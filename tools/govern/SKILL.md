@@ -1,0 +1,103 @@
+---
+name: govern
+description: Work on a PALS Notes video (script, sound, preview, fixes, metadata, publishing) with the owner through the govern CLI, at a fraction of the tokens. Use whenever the conversation is about making, changing, checking or publishing a specific video or Short.
+---
+
+# Working on a video with govern
+
+You and the owner shape a video together: the work is iterative and creative. `govern` keeps that conversation cheap. Measured on 2026-10-10/11 (PALS-Notes/costs/token-analysis/REPORT-2026-10-11.md), the money did not go into the conversation. It went into four things:
+- re-reading a 468k-token context on every call;
+- polling renders from inside the model, about $800;
+- review and fix agent cascades, about $1,400;
+- sessions messaging each other, about $455.
+
+The rules below remove those four.
+
+## Start
+
+1. `govern status` lists the videos. If the video is not there, run `govern new <slug> --kind long|short --title "…" --lang en|pt-BR [--parent <film>]`. The slug is its folder under `PALS-Notes/projects/`, for example `a-millionth-apart/shorts`.
+2. `govern work <slug> <stage>`, where stage is one of plan, script, script-check, sound, preview, produce, final, deliver. This opens a measured work segment and prints the **brief**:
+   - stage and exit condition;
+   - approvals;
+   - named files;
+   - commands;
+   - last jobs;
+   - recent decisions.
+
+   Work from the brief. Do not read WORKFLOW.md, CHECKLIST.md, the style guide or old reports in full. The brief carries the exit condition, and `govern ask` carries the rules each step needs.
+3. If the video's build commands or files are not named yet, name them once:
+   - `govern cmd <slug> preview -- {python} build_short1.py --preview`. Placeholders: `{python}`, `{repo}`, `{dir}`.
+   - `govern file <slug> script short-1.screenplay.json`
+   - `govern file <slug> sheet "renders/**/*sheet*.png"`. A glob means its newest match.
+
+## The loop
+
+The owner says what to change. Then:
+
+1. **Read narrowly.** Open only the file the change touches, and only the part you need (grep, offset or limit). Don't re-read what is already in this conversation.
+2. **Edit the source.** Scene files are generated, so edit the builder, never the XML.
+3. **Build without waiting in the model.** Run `govern run <slug> preview --bg`, then `govern wait <slug>`.
+   - In Claude Code, run the wait as one Bash call with `run_in_background: true`. You are notified when it ends, and no tokens are spent while it runs. Never write sleep or poll loops, and never check a job repeatedly.
+   - `wait` prints the exit code, the new files and the last 12 log lines. Use `govern log <slug> --grep RE` only if those lines don't explain a failure.
+4. **Show the result.**
+   - Give the owner the sheet's or preview's path to open.
+   - Read an image yourself only when you must judge it. An image stays in the context for the rest of the session, so read one sheet once, not every frame.
+   - State what you measured and what you could not judge. You cannot watch motion or hear audio.
+5. **Record the decision** as soon as it is made, in one line: `govern note <slug> "scene 3: slower zoom, hold 2 s on the label"`. The next session starts from these notes, not from this chat.
+
+Keep replies short: what changed, what to look at, and the open question. No long reports or tables unless asked.
+
+## Steps that go to Codex
+
+These steps run as one verified Codex call each, not as chat work in this session:
+
+| Step | Command |
+|---|---|
+| Hook options for a Short | `govern ask <slug> hooks --file <script> [--var direction="…"]` |
+| Title, description, chapters, pinned comment | `govern ask <slug> metadata --file <script> --file <timings or publication notes>` |
+| Fact-check against saved evidence | `govern ask <slug> factcheck --file <script> --file CLAIMS-LEDGER.md` |
+| Script review (style guide, read-aloud checks, story questions) | `govern ask <slug> script-review --file <script>` |
+| English → spoken pt-BR | `govern ask <slug> ptbr --file <script>` |
+
+- Output is JSON, checked against a schema and the house rules, with one automatic repair.
+- Exit 3 means it failed verification. Say so; don't patch the output by hand and present it as verified.
+- Present the result in a few lines, and give the owner the JSON path for the full text.
+- Images can be added with `--image sheet.png`. `govern prompts` lists the steps.
+
+## The owner's gates
+
+- **Approvals** come only from the owner's own words. Record them verbatim: `govern approve <slug> script|final|publish --quote "<exactly what the owner said>"`. Never infer an approval, and never approve for the owner.
+- **The owner sees complete drafts,** not intermediate passes. State the farm pass cost and the film's total when you deliver.
+- **Publish.** `govern publish <slug>` checks the approvals and the filed package, then prints the smm commands. Run those printed commands through Bash, unchanged, so the publish guard sees them. Only do this after the owner's go in this session.
+
+## Never, in production work
+
+- No subagents, Agent tool or Workflow. One session does the video. A real engine bug goes to e4 as a request (PALS-Notes/docs/engine/patches/), not to an agent cascade.
+- No messages to other sessions. State lives in `govern.json`, and `govern status` answers "where is it".
+- No heavy work on WSL. Renders, encodes, TTS and Whisper run on the VMs or farm through the video's commands (`vmrun.sh`, `farm-pool.sh`).
+- No long logs or whole files pasted into the chat.
+- No overwriting an approved file. Write the new one beside it with a suffix.
+
+## Keep the context small
+
+- Every govern command warns when this session reads more than 150k tokens per call. `govern ctx` shows the number.
+- When it warns:
+  1. Record what is open with `govern note`.
+  2. Tell the owner in one line that the session should restart.
+  3. After the owner's `/clear`, run `govern work <slug> <stage>` again. Nothing is lost, because the state is in files.
+- One session covers one video and one stage at a time. For another video, run `govern done <slug>` and start a fresh session.
+- `govern work <slug> <stage> --open [--engine codex|claude]`, from a terminal, starts a fresh interactive session for one video.
+
+## Measure
+
+`govern usage [<slug>] [--since YYYY-MM-DD]` shows, per work segment:
+- calls;
+- input-side tokens;
+- output tokens;
+- average and maximum context per call;
+- cache share;
+- the owner's turns, and tokens per owner message;
+- `~usd` (where priced);
+- the Codex `ask` steps.
+
+It compares these with the chat baseline (468k context per call). Report it when the owner asks, or when a video is delivered, alongside the farm cost per pass.

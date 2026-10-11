@@ -1,0 +1,45 @@
+#!/usr/bin/env sh
+# MANPAGE >>>
+# NAME
+#     govern — run a PALS Notes video through its workflow from a conversation, with few tokens
+# SYNOPSIS
+#     govern new SLUG --kind long|short [--title T] [--lang L] [--parent SLUG]
+#     govern work SLUG STAGE [--engine claude|codex] [--open]  |  brief SLUG  |  status [SLUG]
+#     govern note SLUG TEXT  |  approve SLUG script|final|publish --quote "owner's words"  |  done SLUG
+#     govern cmd SLUG [NAME -- ARGV...]  |  file SLUG [NAME PATH-OR-GLOB]
+#     govern run SLUG CMD [--bg] [-- ARGS]  |  wait SLUG [JOB] [--timeout S]  |  jobs SLUG  |  log SLUG [JOB]
+#     govern prompts  |  ask SLUG STEP [--file F]... [--var K=V]... [--image PNG]... [--effort E]
+#     govern usage [SLUG...] [--since DATE]  |  ctx  |  publish SLUG  |  manual
+# DESCRIPTION
+#     The control surface an AI uses while it works on a video with the owner. State (stage, decisions,
+#     approvals, commands, files) lives in PALS-Notes/projects/SLUG/govern.json, so a session starts from
+#     `govern brief` (a few hundred tokens) instead of re-reading history. Builds and renders run as jobs:
+#     `run --bg` returns at once and `wait` blocks with no model in the loop. `ask` runs one Codex step
+#     (codex exec --json --output-schema) and verifies the reply against its schema and house rules, with
+#     one repair. `usage` attributes the tokens of Claude Code and Codex sessions to (video, stage)
+#     segments opened by `govern work`, against the chat baseline of REPORT-2026-10-11. The operating
+#     manual for the AI is tools/govern/SKILL.md (`govern manual`).
+# OPTIONS
+#     --bg          run detached; wait with `govern wait`
+#     --timeout S   wait at most S seconds (default 540); exit 124 if the job is still running
+#     --quote Q     approve: the owner's own words (required; only the owner approves)
+#     --open        work: launch a fresh interactive claude or codex session for this video
+# EXIT STATUS
+#     0 ok · 2 usage or state error · 3 a Codex reply failed verification · a job's exit code for run/wait · 124 wait timed out
+# ENVIRONMENT
+#     GOVERN_PROJECTS (default REPO/PALS-Notes/projects) · GOVERN_CODEX_BIN · GOVERN_PYTHON · GOVERN_CTX_WARN (150000)
+#     GOVERN_CLAUDE_PROJECTS (~/.claude/projects) · GOVERN_CODEX_SESSIONS (~/.codex/sessions)
+# EXAMPLES
+#     govern work a-millionth-apart/shorts script
+#     govern run golden-pixel fb gates sheets --bg && govern wait golden-pixel
+#     govern ask you-vs-the-sun metadata --file publication.txt --file timings.json
+#     govern usage --since 2026-10-12
+# KEYWORDS
+#     video workflow codex claude tokens usage orchestration pals-notes youtube
+# SEE ALSO
+#     tools/govern/SKILL.md, docs/govern-design.md
+# MANPAGE <<<
+set -eu
+ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+for a in "$@"; do case "$a" in -h|--help) exec "$ROOT/bin/st-man" govern ;; esac; done
+exec node --disable-warning=ExperimentalWarning "$ROOT/tools/govern/govern.ts" "$@"

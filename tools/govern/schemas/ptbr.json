@@ -1,0 +1,7 @@
+{ "type": "object", "additionalProperties": false, "required": ["lines", "english_terms", "notes"],
+  "properties": {
+    "lines": { "type": "array", "minItems": 1, "items": { "type": "object", "additionalProperties": false,
+      "required": ["id", "en", "spoken", "caption"],
+      "properties": { "id": { "type": "string" }, "en": { "type": "string" }, "spoken": { "type": "string" }, "caption": { "type": "string" } } } },
+    "english_terms": { "type": "array", "items": { "type": "string" } },
+    "notes": { "type": "array", "maxItems": 5, "items": { "type": "string" } } } }

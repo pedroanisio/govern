@@ -1,0 +1,7 @@
+{ "type": "object", "additionalProperties": false, "required": ["claims", "summary"],
+  "properties": {
+    "claims": { "type": "array", "items": { "type": "object", "additionalProperties": false,
+      "required": ["sentence", "verdict", "evidence_file", "passage", "fix"],
+      "properties": { "sentence": { "type": "string" }, "verdict": { "type": "string", "enum": ["supported", "overstated", "wrong", "unsupported"] },
+        "evidence_file": { "type": "string" }, "passage": { "type": "string" }, "fix": { "type": "string" } } } },
+    "summary": { "type": "string", "maxLength": 600 } } }

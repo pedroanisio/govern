@@ -1,0 +1,9 @@
+{ "type": "object", "additionalProperties": false, "required": ["issues", "story", "verdict"],
+  "properties": {
+    "issues": { "type": "array", "maxItems": 12, "items": { "type": "object", "additionalProperties": false,
+      "required": ["line", "problem", "rule", "rewrite"],
+      "properties": { "line": { "type": "string" }, "problem": { "type": "string" }, "rule": { "type": "string" }, "rewrite": { "type": "string" } } } },
+    "story": { "type": "array", "minItems": 5, "maxItems": 5, "items": { "type": "object", "additionalProperties": false,
+      "required": ["question", "answer", "why"],
+      "properties": { "question": { "type": "string" }, "answer": { "type": "string", "enum": ["yes", "no"] }, "why": { "type": "string" } } } },
+    "verdict": { "type": "string", "enum": ["ready", "minor-fixes", "rewrite"] } } }

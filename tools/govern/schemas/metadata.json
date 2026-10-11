@@ -1,0 +1,9 @@
+{ "type": "object", "additionalProperties": false, "required": ["title", "description", "chapters", "hashtags", "pinned_comment", "title_alternatives"],
+  "properties": {
+    "title": { "type": "string", "minLength": 10, "maxLength": 100 },
+    "title_alternatives": { "type": "array", "maxItems": 4, "items": { "type": "string", "maxLength": 100 } },
+    "description": { "type": "string", "maxLength": 5000 },
+    "chapters": { "type": "array", "items": { "type": "object", "additionalProperties": false, "required": ["time", "label"],
+      "properties": { "time": { "type": "string" }, "label": { "type": "string" } } } },
+    "hashtags": { "type": "array", "maxItems": 3, "items": { "type": "string" } },
+    "pinned_comment": { "type": "string", "maxLength": 2000 } } }

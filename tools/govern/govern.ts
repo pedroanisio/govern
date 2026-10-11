@@ -1,0 +1,248 @@
+#!/usr/bin/env node
+// govern — run a PALS Notes video through its workflow from inside a conversation, cheaply.
+// The manual for the AI operating it is SKILL.md (govern manual). Usage: govern help.
+import { spawnSync } from "node:child_process";
+import { readFileSync, globSync, mkdirSync, copyFileSync } from "node:fs";
+import { join, dirname, resolve, relative } from "node:path";
+import { fileURLToPath } from "node:url";
+import { randomUUID } from "node:crypto";
+import { GovernError, fail, parseArgs, opt, nowIso, readJsonl, kTok, type Args } from "./lib/util.ts";
+import { REPO, PROJECTS, STAGES, GATES, load, save, create, stageOf, brief, appendLedger, resolveFile, ledgerFile, projectDir, checkSlug } from "./lib/project.ts";
+import * as jobs from "./lib/jobs.ts";
+import { ask, readPrompt, PROMPTS } from "./lib/codex.ts";
+import { report, currentCtx, CTX_WARN } from "./lib/usage.ts";
+
+const HERE = dirname(fileURLToPath(import.meta.url));
+const SKILL = resolve(HERE, "SKILL.md");
+
+const HELP = `govern — run a video through the PALS Notes workflow from a conversation (manual: govern manual)
+
+start / state
+  govern new <slug> --kind long|short [--title T] [--lang en|pt-BR] [--parent <slug>]
+  govern work <slug> <stage> [--engine claude|codex] [--open]   start a work segment, print the brief
+  govern brief <slug>            the compact context (stage, exit condition, approvals, files, decisions)
+  govern status [<slug>]         one line per video, or the brief of one
+  govern note <slug> "<decision>"          record a decision (state lives in files, not in the chat)
+  govern approve <slug> ${GATES.join("|")} --quote "<the owner's words>"
+  govern done <slug>             end the current work segment
+  govern cmd <slug> [<name> -- <argv…>] | --rm <name>      list or set the video's commands
+  govern file <slug> <name> <path-or-glob>                 name a file (a glob means its newest match)
+
+run without a model in the loop
+  govern run <slug> <command> [--bg] [-- extra args]      foreground prints a summary; --bg returns a job id
+  govern wait <slug> [<job>|last] [--timeout 540]          block until it ends; exit code = the job's (124 = still running)
+  govern jobs <slug>  ·  govern log <slug> [<job>] [--tail 40] [--grep RE]
+
+codex one-shot steps (verified JSON)
+  govern prompts                 list the steps
+  govern ask <slug> <step> [--file F]… [--var K=V]… [--image PNG]… [--effort low|medium|high] [--model M]
+
+measure
+  govern usage [<slug>…] [--since YYYY-MM-DD]   tokens per video and segment, against the chat baseline
+  govern ctx                     this Claude Code session's context size now
+  govern manual  ·  govern install-skill [<skills dir>]   the AI's operating manual (SKILL.md)
+
+publish (prints the commands; the publish guard hook must see them)
+  govern publish <slug>
+
+stages: ${STAGES.join(", ")}`;
+
+// A reader that stops early (govern brief x | head) is not an error.
+process.stdout.on("error", (e: NodeJS.ErrnoException) => { if (e.code === "EPIPE") process.exit(0); throw e; });
+const out = (s: string) => process.stdout.write(s.endsWith("\n") ? s : s + "\n");
+
+function ctxFooter(): void {
+  const c = currentCtx();
+  if (c && c.ctx > CTX_WARN) out(`⚠ this session reads ${kTok(c.ctx)} per call (limit ${kTok(CTX_WARN)}). Record open decisions with govern note, then /clear and govern work again.`);
+}
+
+function engineOf(a: Args): "claude" | "codex" {
+  const e = opt(a, "engine") ?? (process.env.CLAUDE_CODE_SESSION_ID ? "claude" : "codex");
+  if (e !== "claude" && e !== "codex") fail("--engine must be claude or codex");
+  return e as "claude" | "codex";
+}
+
+function cmdWork(a: Args): void {
+  const p = load(a._[1]);
+  const stage = stageOf(a._[2]);
+  p.stage = stage;
+  save(p);
+  const engine = engineOf(a);
+  if (a.opts.open) {
+    const session = engine === "claude" ? randomUUID() : undefined;
+    appendLedger(p.slug, { kind: "work", stage, engine, session });
+    const first = `Video work session (registered by govern work ${p.slug} ${stage}). Use the govern skill: run \`govern brief ${p.slug}\` first and work from it; do not explore the repository. Then ask me what we change.`;
+    const args = engine === "claude" ? ["--session-id", session!, first] : ["-C", REPO, first];
+    const r = spawnSync(engine, args, { cwd: REPO, stdio: "inherit" });
+    appendLedger(p.slug, { kind: "done", engine, session });
+    process.exitCode = r.status ?? 0;
+    return;
+  }
+  appendLedger(p.slug, { kind: "work", stage, engine, session: engine === "claude" ? process.env.CLAUDE_CODE_SESSION_ID : undefined });
+  out(brief(p));
+}
+
+function cmdStatus(a: Args): void {
+  if (a._[1]) return out(brief(load(a._[1])));
+  const slugs = globSync("**/govern.json", { cwd: PROJECTS }).map((f) => dirname(f)).sort();
+  if (!slugs.length) return out("no videos under govern yet (govern new <slug> --kind long|short)");
+  for (const s of slugs) {
+    const p = load(s);
+    const lastJob = readJsonl(ledgerFile(s)).filter((e) => e.kind === "job").pop();
+    const ap = GATES.map((g) => (p.approvals[g] ? g[0].toUpperCase() : "·")).join("");
+    out(`${s.padEnd(36)} ${p.kind.padEnd(5)} ${String(STAGES.indexOf(p.stage) + 1)}/8 ${p.stage.padEnd(12)} approvals ${ap}  ${lastJob ? `last job ${lastJob.name} ${lastJob.status}` : ""}`);
+  }
+}
+
+function cmdApprove(a: Args): void {
+  const p = load(a._[1]);
+  const gate = a._[2] as (typeof GATES)[number];
+  if (!GATES.includes(gate)) fail(`gate must be one of ${GATES.join(", ")}`);
+  const quote = opt(a, "quote");
+  if (!quote || quote.trim().length < 2) fail(`--quote is required: the owner's own words approving the ${gate} (only the owner approves)`);
+  if (gate === "final" && !p.approvals.script) fail("no script approval recorded yet");
+  if (gate === "publish" && !p.approvals.final) fail("no final-cut approval recorded yet");
+  p.approvals[gate] = { at: nowIso(), quote: quote! };
+  p.notes.push({ at: nowIso(), stage: p.stage, text: `owner approved ${gate}: "${quote}"` });
+  save(p);
+  appendLedger(p.slug, { kind: "approve", gate, quote });
+  out(`${p.slug}: ${gate} approved`);
+}
+
+function cmdCmd(a: Args): void {
+  const p = load(a._[1]);
+  const rm = opt(a, "rm");
+  if (rm) { delete p.commands[rm]; save(p); return out(`${p.slug}: removed command ${rm}`); }
+  const name = a._[2];
+  if (!name) { for (const [k, v] of Object.entries(p.commands)) out(`${k}: ${v.join(" ")}`); return; }
+  const argv = a._.slice(3);
+  if (!argv.length) fail(`give the argv after --: govern cmd ${p.slug} ${name} -- {python} build.py --preview`);
+  p.commands[name] = argv;
+  save(p);
+  out(`${p.slug}: ${name} = ${argv.join(" ")}`);
+}
+
+function cmdFile(a: Args): void {
+  const p = load(a._[1]);
+  const [name, pat] = [a._[2], a._[3]];
+  if (!name || !pat) { for (const k of Object.keys(p.files)) { const f = resolveFile(p, k); out(`${k}: ${p.files[k]} → ${f ? relative(REPO, f) : "(none)"}`); } return; }
+  p.files[name] = pat;
+  save(p);
+  const f = resolveFile(p, name);
+  out(`${p.slug}: ${name} = ${pat} → ${f ? relative(REPO, f) : "(nothing matches yet)"}`);
+}
+
+function cmdRun(a: Args): void {
+  const p = load(a._[1]);
+  const name = a._[2];
+  if (!name) fail(`govern run ${p.slug} <command> (have: ${Object.keys(p.commands).join(", ") || "none"})`);
+  const st = jobs.start(p, name, a._.slice(3), Boolean(a.opts.bg));
+  if (st.status === "running") return out(`job ${st.id} started in the background · wait with: govern wait ${p.slug} ${st.id}`);
+  out(jobs.summary(p, st));
+  process.exitCode = st.exit ?? 1;
+}
+
+function cmdWait(a: Args): void {
+  const p = load(a._[1]);
+  const id = jobs.find(p.slug, a._[2]);
+  const st = jobs.wait(p.slug, id, Number(opt(a, "timeout") ?? 540));
+  if (st.timedOut) { out(`job ${id} still running after ${opt(a, "timeout") ?? 540}s · wait again with: govern wait ${p.slug} ${id}`); process.exitCode = 124; return; }
+  appendLedger(p.slug, { kind: "job", id, name: st.name, bg: true, status: st.status, exit: st.exit, seconds: st.seconds });
+  out(jobs.summary(p, st));
+  process.exitCode = st.exit ?? 1;
+}
+
+function cmdAsk(a: Args): void {
+  const p = load(a._[1]);
+  const step = a._[2];
+  if (!step) fail("govern ask <slug> <step> (see govern prompts)");
+  const vars: Record<string, string> = {};
+  for (const kv of a.multi.var ?? []) { const i = kv.indexOf("="); if (i < 1) fail(`--var needs NAME=VALUE: ${kv}`); vars[kv.slice(0, i)] = kv.slice(i + 1); }
+  const r = ask(p, step, { files: a.multi.file, vars, images: a.multi.image, effort: opt(a, "effort"), model: opt(a, "model") });
+  const u = r.usage;
+  const meter = `codex ${step}: ${r.calls} call${r.calls > 1 ? "s" : ""}, ${r.turns} turns, ${kTok(u.input)} in (${u.input ? Math.round((u.cached / u.input) * 100) : 0}% cached), ${kTok(u.output)} out, ${r.seconds}s`;
+  if (!r.ok) { out(`${meter}\nFAILED verification (nothing to use):\n- ${r.errors.join("\n- ")}\nraw: ${relative(REPO, r.out)}`); process.exitCode = 3; return; }
+  out(`${meter} · verified · ${relative(REPO, r.out)}`);
+  out(JSON.stringify(r.value, null, 1));
+}
+
+function cmdPrompts(): void {
+  for (const f of globSync("*.md", { cwd: PROMPTS }).sort()) {
+    const pf = readPrompt(f.replace(/\.md$/, ""));
+    out(`${pf.name.padEnd(14)} ${pf.meta.effort ? `[${pf.meta.effort}] ` : ""}${pf.meta.description ?? ""}`);
+  }
+}
+
+function cmdPublish(a: Args): void {
+  const p = load(a._[1]);
+  const missing = (["final", "publish"] as const).filter((g) => !p.approvals[g]);
+  if (missing.length) fail(`${p.slug}: no owner approval recorded for: ${missing.join(", ")} (govern approve ${p.slug} <gate> --quote "…")`);
+  const vpkg = resolveFile(p, "vpkg"), release = resolveFile(p, "release");
+  if (!vpkg) fail(`${p.slug}: name the filed package first: govern file ${p.slug} vpkg ../../packages/<file>.vpkg.zip`);
+  if (!release) fail(`${p.slug}: name the release manifest: govern file ${p.slug} release <path>/release.json`);
+  const pkgs = join(REPO, "PALS-Notes", "packages");
+  if (dirname(vpkg!) !== pkgs) fail(`${relative(REPO, vpkg!)} is not filed in PALS-Notes/packages`);
+  const sha = spawnSync("sha256sum", [vpkg!], { encoding: "utf8" }).stdout.split(" ")[0];
+  const sums = globSync("channel-vpkg-SHA256SUMS-*.txt", { cwd: pkgs }).some((f) => readFileSync(join(pkgs, f), "utf8").includes(sha));
+  if (!sha || !sums) fail(`${relative(REPO, vpkg!)}: sha256 not in any channel-vpkg-SHA256SUMS-*.txt (file the package first)`);
+  const base = vpkg!.split("/").pop();
+  out(`${p.slug}: approvals ✓ (final, publish) · package filed ✓ ${base}`);
+  out(`On the publishing host (smm), with the release manifest ${relative(REPO, release!)} copied there:`);
+  out(`  1. plan:  smm youtube publish release.json --upload`);
+  out(`  2. apply: PACKAGE_FILED=${base} smm youtube publish release.json --upload --apply`);
+  out(`Then read the result back, and run: govern note ${p.slug} "published <videoId> at <time>"`);
+}
+
+function main(argv: string[]): void {
+  const a = parseArgs(argv, { bool: ["bg", "open", "help"], multi: ["file", "var", "image"] });
+  const c = a._[0];
+  switch (c) {
+    case undefined: case "help": case "-h": return out(HELP);
+    case "manual": return out(readFileSync(SKILL, "utf8"));
+    case "install-skill": {
+      const dest = join(a._[1] ?? join(REPO, ".claude", "skills"), "govern", "SKILL.md");
+      mkdirSync(dirname(dest), { recursive: true });
+      copyFileSync(SKILL, dest);
+      return out(`installed ${dest} (refresh with govern install-skill after editing tools/govern/SKILL.md)`);
+    }
+    case "new": {
+      const p = create(checkSlug(a._[1]), { kind: opt(a, "kind") ?? "", title: opt(a, "title"), lang: opt(a, "lang"), parent: opt(a, "parent") });
+      out(`created ${relative(REPO, join(projectDir(p.slug), "govern.json"))}`);
+      return out(brief(p));
+    }
+    case "work": cmdWork(a); break;
+    case "brief": out(brief(load(a._[1]))); break;
+    case "status": cmdStatus(a); break;
+    case "note": {
+      const p = load(a._[1]);
+      const text = a._.slice(2).join(" ").trim();
+      if (!text) fail("govern note <slug> \"<decision>\"");
+      p.notes.push({ at: nowIso(), stage: p.stage, text });
+      save(p);
+      appendLedger(p.slug, { kind: "note", text });
+      out(`${p.slug}: noted (${p.notes.length})`);
+      break;
+    }
+    case "approve": cmdApprove(a); break;
+    case "done": { const p = load(a._[1]); appendLedger(p.slug, { kind: "done", engine: engineOf(a), session: process.env.CLAUDE_CODE_SESSION_ID }); out(`${p.slug}: segment closed`); break; }
+    case "cmd": cmdCmd(a); break;
+    case "file": cmdFile(a); break;
+    case "run": cmdRun(a); break;
+    case "wait": cmdWait(a); break;
+    case "jobs": { const p = load(a._[1]); for (const id of jobs.list(p.slug).slice(-15)) { const s = jobs.state(p.slug, id); out(`${id} ${s.status}${s.exit != null ? ` exit ${s.exit}` : ""}${s.seconds != null ? ` ${s.seconds}s` : ""}`); } break; }
+    case "log": { const p = load(a._[1]); const id = jobs.find(p.slug, a._[2]); out(jobs.tail(p.slug, id, Number(opt(a, "tail") ?? 40), opt(a, "grep")).join("\n") || "(empty log)"); break; }
+    case "prompts": return cmdPrompts();
+    case "ask": cmdAsk(a); break;
+    case "usage": { const since = opt(a, "since"); return out(report(a._.length > 1 ? a._.slice(1).map(checkSlug) : undefined, since ? Date.parse(since) : undefined)); }
+    case "ctx": { const x = currentCtx(); return out(x ? `context now ${kTok(x.ctx)} per call (limit ${kTok(CTX_WARN)})${x.ctx > CTX_WARN ? " ⚠ over: govern note what is open, /clear, govern work again" : ""}` : "not in a Claude Code session (no CLAUDE_CODE_SESSION_ID) or no transcript yet"); }
+    case "publish": cmdPublish(a); break;
+    default: fail(`unknown command "${c}" (govern help)`);
+  }
+  ctxFooter();
+}
+
+try { main(process.argv.slice(2)); }
+catch (e) {
+  if (e instanceof GovernError) { process.stderr.write(`govern: ${e.message}\n`); process.exitCode = e.code; }
+  else throw e;
+}

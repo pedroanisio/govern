@@ -1,0 +1,8 @@
+{ "type": "object", "additionalProperties": false, "required": ["hooks", "chosen", "reason"],
+  "properties": {
+    "hooks": { "type": "array", "minItems": 3, "maxItems": 6, "items": { "type": "object", "additionalProperties": false,
+      "required": ["text", "approach", "on_screen", "risk"],
+      "properties": { "text": { "type": "string", "minLength": 3, "maxLength": 80 }, "approach": { "type": "string" },
+        "on_screen": { "type": "string" }, "risk": { "type": "string" } } } },
+    "chosen": { "type": "integer" },
+    "reason": { "type": "string", "maxLength": 400 } } }

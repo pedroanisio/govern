@@ -1,0 +1,6 @@
+{
+  "note": "USD per million tokens, used only for the ~usd column. Basis: the Opus 5.5 list prices used in PALS-Notes/costs/token-analysis/REPORT-2026-10-11.md (an estimate). Models not listed get tokens only. On a subscription these are plan-limit use, not money spent.",
+  "models": {
+    "claude-opus-5": { "in": 4, "cw": 5, "cr": 0.4, "out": 20 }
+  }
+}
