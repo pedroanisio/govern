@@ -263,7 +263,7 @@ function cmdTask(a: Args): void {
     const body = bodyFile ? readFileSync(bodyFile, "utf8") : opt(a, "body") ?? "";
     const { to, routed } = recipient(opt(a, "to") ?? "");
     const m = queue.send({
-      project: opt(a, "project") ?? "", task: opt(a, "task") ?? "", kind: opt(a, "kind") ?? "TASK", from: opt(a, "from") ?? "owner",
+      project: opt(a, "project") ?? "", task: opt(a, "task") ?? "", kind: opt(a, "kind") ?? "TASK", from: opt(a, "from") ?? resolveAs() ?? fail("cannot tell who is sending (no parent process is a registered Claude Code session): pass --from NAME"),
       to, ...(routed ? { routed: true } : {}), summary: opt(a, "summary") ?? "", body, files: a.multi.file ?? [], replyTo: opt(a, "reply-to"),
       access: a.opts.write ? "write" : "read-only",
     });

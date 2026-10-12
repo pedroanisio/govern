@@ -182,6 +182,18 @@ test("close moves an open message to done with the closer recorded; anything els
   assert.match(govern(e, ["task", "close", "nope", "--as", "alice"], S).err, /no message nope/);
 });
 
+test("send without --from is from the sending session, never silently the owner; unresolved fails asking for --from", () => {
+  const e = env();
+  const S = { GOVERN_SESSIONS_DIR: sess(["alice"]) };
+  const id = idOf(govern(e, [...SEND, "--to", "codex"], { ...S, GOVERN_AS: "alice" }).out);
+  assert.match(govern(e, ["task", "show", id]).out, /\[TASK\] alice→codex/);
+  const none = govern(e, [...SEND, "--to", "codex"], { GOVERN_SESSIONS_DIR: sess([]), GOVERN_AS: "" });
+  assert.equal(none.code, 2);
+  assert.match(none.err, /--from/);
+  const explicit = govern(e, [...SEND, "--to", "codex", "--from", "owner"], { GOVERN_SESSIONS_DIR: sess([]), GOVERN_AS: "" });
+  assert.equal(explicit.code, 0, explicit.err);
+});
+
 test("a message is found by its full id, a prefix of it, or the short code after the last dash", () => {
   const e = env();
   const S = { GOVERN_SESSIONS_DIR: sess(["alice"]) };

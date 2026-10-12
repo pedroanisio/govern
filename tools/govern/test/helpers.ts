@@ -29,6 +29,7 @@ export function makeEnv(): Env {
       GOVERN_CLAUDE_PROJECTS: join(root, "claude"), GOVERN_CODEX_SESSIONS: join(root, "codex-sessions"),
       FAKE_CODEX_ARGV_OUT: join(root, "argv.log"), FAKE_CODEX_STDIN_OUT: join(root, "stdin.log"), FAKE_CODEX_COUNTER: join(root, "count"),
       CLAUDE_CODE_SESSION_ID: "",
+      GOVERN_AS: "owner", // the sender of a test's `task send`, never the session running the tests
     },
   };
 }
