@@ -34,7 +34,9 @@ export function makeEnv(): Env {
 }
 
 export function govern(e: Env, args: string[], env: Record<string, string> = {}) {
-  const base = { ...process.env, ...e.env, ...env };
+  // The compaction window comes from the test, never from the session running it (Claude Code exports its settings env).
+  const { CLAUDE_CODE_AUTO_COMPACT_WINDOW: _, ...inherited } = process.env;
+  const base = { ...inherited, ...e.env, ...env };
   if (!base.CLAUDE_CODE_SESSION_ID) delete base.CLAUDE_CODE_SESSION_ID;
   const r = spawnSync(process.execPath, ["--disable-warning=ExperimentalWarning", GOVERN, ...args], { env: base, encoding: "utf8", timeout: 60000 });
   return { code: r.status, out: r.stdout, err: r.stderr };
