@@ -1,4 +1,6 @@
 import { test } from "node:test";
+import { createRequire } from "node:module";
+const require = createRequire(import.meta.url);
 import assert from "node:assert/strict";
 import { join } from "node:path";
 import { makeEnv, govern, write, reply } from "./helpers.ts";
@@ -32,11 +34,16 @@ test("govern tune measures transcripts (compactions, owner turns, subagents) and
   lines.push({ type: "system", subtype: "compact_boundary", timestamp: new Date(now).toISOString(), compactMetadata: { trigger: "auto", preTokens: 300000 } });
   write(join(e.root, "claude", "p", "S1.jsonl"), lines.map((l) => JSON.stringify(l)).join("\n") + "\n");
   write(join(e.root, "claude", "p", "S1", "subagents", "a.jsonl"), JSON.stringify({ type: "assistant", timestamp: new Date(now).toISOString(), message: { id: "s1", usage: { input_tokens: 1 } } }) + "\n");
+  write(join(e.root, "settings.json"), JSON.stringify({ keep: 1 }));
   const r = govern(e, ["tune"]);
   assert.equal(r.code, 0, r.err);
-  assert.match(r.out, /compact window default → recommend 300k \(CLAUDE_CODE_AUTO_COMPACT_WINDOW=300000\)/);
+  assert.match(r.out, /compact window default → SET 300k/);
+  const settings = JSON.parse(require("node:fs").readFileSync(join(e.root, "settings.json"), "utf8"));
+  assert.equal(settings.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW, "300000");
+  assert.equal(settings.keep, 1); // other settings survive
+  assert.match(govern(e, ["tune"]).out, /hold 6 h/); // no second change inside the hold
   assert.match(r.out, /40 calls in 1 sessions, median 300k, p90 300k, 1 owner turns, 1 auto \+ 0 manual compactions, 1 subagent calls/);
-  assert.match(govern(e, ["desk"]).out, /tuning: compact window default · .*RECOMMEND 300k/);
+  assert.match(govern(e, ["desk"]).out, /tuning: compact window 300k \(auto\)/);
 });
 
 test("--to auto routes to the cheapest runner with verified replies, codex by default", () => {

@@ -2,13 +2,14 @@
 // transcripts and the queue ledger, decides with bounded, damped rules and records the decision with its evidence.
 //
 // Knob 1, Claude Code's compaction window (CLAUDE_CODE_AUTO_COMPACT_WINDOW): a session compacts itself when its context
-// nears the window, so the window caps what every call re-reads. The loop recommends a lower window while the median
-// context of main-session calls is over the target, and a higher one when automatic compactions come too often. It
-// does not write Claude Code's settings itself: changing an agent's own configuration is the owner's act.
+// nears the window, so the window caps what every call re-reads. The loop lowers the window while the median context
+// of main-session calls is over the target, and raises it when automatic compactions come too often. It applies the
+// decision to env.CLAUDE_CODE_AUTO_COMPACT_WINDOW in ~/.claude/settings.json (new sessions read it), only that key,
+// with a backup, at most once per holdHours: the owner authorised this on 2026-10-12 ("autorizo o ajuste automatico").
 //
 // Knob 2, the queue's runner for `--to auto` (govern's own decision, applied): the cheapest runner whose recent replies
 // pass verification; one task in ten goes to the other runner so its numbers stay current.
-import { existsSync, readFileSync, readdirSync, statSync, appendFileSync, mkdirSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, statSync, appendFileSync, mkdirSync, writeFileSync, renameSync, copyFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { homedir } from "node:os";
 import { readJsonl, kTok, nowIso } from "./util.ts";
@@ -25,6 +26,7 @@ export const RULES = {
   minWindow: 100000, maxWindow: 500000, step: 50000, firstWindow: 300000,
   maxAutoCompactsPer100Turns: 10,
   minCalls: 30, // fewer main-session calls in 24 h: not enough evidence
+  holdHours: 6, // at most one change of the window in this time
 };
 
 export interface Metrics { calls: number; medianCtx: number; p90Ctx: number; ownerTurns: number; autoCompacts: number; manualCompacts: number; sessions: number; subagentCalls: number }
@@ -88,10 +90,12 @@ export function currentWindow(): number | undefined {
 
 export interface Decision { knob: string; from?: number; to?: number; change: boolean; reason: string; metrics: Metrics }
 
-export function decideWindow(m: Metrics, cur: number | undefined): Decision {
+export function decideWindow(m: Metrics, cur: number | undefined, lastChangeAt?: number, now = Date.now()): Decision {
   const R = RULES;
   const base = { knob: "compact-window", from: cur, metrics: m };
   if (m.calls < R.minCalls) return { ...base, to: cur, change: false, reason: `only ${m.calls} main-session calls in 24 h (< ${R.minCalls}): no evidence for a change` };
+  if (lastChangeAt !== undefined && now - lastChangeAt < R.holdHours * 3600e3)
+    return { ...base, to: cur, change: false, reason: `last change ${Math.round((now - lastChangeAt) / 60000)} min ago: hold ${R.holdHours} h so sessions started under it can be measured` };
   const per100 = m.ownerTurns ? (m.autoCompacts / m.ownerTurns) * 100 : 0;
   if (m.medianCtx > R.targetCtx) {
     const to = cur === undefined ? R.firstWindow : Math.max(R.minWindow, cur - R.step);
@@ -119,19 +123,33 @@ export function chooseRunner(seq: number): { runner: "codex" | "claude"; reason:
   return { runner: best, reason: good.length ? `${best}: ${Math.round(s.okRate * 100)}% verified, mean ${kTok(Math.round(s.meanIn))} in over its last ${s.n} runs` : "fewer than 3 verified runs per runner: codex by default" };
 }
 
-/** One loop turn: measure, decide, record. Returns the line for the log and the desk. */
-export function tune(): string {
+/** Write only env.CLAUDE_CODE_AUTO_COMPACT_WINDOW, keeping every other setting; the previous file is kept as a backup. */
+function applyWindow(w: number): void {
+  const f = SETTINGS();
+  const s = existsSync(f) ? JSON.parse(readFileSync(f, "utf8")) : {};
+  if (existsSync(f)) copyFileSync(f, `${f}.govern-tune.bak`);
+  s.env = { ...(s.env ?? {}), [VAR]: String(w) };
+  const tmp = `${f}.tmp-${process.pid}`;
+  writeFileSync(tmp, JSON.stringify(s, null, 2) + "\n");
+  renameSync(tmp, f);
+}
+
+/** One loop turn: measure, decide, apply, record. Returns the line for the log and the desk. */
+export function tune(o: { dryRun?: boolean } = {}): string {
   const m = measure(24);
-  const d = decideWindow(m, currentWindow());
+  const last = readJsonl(TUNING_LOG()).filter((e) => e.knob === "compact-window" && e.applied).pop();
+  const d = decideWindow(m, currentWindow(), last ? Date.parse(last.t) : undefined);
+  const applied = d.change && !o.dryRun;
+  if (applied) applyWindow(d.to!);
   mkdirSync(dirname(TUNING_LOG()), { recursive: true });
-  appendFileSync(TUNING_LOG(), JSON.stringify({ t: nowIso(), ...d }) + "\n");
+  if (!o.dryRun) appendFileSync(TUNING_LOG(), JSON.stringify({ t: nowIso(), ...d, applied }) + "\n");
   const w = (x?: number) => (x === undefined ? "default" : kTok(x));
-  return `compact window ${w(d.from)}${d.change ? ` → recommend ${w(d.to)} (${VAR}=${d.to})` : ""} · ${d.reason} · 24 h: ${m.calls} calls in ${m.sessions} sessions, median ${kTok(m.medianCtx)}, p90 ${kTok(m.p90Ctx)}, ${m.ownerTurns} owner turns, ${m.autoCompacts} auto + ${m.manualCompacts} manual compactions, ${m.subagentCalls} subagent calls`;
+  return `compact window ${w(d.from)}${d.change ? ` → ${applied ? "SET" : "would set"} ${w(d.to)}` : ""} · ${d.reason} · 24 h: ${m.calls} calls in ${m.sessions} sessions, median ${kTok(m.medianCtx)}, p90 ${kTok(m.p90Ctx)}, ${m.ownerTurns} owner turns, ${m.autoCompacts} auto + ${m.manualCompacts} manual compactions, ${m.subagentCalls} subagent calls`;
 }
 
 export function tuningState(): string {
   const last = readJsonl(TUNING_LOG()).pop();
   const cur = currentWindow();
   if (!last) return `tuning: compact window ${cur === undefined ? "default" : kTok(cur)} · never measured (govern tune)`;
-  return `tuning: compact window ${cur === undefined ? "default" : kTok(cur)} · ${last.t.slice(0, 16).replace("T", " ")}: ${last.change ? `RECOMMEND ${kTok(last.to)} — ` : ""}${last.reason}`;
+  return `tuning: compact window ${cur === undefined ? "default" : kTok(cur)} (auto) · ${last.t.slice(0, 16).replace("T", " ")}: ${last.applied ? `set ${kTok(last.to)} — ` : ""}${last.reason}`;
 }
