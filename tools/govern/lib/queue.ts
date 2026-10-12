@@ -26,6 +26,8 @@ export interface Message {
   summary: string; body: string; files: string[]; replyTo?: string; created: string;
   /** read-only (default) or write: the runner may change files in the project folder. */
   access: "read-only" | "write";
+  /** sent with --to auto: the runner was chosen by the tuning loop */
+  routed?: boolean;
   result?: { agent: string; ok: boolean; usage?: Usage & { costUsd?: number }; turns?: number; seconds: number; reply?: string; error?: string };
 }
 

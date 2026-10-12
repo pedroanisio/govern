@@ -13,6 +13,7 @@ import { ask, readPrompt, PROMPTS } from "./lib/codex.ts";
 import { report, currentCtx, CTX_WARN } from "./lib/usage.ts";
 import * as queue from "./lib/queue.ts";
 import { desk } from "./lib/desk.ts";
+import { tune, chooseRunner } from "./lib/tune.ts";
 import { writeFileSync, existsSync, unlinkSync } from "node:fs";
 import { homedir } from "node:os";
 
@@ -47,13 +48,14 @@ measure
   govern manual  ·  govern install-skill [<skills dir>]   the AI's operating manual (SKILL.md)
 
 task queue between agents (one fresh headless session per message; nothing runs while the queue waits)
-  govern task send --to codex|claude|owner|<name> --project P --task T --kind TASK --summary S (--body B | --body-file F)
+  govern task send --to auto|codex|claude|owner|<name> --project P --task T --kind TASK --summary S (--body B | --body-file F)
                    [--file REPO-RELATIVE-PATH]… [--reply-to ID] [--write] [--from NAME]
   govern task list [--to X] [--state open|claimed|done|failed] [--project P]  ·  govern task show <id>
   govern task dispatch [--max N] [--only codex|claude] [--loop --interval 30]  ·  govern task install-service
 
 the owner's screen
   govern desk                    every lane, your inbox, the queue, today's tokens (reads files only)
+  govern tune                    measure the last 24 h and record the tuning decision (the dispatcher runs it hourly)
 
 publish (prints the commands; the publish guard hook must see them)
   govern publish <slug>
@@ -212,9 +214,16 @@ function cmdTask(a: Args): void {
   if (sub === "send") {
     const bodyFile = opt(a, "body-file");
     const body = bodyFile ? readFileSync(bodyFile, "utf8") : opt(a, "body") ?? "";
+    let to = opt(a, "to") ?? "";
+    if (to === "auto") {
+      const seq = queue.all().filter((x) => x.m.routed).length;
+      const c = chooseRunner(seq);
+      to = c.runner;
+      out(`auto → ${c.runner} (${c.reason})`);
+    }
     const m = queue.send({
       project: opt(a, "project") ?? "", task: opt(a, "task") ?? "", kind: opt(a, "kind") ?? "TASK", from: opt(a, "from") ?? "owner",
-      to: opt(a, "to") ?? "", summary: opt(a, "summary") ?? "", body, files: a.multi.file ?? [], replyTo: opt(a, "reply-to"),
+      to, ...(opt(a, "to") === "auto" ? { routed: true } : {}), summary: opt(a, "summary") ?? "", body, files: a.multi.file ?? [], replyTo: opt(a, "reply-to"),
       access: a.opts.write ? "write" : "read-only",
     });
     return out(`queued ${m.id} (${m.kind} to ${m.to})`);
@@ -244,7 +253,13 @@ function cmdTask(a: Args): void {
     const stop = () => { try { if (existsSync(pidf) && JSON.parse(readFileSync(pidf, "utf8")).pid === process.pid) unlinkSync(pidf); } catch { /* gone */ } process.exit(0); };
     process.on("SIGTERM", stop); process.on("SIGINT", stop);
     // setTimeout, not a blocking sleep: signals are handled only when the event loop turns.
-    const tick = () => { once(); setTimeout(tick, secs * 1000); };
+    // The tuning measurement runs hourly in the same loop: reading transcripts, no model.
+    let lastTune = 0;
+    const tick = () => {
+      once();
+      if (Date.now() - lastTune > 3600e3) { lastTune = Date.now(); try { out(`[tune] ${tune()}`); } catch (e) { out(`[tune] failed: ${(e as Error).message}`); } }
+      setTimeout(tick, secs * 1000);
+    };
     tick();
     return;
   }
@@ -309,6 +324,7 @@ function main(argv: string[]): void {
     case "publish": cmdPublish(a); break;
     case "task": cmdTask(a); break;
     case "desk": out(desk()); break;
+    case "tune": out(tune()); break;
     default: fail(`unknown command "${c}" (govern help)`);
   }
   ctxFooter();

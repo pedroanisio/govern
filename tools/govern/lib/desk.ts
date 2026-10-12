@@ -5,6 +5,7 @@ import { dirname, join } from "node:path";
 import { readJsonl, kTok, clip } from "./util.ts";
 import { PROJECTS, GATES, ledgerFile, stagesOf, type Project } from "./project.ts";
 import * as queue from "./queue.ts";
+import { tuningState } from "./tune.ts";
 
 const ago = (iso: string) => {
   const m = Math.round((Date.now() - Date.parse(iso)) / 60000);
@@ -44,6 +45,7 @@ export function desk(): string {
   for (const { m } of inbox.slice(-10)) L.push(`  ${m.id} ${m.kind.padEnd(8)} from ${m.from} [${m.project}] ${clip(m.summary, 80)}`);
   // ---- queue
   const count = (state: string, to?: string) => msgs.filter((x) => x.state === state && (!to || x.m.to === to)).length;
+  L.push("", tuningState());
   L.push("", `QUEUE  codex: ${count("open", "codex")} waiting, ${count("claimed", "codex")} running · claude: ${count("open", "claude")} waiting, ${count("claimed", "claude")} running · failed: ${count("failed")} · ${dispatcherState()}`);
   // ---- tokens today (queue runs and codex asks; chat sessions: govern usage)
   const byLane = new Map<string, { calls: number; input: number; output: number; usd: number }>();
