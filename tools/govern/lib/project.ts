@@ -14,6 +14,10 @@ export const FILM_BUILD = join(REPO, "PALS-Notes", "videos", "lib", "tools", "fi
 /** The eight stages of WORKFLOW.md, in order. */
 export const STAGES = ["plan", "script", "script-check", "sound", "preview", "produce", "final", "deliver"] as const;
 export type Stage = (typeof STAGES)[number];
+/** Work that is not a video (engine, lab, docs, channel set-up): a short life cycle and no owner gates. */
+export const OPS_STAGES = ["plan", "doing", "review", "done"] as const;
+export const KINDS = ["long", "short", "ops"] as const;
+export const stagesOf = (kind: string): readonly string[] => (kind === "ops" ? OPS_STAGES : STAGES);
 export const GATES = ["script", "final", "publish"] as const;
 
 export interface Approval { at: string; quote: string }
@@ -22,10 +26,10 @@ export interface Project {
   version: 1;
   slug: string;
   title: string;
-  kind: "long" | "short";
+  kind: "long" | "short" | "ops";
   lang: string;
   parent?: string;
-  stage: Stage;
+  stage: string;
   created: string;
   /** name → argv; `{repo}`, `{dir}`, `{python}` are expanded. Extra args from `govern run` are appended. */
   commands: Record<string, string[]>;
@@ -48,7 +52,7 @@ export function checkSlug(slug: string | undefined): string {
 
 export function load(slug: string): Project {
   const f = stateFile(checkSlug(slug));
-  if (!existsSync(f)) fail(`${slug}: no govern.json — start it with: govern new ${slug} --kind long|short --title "…"`);
+  if (!existsSync(f)) fail(`${slug}: no govern.json — start it with: govern new ${slug} --kind long|short|ops --title "…"`);
   return readJson<Project>(f);
 }
 export const save = (p: Project) => writeJson(stateFile(p.slug), p);
@@ -56,29 +60,31 @@ export const save = (p: Project) => writeJson(stateFile(p.slug), p);
 export function create(slug: string, o: { kind: string; title?: string; lang?: string; parent?: string }): Project {
   checkSlug(slug);
   if (existsSync(stateFile(slug))) fail(`${slug}: govern.json already exists`);
-  if (o.kind !== "long" && o.kind !== "short") fail("--kind must be long or short");
+  if (!(KINDS as readonly string[]).includes(o.kind)) fail("--kind must be long, short or ops");
   const dir = projectDir(slug);
   mkdirSync(dir, { recursive: true });
   const commands: Record<string, string[]> = {};
   const files: Record<string, string> = {};
-  if (existsSync(join(dir, "film.json"))) {
+  if (o.kind !== "ops" && existsSync(join(dir, "film.json"))) {
     commands.fb = ["{python}", "{repo}/PALS-Notes/videos/lib/tools/film_build.py", "film.json"];
     files.timings = "timings.json";
   }
-  files.approval = "APPROVAL.md";
-  files.sheet = "**/*sheet*.png";
+  if (o.kind !== "ops") {
+    files.approval = "APPROVAL.md";
+    files.sheet = "**/*sheet*.png";
+  }
   const p: Project = {
-    version: 1, slug, title: o.title ?? slug, kind: o.kind, lang: o.lang ?? "en", ...(o.parent ? { parent: o.parent } : {}),
+    version: 1, slug, title: o.title ?? slug, kind: o.kind as Project["kind"], lang: o.lang ?? "en", ...(o.parent ? { parent: o.parent } : {}),
     stage: "plan", created: nowIso(), commands, files, approvals: {}, notes: [],
   };
   save(p);
   return p;
 }
 
-export function stageOf(s: string | undefined): Stage {
-  const i = STAGES.indexOf(s as Stage);
-  if (i < 0) fail(`stage must be one of: ${STAGES.join(", ")}`);
-  return STAGES[i];
+export function stageOf(s: string | undefined, kind = "long"): string {
+  const list = stagesOf(kind);
+  if (!s || !list.includes(s)) fail(`stage must be one of: ${list.join(", ")}`);
+  return s!;
 }
 
 export function appendLedger(slug: string, entry: Record<string, unknown>): void {
@@ -87,9 +93,9 @@ export function appendLedger(slug: string, entry: Record<string, unknown>): void
 }
 
 /** The "Exit when" cell of a stage's row in WORKFLOW.md (the digest the AI works against). */
-export function exitCondition(stage: Stage): string | undefined {
-  if (!existsSync(WORKFLOW)) return undefined;
-  const n = STAGES.indexOf(stage) + 1;
+export function exitCondition(stage: string): string | undefined {
+  if (!existsSync(WORKFLOW) || !(STAGES as readonly string[]).includes(stage)) return undefined;
+  const n = STAGES.indexOf(stage as Stage) + 1;
   const row = readFileSync(WORKFLOW, "utf8").split("\n").find((l) => l.startsWith(`| ${n} |`));
   if (!row) return undefined;
   const cells = row.split(/(?<!\\)\|/).map((c) => c.trim()).filter((_, i, a) => i > 0 && i < a.length - 1);
@@ -110,12 +116,13 @@ export function brief(p: Project, o: { notes?: number } = {}): string {
   const dir = projectDir(p.slug);
   const rel = (f: string) => relative(REPO, f);
   const L: string[] = [];
-  const n = STAGES.indexOf(p.stage) + 1;
+  const list = stagesOf(p.kind);
+  const n = list.indexOf(p.stage) + 1;
   L.push(`# ${p.slug} — ${p.title}`);
-  L.push(`kind ${p.kind} · lang ${p.lang}${p.parent ? ` · from ${p.parent}` : ""} · stage ${n}/8 ${p.stage} · folder ${rel(dir)}`);
+  L.push(`kind ${p.kind}${p.kind === "ops" ? "" : ` · lang ${p.lang}`}${p.parent ? ` · from ${p.parent}` : ""} · stage ${n}/${list.length} ${p.stage} · folder ${rel(dir)}`);
   const ex = exitCondition(p.stage);
   if (ex) L.push(`exit when: ${ex}`);
-  L.push(`approvals: ${GATES.map((g) => (p.approvals[g] ? `${g} ✓ ${p.approvals[g]!.at.slice(0, 10)}` : `${g} –`)).join(" · ")}`);
+  if (p.kind !== "ops") L.push(`approvals: ${GATES.map((g) => (p.approvals[g] ? `${g} ✓ ${p.approvals[g]!.at.slice(0, 10)}` : `${g} –`)).join(" · ")}`);
   const files = Object.keys(p.files).map((k) => { const f = resolveFile(p, k); return `${k}=${f ? rel(f) : "(none)"}`; });
   if (files.length) L.push(`files: ${files.join(" · ")}`);
   const cmds = Object.keys(p.commands);

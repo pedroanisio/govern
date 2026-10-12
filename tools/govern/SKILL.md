@@ -15,8 +15,10 @@ The rules below remove those four.
 
 ## Start
 
+The owner's one screen is `govern desk`: every lane (videos and `ops/*` work), their inbox, the queue and today's tokens. One session works one lane; the other lanes wait in their files, not in open chat tabs.
+
 1. `govern status` lists the videos. If the video is not there, run `govern new <slug> --kind long|short --title "…" --lang en|pt-BR [--parent <film>]`. The slug is its folder under `PALS-Notes/projects/`, for example `a-millionth-apart/shorts`.
-2. `govern work <slug> <stage>`, where stage is one of plan, script, script-check, sound, preview, produce, final, deliver. This opens a measured work segment and prints the **brief**:
+2. `govern work <slug> <stage>`. For a video, stage is one of plan, script, script-check, sound, preview, produce, final or deliver. For an `ops` lane (engine, lab, docs, channel set-up), it is plan, doing, review or done. This opens a measured work segment and prints the **brief**:
    - stage and exit condition;
    - approvals;
    - named files;

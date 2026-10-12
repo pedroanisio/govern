@@ -6,12 +6,15 @@ import { readFileSync, globSync, mkdirSync, copyFileSync } from "node:fs";
 import { join, dirname, resolve, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
-import { GovernError, fail, parseArgs, opt, nowIso, readJsonl, kTok, clip, sleepSync, type Args } from "./lib/util.ts";
-import { REPO, PROJECTS, STAGES, GATES, load, save, create, stageOf, brief, appendLedger, resolveFile, ledgerFile, projectDir, checkSlug } from "./lib/project.ts";
+import { GovernError, fail, parseArgs, opt, nowIso, readJsonl, kTok, clip, type Args } from "./lib/util.ts";
+import { REPO, PROJECTS, STAGES, GATES, stagesOf, load, save, create, stageOf, brief, appendLedger, resolveFile, ledgerFile, projectDir, checkSlug } from "./lib/project.ts";
 import * as jobs from "./lib/jobs.ts";
 import { ask, readPrompt, PROMPTS } from "./lib/codex.ts";
 import { report, currentCtx, CTX_WARN } from "./lib/usage.ts";
 import * as queue from "./lib/queue.ts";
+import { desk } from "./lib/desk.ts";
+import { writeFileSync, existsSync, unlinkSync } from "node:fs";
+import { homedir } from "node:os";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const SKILL = resolve(HERE, "SKILL.md");
@@ -19,7 +22,7 @@ const SKILL = resolve(HERE, "SKILL.md");
 const HELP = `govern — run a video through the PALS Notes workflow from a conversation (manual: govern manual)
 
 start / state
-  govern new <slug> --kind long|short [--title T] [--lang en|pt-BR] [--parent <slug>]
+  govern new <slug> --kind long|short|ops [--title T] [--lang en|pt-BR] [--parent <slug>]
   govern work <slug> <stage> [--engine claude|codex] [--open]   start a work segment, print the brief
   govern brief <slug>            the compact context (stage, exit condition, approvals, files, decisions)
   govern status [<slug>]         one line per video, or the brief of one
@@ -47,12 +50,15 @@ task queue between agents (one fresh headless session per message; nothing runs 
   govern task send --to codex|claude|owner|<name> --project P --task T --kind TASK --summary S (--body B | --body-file F)
                    [--file REPO-RELATIVE-PATH]… [--reply-to ID] [--write] [--from NAME]
   govern task list [--to X] [--state open|claimed|done|failed] [--project P]  ·  govern task show <id>
-  govern task dispatch [--max N] [--only codex|claude] [--loop --interval 30]
+  govern task dispatch [--max N] [--only codex|claude] [--loop --interval 30]  ·  govern task install-service
+
+the owner's screen
+  govern desk                    every lane, your inbox, the queue, today's tokens (reads files only)
 
 publish (prints the commands; the publish guard hook must see them)
   govern publish <slug>
 
-stages: ${STAGES.join(", ")}`;
+stages: ${STAGES.join(", ")} (ops: plan, doing, review, done)`;
 
 // A reader that stops early (govern brief x | head) is not an error.
 process.stdout.on("error", (e: NodeJS.ErrnoException) => { if (e.code === "EPIPE") process.exit(0); throw e; });
@@ -71,7 +77,7 @@ function engineOf(a: Args): "claude" | "codex" {
 
 function cmdWork(a: Args): void {
   const p = load(a._[1]);
-  const stage = stageOf(a._[2]);
+  const stage = stageOf(a._[2], p.kind);
   p.stage = stage;
   save(p);
   const engine = engineOf(a);
@@ -92,12 +98,13 @@ function cmdWork(a: Args): void {
 function cmdStatus(a: Args): void {
   if (a._[1]) return out(brief(load(a._[1])));
   const slugs = globSync("**/govern.json", { cwd: PROJECTS }).map((f) => dirname(f)).sort();
-  if (!slugs.length) return out("no videos under govern yet (govern new <slug> --kind long|short)");
+  if (!slugs.length) return out("nothing under govern yet (govern new <slug> --kind long|short|ops)");
   for (const s of slugs) {
     const p = load(s);
     const lastJob = readJsonl(ledgerFile(s)).filter((e) => e.kind === "job").pop();
     const ap = GATES.map((g) => (p.approvals[g] ? g[0].toUpperCase() : "·")).join("");
-    out(`${s.padEnd(36)} ${p.kind.padEnd(5)} ${String(STAGES.indexOf(p.stage) + 1)}/8 ${p.stage.padEnd(12)} approvals ${ap}  ${lastJob ? `last job ${lastJob.name} ${lastJob.status}` : ""}`);
+    const list = stagesOf(p.kind);
+    out(`${s.padEnd(36)} ${p.kind.padEnd(5)} ${list.indexOf(p.stage) + 1}/${list.length} ${p.stage.padEnd(12)} ${p.kind === "ops" ? "          " : `approvals ${ap}`}  ${lastJob ? `last job ${lastJob.name} ${lastJob.status}` : ""}`);
   }
 }
 
@@ -230,10 +237,31 @@ function cmdTask(a: Args): void {
     const max = opt(a, "max") ? Number(opt(a, "max")) : undefined;
     const once = () => queue.dispatch({ max, only: opt(a, "only") }).forEach((l) => out(l));
     if (!a.opts.loop) { once(); return; }
-    const interval = Number(opt(a, "interval") ?? 30) * 1000;
-    for (;;) { once(); sleepSync(interval); }
+    const secs = Number(opt(a, "interval") ?? 30);
+    const pidf = join(queue.QUEUE(), "dispatcher.json");
+    mkdirSync(queue.QUEUE(), { recursive: true });
+    writeFileSync(pidf, JSON.stringify({ pid: process.pid, started: nowIso(), interval: secs }) + "\n");
+    const stop = () => { try { if (existsSync(pidf) && JSON.parse(readFileSync(pidf, "utf8")).pid === process.pid) unlinkSync(pidf); } catch { /* gone */ } process.exit(0); };
+    process.on("SIGTERM", stop); process.on("SIGINT", stop);
+    // setTimeout, not a blocking sleep: signals are handled only when the event loop turns.
+    const tick = () => { once(); setTimeout(tick, secs * 1000); };
+    tick();
+    return;
   }
-  fail("govern task send|list|show|dispatch (govern help)");
+  if (sub === "install-service") {
+    // A user systemd service, so the dispatcher survives sessions and reboots. It runs a model only when a message waits.
+    const unit = join(homedir(), ".config", "systemd", "user", "govern-dispatch.service");
+    mkdirSync(dirname(unit), { recursive: true });
+    const bin = resolve(HERE, "..", "..", "bin", "govern");
+    writeFileSync(unit, [
+      "[Unit]", "Description=govern task dispatcher (one fresh codex/claude session per queued message)", "",
+      "[Service]", `ExecStart=${bin} task dispatch --loop --interval ${opt(a, "interval") ?? 30}`,
+      `Environment=PATH=${process.env.PATH}`, `Environment=GOVERN_QUEUE=${queue.QUEUE()}`, "Restart=on-failure", "RestartSec=30", "",
+      "[Install]", "WantedBy=default.target", "",
+    ].join("\n"));
+    return out(`wrote ${unit}\nenable with: systemctl --user daemon-reload && systemctl --user enable --now govern-dispatch`);
+  }
+  fail("govern task send|list|show|dispatch|install-service (govern help)");
 }
 
 function main(argv: string[]): void {
@@ -280,6 +308,7 @@ function main(argv: string[]): void {
     case "ctx": { const x = currentCtx(); return out(x ? `context now ${kTok(x.ctx)} per call (limit ${kTok(CTX_WARN)})${x.ctx > CTX_WARN ? " ⚠ over: govern note what is open, /clear, govern work again" : ""}` : "not in a Claude Code session (no CLAUDE_CODE_SESSION_ID) or no transcript yet"); }
     case "publish": cmdPublish(a); break;
     case "task": cmdTask(a); break;
+    case "desk": out(desk()); break;
     default: fail(`unknown command "${c}" (govern help)`);
   }
   ctxFooter();
