@@ -71,11 +71,13 @@ These steps run as one verified Codex call each, not as chat work in this sessio
 Do not message other sessions, and do not start subagents. Put the request in the queue:
 
 ```bash
-govern task send --to codex|claude --project <slug> --task <name> --kind TASK --summary "…" --body "…" --file <repo-relative path>
+govern task send --to codex|claude|<session> --project <slug> --task <name> --kind TASK --summary "…" --body "…" --file <repo-relative path>
 ```
 
 - `govern task dispatch`, or the timer `govern task dispatch --loop`, starts one fresh headless session per message: `codex exec` or `claude -p` (Sonnet). The session gets only the message, its thread and the named files. The reply is verified JSON (ACK, REVIEW, HANDOFF, BLOCKED…) and is filed back to the sender. A reply that fails verification becomes a BLOCKED notice from the dispatcher, never an answer.
 - Nothing runs while the queue waits. Read replies with `govern task list --to <you>` and `govern task show <id>`, once, when the owner asks or the work needs them, not in a loop.
+- `--to` must be `codex`, `claude`, `auto`, `owner` or the name of a live Claude Code session (`~/.claude/sessions`); an unknown or dead name fails and lists the live ones. **Sessions are not woken by the queue** (the dispatcher runs only codex and claude): after sending to one, also tell it `govern task show <id>` with SendMessage.
+- Your own mail: `govern task inbox` (open messages for you; `--all` adds closed). Answer with `govern task reply <id> --kind ACK|REVIEW|HANDOFF|... --summary … --body …` (files the reply to the sender and closes the original), `govern task close <id> --note …` when nothing needs saying, `govern task forward <id> --to <name>` when it went to the wrong name. Your name is `GOVERN_AS`, else found from your process tree; pass `--as NAME` if neither works. `govern task inbox --hook` prints a short block only when mail waits, for a UserPromptSubmit/SessionStart hook.
 - Prefer `--to codex` for checks: in the 2026-10-12 pilot, the same fact-check took 56k tokens and 29 s on Codex, against 122k tokens, 67 s and $0.83 on `claude -p`.
 - `--write` lets the runner change files in the project folder. Default is read-only.
 

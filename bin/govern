@@ -10,6 +10,10 @@
 #     govern run SLUG CMD [--bg] [-- ARGS]  |  wait SLUG [JOB] [--timeout S]  |  jobs SLUG  |  log SLUG [JOB]
 #     govern prompts  |  ask SLUG STEP [--file F]... [--var K=V]... [--image PNG]... [--effort E]
 #     govern usage [SLUG...] [--since DATE]  |  ctx  |  publish SLUG  |  manual
+#     govern task send --to codex|claude|auto|owner|SESSION --project P --task T --kind K --summary S --body B
+#     govern task inbox [--as NAME] [--all] [--hook]  |  close ID [--as NAME] [--note T]
+#     govern task reply ID --kind K --summary S (--body B | --body-file F) [--as NAME]  |  forward ID --to NAME [--as NAME]
+#     govern task list|show|dispatch|install-service
 # DESCRIPTION
 #     The control surface an AI uses while it works on a video with the owner. State (stage, decisions,
 #     approvals, commands, files) lives in PALS-Notes/projects/SLUG/govern.json, so a session starts from
@@ -19,6 +23,11 @@
 #     one repair. `usage` attributes the tokens of Claude Code and Codex sessions to (video, stage)
 #     segments opened by `govern work`, against the chat baseline of REPORT-2026-10-11. The operating
 #     manual for the AI is tools/govern/SKILL.md (`govern manual`).
+#     The task queue carries messages between agents. `task send --to` accepts codex, claude, auto, owner or the
+#     name of a live Claude Code session (~/.claude/sessions); the dispatcher runs only codex and claude, so a
+#     session is NOT woken: it reads its mail with `task inbox` (or a UserPromptSubmit hook running
+#     `task inbox --hook`), answers with `reply`, and `close`s or `forward`s what is not for it. NAME defaults to
+#     GOVERN_AS, else the registered session found up this process's parent chain.
 # OPTIONS
 #     --bg          run detached; wait with `govern wait`
 #     --timeout S   wait at most S seconds (default 540); exit 124 if the job is still running
@@ -29,6 +38,7 @@
 # ENVIRONMENT
 #     GOVERN_PROJECTS (default REPO/PALS-Notes/projects) · GOVERN_CODEX_BIN · GOVERN_PYTHON · GOVERN_CTX_WARN (150000)
 #     GOVERN_CLAUDE_PROJECTS (~/.claude/projects) · GOVERN_CODEX_SESSIONS (~/.codex/sessions)
+#     GOVERN_QUEUE (default REPO/PALS-Notes/queue) · GOVERN_SESSIONS_DIR (~/.claude/sessions) · GOVERN_AS (session name)
 # EXAMPLES
 #     govern work a-millionth-apart/shorts script
 #     govern run golden-pixel fb gates sheets --bg && govern wait golden-pixel

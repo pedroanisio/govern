@@ -14,6 +14,7 @@ import { report, currentCtx, CTX_WARN } from "./lib/usage.ts";
 import * as queue from "./lib/queue.ts";
 import { desk } from "./lib/desk.ts";
 import { tune, chooseRunner } from "./lib/tune.ts";
+import { checkRecipient, requireAs, resolveAs } from "./lib/sessions.ts";
 import { writeFileSync, existsSync, unlinkSync } from "node:fs";
 import { homedir } from "node:os";
 
@@ -48,10 +49,14 @@ measure
   govern manual  ·  govern install-skill [<skills dir>]   the AI's operating manual (SKILL.md)
 
 task queue between agents (one fresh headless session per message; nothing runs while the queue waits)
-  govern task send --to auto|codex|claude|owner|<name> --project P --task T --kind TASK --summary S (--body B | --body-file F)
-                   [--file REPO-RELATIVE-PATH]… [--reply-to ID] [--write] [--from NAME]
+  govern task send --to auto|codex|claude|owner|<session> --project P --task T --kind TASK --summary S (--body B | --body-file F)
+                   [--file REPO-RELATIVE-PATH]… [--reply-to ID] [--write] [--from NAME]     --to must be a runner, owner or a LIVE session name
   govern task list [--to X] [--state open|claimed|done|failed] [--project P]  ·  govern task show <id>
+  govern task inbox [--as NAME] [--all] [--hook]    open messages for NAME (default: GOVERN_AS, else this session); --hook is silent when empty
+  govern task close <id> [--as NAME] [--note T]  ·  govern task forward <id> --to NAME [--as NAME]
+  govern task reply <id> --kind K --summary S (--body B | --body-file F) [--as NAME]   answer the sender, then close <id>
   govern task dispatch [--max N] [--only codex|claude] [--loop --interval 30]  ·  govern task install-service
+  (sessions are not woken by the queue: tell them "govern task show <id>" with SendMessage; the dispatcher runs only codex and claude)
 
 the owner's screen
   govern desk                    every lane, your inbox, the queue, today's tokens (reads files only)
@@ -209,38 +214,87 @@ function cmdPublish(a: Args): void {
   out(`Then read the result back, and run: govern note ${p.slug} "published <videoId> at <time>"`);
 }
 
+/** Recipient of a new message: runner, auto (the tuning loop picks the runner), owner or a live session. */
+function recipient(to: string): { to: string; routed: boolean } {
+  checkRecipient(to, queue.RUNNERS);
+  if (to !== "auto") return { to, routed: false };
+  const c = chooseRunner(queue.all().filter((x) => x.m.routed).length);
+  out(`auto → ${c.runner} (${c.reason})`);
+  return { to: c.runner, routed: true };
+}
+/** The queue does not wake a session: say so when a message goes to one. */
+function wakeNote(m: queue.Message): void {
+  if (!(queue.RUNNERS as readonly string[]).includes(m.to) && m.to !== "owner")
+    out(`sessions are not woken by the queue: also tell ${m.to} "govern task show ${m.id}" (SendMessage)`);
+}
+const rowLine = ({ state, m }: { state: string; m: queue.Message }) => {
+  const u = m.result?.usage;
+  return `${m.id} ${state.padEnd(7)} ${m.kind.padEnd(8)} ${m.from}→${m.to} [${m.project}/${m.task}] ${clip(m.summary, 70)}${u ? ` · ${kTok(u.input)} in, ${kTok(u.output)} out, ${m.result!.seconds}s` : ""}`;
+};
+
+function cmdInbox(a: Args): void {
+  if (a.opts.hook) {
+    // For a UserPromptSubmit/SessionStart hook: silent unless there is something to say, and it never fails.
+    try {
+      const name = resolveAs({ as: opt(a, "as") });
+      if (!name) return;
+      const rows = queue.all().filter((x) => x.state === "open" && x.m.to === name);
+      if (!rows.length) return;
+      out(`govern queue: ${rows.length} open message(s) for ${name}:`);
+      rows.slice(0, 5).forEach(({ m }) => out(`  ${m.id} [${m.kind}] ${clip(m.summary, 80)}`));
+      if (rows.length > 5) out(`  +${rows.length - 5} more`);
+    } catch { /* a hook must not break the session */ }
+    return;
+  }
+  const name = requireAs(opt(a, "as"));
+  const rows = queue.all().filter((x) => x.m.to === name && (a.opts.all || x.state === "open"));
+  if (!rows.length) return out("(no messages)");
+  rows.forEach((r) => out(rowLine(r)));
+}
+
 function cmdTask(a: Args): void {
   const sub = a._[1];
   if (sub === "send") {
     const bodyFile = opt(a, "body-file");
     const body = bodyFile ? readFileSync(bodyFile, "utf8") : opt(a, "body") ?? "";
-    let to = opt(a, "to") ?? "";
-    if (to === "auto") {
-      const seq = queue.all().filter((x) => x.m.routed).length;
-      const c = chooseRunner(seq);
-      to = c.runner;
-      out(`auto → ${c.runner} (${c.reason})`);
-    }
+    const { to, routed } = recipient(opt(a, "to") ?? "");
     const m = queue.send({
       project: opt(a, "project") ?? "", task: opt(a, "task") ?? "", kind: opt(a, "kind") ?? "TASK", from: opt(a, "from") ?? "owner",
-      to, ...(opt(a, "to") === "auto" ? { routed: true } : {}), summary: opt(a, "summary") ?? "", body, files: a.multi.file ?? [], replyTo: opt(a, "reply-to"),
+      to, ...(routed ? { routed: true } : {}), summary: opt(a, "summary") ?? "", body, files: a.multi.file ?? [], replyTo: opt(a, "reply-to"),
       access: a.opts.write ? "write" : "read-only",
     });
-    return out(`queued ${m.id} (${m.kind} to ${m.to})`);
+    out(`queued ${m.id} (${m.kind} to ${m.to})`);
+    return wakeNote(m);
   }
   if (sub === "list") {
     const rows = queue.all().filter((x) => (!opt(a, "to") || x.m.to === opt(a, "to")) && (!opt(a, "state") || x.state === opt(a, "state")) && (!opt(a, "project") || x.m.project === opt(a, "project")));
     if (!rows.length) return out("(no messages)");
-    for (const { state, m } of rows) {
-      const u = m.result?.usage;
-      out(`${m.id} ${state.padEnd(7)} ${m.kind.padEnd(8)} ${m.from}→${m.to} [${m.project}/${m.task}] ${clip(m.summary, 70)}${u ? ` · ${kTok(u.input)} in, ${kTok(u.output)} out, ${m.result!.seconds}s` : ""}`);
-    }
+    rows.forEach((r) => out(rowLine(r)));
     return;
   }
   if (sub === "show") {
     const hit = queue.find(a._[2] ?? "") ?? fail(`no message ${a._[2]}`);
     for (const m of queue.thread(hit!.m)) out(`--- ${m.id} [${m.kind}] ${m.from}→${m.to} ${m.created}\n${m.summary}\n${m.body}${m.files.length ? `\nfiles: ${m.files.join(", ")}` : ""}${m.result ? `\nresult: ${JSON.stringify(m.result)}` : ""}`);
     return;
+  }
+  if (sub === "inbox") return cmdInbox(a);
+  if (sub === "close") {
+    const m = queue.close(a._[2] ?? "", requireAs(opt(a, "as")), opt(a, "note"));
+    return out(`closed ${m.id}`);
+  }
+  if (sub === "reply") {
+    const bodyFile = opt(a, "body-file"), b = opt(a, "body");
+    if (bodyFile === undefined && b === undefined) fail("--body or --body-file is required");
+    const by = requireAs(opt(a, "as"));
+    const m = queue.reply(a._[2] ?? "", by, { kind: opt(a, "kind") ?? "", summary: opt(a, "summary") ?? "", body: bodyFile ? readFileSync(bodyFile, "utf8") : b! });
+    out(`replied ${m.id} (${m.kind} to ${m.to}); closed ${a._[2]}`);
+    return wakeNote(m);
+  }
+  if (sub === "forward") {
+    const { to, routed } = recipient(opt(a, "to") ?? "");
+    const m = queue.forward(a._[2] ?? "", requireAs(opt(a, "as")), to, routed);
+    out(`forwarded ${a._[2]} to ${m.to} as ${m.id}`);
+    return wakeNote(m);
   }
   if (sub === "dispatch") {
     const max = opt(a, "max") ? Number(opt(a, "max")) : undefined;
@@ -276,11 +330,11 @@ function cmdTask(a: Args): void {
     ].join("\n"));
     return out(`wrote ${unit}\nenable with: systemctl --user daemon-reload && systemctl --user enable --now govern-dispatch`);
   }
-  fail("govern task send|list|show|dispatch|install-service (govern help)");
+  fail("govern task send|list|show|inbox|close|reply|forward|dispatch|install-service (govern help)");
 }
 
 function main(argv: string[]): void {
-  const a = parseArgs(argv, { bool: ["bg", "open", "help", "write", "loop"], multi: ["file", "var", "image"] });
+  const a = parseArgs(argv, { bool: ["bg", "open", "help", "write", "loop", "hook", "all"], multi: ["file", "var", "image"] });
   const c = a._[0];
   switch (c) {
     case undefined: case "help": case "-h": return out(HELP);

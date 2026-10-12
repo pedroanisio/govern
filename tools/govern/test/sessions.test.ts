@@ -9,7 +9,7 @@ import { liveSessions, pidChain, resolveAs, parsePpid } from "../lib/sessions.ts
 const deadPid = () => spawnSync("true").pid!; // a pid that has just exited
 function registry(entries: Record<string, unknown>[]) {
   const dir = mkdtempSync(join(tmpdir(), "govern-sessions-"));
-  for (const e of entries) writeFileSync(join(dir, `${e.pid}.json`), JSON.stringify(e));
+  entries.forEach((e, i) => writeFileSync(join(dir, `${e.pid}-${i}.json`), JSON.stringify(e)));
   writeFileSync(join(dir, `${process.pid}.deadbeef.key`), "SECRET-KEY-MATERIAL"); // must never be read
   writeFileSync(join(dir, "broken.json"), "{not json");
   return dir;

@@ -162,7 +162,7 @@ test("inbox lists the open messages for NAME, oldest first; --all adds closed on
   assert.equal(govern(e, ["task", "inbox", "--as", "alice"], S).out.trim().split("\n").length, 1);
   assert.match(govern(e, ["task", "inbox", "--as", "alice", "--all"], S).out, /done\s+TASK/);
   assert.match(govern(e, ["task", "inbox", "--as", "carol"], S).out, /\(no messages\)/);
-  const nameless = govern(e, ["task", "inbox"], { ...S, GOVERN_AS: "" });
+  const nameless = govern(e, ["task", "inbox"], { GOVERN_SESSIONS_DIR: sess([]), GOVERN_AS: "" }); // the test process itself is a registered session in S
   assert.equal(nameless.code, 2);
   assert.match(nameless.err, /--as/);
 });

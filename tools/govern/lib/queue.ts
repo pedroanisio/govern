@@ -28,7 +28,9 @@ export interface Message {
   access: "read-only" | "write";
   /** sent with --to auto: the runner was chosen by the tuning loop */
   routed?: boolean;
-  result?: { agent: string; ok: boolean; usage?: Usage & { costUsd?: number }; turns?: number; seconds: number; reply?: string; error?: string };
+  /** id of the message this one is a copy of (govern task forward) */
+  forwardedFrom?: string;
+  result?: { closedBy?: string; note?: string; agent: string; ok: boolean; usage?: Usage & { costUsd?: number }; turns?: number; seconds: number; reply?: string; error?: string };
 }
 
 const dir = (s: State) => join(QUEUE(), s);
@@ -56,13 +58,45 @@ export function all(): { state: State; m: Message }[] {
     for (const f of readdirSync(dir(s)).filter((x) => x.endsWith(".json")).sort())
       out.push({ state: s, m: JSON.parse(readFileSync(join(dir(s), f), "utf8")) });
   }
-  return out.sort((a, b) => a.m.id.localeCompare(b.m.id));
+  return out.sort((a, b) => a.m.created.localeCompare(b.m.created) || a.m.id.localeCompare(b.m.id)); // ids carry whole seconds only
 }
 
 export function find(ref: string): { state: State; m: Message } | undefined {
   const hits = all().filter((x) => x.m.id === ref || x.m.id.startsWith(ref));
   if (hits.length > 1) fail(`message ${ref} is ambiguous`);
   return hits[0];
+}
+
+function openMessage(ref: string): Message {
+  const hit = find(ref) ?? fail(`no message ${ref}`);
+  if (hit.state !== "open") fail(`message ${hit.m.id} is not open (it is ${hit.state})`);
+  return hit.m;
+}
+
+/** Close an open message by hand (no model ran): open → done, with who closed it. */
+export function close(ref: string, by: string, note?: string): Message {
+  const m = openMessage(ref);
+  m.result = { agent: by, ok: true, seconds: 0, closedBy: by, ...(note ? { note } : {}) };
+  save(m, "open");
+  move(m, "open", "done");
+  return m;
+}
+
+/** Answer an open message: a reply to its sender, threaded to it, then close it. */
+export function reply(ref: string, by: string, r: { kind: string; summary: string; body: string }): Message {
+  const orig = openMessage(ref);
+  if (!(REPLY_KINDS as readonly string[]).includes(r.kind)) fail(`--kind must be one of ${REPLY_KINDS.join(", ")}`);
+  const answer = send({ project: orig.project, task: orig.task, kind: r.kind, from: by, to: orig.from, summary: r.summary, body: r.body, files: [], replyTo: orig.id, access: "read-only" });
+  close(orig.id, by, `replied with ${answer.id}`);
+  return answer;
+}
+
+/** Send a copy of an open message to another recipient and close the original. */
+export function forward(ref: string, by: string, to: string, routed = false): Message {
+  const o = openMessage(ref);
+  const copy = send({ project: o.project, task: o.task, kind: o.kind, from: o.from, to, summary: o.summary, body: o.body, files: o.files, access: o.access, forwardedFrom: o.id, ...(routed ? { routed: true } : {}) });
+  close(o.id, by, `forwarded to ${to} as ${copy.id}`);
+  return copy;
 }
 
 /** The message and everything it replies to, oldest first. */
