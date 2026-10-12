@@ -62,7 +62,9 @@ export function all(): { state: State; m: Message }[] {
 }
 
 export function find(ref: string): { state: State; m: Message } | undefined {
-  const hits = all().filter((x) => x.m.id === ref || x.m.id.startsWith(ref));
+  // the full id, a prefix of it, or the short code after the last dash (what people quote: "4x9l")
+  const code = (id: string) => id.slice(id.lastIndexOf("-") + 1);
+  const hits = all().filter((x) => x.m.id === ref || x.m.id.startsWith(ref) || code(x.m.id) === ref);
   if (hits.length > 1) fail(`message ${ref} is ambiguous`);
   return hits[0];
 }

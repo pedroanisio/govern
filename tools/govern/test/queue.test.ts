@@ -182,6 +182,21 @@ test("close moves an open message to done with the closer recorded; anything els
   assert.match(govern(e, ["task", "close", "nope", "--as", "alice"], S).err, /no message nope/);
 });
 
+test("a message is found by its full id, a prefix of it, or the short code after the last dash", () => {
+  const e = env();
+  const S = { GOVERN_SESSIONS_DIR: sess(["alice"]) };
+  const id = idOf(govern(e, [...SEND, "--to", "alice"], S).out);
+  const code = id.slice(id.lastIndexOf("-") + 1);
+  for (const ref of [id, id.slice(0, 20), code]) {
+    const r = govern(e, ["task", "show", ref]);
+    assert.equal(r.code, 0, `${ref}: ${r.err}`);
+    assert.ok(r.out.includes(id), ref);
+  }
+  assert.match(govern(e, ["task", "show", "alice"]).err, /no message alice/); // a recipient name is not a code
+  const r = govern(e, ["task", "close", code, "--as", "alice"], S);
+  assert.equal(r.code, 0, r.err);
+});
+
 test("reply files an answer to the sender, threaded to the original, and closes the original", () => {
   const e = env();
   const S = { GOVERN_SESSIONS_DIR: sess(["alice", "bob"]) };
