@@ -107,3 +107,140 @@ test("a project slug may hold a folder path but not escape it", () => {
   assert.equal(govern(e, ["task", "send", "--to", "codex", "--project", "film/shorts", "--task", "a", "--summary", "one"]).code, 0);
   assert.match(govern(e, ["task", "send", "--to", "codex", "--project", "film/../x", "--task", "a", "--summary", "one"]).err, /--project must be a project slug/);
 });
+
+// ---------------------------------------------------------------- named sessions: recipient check, inbox, close, reply, forward
+
+import { mkdtempSync, writeFileSync, mkdirSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { spawnSync } from "node:child_process";
+
+function sess(names: string[], dead: string[] = []) {
+  const dir = mkdtempSync(join(tmpdir(), "govern-sessions-"));
+  const gone = spawnSync("true").pid!;
+  for (const n of names) writeFileSync(join(dir, `${process.pid}-${n}.json`), JSON.stringify({ pid: process.pid, name: n, cwd: "/x", kind: "interactive", status: "idle" }));
+  for (const n of dead) writeFileSync(join(dir, `${gone}-${n}.json`), JSON.stringify({ pid: gone, name: n, cwd: "/x", kind: "interactive" }));
+  writeFileSync(join(dir, `${process.pid}.cafe.key`), "TOP-SECRET-KEY");
+  return dir;
+}
+const SEND = ["task", "send", "--project", "film", "--task", "check", "--summary", "look at this", "--body", "BODY"];
+const idOf = (out: string) => out.match(/queued (\S+)/)![1];
+
+test("send checks --to: runners, auto and owner pass; a live session passes with a reminder; unknown or dead names fail listing live names", () => {
+  const e = env();
+  const S = { GOVERN_SESSIONS_DIR: sess(["render-frontend-js-e4", "sr-core-d4"], ["old-one"]) };
+  for (const to of ["codex", "claude", "owner"]) assert.equal(govern(e, [...SEND, "--to", to], S).code, 0, to);
+  const r = govern(e, [...SEND, "--to", "sr-core-d4"], S);
+  assert.equal(r.code, 0, r.err);
+  const id = idOf(r.out);
+  assert.match(r.out, /sessions are not woken by the queue: also tell sr-core-d4 "govern task show \S+" \(SendMessage\)/);
+  assert.ok(r.out.includes(`govern task show ${id}`));
+  for (const to of ["e4", "old-one"]) {
+    const f = govern(e, [...SEND, "--to", to], S);
+    assert.equal(f.code, 2, to);
+    assert.match(f.err, /no live session "[^"]+"/);
+    assert.match(f.err, /render-frontend-js-e4/);
+    assert.match(f.err, /sr-core-d4/);
+    assert.ok(!f.err.includes("TOP-SECRET-KEY"));
+  }
+  assert.doesNotMatch(govern(e, ["task", "list", "--to", "e4"], S).out, /e4/);
+});
+
+test("inbox lists the open messages for NAME, oldest first; --all adds closed ones; the name comes from --as, GOVERN_AS or fails", () => {
+  const e = env();
+  const S = { GOVERN_SESSIONS_DIR: sess(["alice", "bob"]) };
+  const a = idOf(govern(e, [...SEND, "--to", "alice", "--from", "bob"], S).out);
+  const b = idOf(govern(e, [...SEND, "--to", "alice", "--from", "bob", "--summary", "second"], S).out);
+  govern(e, [...SEND, "--to", "bob", "--from", "alice"], S);
+  const inbox = govern(e, ["task", "inbox", "--as", "alice"], S);
+  assert.equal(inbox.code, 0, inbox.err);
+  const lines = inbox.out.trim().split("\n");
+  assert.equal(lines.length, 2);
+  assert.match(lines[0], new RegExp(`^${a} open\\s+TASK\\s+bob→alice \\[film/check\\] look at this`));
+  assert.ok(lines[1].startsWith(b));
+  assert.equal(govern(e, ["task", "inbox"], { ...S, GOVERN_AS: "alice" }).out, inbox.out);
+  govern(e, ["task", "close", a, "--as", "alice"], S);
+  assert.equal(govern(e, ["task", "inbox", "--as", "alice"], S).out.trim().split("\n").length, 1);
+  assert.match(govern(e, ["task", "inbox", "--as", "alice", "--all"], S).out, /done\s+TASK/);
+  assert.match(govern(e, ["task", "inbox", "--as", "carol"], S).out, /\(no messages\)/);
+  const nameless = govern(e, ["task", "inbox"], { ...S, GOVERN_AS: "" });
+  assert.equal(nameless.code, 2);
+  assert.match(nameless.err, /--as/);
+});
+
+test("close moves an open message to done with the closer recorded; anything else fails", () => {
+  const e = env();
+  const S = { GOVERN_SESSIONS_DIR: sess(["alice"]) };
+  const id = idOf(govern(e, [...SEND, "--to", "alice"], S).out);
+  const r = govern(e, ["task", "close", id, "--as", "alice", "--note", "done by hand"], S);
+  assert.equal(r.code, 0, r.err);
+  assert.match(govern(e, ["task", "list", "--state", "done"]).out, new RegExp(id));
+  const shown = govern(e, ["task", "show", id]).out;
+  assert.match(shown, /"closedBy":"alice"/);
+  assert.match(shown, /"note":"done by hand"/);
+  assert.match(shown, /"ok":true/);
+  assert.match(govern(e, ["task", "close", id, "--as", "alice"], S).err, /not open \(it is done\)/);
+  assert.match(govern(e, ["task", "close", "nope", "--as", "alice"], S).err, /no message nope/);
+});
+
+test("reply files an answer to the sender, threaded to the original, and closes the original", () => {
+  const e = env();
+  const S = { GOVERN_SESSIONS_DIR: sess(["alice", "bob"]) };
+  const id = idOf(govern(e, [...SEND, "--to", "alice", "--from", "bob"], S).out);
+  assert.match(govern(e, ["task", "reply", id, "--as", "alice", "--kind", "TASK", "--summary", "s", "--body", "b"], S).err, /--kind must be one of ACK/);
+  assert.match(govern(e, ["task", "reply", id, "--as", "alice", "--kind", "ACK", "--summary", "s"], S).err, /--body or --body-file/);
+  const bf = write(join(e.root, "reply.txt"), "FROM-FILE");
+  const r = govern(e, ["task", "reply", id, "--as", "alice", "--kind", "REVIEW", "--summary", "found two", "--body-file", bf], S);
+  assert.equal(r.code, 0, r.err);
+  const list = govern(e, ["task", "list"], S).out;
+  assert.match(list, new RegExp(`${id} done`));
+  assert.match(list, /open\s+REVIEW\s+alice→bob \[film\/check\] found two/);
+  const rid = list.split("\n").find((l) => /REVIEW/.test(l))!.split(" ")[0];
+  assert.match(govern(e, ["task", "show", rid]).out, /\[TASK\] bob→alice[\s\S]*\[REVIEW\] alice→bob[\s\S]*FROM-FILE/);
+  assert.match(govern(e, ["task", "reply", id, "--as", "alice", "--kind", "ACK", "--summary", "s", "--body", "b"], S).err, /not open/);
+});
+
+test("forward sends a copy to the right name and closes the original with a note", () => {
+  const e = env();
+  const S = { GOVERN_SESSIONS_DIR: sess(["alice", "bob", "real-e4"]) };
+  const id = idOf(govern(e, [...SEND, "--to", "bob", "--from", "alice", "--write"], S).out);
+  assert.equal(govern(e, ["task", "forward", id, "--to", "e4", "--as", "bob"], S).code, 2);
+  assert.equal(govern(e, ["task", "list", "--state", "open"], S).out.trim().split("\n").length, 1); // nothing was queued for e4
+  const r = govern(e, ["task", "forward", id, "--to", "real-e4", "--as", "bob"], S);
+  assert.equal(r.code, 0, r.err);
+  assert.match(r.out, /sessions are not woken by the queue: also tell real-e4/);
+  const rows = govern(e, ["task", "list"], S).out.trim().split("\n");
+  const orig = rows.find((l) => l.startsWith(id))!;
+  assert.match(orig, /done/);
+  const copy = rows.find((l) => /alice→real-e4/.test(l))!;
+  const nid = copy.split(" ")[0];
+  assert.match(copy, /open\s+TASK/);
+  assert.match(govern(e, ["task", "show", id]).out, new RegExp(`forwarded to real-e4 as ${nid}`));
+  const file = JSON.parse(readFileSync(join(e.root, "queue", "open", `${nid}.json`), "utf8"));
+  assert.equal(file.forwardedFrom, id);
+  assert.equal(file.from, "alice");
+  assert.equal(file.access, "write");
+  assert.equal(file.body, "BODY");
+  assert.equal(file.project, "film");
+  assert.match(govern(e, ["task", "forward", id, "--to", "real-e4", "--as", "bob"], S).err, /not open/);
+});
+
+test("inbox --hook prints nothing when empty or unresolved, never fails, and otherwise a short block of at most 5 lines plus +M more", () => {
+  const e = env();
+  const S = { GOVERN_SESSIONS_DIR: sess(["alice"]) };
+  for (const env2 of [{ ...S, GOVERN_AS: "alice" }, { ...S, GOVERN_AS: "" }, { GOVERN_SESSIONS_DIR: "/nonexistent-dir", GOVERN_AS: "" }]) {
+    const r = govern(e, ["task", "inbox", "--hook"], env2);
+    assert.equal(r.code, 0);
+    assert.equal(r.out, "");
+  }
+  for (let i = 0; i < 7; i++) govern(e, [...SEND, "--to", "alice", "--summary", `msg ${i}`], S);
+  const r = govern(e, ["task", "inbox", "--hook"], { ...S, GOVERN_AS: "alice" });
+  assert.equal(r.code, 0);
+  const lines = r.out.trim().split("\n");
+  assert.match(lines[0], /^govern queue: 7 open message\(s\) for alice:/);
+  assert.equal(lines.length, 1 + 5 + 1);
+  assert.match(lines[1], /^\s*\S+-alice-\w+ \[TASK\] msg 0/);
+  assert.match(lines[6], /\+2 more/);
+  // a broken queue still exits 0
+  const broken = govern(e, ["task", "inbox", "--hook"], { ...S, GOVERN_AS: "alice", GOVERN_QUEUE: "/proc/nope/x" });
+  assert.equal(broken.code, 0);
+});
