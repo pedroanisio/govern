@@ -64,6 +64,19 @@ These steps run as one verified Codex call each, not as chat work in this sessio
 - Present the result in a few lines, and give the owner the JSON path for the full text.
 - Images can be added with `--image sheet.png`. `govern prompts` lists the steps.
 
+## Asking another agent: the task queue
+
+Do not message other sessions, and do not start subagents. Put the request in the queue:
+
+```bash
+govern task send --to codex|claude --project <slug> --task <name> --kind TASK --summary "…" --body "…" --file <repo-relative path>
+```
+
+- `govern task dispatch`, or the timer `govern task dispatch --loop`, starts one fresh headless session per message: `codex exec` or `claude -p` (Sonnet). The session gets only the message, its thread and the named files. The reply is verified JSON (ACK, REVIEW, HANDOFF, BLOCKED…) and is filed back to the sender. A reply that fails verification becomes a BLOCKED notice from the dispatcher, never an answer.
+- Nothing runs while the queue waits. Read replies with `govern task list --to <you>` and `govern task show <id>`, once, when the owner asks or the work needs them, not in a loop.
+- Prefer `--to codex` for checks: in the 2026-10-12 pilot, the same fact-check took 56k tokens and 29 s on Codex, against 122k tokens, 67 s and $0.83 on `claude -p`.
+- `--write` lets the runner change files in the project folder. Default is read-only.
+
 ## The owner's gates
 
 - **Approvals** come only from the owner's own words. Record them verbatim: `govern approve <slug> script|final|publish --quote "<exactly what the owner said>"`. Never infer an approval, and never approve for the owner.

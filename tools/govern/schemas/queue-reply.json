@@ -1,0 +1,5 @@
+{ "type": "object", "additionalProperties": false, "required": ["kind", "summary", "body"],
+  "properties": {
+    "kind": { "type": "string", "enum": ["ACK", "PROGRESS", "BLOCKED", "HANDOFF", "REVIEW", "DECISION", "NOTICE"] },
+    "summary": { "type": "string", "minLength": 3, "maxLength": 200 },
+    "body": { "type": "string", "minLength": 1 } } }

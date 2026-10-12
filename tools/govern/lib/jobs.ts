@@ -94,7 +94,9 @@ export function wait(slug: string, id: string, timeoutSec: number, pollMs = 2000
 export function summary(p: Project, st: JobState, n = 12): string {
   const L = [`job ${st.id} · ${st.status}${st.exit != null ? ` (exit ${st.exit})` : ""}${st.seconds != null ? ` · ${st.seconds}s` : ""}`];
   if (st.status !== "running") {
-    const t0 = Date.parse(st.start);
+    // File mtimes come from the kernel's coarse clock (one tick, a few ms), which can read slightly before the
+    // Date.now() taken at start: a file the job wrote can look older than the job. One second of slack covers it.
+    const t0 = Date.parse(st.start) - 1000;
     const outs = Object.entries(p.files).flatMap(([k, pat]) => changedSince(projectDir(p.slug), pat, t0).map((f) => `${k}: ${f.replace(REPO + "/", "")}`));
     if (outs.length) L.push(`new files: ${outs.slice(0, 8).join(" · ")}${outs.length > 8 ? ` (+${outs.length - 8})` : ""}`);
   }

@@ -6,11 +6,12 @@ import { readFileSync, globSync, mkdirSync, copyFileSync } from "node:fs";
 import { join, dirname, resolve, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
-import { GovernError, fail, parseArgs, opt, nowIso, readJsonl, kTok, type Args } from "./lib/util.ts";
+import { GovernError, fail, parseArgs, opt, nowIso, readJsonl, kTok, clip, sleepSync, type Args } from "./lib/util.ts";
 import { REPO, PROJECTS, STAGES, GATES, load, save, create, stageOf, brief, appendLedger, resolveFile, ledgerFile, projectDir, checkSlug } from "./lib/project.ts";
 import * as jobs from "./lib/jobs.ts";
 import { ask, readPrompt, PROMPTS } from "./lib/codex.ts";
 import { report, currentCtx, CTX_WARN } from "./lib/usage.ts";
+import * as queue from "./lib/queue.ts";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const SKILL = resolve(HERE, "SKILL.md");
@@ -41,6 +42,12 @@ measure
   govern usage [<slug>…] [--since YYYY-MM-DD]   tokens per video and segment, against the chat baseline
   govern ctx                     this Claude Code session's context size now
   govern manual  ·  govern install-skill [<skills dir>]   the AI's operating manual (SKILL.md)
+
+task queue between agents (one fresh headless session per message; nothing runs while the queue waits)
+  govern task send --to codex|claude|owner|<name> --project P --task T --kind TASK --summary S (--body B | --body-file F)
+                   [--file REPO-RELATIVE-PATH]… [--reply-to ID] [--write] [--from NAME]
+  govern task list [--to X] [--state open|claimed|done|failed] [--project P]  ·  govern task show <id>
+  govern task dispatch [--max N] [--only codex|claude] [--loop --interval 30]
 
 publish (prints the commands; the publish guard hook must see them)
   govern publish <slug>
@@ -193,8 +200,44 @@ function cmdPublish(a: Args): void {
   out(`Then read the result back, and run: govern note ${p.slug} "published <videoId> at <time>"`);
 }
 
+function cmdTask(a: Args): void {
+  const sub = a._[1];
+  if (sub === "send") {
+    const bodyFile = opt(a, "body-file");
+    const body = bodyFile ? readFileSync(bodyFile, "utf8") : opt(a, "body") ?? "";
+    const m = queue.send({
+      project: opt(a, "project") ?? "", task: opt(a, "task") ?? "", kind: opt(a, "kind") ?? "TASK", from: opt(a, "from") ?? "owner",
+      to: opt(a, "to") ?? "", summary: opt(a, "summary") ?? "", body, files: a.multi.file ?? [], replyTo: opt(a, "reply-to"),
+      access: a.opts.write ? "write" : "read-only",
+    });
+    return out(`queued ${m.id} (${m.kind} to ${m.to})`);
+  }
+  if (sub === "list") {
+    const rows = queue.all().filter((x) => (!opt(a, "to") || x.m.to === opt(a, "to")) && (!opt(a, "state") || x.state === opt(a, "state")) && (!opt(a, "project") || x.m.project === opt(a, "project")));
+    if (!rows.length) return out("(no messages)");
+    for (const { state, m } of rows) {
+      const u = m.result?.usage;
+      out(`${m.id} ${state.padEnd(7)} ${m.kind.padEnd(8)} ${m.from}→${m.to} [${m.project}/${m.task}] ${clip(m.summary, 70)}${u ? ` · ${kTok(u.input)} in, ${kTok(u.output)} out, ${m.result!.seconds}s` : ""}`);
+    }
+    return;
+  }
+  if (sub === "show") {
+    const hit = queue.find(a._[2] ?? "") ?? fail(`no message ${a._[2]}`);
+    for (const m of queue.thread(hit!.m)) out(`--- ${m.id} [${m.kind}] ${m.from}→${m.to} ${m.created}\n${m.summary}\n${m.body}${m.files.length ? `\nfiles: ${m.files.join(", ")}` : ""}${m.result ? `\nresult: ${JSON.stringify(m.result)}` : ""}`);
+    return;
+  }
+  if (sub === "dispatch") {
+    const max = opt(a, "max") ? Number(opt(a, "max")) : undefined;
+    const once = () => queue.dispatch({ max, only: opt(a, "only") }).forEach((l) => out(l));
+    if (!a.opts.loop) { once(); return; }
+    const interval = Number(opt(a, "interval") ?? 30) * 1000;
+    for (;;) { once(); sleepSync(interval); }
+  }
+  fail("govern task send|list|show|dispatch (govern help)");
+}
+
 function main(argv: string[]): void {
-  const a = parseArgs(argv, { bool: ["bg", "open", "help"], multi: ["file", "var", "image"] });
+  const a = parseArgs(argv, { bool: ["bg", "open", "help", "write", "loop"], multi: ["file", "var", "image"] });
   const c = a._[0];
   switch (c) {
     case undefined: case "help": case "-h": return out(HELP);
@@ -236,6 +279,7 @@ function main(argv: string[]): void {
     case "usage": { const since = opt(a, "since"); return out(report(a._.length > 1 ? a._.slice(1).map(checkSlug) : undefined, since ? Date.parse(since) : undefined)); }
     case "ctx": { const x = currentCtx(); return out(x ? `context now ${kTok(x.ctx)} per call (limit ${kTok(CTX_WARN)})${x.ctx > CTX_WARN ? " ⚠ over: govern note what is open, /clear, govern work again" : ""}` : "not in a Claude Code session (no CLAUDE_CODE_SESSION_ID) or no transcript yet"); }
     case "publish": cmdPublish(a); break;
+    case "task": cmdTask(a); break;
     default: fail(`unknown command "${c}" (govern help)`);
   }
   ctxFooter();
