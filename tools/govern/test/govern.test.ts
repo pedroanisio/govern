@@ -299,6 +299,12 @@ test("ctx reads the session's last call and the footer warns past the limit", ()
   const r = govern(e, ["ctx"], { CLAUDE_CODE_SESSION_ID: "S9" });
   assert.match(r.out, /context now 200k per call \(limit 150k\) ⚠ over/);
   assert.match(govern(e, ["brief", slug], { CLAUDE_CODE_SESSION_ID: "S9" }).out, /⚠ this session reads 200k per call/);
+  // context is the session's own job: the advice names what it can do itself, never a /clear for the owner
+  for (const out of [r.out, govern(e, ["brief", slug], { CLAUDE_CODE_SESSION_ID: "S9" }).out]) {
+    assert.doesNotMatch(out, /\/clear|owner/i);
+    assert.match(out, /task send --to codex/);
+    assert.match(out, /auto-compact/);
+  }
   assert.doesNotMatch(govern(e, ["brief", slug], { CLAUDE_CODE_SESSION_ID: "S9", GOVERN_CTX_WARN: "300000" }).out, /⚠/);
 });
 

@@ -71,9 +71,13 @@ stages: ${STAGES.join(", ")} (ops: plan, doing, review, done)`;
 process.stdout.on("error", (e: NodeJS.ErrnoException) => { if (e.code === "EPIPE") process.exit(0); throw e; });
 const out = (s: string) => process.stdout.write(s.endsWith("\n") ? s : s + "\n");
 
+// What the session does about it by itself: the owner is never asked to /clear (context is the session's job).
+const CTX_ADVICE = "keep state in files (govern note, memory), offload model work with `govern task send --to codex`, " +
+  "wait on jobs in the background, and let auto-compaction (window tuned hourly by govern tune) shrink the rest";
+
 function ctxFooter(): void {
   const c = currentCtx();
-  if (c && c.ctx > CTX_WARN) out(`⚠ this session reads ${kTok(c.ctx)} per call (limit ${kTok(CTX_WARN)}). Record open decisions with govern note, then /clear and govern work again.`);
+  if (c && c.ctx > CTX_WARN) out(`⚠ this session reads ${kTok(c.ctx)} per call (limit ${kTok(CTX_WARN)}): ${CTX_ADVICE}.`);
 }
 
 function engineOf(a: Args): "claude" | "codex" {
@@ -374,7 +378,7 @@ function main(argv: string[]): void {
     case "prompts": return cmdPrompts();
     case "ask": cmdAsk(a); break;
     case "usage": { const since = opt(a, "since"); return out(report(a._.length > 1 ? a._.slice(1).map(checkSlug) : undefined, since ? Date.parse(since) : undefined)); }
-    case "ctx": { const x = currentCtx(); return out(x ? `context now ${kTok(x.ctx)} per call (limit ${kTok(CTX_WARN)})${x.ctx > CTX_WARN ? " ⚠ over: govern note what is open, /clear, govern work again" : ""}` : "not in a Claude Code session (no CLAUDE_CODE_SESSION_ID) or no transcript yet"); }
+    case "ctx": { const x = currentCtx(); return out(x ? `context now ${kTok(x.ctx)} per call (limit ${kTok(CTX_WARN)})${x.ctx > CTX_WARN ? ` ⚠ over: ${CTX_ADVICE}` : ""}` : "not in a Claude Code session (no CLAUDE_CODE_SESSION_ID) or no transcript yet"); }
     case "publish": cmdPublish(a); break;
     case "task": cmdTask(a); break;
     case "desk": out(desk()); break;

@@ -98,10 +98,10 @@ govern task send --to codex|claude|<session> --project <slug> --task <name> --ki
 ## Keep the context small
 
 - Every govern command warns when this session reads more than 150k tokens per call. `govern ctx` shows the number.
-- When it warns:
-  1. Record what is open with `govern note`.
-  2. Tell the owner in one line that the session should restart.
-  3. After the owner's `/clear`, run `govern work <slug> <stage>` again. Nothing is lost, because the state is in files.
+- Context is the session's own job; never ask the owner to `/clear` or restart. When it warns:
+  1. Record what is open with `govern note` (or memory), so nothing depends on the chat.
+  2. Offload model work to Codex with `govern task send --to codex`, and wait on jobs in the background.
+  3. Let auto-compaction shrink the rest. The dispatcher runs `govern tune` hourly, and it sets the compaction window.
 - One session covers one video and one stage at a time. For another video, run `govern done <slug>` and start a fresh session.
 - `govern work <slug> <stage> --open [--engine codex|claude]`, from a terminal, starts a fresh interactive session for one video.
 
