@@ -52,7 +52,7 @@ codex one-shot steps (verified JSON)
   govern ask <slug> <step> [--file F]… [--var K=V]… [--image PNG]… [--effort low|medium|high] [--model M]
 
 measure
-  govern usage [<slug>…] [--since YYYY-MM-DD]   tokens per video and segment, against the chat baseline
+  govern usage [<slug>…] [--since YYYY-MM-DD]   tokens and tool calls per video and segment, against the chat baseline
   govern ctx                     this Claude Code session's context size now
   govern manual  ·  govern install-skill [<skills dir>]   the AI's operating manual (SKILL.md)
 
