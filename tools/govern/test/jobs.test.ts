@@ -234,3 +234,26 @@ test("a job.json without a start time falls back to the pid, and kill will not s
   } finally { cleanup(e, [child.pid!]); }
   assert.match(govern(e, ["jobs", slug]).out, /-old lost/);
 });
+
+test("an exit file not yet fully written is not an exit: the job still runs, or failed, never ok", { skip: NO_PROC }, () => {
+  const { e, slug } = lane();
+  const live = "20260101T000000Z-x";
+  const child = fakeJob(e, slug, live, {});
+  try {
+    write(join(jobsDir(e, slug), live, "job.json"), JSON.stringify({ ...jobJson(e, slug, live), procStart: procStat(child.pid!)!.start }));
+    write(join(jobsDir(e, slug), live, "exit"), "");
+    const gone = "20260101T000001Z-y";
+    write(join(jobsDir(e, slug), gone, "job.json"), JSON.stringify({ id: gone, slug, name: "y", argv: ["true"], cwd: e.root, start: new Date().toISOString(), bg: false }));
+    write(join(jobsDir(e, slug), gone, "exit"), " \n");
+    const out = govern(e, ["jobs", slug]).out;
+    assert.match(out, /-x running/);
+    assert.match(out, /-y failed/);
+    assert.doesNotMatch(out, / ok/);
+    // the job's script writes exit.tmp and renames it: never a partial exit file, nothing left behind
+    govern(e, ["cmd", slug, "t", "--", "sh", "-c", "exit 4"]);
+    assert.equal(govern(e, ["run", slug, "t"]).code, 4);
+    const d = join(jobsDir(e, slug), jobJson(e, slug).id);
+    assert.equal(readFileSync(join(d, "exit"), "utf8"), "4\n");
+    assert.ok(!existsSync(join(d, "exit.tmp")));
+  } finally { cleanup(e, [child.pid!]); }
+});

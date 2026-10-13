@@ -49,7 +49,8 @@ export function start(p: Project, name: string, extra: string[], bg: boolean): J
   const timeout = (Array.isArray(base) ? undefined : base.timeout) ?? DEFAULT_TIMEOUT;
   const job: Job = { id, slug: p.slug, name, argv, cwd, start: nowIso(), bg, ...(bg ? {} : { timeout }) };
   writeJson(f, job);
-  const script = `${argv.map(shq).join(" ")} > ${shq(join(dir, "log"))} 2>&1; echo $? > ${shq(exitF)}`;
+  // The exit code goes to exit.tmp and is renamed to exit: a poller never sees an exit file that exists but is not yet written.
+  const script = `${argv.map(shq).join(" ")} > ${shq(join(dir, "log"))} 2>&1; echo $? > ${shq(exitF)}.tmp && mv -f ${shq(exitF)}.tmp ${shq(exitF)}`;
   // A foreground job is spawned, not spawnSync'd, and then waited on synchronously: spawnSync gives no pid while the child
   // runs, so neither a timeout nor govern kill could find it. It is not detached: it stays in govern's process group, so a
   // terminal's Ctrl-C (or anything else that signals the caller's group) stops it with govern. Its timeout stops its tree.
@@ -65,7 +66,7 @@ export function start(p: Project, name: string, extra: string[], bg: boolean): J
     appendLedger(p.slug, { kind: "job", id, name, bg: true, status: "started" });
     return { ...job, status: "running" };
   }
-  const running = () => !existsSync(exitF) && alive(job) && !readJson<Job>(f).stopped;
+  const running = () => !readExit(dir) && alive(job) && !readJson<Job>(f).stopped;
   for (const end = Date.now() + timeout * 1000; running() && Date.now() < end;) sleepSync(POLL_MS);
   if (running()) { stopTree(job.pid!, job.procStart); writeJson(f, { ...readJson<Job>(f), stopped: "timeout", end: nowIso() }); }
   const st = state(p.slug, id);
@@ -168,6 +169,16 @@ function stopTree(pid: number, start: string | undefined, graceMs = KILL_GRACE_M
   return "killed";
 }
 
+/** The job's exit code and when it was written, once its exit file holds one. The script renames it into place, but an exit
+ *  file that is empty or not an integer (an older govern's, or one cut short) is still read as not yet written. */
+function readExit(dir: string): { code: number; mtimeMs: number } | undefined {
+  const f = join(dir, "exit");
+  try {
+    const t = readFileSync(f, "utf8").trim();
+    return /^\d+$/.test(t) ? { code: Number(t), mtimeMs: statSync(f).mtimeMs } : undefined;
+  } catch { return undefined; }
+}
+
 export function state(slug: string, id: string): JobState {
   const dir = join(jobsDir(slug), id);
   const job = readJson<Job>(join(dir, "job.json"));
@@ -175,12 +186,8 @@ export function state(slug: string, id: string): JobState {
     const seconds = job.end ? Math.round((Date.parse(job.end) - Date.parse(job.start)) / 1000) : undefined;
     return { ...job, status: job.stopped, ...(seconds != null ? { seconds } : {}) };
   }
-  const exitF = join(dir, "exit");
-  if (existsSync(exitF)) {
-    const exit = Number(readFileSync(exitF, "utf8").trim());
-    const seconds = Math.round((statSync(exitF).mtimeMs - Date.parse(job.start)) / 1000);
-    return { ...job, status: exit === 0 ? "ok" : "failed", exit, seconds };
-  }
+  const ex = readExit(dir);
+  if (ex) return { ...job, status: ex.code === 0 ? "ok" : "failed", exit: ex.code, seconds: Math.round((ex.mtimeMs - Date.parse(job.start)) / 1000) };
   // A foreground job runs while its govern waits on it (a check, or another session's govern run).
   return { ...job, status: alive(job) ? "running" : job.bg ? "lost" : "failed" };
 }
@@ -193,7 +200,7 @@ export function kill(slug: string, ref?: string): { id: string; outcome: KillOut
     ?? fail(`${slug}: no running job (govern jobs ${slug})`);
   const f = join(jobsDir(slug), id, "job.json");
   const job = readJson<Job>(f);
-  const who = job.stopped || existsSync(join(jobsDir(slug), id, "exit")) ? "gone" : owner(job);
+  const who = job.stopped || readExit(join(jobsDir(slug), id)) ? "gone" : owner(job);
   const record = (outcome: KillOutcome) => appendLedger(slug, { kind: "kill", job: id, outcome });
   if (who === "gone") { record("already-exited"); return { id, outcome: "already-exited" }; }
   if (who !== "live") {
