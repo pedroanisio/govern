@@ -21,15 +21,17 @@ export interface Args { _: string[]; opts: Record<string, string | boolean>; mul
 /** The flags of a spec in declaration order (value, multi, then switches), as `--a, --b`, or "" for none. */
 export const flagNames = (spec: FlagSpec) => [...(spec.value ?? []), ...(spec.multi ?? []), ...(spec.bool ?? [])].map((f) => `--${f}`).join(", ");
 
-/** A word that reads as a long flag: it cannot be the value of the flag before it (give that one as --k=VALUE). */
-const looksLikeFlag = (s: string) => /^--[A-Za-z]/.test(s);
-
 /** Parse argv against `spec`: positionals, `--k v`, `--k=v`, switches, repeatable flags, and `--` (rest kept raw).
  *  `label` names the command in every error. An unknown flag, a switch given a value other than true/false, and a
  *  value flag without its value are usage errors (GovernError, exit 2) naming the flag and the valid ones. */
-export function parseArgs(argv: string[], spec: FlagSpec, label: string): Args {
+export function parseArgs(argv: string[], spec: FlagSpec, label: string, vocabulary: Iterable<string> = []): Args {
   const bool = new Set(spec.bool ?? []), value = new Set(spec.value ?? []), multi = new Set(spec.multi ?? []);
+  const known = new Set([...bool, ...value, ...multi, ...vocabulary]);
   const out: Args = { _: [], opts: {}, multi: {}, spec, label };
+  // The one word a value flag will not take as its value: a flag (`--x` or `--x=…`) this command declares or that is in
+  // `vocabulary` (govern passes every flag any command declares). That is the user forgetting the value, not giving
+  // one. Any other word is the value, `--verbose test passes` included; `--k=--bg` gives a value that is a flag word.
+  const isDeclaredFlag = (w: string) => w.startsWith("--") && known.has(w.slice(2).split("=", 1)[0]);
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === "--") { out._.push(...argv.slice(i + 1)); break; }
@@ -46,7 +48,7 @@ export function parseArgs(argv: string[], spec: FlagSpec, label: string): Args {
     }
     if (v === undefined) {
       v = argv[++i];
-      if (v === undefined || v === "--" || looksLikeFlag(v)) fail(`${label}: --${k} needs a value (give --${k}=VALUE when the value starts with --)`);
+      if (v === undefined || v === "--" || isDeclaredFlag(v)) fail(`${label}: --${k} needs a value (give --${k}=VALUE when the value starts with --)`);
     }
     if (multi.has(k)) (out.multi[k] ??= []).push(v);
     else out.opts[k] = v;

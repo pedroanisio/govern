@@ -671,6 +671,13 @@ export const HELP = [
 /** Every command takes --help: its own help lines instead of running. */
 const withHelp = (f: FlagSpec | undefined): FlagSpec => ({ ...f, bool: [...(f?.bool ?? []), "help"] });
 
+/** Every flag any command or subcommand declares: a value flag never takes one of these words as its value
+ *  (`advance l1 --note --bg` forgot the note), while any other word, `--verbose test passes` included, is the value. */
+const FLAG_WORDS: ReadonlySet<string> = new Set(
+  COMMANDS.flatMap((c) => [c.flags, ...Object.values(c.subs ?? {}).map((s) => s.flags)])
+    .flatMap((f) => [...(withHelp(f).bool ?? []), ...(f?.value ?? []), ...(f?.multi ?? [])]),
+);
+
 function main(argv: string[]): void {
   const name = argv[0];
   if (name === undefined || name === "-h" || name === "--help") return void out(HELP);
@@ -688,7 +695,7 @@ function main(argv: string[]): void {
     label = `${c.name} ${sub}`;
     if (given) { rest = argv.slice(2); lead.push(word); }
   }
-  const a = parseArgs(rest, withHelp(entry.flags), label);
+  const a = parseArgs(rest, withHelp(entry.flags), label, FLAG_WORDS);
   if (flag(a, "help")) return void out(commandHelp(c.name, sub));
   a._.unshift(...lead);
   entry.run!(a);

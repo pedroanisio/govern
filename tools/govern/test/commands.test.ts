@@ -3,7 +3,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { makeEnv, govern, HERE } from "./helpers.ts";
+import { makeEnv, govern, jsonl, HERE } from "./helpers.ts";
 import { parseArgs, opt, flag, many } from "../lib/util.ts";
 import { COMMANDS, HELP, commandHelp } from "../govern.ts";
 
@@ -75,6 +75,27 @@ test("a value flag missing its value is refused, also when the next word is a fl
   const n = govern(e, ["advance", "lane", "--note", "--help"]);
   assert.equal(n.code, 2);
   assert.match(n.err, /advance: --note needs a value \(give --note=VALUE when the value starts with --\)/);
+});
+
+test("a value flag takes the next word even when it starts with --, unless that word is a govern flag", () => {
+  const f = makeEnv();
+  assert.equal(govern(f, ["new", "l1", "--process", "dev"]).code, 0);
+  const r = govern(f, ["advance", "l1", "--note", "--verbose test passes"]);
+  assert.equal(r.code, 0, r.err);
+  const adv = jsonl(join(f.projects, "l1", "govern", "ledger.jsonl")).find((x) => x.kind === "advance");
+  assert.equal(adv.note, "--verbose test passes");
+  // --bg is not advance's, but it is a govern flag: `--note --bg` is a forgotten value, not a note
+  for (const next of ["--note", "--note=x", "--help", "--bg", "--process=dev"]) {
+    const n = govern(f, ["advance", "l1", "--note", next]);
+    assert.equal(n.code, 2, next);
+    assert.match(n.err, /advance: --note needs a value \(give --note=VALUE when the value starts with --\)/);
+  }
+  assert.throws(() => parseArgs(["--m", "--n"], { value: ["n"], multi: ["m"] }, "t"), /t: --m needs a value/);
+  assert.throws(() => parseArgs(["--n", "--b=false"], { value: ["n"], bool: ["b"] }, "t"), /t: --n needs a value/);
+  assert.deepEqual(parseArgs(["--n", "--other", "--m", "--zz=1"], { value: ["n"], multi: ["m"] }, "t").opts.n, "--other");
+  assert.deepEqual(parseArgs(["--m", "--zz=1"], { value: ["n"], multi: ["m"] }, "t").multi.m, ["--zz=1"]);
+  assert.throws(() => parseArgs(["--n", "--bg"], { value: ["n"] }, "t", ["bg"]), /t: --n needs a value/);
+  assert.equal(parseArgs(["--n", "--bg is set"], { value: ["n"] }, "t", ["bg"]).opts.n, "--bg is set");
 });
 
 test("a value may start with -- when given with =", () => {
