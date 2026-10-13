@@ -1,14 +1,14 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import { liveSessions, pidChain, resolveAs, parsePpid } from "../lib/sessions.ts";
+import { tempDir } from "./helpers.ts";
 
 const deadPid = () => spawnSync("true").pid!; // a pid that has just exited
 function registry(entries: Record<string, unknown>[]) {
-  const dir = mkdtempSync(join(tmpdir(), "govern-sessions-"));
+  const dir = tempDir("sessions");
   entries.forEach((e, i) => writeFileSync(join(dir, `${e.pid}-${i}.json`), JSON.stringify(e)));
   writeFileSync(join(dir, `${process.pid}.deadbeef.key`), "SECRET-KEY-MATERIAL"); // must never be read
   writeFileSync(join(dir, "broken.json"), "{not json");

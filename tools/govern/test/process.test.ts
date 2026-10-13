@@ -1,10 +1,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, mkdirSync, readFileSync, chmodSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, readFileSync, chmodSync } from "node:fs";
 import { join } from "node:path";
-import { makeEnv, govern, write, jsonl, GOVERN } from "./helpers.ts";
+import { makeEnv, govern, write, jsonl, GOVERN, tempDir, parentEnv } from "./helpers.ts";
 
 const env = () => { const e = makeEnv(); e.env.GOVERN_QUEUE = join(e.root, "queue"); return e; };
 const ledger = (e: ReturnType<typeof makeEnv>, slug: string) => jsonl(join(e.projects, slug, "govern", "ledger.jsonl"));
@@ -166,12 +165,13 @@ test("the prompt names the queue generically when no config names it", () => {
 });
 
 test("a govern.config.json above the working directory makes any folder a govern workspace", () => {
-  const root = mkdtempSync(join(tmpdir(), "govern-ws-"));
+  const root = tempDir("ws");
   write(join(root, "govern.config.json"), JSON.stringify({ projects: "lanes", queue: "q" }));
   mkdirSync(join(root, "lanes"), { recursive: true });
   mkdirSync(join(root, "src", "deep"), { recursive: true });
-  const { GOVERN_REPO: _a, GOVERN_PROJECTS: _b, GOVERN_QUEUE: _c, GOVERN_PROCESSES: _d, CLAUDE_CODE_SESSION_ID: _e, ...base } = process.env;
-  const run = (args: string[]) => spawnSync(process.execPath, ["--disable-warning=ExperimentalWarning", GOVERN, ...args], { cwd: join(root, "src", "deep"), env: { ...base, GOVERN_AS: "owner" }, encoding: "utf8" });
+  const { CLAUDE_CODE_SESSION_ID: _, ...base } = parentEnv(); // no GOVERN_* says where the workspace is: only the config file
+  const env = { ...base, HOME: join(root, "home"), GOVERN_AS: "owner" };
+  const run = (args: string[]) => spawnSync(process.execPath, ["--disable-warning=ExperimentalWarning", GOVERN, ...args], { cwd: join(root, "src", "deep"), env, encoding: "utf8" });
   assert.equal(run(["new", "api", "--process", "dev"]).status, 0);
   assert.match(readFileSync(join(root, "lanes", "api", "govern.json"), "utf8"), /"process": "dev"/);
   assert.equal(run(["task", "send", "--to", "owner", "--project", "api", "--task", "t", "--summary", "hello"]).status, 0);

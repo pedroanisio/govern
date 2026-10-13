@@ -4,7 +4,7 @@ const require = createRequire(import.meta.url);
 import assert from "node:assert/strict";
 import { readFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
-import { makeEnv, govern, childEnv, jsonl, write, reply, HERE } from "./helpers.ts";
+import { makeEnv, govern, childEnv, jsonl, write, reply, HERE, tempDir } from "./helpers.ts";
 
 function env() {
   const e = makeEnv();
@@ -110,12 +110,11 @@ test("a project slug may hold a folder path but not escape it", () => {
 
 // ---------------------------------------------------------------- named sessions: recipient check, inbox, close, reply, forward
 
-import { mkdtempSync, writeFileSync, mkdirSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { writeFileSync, mkdirSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 
 function sess(names: string[], dead: string[] = []) {
-  const dir = mkdtempSync(join(tmpdir(), "govern-sessions-"));
+  const dir = tempDir("sessions");
   const gone = spawnSync("true").pid!;
   for (const n of names) writeFileSync(join(dir, `${process.pid}-${n}.json`), JSON.stringify({ pid: process.pid, name: n, cwd: "/x", kind: "interactive", status: "idle" }));
   for (const n of dead) writeFileSync(join(dir, `${gone}-${n}.json`), JSON.stringify({ pid: gone, name: n, cwd: "/x", kind: "interactive" }));

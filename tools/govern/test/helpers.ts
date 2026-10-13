@@ -12,15 +12,21 @@ export const fixture = (name: string) => join(HERE, "fixtures", name);
 
 export interface Env { root: string; projects: string; env: Record<string, string> }
 
-// Every root makeEnv creates is removed when its test file finishes (a root-level hook of the file importing this).
+// Every dir makeEnv or tempDir creates is removed when its test file finishes (a root-level hook of the file importing this).
 const roots: string[] = [];
 after(() => { for (const r of roots.splice(0)) rmSync(r, { recursive: true, force: true, maxRetries: 3 }); });
+
+/** A fresh dir under the system temp dir (govern-<name>-XXXXXX), removed when the test file finishes. */
+export function tempDir(name: string): string {
+  const d = mkdtempSync(join(tmpdir(), `govern-${name}-`));
+  roots.push(d);
+  return d;
+}
 
 /** A throwaway repo: PALS-Notes/projects, packages, a WORKFLOW.md with the stage table, empty transcript dirs, and a
  *  HOME (with XDG dirs) of its own, so nothing reads or writes the developer's ~/.claude, ~/.codex or ~/.config. */
 export function makeEnv(): Env {
-  const root = mkdtempSync(join(tmpdir(), "govern-test-"));
-  roots.push(root);
+  const root = tempDir("test");
   const projects = join(root, "PALS-Notes", "projects");
   mkdirSync(projects, { recursive: true });
   mkdirSync(join(root, "PALS-Notes", "packages"), { recursive: true });
@@ -46,12 +52,17 @@ export function makeEnv(): Env {
   };
 }
 
-/** A govern child's environment: the parent's without any GOVERN_* it set, then the test's own, then the call's. */
-export function childEnv(e: Env, env: Record<string, string> = {}): NodeJS.ProcessEnv {
-  // The compaction window comes from the test, never from the session running it (Claude Code exports its settings env).
+/** The parent's environment without any GOVERN_* and without the compaction window: those come from the test, never
+ *  from the session running it (Claude Code exports its settings env). */
+export function parentEnv(): NodeJS.ProcessEnv {
   const { CLAUDE_CODE_AUTO_COMPACT_WINDOW: _, ...inherited } = process.env;
   for (const k of Object.keys(inherited)) if (k.startsWith("GOVERN_")) delete inherited[k];
-  const base = { ...inherited, ...e.env, ...env };
+  return inherited;
+}
+
+/** A govern child's environment: parentEnv(), then the test's own, then the call's. */
+export function childEnv(e: Env, env: Record<string, string> = {}): NodeJS.ProcessEnv {
+  const base = { ...parentEnv(), ...e.env, ...env };
   if (!base.CLAUDE_CODE_SESSION_ID) delete base.CLAUDE_CODE_SESSION_ID;
   return base;
 }
