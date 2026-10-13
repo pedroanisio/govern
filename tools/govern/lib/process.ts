@@ -5,6 +5,7 @@ import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { fail } from "./util.ts";
+import { obj, arr, str, name, literal, check, reject } from "./shape.ts";
 import { PROJECTS, CONFIG, type Project } from "./project.ts";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -27,19 +28,60 @@ export interface Process {
 
 export const extraDir = () => process.env.GOVERN_PROCESSES ?? CONFIG.processes ?? join(PROJECTS, "..", "processes");
 
+const STAGE = obj({ name }, { exit: str, check: name, requires: literal("check") });
+const GATE = obj({ name }, { stage: name, needs: arr(name), message: str });
+const PROCESS = obj({ version: literal(1), name, stages: arr(STAGE, { nonEmpty: true }) },
+  { description: str, kinds: arr(name, { nonEmpty: true }), exitFrom: literal("workflow"), gates: arr(GATE) });
+
+/** Names unique within a list: the second one is refused at its path. */
+function unique(items: { name: string }[], what: string, at: string): void {
+  const seen = new Set<string>();
+  items.forEach((x, i) => { if (seen.has(x.name)) reject(`${at}[${i}].name`, `${what} "${x.name}" is already defined`); seen.add(x.name); });
+}
+
+/** What a process file must be beyond its types: unique stage and gate names, a gate's stage and needs exist, and no gate
+ *  waits (directly or through others) on itself, which would leave it and every gate after it unapprovable. */
+function resolveRefs(p: ReturnType<typeof PROCESS>): void {
+  const stages = p.stages, gates = p.gates ?? [];
+  unique(stages, "stage", "$.stages");
+  unique(gates, "gate", "$.gates");
+  const names = new Set(stages.map((s) => s.name)), byName = new Map(gates.map((g) => [g.name, g]));
+  gates.forEach((g, i) => {
+    if (g.stage !== undefined && !names.has(g.stage)) reject(`$.gates[${i}].stage`, `gate ${g.name} names unknown stage ${g.stage}`);
+    (g.needs ?? []).forEach((n, j) => {
+      if (n === g.name) reject(`$.gates[${i}].needs[${j}]`, `gate ${g.name} needs itself`);
+      if (!byName.has(n)) reject(`$.gates[${i}].needs[${j}]`, `gate ${g.name} needs unknown gate ${n}`);
+    });
+  });
+  // a cycle through needs, reported at the first gate (in file order) on it, at the need that starts the loop
+  gates.forEach((g, i) => {
+    const walk = (at: string, path: string[]): void => {
+      for (const n of byName.get(at)?.needs ?? []) {
+        if (n === g.name) reject(`$.gates[${i}].needs[${g.needs!.indexOf(path[1] ?? n)}]`, `gates ${[...path, n].join(" → ")} need each other: none can be approved`);
+        if (!path.includes(n)) walk(n, [...path, n]);
+      }
+    };
+    walk(g.name, [g.name]);
+  });
+}
+
+/** Parse a process file's text: typed (unknown keys refused), version 1, names unique, references resolved. Every failure
+ *  is a GovernError naming `file` and the JSON path of the wrong field. */
+export function parseProcess(file: string, text: string): Process {
+  let raw: unknown;
+  try { raw = JSON.parse(text); } catch (e) { return fail(`${file}: not JSON (${(e as Error).message})`); }
+  // a stage that requires anything but a check keeps the message it has always had: it names the stage
+  const st = (raw as { stages?: unknown })?.stages;
+  if (Array.isArray(st)) for (const s of st as { name?: unknown; requires?: unknown }[]) {
+    if (s && typeof s === "object" && "requires" in s && s.requires !== "check") fail(`${file}: stage ${String(s.name)}: requires must be "check" (got ${JSON.stringify(s.requires)})`);
+  }
+  const p = check(file, raw, (v, at) => { const x = PROCESS(v, at); resolveRefs(x); return x; });
+  return { ...p, description: p.description ?? "", gates: p.gates ?? [] };
+}
+
 function readDir(dir: string): Process[] {
   if (!existsSync(dir)) return [];
-  return readdirSync(dir).filter((f) => f.endsWith(".json")).sort().map((f) => {
-    let p: Process;
-    try { p = JSON.parse(readFileSync(join(dir, f), "utf8")); } catch (e) { return fail(`${join(dir, f)}: not JSON (${(e as Error).message})`); }
-    const bad = !p || typeof p.name !== "string" || !Array.isArray(p.stages) || !p.stages.length || p.stages.some((s) => typeof s?.name !== "string")
-      || (p.gates !== undefined && !Array.isArray(p.gates));
-    if (bad) fail(`${join(dir, f)}: a process needs a name and a non-empty stages list of {name}`);
-    const names = p.stages.map((s) => s.name);
-    for (const s of p.stages) if (s.requires !== undefined && s.requires !== "check") fail(`${join(dir, f)}: stage ${s.name}: requires must be "check" (got ${JSON.stringify(s.requires)})`);
-    for (const g of p.gates ?? []) if (g.stage && !names.includes(g.stage)) fail(`${join(dir, f)}: gate ${g.name} names unknown stage ${g.stage}`);
-    return { ...p, description: p.description ?? "", gates: p.gates ?? [] };
-  });
+  return readdirSync(dir).filter((f) => f.endsWith(".json")).sort().map((f) => parseProcess(join(dir, f), readFileSync(join(dir, f), "utf8")));
 }
 
 /** Every process by name; a workspace process overrides a built-in of the same name. */
