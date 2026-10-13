@@ -3,7 +3,8 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { makeEnv, govern, jsonl, HERE } from "./helpers.ts";
+import { makeEnv, govern, jsonl, childEnv, HERE } from "./helpers.ts";
+import { spawnSync } from "node:child_process";
 import { parseArgs, opt, flag, many } from "../lib/util.ts";
 import { COMMANDS, HELP, commandHelp } from "../govern.ts";
 
@@ -153,6 +154,38 @@ test("drift: every command and subcommand is in SKILL.md and HELP; SKILL.md name
     const cmd = byName.get(c);
     assert.ok(cmd, `SKILL.md mentions \`govern ${c}\`, which is not a command`);
     if (cmd.subs && s !== undefined) assert.ok(s in cmd.subs, `SKILL.md mentions \`govern ${c} ${s}\`, which is not a subcommand of ${c}`);
+  }
+});
+
+const BIN = join(HERE, "..", "..", "..", "bin", "govern");
+const bin = (args: string[]) => {
+  const r = spawnSync(BIN, args, { env: childEnv(e), encoding: "utf8", timeout: 60000 });
+  return { code: r.status, out: r.stdout, err: r.stderr };
+};
+
+test("bin/govern: --help after the command is the command's help; only a leading -h/--help shows the manpage", () => {
+  const r = bin(["advance", "--help"]);
+  assert.equal(r.code, 0, r.err);
+  assert.equal(r.out, govern(e, ["help", "advance"]).out);
+  assert.doesNotMatch(r.out, /MANPAGE|SYNOPSIS/);
+  const set = bin(["cmd", "lane", "usage", "--", "echo", "--help"]);
+  assert.equal(set.code, 0, set.err);
+  const lane = JSON.parse(readFileSync(join(e.projects, "lane", "govern.json"), "utf8"));
+  assert.deepEqual(lane.commands.usage, ["echo", "--help"], "a --help inside the argv after -- is the argv's");
+  for (const h of ["--help", "-h"]) {
+    const m = bin([h]);
+    assert.equal(m.code, 0, m.err);
+    assert.match(m.out, /SYNOPSIS/, h);
+  }
+});
+
+test("drift: the bin/govern MANPAGE names every command", () => {
+  const text = readFileSync(BIN, "utf8");
+  const man = text.slice(text.indexOf("# MANPAGE >>>"), text.indexOf("# MANPAGE <<<"));
+  const synopsis = man.slice(man.indexOf("# SYNOPSIS"), man.indexOf("# DESCRIPTION"));
+  for (const c of COMMANDS) {
+    assert.match(synopsis, new RegExp(`(?:govern|\\|)\\s+${c.name}(?![\\w-])`), `the MANPAGE SYNOPSIS lacks ${c.name}`);
+    for (const s of Object.keys(c.subs ?? {})) assert.match(synopsis, new RegExp(`${c.name}\\b.*\\b${s}(?![\\w-])`), `the MANPAGE SYNOPSIS lacks ${c.name} ${s}`);
   }
 });
 
