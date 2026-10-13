@@ -208,15 +208,16 @@ function cmdDep(a: Args): void {
   const p = load(a._[1]);
   const add = opt(a, "after"), rm = opt(a, "rm");
   if (add) {
-    const [lane, stage] = add.split(":");
-    const o = load(lane);
+    const [given, stage] = add.split(":");
+    const o = load(given);
+    const lane = o.slug; // the folder's slug: `--after ./l2` waits on l2
     if (lane === p.slug) fail(`${p.slug} cannot wait on itself`);
     if (stage) stageOf(stage, o);
     const loop = waitPath(lane, p.slug);
     if (loop) fail(`${p.slug} cannot wait on ${lane}: ${loop.join(" → ")} already waits the other way`);
     p.after = [...(p.after ?? []).filter((x) => !(x.lane === lane && x.stage === stage)), { lane, ...(stage ? { stage } : {}) }];
   }
-  if (rm) p.after = (p.after ?? []).filter((x) => x.lane !== rm);
+  if (rm) { const gone = checkSlug(rm); p.after = (p.after ?? []).filter((x) => x.lane !== gone); }
   if (add || rm) { save(p); appendLedger(p.slug, { kind: "dep", after: p.after ?? [] }); }
   const labels = (p.after ?? []).map((x) => (x.stage ? `${x.lane}:${x.stage}` : x.lane));
   out(labels.length ? `${p.slug}: after ${labels.join(", ")}` : `${p.slug}: no dependencies`);

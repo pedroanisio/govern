@@ -2,7 +2,7 @@
 // field, a key govern does not know is refused, and every failure names the file and the JSON path of the wrong field.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readdirSync, readFileSync, existsSync } from "node:fs";
+import { readdirSync, readFileSync, existsSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { makeEnv, govern, write, HERE, tempDir } from "./helpers.ts";
 import { parseFile, check, obj, arr, record, str, name, posInt, literal } from "../lib/shape.ts";
@@ -228,5 +228,42 @@ test("a workspace process with an unknown key stops every command that reads pro
     assert.equal(s.code, 2, cmd);
     assert.ok(s.err.includes(problem), `${cmd}: ${s.err}`);
     assert.doesNotMatch(s.out, /lane/, `${cmd} prints no lane row`);
+  }
+});
+
+test("a slug's `.` segments name the same lane, as they did before govern.json was checked: ./l1, l1/. and a/./b are l1 and a/b", () => {
+  const e = makeEnv();
+  const slugOf = (lane: string) => JSON.parse(readFileSync(join(e.projects, lane, "govern.json"), "utf8")).slug;
+  assert.equal(govern(e, ["new", "l1", "--process", "dev"]).code, 0);
+  for (const s of ["./l1", "l1/.", "./l1/."]) {
+    const r = govern(e, ["status", s]);
+    assert.equal(r.code, 0, `status ${s}: ${r.err}`);
+    assert.match(r.out, /^# l1 — /, `status ${s}`);
+  }
+  for (const [s, lane] of [["./l2", "l2"], ["a/./b", "a/b"]]) {
+    const r = govern(e, ["new", s, "--process", "dev"]);
+    assert.equal(r.code, 0, `new ${s}: ${r.err}`);
+    assert.equal(slugOf(lane), lane, `new ${s} stores the lane's own slug`);
+  }
+  const d = govern(e, ["dep", "./l1", "--after", "./l2"]);
+  assert.equal(d.code, 0, d.err);
+  assert.deepEqual(JSON.parse(readFileSync(join(e.projects, "l1", "govern.json"), "utf8")).after, [{ lane: "l2" }]);
+  const loop = govern(e, ["dep", "l2", "--after", "l1"]);
+  assert.equal(loop.code, 2);
+  assert.match(loop.err, /l2 cannot wait on l1: l1 → l2 already waits the other way/);
+  // A govern.json written before slugs were normalized: `govern new ./l3` stored "./l3", `dep --after ./l1` stored "./l1".
+  assert.equal(govern(e, ["new", "l3", "--process", "dev"]).code, 0);
+  const f3 = join(e.projects, "l3", "govern.json");
+  writeFileSync(f3, JSON.stringify({ ...JSON.parse(readFileSync(f3, "utf8")), slug: "./l3", after: [{ lane: "./l1" }] }, null, 2));
+  const s3 = govern(e, ["status", "l3"]);
+  assert.equal(s3.code, 0, s3.err);
+  assert.match(s3.out, /^# l3 — /);
+  const all = govern(e, ["status"]);
+  assert.equal(all.code, 0, all.err);
+  for (const lane of ["a/b", "l1", "l2", "l3"]) assert.match(all.out, new RegExp(`^${lane} +dev`, "m"), all.out);
+  for (const s of [".", "./", "../l1", "l1/..", "a//b", "/l1"]) {
+    const r = govern(e, ["status", s]);
+    assert.equal(r.code, 2, `status ${s}`);
+    assert.ok(r.err.includes(`bad slug: ${s}\n`), `status ${s}: ${r.err}`);
   }
 });

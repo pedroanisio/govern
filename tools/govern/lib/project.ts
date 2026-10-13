@@ -84,11 +84,17 @@ export const stateFile = (slug: string) => join(projectDir(slug), "govern.json")
 export const governDir = (slug: string) => join(projectDir(slug), "govern");
 export const ledgerFile = (slug: string) => join(governDir(slug), "ledger.jsonl");
 
-const badSlug = (slug: string) => slug.split("/").some((p) => p === ".." || p === "") || slug.startsWith("/");
+/** A slug as its lane's folder names it: `.` segments dropped (`./l1`, `l1/.` and `a/./b` are the folders l1, l1 and a/b).
+ *  Null for a slug that is no folder under PROJECTS: a leading "/", a ".." or empty segment, or nothing left (`.`). */
+const laneSlug = (slug: string): string | null => {
+  if (slug.startsWith("/")) return null;
+  const parts = slug.split("/").filter((p) => p !== ".");
+  return parts.length && !parts.some((p) => p === ".." || p === "") ? parts.join("/") : null;
+};
+/** The lane's slug as its folder names it (see laneSlug); a missing or bad slug is a GovernError (exit 2). */
 export function checkSlug(slug: string | undefined): string {
   if (!slug) fail(`missing <slug> (a folder under ${relative(REPO, PROJECTS) || PROJECTS}, e.g. a-millionth-apart or ops/engine)`);
-  if (badSlug(slug!)) fail(`bad slug: ${slug}`);
-  return slug!;
+  return laneSlug(slug!) ?? fail(`bad slug: ${slug}`);
 }
 
 /** A timestamp as nowIso() writes it (an offset is accepted too). */
@@ -111,11 +117,14 @@ const PROJECT = obj(
 /** Parse the text of lane `slug`'s govern.json (`file`): typed, unknown keys refused, then checked against what the types
  *  cannot say: the slug is the lane's folder, the process exists and the kind fits it, the stage and every stage a check
  *  is set for are the process's, and every lane waited on is a valid slug. Every failure is a GovernError naming the
- *  file and the JSON path of the wrong field. */
+ *  file and the JSON path of the wrong field. `slug` is the folder's slug (checkSlug's); a stored slug or lane waited on
+ *  with `.` segments (`./l1`, which `govern new ./l1` and `dep --after ./l1` once stored) names the same folder and is
+ *  returned as the folder's slug. */
 export function parseProject(file: string, text: string, slug: string): Project {
   return parseFile(file, text, (v, at) => {
     const p: Project = PROJECT(v, at);
-    if (p.slug !== slug) reject(`${at}.slug`, `is ${JSON.stringify(p.slug)}, but the lane is ${JSON.stringify(slug)} (its folder)`);
+    if (laneSlug(p.slug) !== slug) reject(`${at}.slug`, `is ${JSON.stringify(p.slug)}, but the lane is ${JSON.stringify(slug)} (its folder)`);
+    p.slug = slug;
     const pname = processName(p);
     const all = processes();
     const pr = all.get(pname) ?? reject(p.process !== undefined ? `${at}.process` : `${at}.kind`, `no process "${pname}" (have: ${[...all.keys()].join(", ")})`);
@@ -124,31 +133,34 @@ export function parseProject(file: string, text: string, slug: string): Project 
     const stages = pr.stages.map((s) => s.name);
     if (!stages.includes(p.stage)) reject(`${at}.stage`, `no stage "${p.stage}" in process ${pr.name}`);
     for (const s of Object.keys(p.checks ?? {})) if (!stages.includes(s)) reject(keyPath(`${at}.checks`, s), `no stage "${s}" in process ${pr.name}`);
-    (p.after ?? []).forEach((x, i) => { if (badSlug(x.lane)) reject(`${at}.after[${i}].lane`, `bad slug: ${x.lane}`); });
+    (p.after ?? []).forEach((x, i) => { x.lane = laneSlug(x.lane) ?? reject(`${at}.after[${i}].lane`, `bad slug: ${x.lane}`); });
     return p;
   });
 }
 
-export function load(slug: string): Project {
-  const f = stateFile(checkSlug(slug));
+export function load(given: string): Project {
+  const slug = checkSlug(given);
+  const f = stateFile(slug);
   if (!existsSync(f)) fail(`${slug}: no govern.json — start it with: govern new ${slug} --process NAME (or --kind long|short|ops) --title "…"`);
   return parseProject(f, readFileSync(f, "utf8"), slug);
 }
 /** Write lane `p`'s govern.json, only after the same parse load() runs (shape and the semantic checks) passes over the
  *  exact text: govern never writes a file it would then refuse to read. A failure is that GovernError, and nothing is
- *  written. */
+ *  written. What is written is that parse's result, so the slugs in it are the folders' (no `.` segments). */
 export function save(p: Project): void {
-  const f = stateFile(checkSlug(p.slug));
-  try { parseProject(f, JSON.stringify(p), p.slug); }
+  const slug = checkSlug(p.slug);
+  const f = stateFile(slug);
+  let q: Project;
+  try { q = parseProject(f, JSON.stringify(p), slug); }
   catch (e) {
     if (e instanceof GovernError) fail(`${e.message} (not saved: govern writes no govern.json it would refuse to read)`, e.code);
     throw e;
   }
-  writeJson(f, p);
+  writeJson(f, q);
 }
 
-export function create(slug: string, o: { kind?: string; process?: string; title?: string; lang?: string; parent?: string }): Project {
-  checkSlug(slug);
+export function create(given: string, o: { kind?: string; process?: string; title?: string; lang?: string; parent?: string }): Project {
+  const slug = checkSlug(given);
   if (existsSync(stateFile(slug))) fail(`${slug}: govern.json already exists`);
   let kind: string, proc: string;
   if (o.process) {
