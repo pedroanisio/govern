@@ -339,3 +339,41 @@ test("a process whose stage requires anything but a check is refused, naming the
   assert.equal(r.code, 2);
   assert.ok(r.err.includes(`${f}: stage b: requires must be "check" (got "note")`), r.err);
 });
+
+test("cmd set and rm are in the ledger, and redefining the command behind the stage's check is flagged until it passes", () => {
+  const e = env();
+  govern(e, ["new", "lib", "--process", "dev"]);
+  govern(e, ["work", "lib", "test"]);
+  assert.match(govern(e, ["cmd", "lib", "test", "--", "sh", "-c", "echo 2 failing; exit 1"]).out, /lib: test = sh -c echo 2 failing; exit 1/);
+  assert.match(govern(e, ["brief", "lib"]).out, /^⚠ command "test" behind the check of stage test changed and has not passed since: none → sh -c echo 2 failing; exit 1$/m);
+  assert.equal(govern(e, ["check", "lib"]).code, 1);
+  // the swap: the check still names "test", and "test" now passes whatever the code does
+  govern(e, ["cmd", "lib", "test", "--timeout", "5", "--", "true"]);
+  assert.match(govern(e, ["brief", "lib"]).out, /^⚠ command "test" behind the check of stage test changed and has not passed since: none → sh -c echo 2 failing; exit 1 → true \(timeout 5s\)$/m, "a failed run does not clear it");
+  assert.match(govern(e, ["cmd", "lib", "--rm", "test"]).out, /lib: removed command test/);
+  assert.match(govern(e, ["brief", "lib"]).out, /: none → sh -c echo 2 failing; exit 1 → true \(timeout 5s\) → \(removed\)$/m);
+  govern(e, ["cmd", "lib", "lint", "--", "true"]);
+  assert.doesNotMatch(govern(e, ["brief", "lib"]).out, /command "lint"/, "a command no check names is ledgered, not flagged");
+  const cmds = ledger(e, "lib").filter((x) => String(x.kind).startsWith("cmd-")).map(({ kind, name, from, to }) => ({ kind, name, from, to }));
+  assert.deepEqual(cmds, [
+    { kind: "cmd-set", name: "test", from: null, to: ["sh", "-c", "echo 2 failing; exit 1"] },
+    { kind: "cmd-set", name: "test", from: ["sh", "-c", "echo 2 failing; exit 1"], to: { argv: ["true"], timeout: 5 } },
+    { kind: "cmd-rm", name: "test", from: { argv: ["true"], timeout: 5 }, to: undefined },
+    { kind: "cmd-set", name: "lint", from: null, to: ["true"] },
+  ]);
+  govern(e, ["cmd", "lib", "test", "--", "sh", "-c", "exit 0"]);
+  assert.equal(govern(e, ["check", "lib"]).code, 0);
+  assert.doesNotMatch(govern(e, ["brief", "lib"]).out, /⚠/, "the check passed after the change");
+
+  // a command redefined before the lane reaches the stage it checks is flagged when the lane gets there
+  govern(e, ["new", "lib2", "--process", "dev"]);
+  govern(e, ["cmd", "lib2", "test", "--", "true"]);
+  assert.doesNotMatch(govern(e, ["brief", "lib2"]).out, /⚠/, "plan has no check");
+  assert.match(govern(e, ["work", "lib2", "test"]).out, /^⚠ command "test" behind the check of stage test changed and has not passed since: none → true$/m);
+  // the command behind a check the lane set itself, for any stage
+  govern(e, ["check", "lib2", "--set", "smoke", "--stage", "review"]);
+  govern(e, ["cmd", "lib2", "smoke", "--", "sh", "-c", "exit 0"]);
+  const r = govern(e, ["work", "lib2", "review"]).out;
+  assert.match(r, /^⚠ the check of stage review changed and has not passed since: none → smoke$/m);
+  assert.match(r, /^⚠ command "smoke" behind the check of stage review changed and has not passed since: none → sh -c exit 0$/m);
+});

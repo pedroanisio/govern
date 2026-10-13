@@ -7,7 +7,7 @@ import { join, dirname, resolve, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
 import { GovernError, fail, parseArgs, opt, nowIso, readJsonl, kTok, clip, type Args } from "./lib/util.ts";
-import { REPO, PROJECTS, stagesOf, load, save, create, stageOf, brief, appendLedger, resolveFile, ledgerFile, projectDir, checkSlug, checkOf, blockedBy, laneState, stateFile, argvOf, type Project, type Command } from "./lib/project.ts";
+import { REPO, PROJECTS, stagesOf, load, save, create, stageOf, brief, appendLedger, resolveFile, ledgerFile, projectDir, checkSlug, checkOf, blockedBy, laneState, stateFile, commandLine, type Project, type Command } from "./lib/project.ts";
 import { processes, getProcess, processOf, listLine, show } from "./lib/process.ts";
 import * as jobs from "./lib/jobs.ts";
 import { ask, readPrompt, PROMPTS } from "./lib/codex.ts";
@@ -32,7 +32,7 @@ start / state
   govern note <slug> "<decision>"          record a decision (state lives in files, not in the chat)
   govern approve <slug> <gate> --quote "<the owner's words>"   (gates come from the lane's process)
   govern done <slug>             end the current work segment
-  govern cmd <slug> [<name> [--timeout S] -- <argv…>] | --rm <name>   list or set the video's commands (S: foreground limit, default 1800)
+  govern cmd <slug> [<name> [--timeout S] -- <argv…>] | --rm <name>   list or set the lane's commands (S: foreground limit, default 1800; ledgered, the brief flags a change behind a check)
   govern file <slug> <name> <path-or-glob>                 name a file (a glob means its newest match)
 
 process: stages, exit checks, gates, dependencies
@@ -297,20 +297,31 @@ function cmdHook(a: Args): void {
   } catch { process.exitCode = 0; }
 }
 
+/** List, set or remove a lane's commands. A set or a removal is ledgered with the command as govern.json stores it
+ *  (an argv array, or {argv, timeout}), because a check is only as good as the command it names: the brief flags a
+ *  change to the command behind the stage's check the same way as a change of the check itself. */
 function cmdCmd(a: Args): void {
   const p = load(a._[1]);
   const rm = opt(a, "rm");
-  if (rm) { delete p.commands[rm]; save(p); return out(`${p.slug}: removed command ${rm}`); }
+  if (rm) {
+    const from = p.commands[rm];
+    delete p.commands[rm];
+    save(p);
+    appendLedger(p.slug, { kind: "cmd-rm", name: rm, from });
+    return out(`${p.slug}: removed command ${rm}`);
+  }
   const name = a._[2];
-  const line = (c: string[] | Command) => `${argvOf(c).join(" ")}${!Array.isArray(c) && c.timeout ? ` (timeout ${c.timeout}s)` : ""}`;
-  if (!name) { for (const [k, v] of Object.entries(p.commands)) out(`${k}: ${line(v)}`); return; }
+  if (!name) { for (const [k, v] of Object.entries(p.commands)) out(`${k}: ${commandLine(v)}`); return; }
   const argv = a._.slice(3);
   if (!argv.length) fail(`give the argv after --: govern cmd ${p.slug} ${name} -- {python} build.py --preview`);
   const t = opt(a, "timeout"), timeout = Number(t);
   if (t !== undefined && !(Number.isFinite(timeout) && timeout > 0)) fail(`--timeout must be a number of seconds: ${t}`);
-  p.commands[name] = t === undefined ? argv : { argv, timeout };
+  const from = p.commands[name] ?? null;
+  const to: string[] | Command = t === undefined ? argv : { argv, timeout };
+  p.commands[name] = to;
   save(p);
-  out(`${p.slug}: ${name} = ${line(p.commands[name])}`);
+  appendLedger(p.slug, { kind: "cmd-set", name, from, to });
+  out(`${p.slug}: ${name} = ${commandLine(to)}`);
 }
 
 function cmdFile(a: Args): void {

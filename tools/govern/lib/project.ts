@@ -46,6 +46,8 @@ export const GATES = ["script", "final", "publish"] as const;
  *  command with the default timeout. */
 export interface Command { argv: string[]; timeout?: number }
 export const argvOf = (c: string[] | Command): string[] => (Array.isArray(c) ? c : c.argv);
+/** A command as one line: its argv, and its own timeout when it has one. */
+export const commandLine = (c: string[] | Command): string => `${argvOf(c).join(" ")}${!Array.isArray(c) && c.timeout ? ` (timeout ${c.timeout}s)` : ""}`;
 
 export interface Approval { at: string; quote: string }
 export interface Note { at: string; stage: string; text: string }
@@ -192,16 +194,23 @@ export function resolveFile(p: Project, name: string): string | undefined {
   return existsSync(f) ? f : undefined;
 }
 
-/** The changes to the current stage's check that no passing run of that check has followed, oldest first.
+type Entry = Record<string, unknown>;
+/** The changes to the current stage's check that no passing run of that check has followed, oldest first: `sets`, the
+ *  check-set entries for the stage, and `cmds`, the cmd-set / cmd-rm entries for the command that now backs its check.
  *  Rule: a change is pending from the moment it is ledgered until a `check` entry for the same stage passes after it.
  *  Where the lane was meanwhile does not matter: leaving the stage and coming back does not clear a change, and a change
  *  made before the lane reached the stage is pending when it gets there. Only a pass vouches for the check as it now is;
  *  a failed run, a new segment or another stage's pass does not. */
-function pendingCheckChanges(p: Project, led: Record<string, unknown>[]): Record<string, unknown>[] {
+function pendingCheckChanges(p: Project, led: Entry[]): { sets: Entry[]; cmds: Entry[] } {
   let passed = -1;
   led.forEach((e, i) => { if (e.kind === "check" && e.stage === p.stage && e.ok === true) passed = i; });
-  return led.filter((e, i) => i > passed && e.kind === "check-set" && e.stage === p.stage);
+  const since = led.slice(passed + 1), chk = checkOf(p);
+  return {
+    sets: since.filter((e) => e.kind === "check-set" && e.stage === p.stage),
+    cmds: chk ? since.filter((e) => (e.kind === "cmd-set" || e.kind === "cmd-rm") && e.name === chk) : [],
+  };
 }
+const shownCommand = (c: unknown) => (c == null ? "none" : commandLine(c as string[] | Command));
 
 /** The compact context an AI session starts from instead of exploring the repo. */
 export function brief(p: Project, o: { notes?: number } = {}): string {
@@ -220,8 +229,9 @@ export function brief(p: Project, o: { notes?: number } = {}): string {
   const chk = checkOf(p);
   if (chk) L.push(`check: command "${chk}"${p.commands[chk] ? "" : ` (not set: govern cmd ${p.slug} ${chk} -- …)`}`);
   const led = readJsonl(ledgerFile(p.slug));
-  const sets = pendingCheckChanges(p, led);
+  const { sets, cmds: cmdChanges } = pendingCheckChanges(p, led);
   if (sets.length) L.push(`⚠ the check of stage ${p.stage} changed and has not passed since: ${[sets[0].from ?? "none", ...sets.map((x) => x.to)].join(" → ")}`);
+  if (cmdChanges.length) L.push(`⚠ command "${chk}" behind the check of stage ${p.stage} changed and has not passed since: ${[shownCommand(cmdChanges[0].from), ...cmdChanges.map((x) => (x.kind === "cmd-rm" ? "(removed)" : shownCommand(x.to)))].join(" → ")}`);
   if (pr.gates.length) L.push(`approvals: ${pr.gates.map((g) => (p.approvals[g.name] ? `${g.name} ✓ ${p.approvals[g.name].at.slice(0, 10)}` : `${g.name} –`)).join(" · ")}`);
   if (p.after?.length) L.push(`after: ${p.after.map(afterMet).map((x) => `${x.label} (${x.met ? "done" : "waiting"})`).join(" · ")}`);
   const files = Object.keys(p.files).map((k) => { const f = resolveFile(p, k); return `${k}=${f ? rel(f) : "(none)"}`; });
