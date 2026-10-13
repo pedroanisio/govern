@@ -1,4 +1,5 @@
 import { after } from "node:test";
+import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -10,7 +11,14 @@ export const GOVERN = join(HERE, "..", "govern.ts");
 export const FAKE = join(HERE, "fake-codex.ts");
 export const fixture = (name: string) => join(HERE, "fixtures", name);
 
-export interface Env { root: string; projects: string; env: Record<string, string> }
+export interface Env { root: string; projects: string; env: { HOME: string; [name: string]: string } }
+
+/** `v`, which the test relies on being there: an index, match group or lookup that came back empty fails the test here,
+ *  naming `what`, rather than as a TypeError further on. */
+export function present<T>(v: T | undefined, what: string): T {
+  if (v === undefined) assert.fail(`expected ${what}, got undefined`);
+  return v;
+}
 
 // Every dir makeEnv or tempDir creates is removed when its test file finishes (a root-level hook of the file importing this).
 const roots: string[] = [];

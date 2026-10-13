@@ -25,6 +25,10 @@ process.stdin.on("end", () => {
     process.stdout.write(line + "\n");
   }
   const oi = argv.indexOf("-o");
-  if (oi >= 0 && last !== undefined) writeFileSync(argv[oi + 1], last);
+  if (oi >= 0 && last !== undefined) {
+    const file = argv[oi + 1];
+    if (file === undefined) throw new Error("fake codex: -o needs a file");
+    writeFileSync(file, last);
+  }
   process.exit(Number(process.env.FAKE_CODEX_EXIT ?? 0));
 });

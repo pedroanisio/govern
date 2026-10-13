@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { readFileSync, readdirSync, existsSync } from "node:fs";
 import { join } from "node:path";
-import { makeEnv, govern, jsonl, write, childEnv, GOVERN } from "./helpers.ts";
+import { makeEnv, govern, jsonl, write, childEnv, present, GOVERN } from "./helpers.ts";
 import { parseStat, procStat, procTable, sleepSync, stamp } from "../lib/util.ts";
 import { signal } from "../lib/jobs.ts";
 
@@ -32,6 +32,8 @@ function pidsIn(f: string, lines: number, ms = 10000): number[] {
   assert.equal(got.length, lines, `${f}: ${got}`);
   return got.map(Number);
 }
+/** The one pid written to `f`. */
+const onePid = (f: string): number => present(pidsIn(f, 1)[0], `${f}: a pid`);
 const NO_PROC = !existsSync("/proc/self/stat") && "these tests read /proc to see which processes are left";
 /** Gone, or a zombie waiting for its reaper. */
 const dead = (pid: number) => { const s = procStat(pid); return !s || s.state === "Z" || s.state === "X"; };
@@ -109,8 +111,9 @@ test("procTable reads the same processes from /proc and from ps: parent, group, 
       assert.notEqual(t.get(sleeper.pid!)?.state, "Z");
       assert.equal(t.get(zombie.pid!)?.state, "Z");
     }
-    assert.equal(tables[0].get(process.pid)?.start, procStat(process.pid)!.start);
-    assert.match(tables[1].get(process.pid)!.start, LSTART);
+    const [fromProc, fromPs] = tables;
+    assert.equal(fromProc?.get(process.pid)?.start, procStat(process.pid)!.start);
+    assert.match(present(fromPs?.get(process.pid), "ps's row for this process").start, LSTART);
   } finally {
     if (prev === undefined) delete process.env.GOVERN_PROC; else process.env.GOVERN_PROC = prev;
     sleeper.kill("SIGKILL");
@@ -366,7 +369,7 @@ test("a foreground job's timeout also stops what left its process tree by double
     const r = govern(e, ["run", slug, "hang"]);
     assert.match(r.out, /· timed out after 1s/);
     assert.doesNotMatch(r.out, /timeout \(timed out/);
-    const [esc] = pidsIn(join(e.projects, slug, "esc"), 1);
+    const esc = onePid(join(e.projects, slug, "esc"));
     pids.push(esc);
     assert.ok(allGone([esc]), `the double-forked sleep must be gone: ${esc}`);
   } finally { cleanup(e, pids); }
@@ -379,7 +382,7 @@ test("kill stops a foreground job's double-forked process too", { skip: NO_PROC 
     govern(e, ["cmd", slug, "hang", "--", "sh", "-c", "(sleep 37 & echo $! > esc); echo $$ > kids; sleep 30"]);
     const g = governBg(e, ["run", slug, "hang"], join(e.root, "run.out"));
     pids.push(g.pid!);
-    const [esc] = pidsIn(join(e.projects, slug, "esc"), 1);
+    const esc = onePid(join(e.projects, slug, "esc"));
     const kids = pidsIn(join(e.projects, slug, "kids"), 1);
     const j = jobWithPid(e, slug);
     pids.push(esc, j.pid, ...kids);
@@ -397,7 +400,7 @@ test("kill stops a background job's grandchild that left its process group with 
   try {
     govern(e, ["cmd", slug, "long", "--", "sh", "-c", "(setsid sleep 38 & echo $! > esc); sleep 30"]);
     govern(e, ["run", slug, "long", "--bg"]);
-    const [esc] = pidsIn(join(e.projects, slug, "esc"), 1);
+    const esc = onePid(join(e.projects, slug, "esc"));
     const j = jobWithPid(e, slug);
     pids.push(esc, j.pid);
     for (const end = Date.now() + 5000; procStat(esc)?.pgrp === j.pgid && Date.now() < end;) sleepSync(20);
@@ -414,7 +417,7 @@ test("a background job whose own process exited but left one running: kill stops
   try {
     govern(e, ["cmd", slug, "spawner", "--", "sh", "-c", "(sleep 39 & echo $! > esc)"]);
     govern(e, ["run", slug, "spawner", "--bg"]);
-    const [esc] = pidsIn(join(e.projects, slug, "esc"), 1);
+    const esc = onePid(join(e.projects, slug, "esc"));
     const j = jobWithPid(e, slug);
     pids.push(esc);
     assert.ok(allGone([j.pid]), "the job's own process exits at once");
@@ -547,7 +550,7 @@ test("a job that runs govern kill on its own lane stops what it started, never t
     const kill = `${process.execPath} --disable-warning=ExperimentalWarning ${GOVERN} kill ${slug}`;
     govern(e, ["cmd", slug, "self", "--", "sh", "-c", `sleep 30 & echo $! > kids; ${kill}; echo kill-exit=$?`]);
     const r = govern(e, ["run", slug, "self"]);
-    const [sib] = pidsIn(join(e.projects, slug, "kids"), 1);
+    const sib = onePid(join(e.projects, slug, "kids"));
     pids.push(sib);
     const j = jobJson(e, slug);
     assert.equal(r.code, 0, r.out + r.err);

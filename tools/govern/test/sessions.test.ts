@@ -4,7 +4,7 @@ import { writeFileSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import { liveSessions, pidChain, resolveAs, parsePpid, isAlive } from "../lib/sessions.ts";
-import { tempDir } from "./helpers.ts";
+import { tempDir, present } from "./helpers.ts";
 
 const deadPid = () => spawnSync("true").pid!; // a pid that has just exited
 function registry(entries: Record<string, unknown>[]) {
@@ -23,7 +23,7 @@ test("liveSessions keeps named sessions whose pid is alive and reads only the re
   ]);
   const s = liveSessions(dir);
   assert.deepEqual(s.map((x) => x.name), ["live-one"]);
-  assert.deepEqual(Object.keys(s[0]).sort(), ["cwd", "kind", "name", "pid", "status"]);
+  assert.deepEqual(Object.keys(present(s[0], "the live session")).sort(), ["cwd", "kind", "name", "pid", "status"]);
   assert.deepEqual(liveSessions(join(dir, "missing")), []);
 });
 

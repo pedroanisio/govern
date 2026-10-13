@@ -4,7 +4,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readdirSync, readFileSync, existsSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { makeEnv, govern, write, HERE, tempDir } from "./helpers.ts";
+import { makeEnv, govern, write, present, HERE, tempDir } from "./helpers.ts";
 import { parseFile, check, obj, arr, record, str, name, posInt, literal } from "../lib/shape.ts";
 import { parseProcess } from "../lib/process.ts";
 import { parseProject } from "../lib/project.ts";
@@ -48,7 +48,7 @@ test("a process file: every key known, every field typed, references resolved", 
     stages: [{ name: "a", exit: "x", check: "lint", requires: "check" }, { name: "b" }],
     gates: [{ name: "g1", stage: "a" }, { name: "g2", stage: "b", needs: ["g1"], message: "m" }],
   }));
-  assert.equal(full.gates[1].needs?.[0], "g1");
+  assert.equal(full.gates[1]?.needs?.[0], "g1");
   assert.deepEqual(parseProcess("/w/p.json", proc({})).gates, [], "gates default to none");
   assert.equal(parseProcess("/w/p.json", proc({})).description, "", "description defaults to empty");
   bad({ colour: "red" }, `$.colour: unknown key "colour"`);
@@ -155,7 +155,7 @@ test("a parse keeps the file's key order, so a load and save does not reorder go
   const reversed = Object.fromEntries(Object.entries(full).reverse());
   const p = parseProject("/p/full/govern.json", JSON.stringify(reversed), "full");
   assert.deepEqual(Object.keys(p), Object.keys(reversed));
-  assert.deepEqual(Object.keys(p.commands.slow), ["timeout", "argv"]);
+  assert.deepEqual(Object.keys(present(p.commands.slow, "the slow command")), ["timeout", "argv"]);
   const e = makeEnv();
   assert.equal(govern(e, ["new", "lane", "--process", "dev"]).code, 0);
   const f = join(e.projects, "lane", "govern.json");
@@ -240,7 +240,7 @@ test("a slug's `.` segments name the same lane, as they did before govern.json w
     assert.equal(r.code, 0, `status ${s}: ${r.err}`);
     assert.match(r.out, /^# l1 — /, `status ${s}`);
   }
-  for (const [s, lane] of [["./l2", "l2"], ["a/./b", "a/b"]]) {
+  for (const [s, lane] of [["./l2", "l2"], ["a/./b", "a/b"]] as const) {
     const r = govern(e, ["new", s, "--process", "dev"]);
     assert.equal(r.code, 0, `new ${s}: ${r.err}`);
     assert.equal(slugOf(lane), lane, `new ${s} stores the lane's own slug`);

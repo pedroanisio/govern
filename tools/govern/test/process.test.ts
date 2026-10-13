@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { mkdirSync, readFileSync, chmodSync } from "node:fs";
 import { join } from "node:path";
-import { makeEnv, govern, write, jsonl, GOVERN, tempDir, parentEnv } from "./helpers.ts";
+import { makeEnv, govern, write, jsonl, present, GOVERN, tempDir, parentEnv } from "./helpers.ts";
 
 const env = () => { const e = makeEnv(); e.env.GOVERN_QUEUE = join(e.root, "queue"); return e; };
 const ledger = (e: ReturnType<typeof makeEnv>, slug: string) => jsonl(join(e.projects, slug, "govern", "ledger.jsonl"));
@@ -144,7 +144,7 @@ test("a runner named in the queue config is dispatched like codex and claude; th
   assert.match(readFileSync(join(e.root, "echo-stdin.txt"), "utf8"), /^You are the "echo" agent of the test queue\./);
   assert.match(readFileSync(join(e.root, "echo-argv.txt"), "utf8"), new RegExp(e.root));
   // a thread that already used maxRuns dispatched runs is stopped and goes to the owner
-  const ack = govern(e, ["task", "list"]).out.match(/(\S+-owner-\w+) open\s+ACK/)![1];
+  const ack = present(govern(e, ["task", "list"]).out.match(/(\S+-owner-\w+) open\s+ACK/)?.[1], "the ACK's id");
   const back = govern(e, ["task", "reply", ack, "--kind", "DECISION", "--summary", "again", "--body", "b"]);
   assert.equal(back.code, 0, back.err);
   const q = JSON.parse(readFileSync(join(e.root, "queue", "config.json"), "utf8")); q.maxRuns = 1;
@@ -224,9 +224,9 @@ test("the prompt states the reply limits, and a reply that fails verification is
   govern(e, ["task", "send", "--to", "echo", "--project", "p", "--task", "t", "--summary", "s"]);
   govern(e, ["task", "dispatch"]);
   assert.match(readFileSync(join(e.root, "echo-stdin.txt"), "utf8"), /"summary": one line of at most 200 characters/);
-  const blocked = govern(e, ["task", "list"]).out.match(/(\S+-owner-\w+) open\s+BLOCKED/)![1];
+  const blocked = present(govern(e, ["task", "list"]).out.match(/(\S+-owner-\w+) open\s+BLOCKED/)?.[1], "the BLOCKED reply's id");
   const shown = govern(e, ["task", "show", blocked]).out;
-  const raw = shown.match(/whole reply: (\S+)/)![1];
+  const raw = present(shown.match(/whole reply: (\S+)/)?.[1], "the whole reply's file");
   assert.match(readFileSync(raw, "utf8"), /TAIL-MARKER/);
 });
 

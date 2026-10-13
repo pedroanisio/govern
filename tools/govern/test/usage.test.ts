@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { join } from "node:path";
-import { makeEnv, govern, jsonl, write } from "./helpers.ts";
+import { makeEnv, govern, jsonl, write, present } from "./helpers.ts";
 import { claudeCalls, behaviour, behaviourText, isPoll, BIG_READ_CHARS } from "../lib/usage.ts";
 
 const u = { input_tokens: 10, cache_read_input_tokens: 1000, cache_creation_input_tokens: 0, output_tokens: 20 };
@@ -79,7 +79,8 @@ test("usage shows tool behaviour per segment and in the total; repeats are count
   const w = Date.now();
   while (Date.now() - w < 20) { /* distinct timestamps */ }
   govern(e, ["work", slug, "script"], { CLAUDE_CODE_SESSION_ID: "S1" });
-  const [t1, t2] = jsonl(join(e.projects, slug, "govern", "ledger.jsonl")).filter((x) => x.kind === "work").map((x) => Date.parse(x.t));
+  const works = jsonl(join(e.projects, slug, "govern", "ledger.jsonl")).filter((x) => x.kind === "work").map((x) => Date.parse(x.t));
+  const t1 = present(works[0], "the first work entry"), t2 = present(works[1], "the second work entry");
   const at = (t: number) => new Date(t).toISOString();
   write(join(e.root, "claude", "-proj", "S1.jsonl"), lines([
     asst(at(t1 - 5000), "m0", [tu("t0", "Agent", { prompt: "before the segment" })]),

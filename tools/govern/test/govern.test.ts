@@ -4,7 +4,7 @@ import { readFileSync, writeFileSync, mkdirSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
-import { makeEnv, govern, childEnv, jsonl, write, reply, fixture, GOVERN, HERE } from "./helpers.ts";
+import { makeEnv, govern, childEnv, jsonl, write, reply, fixture, present, GOVERN, HERE } from "./helpers.ts";
 import { parseEvents, execArgs, validate } from "../lib/codex.ts";
 
 const state = (e: ReturnType<typeof makeEnv>, slug: string) => JSON.parse(readFileSync(join(e.projects, slug, "govern.json"), "utf8"));
@@ -163,7 +163,7 @@ test("ask: verified reply is printed, the prompt is filled, the ledger records u
   assert.equal(r.code, 0, r.err + r.out);
   assert.match(r.out, /codex hooks: 1 call, 1 turns, 20k in \(60% cached\), 300 out/);
   assert.match(r.out, /verified/);
-  const prompt = JSON.parse(readFileSync(join(e.root, "stdin.log"), "utf8").split("\n")[0]);
+  const prompt = JSON.parse(present(readFileSync(join(e.root, "stdin.log"), "utf8").split("\n")[0], "the first prompt sent"));
   assert.match(prompt, /THE SCRIPT BODY/);
   assert.match(prompt, /keep it dry/);
   assert.match(prompt, /# film\/shorts — A Test/);
@@ -182,7 +182,7 @@ test("ask: a reply that breaks a house rule gets one repair with the errors, the
   const r = govern(e, ["ask", slug, "hooks"], { FAKE_CODEX_SCRIPTS: `${reply(e, "bad", bad)},${reply(e, "good", goodHooks)}` });
   assert.equal(r.code, 0, r.out);
   assert.match(r.out, /2 calls/);
-  const second = JSON.parse(readFileSync(join(e.root, "stdin.log"), "utf8").split("\n")[1]);
+  const second = JSON.parse(present(readFileSync(join(e.root, "stdin.log"), "utf8").split("\n")[1], "the second prompt sent"));
   assert.match(second, /failed these checks/);
   assert.match(second, /hooks\[0\]: 12 words/);
   assert.match(second, /banned opening/);
@@ -214,9 +214,9 @@ test("ask: the ledger names the exact prompt sent (promptSha) and the schema cod
   const { e, slug } = video();
   const r = govern(e, ["ask", slug, "hooks", "--var", "direction=keep it dry"], { FAKE_CODEX_SCRIPTS: reply(e, "ok", goodHooks) });
   assert.equal(r.code, 0, r.err + r.out);
-  const [sent] = stdinLog(e);
+  const sent = present(stdinLog(e)[0], "the prompt sent");
   const argv: string[] = jsonl(join(e.root, "argv.log"))[0];
-  const schemaFile = argv[argv.indexOf("--output-schema") + 1];
+  const schemaFile = present(argv[argv.indexOf("--output-schema") + 1], "the --output-schema file");
   const l = ledger(e, slug).find((x) => x.kind === "ask");
   assert.equal(l.promptSha, sha256(sent));
   assert.deepEqual(l.callShas, [sha256(sent)]);
@@ -232,7 +232,7 @@ test("ask: a repair call's input is hashed too; promptSha stays the first call's
   const sent = stdinLog(e);
   assert.equal(sent.length, 2);
   const l = ledger(e, slug).find((x) => x.kind === "ask");
-  assert.equal(l.promptSha, sha256(sent[0]));
+  assert.equal(l.promptSha, sha256(present(sent[0], "the first prompt sent")));
   assert.deepEqual(l.callShas, sent.map(sha256));
 });
 
@@ -243,7 +243,7 @@ test("ask: a step without a schema records no schemaSha", () => {
   const r = govern(e, ["ask", slug, "free"], { GOVERN_PROMPTS: prompts, FAKE_CODEX_SCRIPTS: reply(e, "free", { said: "hi" }) });
   assert.equal(r.code, 0, r.err + r.out);
   const l = ledger(e, slug).find((x) => x.kind === "ask");
-  assert.equal(l.promptSha, sha256(stdinLog(e)[0]));
+  assert.equal(l.promptSha, sha256(present(stdinLog(e)[0], "the prompt sent")));
   assert.equal("schemaSha" in l, false);
   assert.equal(jsonl(join(e.root, "argv.log"))[0].includes("--output-schema"), false);
 });
@@ -337,9 +337,10 @@ test("a new segment in the same session ends the previous one, even in another v
   const t1 = Date.parse(ledger(e, "other").find((x) => x.kind === "work").t);
   claudeTranscript(e, "S3", [asst(new Date(t1 + 1000).toISOString(), "late", 1000, 0)]);
   const out = govern(e, ["usage", slug, "other"]).out;
-  const mine = out.split("## other")[0];
+  const [mine, other] = out.split("## other");
+  assert.ok(mine !== undefined && other !== undefined, out);
   assert.match(mine.split("\n").find((l) => / script claude/.test(l))!, /^\S+ \S+ script claude\s+0 /);
-  assert.match(out.split("## other")[1], /plan claude\s+1 /);
+  assert.match(other, /plan claude\s+1 /);
 });
 
 test("usage reads Codex rollouts by the govern work call and counts deltas once", () => {
@@ -385,7 +386,7 @@ test("ctx reads the session's last call and the footer warns past the limit", ()
 test("publish refuses without approvals and an unfiled package; prints guard-visible commands when ready", () => {
   const { e, slug } = video();
   assert.match(govern(e, ["publish", slug]).err, /no owner approval recorded for: final, publish/);
-  for (const [g, q] of [["script", "ok"], ["final", "aprovado"], ["publish", "pode publicar"]]) govern(e, ["approve", slug, g, "--quote", q]);
+  for (const [g, q] of [["script", "ok"], ["final", "aprovado"], ["publish", "pode publicar"]] as const) govern(e, ["approve", slug, g, "--quote", q]);
   assert.match(govern(e, ["publish", slug]).err, /name the filed package/);
   const pkgs = join(e.root, "PALS-Notes", "packages");
   const zip = write(join(pkgs, "film-1.0.0.vpkg.zip"), "zipbytes");
@@ -409,7 +410,7 @@ test("the shipped prompts all render with a brief and their schemas compile", ()
   const { e, slug } = video();
   mkdirSync(join(e.root, "pals-notes-channel", "writing"), { recursive: true });
   for (const f of ["pals-notes-channel/writing/SCRIPT-STYLE-GUIDE.md", "var/media-business/channels/palsnotes/workflow/script/post-validation/en-US-writing.md", "var/media-business/channels/palsnotes/workflow/script/post-validation/pt-BR-writing.md"]) write(join(e.root, f), "rules");
-  const steps = govern(e, ["prompts"]).out.split("\n").filter(Boolean).map((l) => l.split(/\s+/)[0]);
+  const steps = govern(e, ["prompts"]).out.split("\n").filter(Boolean).map((l) => l.replace(/\s.*/s, ""));
   // The inventory is prompts/*.md; each has its schemas/<name>.json, and schemas/ holds nothing else but the queue's.
   const shipped = readdirSync(join(HERE, "..", "prompts")).filter((f) => f.endsWith(".md")).map((f) => f.slice(0, -3)).sort();
   assert.ok(shipped.length > 0);

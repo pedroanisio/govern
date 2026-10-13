@@ -4,7 +4,7 @@ const require = createRequire(import.meta.url);
 import assert from "node:assert/strict";
 import { readFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
-import { makeEnv, govern, childEnv, jsonl, write, reply, HERE, tempDir } from "./helpers.ts";
+import { makeEnv, govern, childEnv, jsonl, write, reply, present, HERE, tempDir } from "./helpers.ts";
 
 function env() {
   const e = makeEnv();
@@ -33,7 +33,7 @@ test("dispatch runs codex once per message, files the verified reply to the send
   const r = govern(e, ["task", "dispatch"], { FAKE_CODEX_SCRIPTS: reply(e, "ok", answer) });
   assert.equal(r.code, 0, r.err);
   assert.match(r.out, /→ codex: REVIEW in \d+s, 20k in \(60% cached\), 300 out · reply /);
-  const prompt = JSON.parse(readFileSync(join(e.root, "stdin.log"), "utf8").split("\n")[0]);
+  const prompt = JSON.parse(present(readFileSync(join(e.root, "stdin.log"), "utf8").split("\n")[0], "the prompt sent"));
   assert.match(prompt, /BODY-XYZ/);
   assert.match(prompt, /CLAIM-TEXT-123/);
   assert.match(prompt, /this task is read-only/);
@@ -59,7 +59,7 @@ test("an unverified reply fails the message and the sender gets a BLOCKED notice
   const list = govern(e, ["task", "list"]).out;
   assert.match(list, /failed\s+TASK/);
   assert.match(list, /open\s+BLOCKED\s+dispatcher→owner \[film\/check\] codex reply failed verification/);
-  const id = list.split("\n").find((l) => /BLOCKED/.test(l))!.split(" ")[0];
+  const id = present(list.split("\n").find((l) => /BLOCKED/.test(l))?.split(" ")[0], "the BLOCKED reply's id");
   assert.match(govern(e, ["task", "show", id]).out, /reply is not JSON[\s\S]*unverified, not an answer/);
 });
 
@@ -81,7 +81,7 @@ test("--write gives the runner write access; replies thread back to the original
   govern(e, ["task", "dispatch"], { FAKE_CODEX_SCRIPTS: reply(e, "ok", { kind: "HANDOFF", summary: "fixed", body: "changed scene_03.py" }) });
   const argv = jsonl(join(e.root, "argv.log"))[0];
   assert.equal(argv[argv.indexOf("-s") + 1], "workspace-write");
-  const handoff = govern(e, ["task", "list", "--state", "open"]).out.split(" ")[0];
+  const handoff = present(govern(e, ["task", "list", "--state", "open"]).out.split(" ")[0], "the HANDOFF's id");
   const shown = govern(e, ["task", "show", handoff]).out;
   assert.match(shown, /\[TASK\] owner→codex[\s\S]*\[HANDOFF\] codex→owner/);
 });
@@ -122,7 +122,7 @@ function sess(names: string[], dead: string[] = []) {
   return dir;
 }
 const SEND = ["task", "send", "--project", "film", "--task", "check", "--summary", "look at this", "--body", "BODY"];
-const idOf = (out: string) => out.match(/queued (\S+)/)![1];
+const idOf = (out: string) => present(out.match(/queued (\S+)/)?.[1], `a queued id in ${JSON.stringify(out)}`);
 
 test("send checks --to: runners, auto and owner pass; a live session passes with a reminder; unknown or dead names fail listing live names", () => {
   const e = env();
@@ -154,8 +154,8 @@ test("inbox lists the open messages for NAME, oldest first; --all adds closed on
   assert.equal(inbox.code, 0, inbox.err);
   const lines = inbox.out.trim().split("\n");
   assert.equal(lines.length, 2);
-  assert.match(lines[0], new RegExp(`^${a} open\\s+TASK\\s+bob→alice \\[film/check\\] look at this`));
-  assert.ok(lines[1].startsWith(b));
+  assert.match(present(lines[0], "inbox line 1"), new RegExp(`^${a} open\\s+TASK\\s+bob→alice \\[film/check\\] look at this`));
+  assert.ok(present(lines[1], "inbox line 2").startsWith(b));
   assert.equal(govern(e, ["task", "inbox"], { ...S, GOVERN_AS: "alice" }).out, inbox.out);
   govern(e, ["task", "close", a, "--as", "alice"], S);
   assert.equal(govern(e, ["task", "inbox", "--as", "alice"], S).out.trim().split("\n").length, 1);
@@ -220,7 +220,7 @@ test("reply files an answer to the sender, threaded to the original, and closes 
   const list = govern(e, ["task", "list"], S).out;
   assert.match(list, new RegExp(`${id} done`));
   assert.match(list, /open\s+REVIEW\s+alice→bob \[film\/check\] found two/);
-  const rid = list.split("\n").find((l) => /REVIEW/.test(l))!.split(" ")[0];
+  const rid = present(list.split("\n").find((l) => /REVIEW/.test(l))?.split(" ")[0], "the REVIEW's id");
   assert.match(govern(e, ["task", "show", rid]).out, /\[TASK\] bob→alice[\s\S]*\[REVIEW\] alice→bob[\s\S]*FROM-FILE/);
   assert.match(govern(e, ["task", "reply", id, "--as", "alice", "--kind", "ACK", "--summary", "s", "--body", "b"], S).err, /not open/);
 });
@@ -238,7 +238,7 @@ test("forward sends a copy to the right name and closes the original with a note
   const orig = rows.find((l) => l.startsWith(id))!;
   assert.match(orig, /done/);
   const copy = rows.find((l) => /alice→real-e4/.test(l))!;
-  const nid = copy.split(" ")[0];
+  const nid = present(copy.split(" ")[0], "the copy's id");
   assert.match(copy, /open\s+TASK/);
   assert.match(govern(e, ["task", "show", id]).out, new RegExp(`forwarded to real-e4 as ${nid}`));
   const file = JSON.parse(readFileSync(join(e.root, "queue", "open", `${nid}.json`), "utf8"));
@@ -262,10 +262,11 @@ test("inbox --hook prints nothing when empty or unresolved, never fails, and oth
   const r = govern(e, ["task", "inbox", "--hook"], { ...S, GOVERN_AS: "alice" });
   assert.equal(r.code, 0);
   const lines = r.out.trim().split("\n");
-  assert.match(lines[0], /^govern queue: 7 open message\(s\) for alice:/);
   assert.equal(lines.length, 1 + 5 + 1);
-  assert.match(lines[1], /^\s*\S+-alice-\w+ \[TASK\] msg 0/);
-  assert.match(lines[6], /\+2 more/);
+  const [head, first, , , , , more] = lines;
+  assert.match(present(head, "the hook's header"), /^govern queue: 7 open message\(s\) for alice:/);
+  assert.match(present(first, "the hook's first message"), /^\s*\S+-alice-\w+ \[TASK\] msg 0/);
+  assert.match(present(more, "the hook's +M more line"), /\+2 more/);
   // a broken queue still exits 0
   const broken = govern(e, ["task", "inbox", "--hook"], { ...S, GOVERN_AS: "alice", GOVERN_QUEUE: "/proc/nope/x" });
   assert.equal(broken.code, 0);
