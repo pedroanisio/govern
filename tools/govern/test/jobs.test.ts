@@ -451,6 +451,22 @@ test("stopped is an intent, not an outcome: a job marked stopped whose processes
   } finally { cleanup(e, pids); }
 });
 
+test("a stop that finished (job.json has its end) is final: no process table scan, so a stray process carrying its GOVERN_JOB_DIR neither revives it nor gets picked by kill", { skip: NO_PROC }, () => {
+  const { e, slug } = lane();
+  const id = `${stamp()}-x`, dir = join(jobsDir(e, slug), id);
+  const stray = spawn("sleep", ["30"], { detached: true, stdio: "ignore", env: { ...process.env, GOVERN_JOB_DIR: dir } });
+  try {
+    const t = new Date(Date.now() - 5000).toISOString();
+    write(join(dir, "job.json"), JSON.stringify({ id, slug, name: "x", argv: ["sleep", "30"], cwd: e.root, start: t, pid: 2 ** 22 + 1, procStart: "1", bg: true, stopped: "killed", end: new Date().toISOString() }));
+    while (!procStat(stray.pid!)) sleepSync(20);
+    assert.match(govern(e, ["jobs", slug]).out, new RegExp(`${id} killed`));
+    const k = govern(e, ["kill", slug]);
+    assert.notEqual(k.code, 0);
+    assert.match(k.err, /no running job/);
+    assert.ok(!dead(stray.pid!), "kill signalled a process of a job whose stop had finished");
+  } finally { cleanup(e, [stray.pid!]); }
+});
+
 test("a job's end is ledgered once: kill, then wait, then wait again add no second entry", { skip: NO_PROC }, () => {
   const { e, slug } = lane();
   const pids: number[] = [];

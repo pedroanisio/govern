@@ -162,9 +162,13 @@ function marked(snap: Snapshot, dir: string): number[] {
  *  group's members (a background job; also once its leader is gone, since a group id is not reused while the group has
  *  a member), every process marked with its directory, every process in `known` that is still the same process, and
  *  every descendant of those by parent pid. A job whose pid now belongs to another process, or has no start time to
- *  check, contributes neither its pid nor its group. */
-function members(job: Job, dir: string, snap = snapshot(), known: Map<number, string> = new Map()): Map<number, string> {
-  const { live } = snap, out = new Map<number, string>();
+ *  check, contributes neither its pid nor its group. A job whose stop finished (its end is written, which happens only
+ *  once none of its processes was left) has none, without reading the process table: nothing of it can have appeared since. */
+function members(job: Job, dir: string, snap?: Snapshot, known: Map<number, string> = new Map()): Map<number, string> {
+  const out = new Map<number, string>();
+  if (job.end) return out;
+  snap ??= snapshot();
+  const { live } = snap;
   const add = (pid: number) => { const s = live.get(pid); if (s) out.set(pid, s.start); };
   for (const [pid, start] of known) if (live.get(pid)?.start === start) out.set(pid, start);
   const leader = job.pid ? live.get(job.pid) : undefined;
