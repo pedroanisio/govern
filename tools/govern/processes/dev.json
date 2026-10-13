@@ -5,7 +5,7 @@
   "stages": [
     { "name": "plan", "exit": "the change, its tests and its risks are written down" },
     { "name": "build", "exit": "failing tests written first, then the code that makes them pass" },
-    { "name": "test", "exit": "the whole suite passes", "check": "test" },
+    { "name": "test", "exit": "the whole suite passes", "check": "test", "requires": "check" },
     { "name": "review", "exit": "a second agent or the owner has read the diff; findings fixed or answered" },
     { "name": "done", "exit": "committed; pushed only on the owner's go" }
   ],

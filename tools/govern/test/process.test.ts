@@ -229,3 +229,83 @@ test("the prompt states the reply limits, and a reply that fails verification is
   const raw = shown.match(/whole reply: (\S+)/)![1];
   assert.match(readFileSync(raw, "utf8"), /TAIL-MARKER/);
 });
+
+test("check --set is in the ledger, and the brief warns when the current stage's check changed after the lane entered it", () => {
+  const e = env();
+  govern(e, ["new", "lib", "--process", "dev"]);
+  govern(e, ["work", "lib", "test"]);
+  assert.match(govern(e, ["check", "lib", "--set", "true", "--stage", "test"]).out, /lib: stage test checked by "true"/);
+  govern(e, ["check", "lib", "--set", "lint", "--stage", "plan"]);
+  const sets = ledger(e, "lib").filter((x) => x.kind === "check-set").map(({ stage, from, to }) => ({ stage, from, to }));
+  assert.deepEqual(sets, [{ stage: "test", from: "test", to: "true" }, { stage: "plan", from: null, to: "lint" }]);
+  assert.match(govern(e, ["brief", "lib"]).out, /^⚠ the check of stage test changed after the lane entered it: test → true$/m);
+  govern(e, ["work", "lib", "test"]);
+  assert.match(govern(e, ["brief", "lib"]).out, /⚠ the check of stage test changed .*: test → true/, "a new segment on the same stage keeps the warning");
+
+  govern(e, ["new", "ops/x", "--kind", "ops"]);
+  govern(e, ["check", "ops/x", "--set", "smoke", "--stage", "doing"]);
+  govern(e, ["work", "ops/x", "doing"]);
+  assert.doesNotMatch(govern(e, ["brief", "ops/x"]).out, /⚠/, "set before the lane entered the stage");
+  govern(e, ["check", "ops/x", "--set", "other", "--stage", "doing"]);
+  govern(e, ["check", "ops/x", "--set", "smoke", "--stage", "doing"]);
+  assert.match(govern(e, ["brief", "ops/x"]).out, /⚠ the check of stage doing changed after the lane entered it: smoke → other → smoke/);
+});
+
+test("the advance entry says what passed the stage, the check or a note, with the note's words", () => {
+  const e = env();
+  govern(e, ["new", "lib", "--process", "dev"]);
+  govern(e, ["advance", "lib", "--note", "plan agreed in PLAN.md"]);
+  govern(e, ["advance", "lib", "--note", "builds"]);
+  govern(e, ["cmd", "lib", "test", "--", "sh", "-c", "exit 0"]);
+  govern(e, ["advance", "lib", "--note", "suite green"]);
+  govern(e, ["advance", "lib", "--note", "reviewed"]);
+  govern(e, ["advance", "lib", "--note", "released"]);
+  const adv = ledger(e, "lib").filter((x) => x.kind === "advance").map(({ from, to, authority, note, check }) => ({ from, to, authority, note, check }));
+  assert.deepEqual(adv, [
+    { from: "plan", to: "build", authority: "note", note: "plan agreed in PLAN.md", check: undefined },
+    { from: "build", to: "test", authority: "note", note: "builds", check: undefined },
+    { from: "test", to: "review", authority: "check", note: "suite green", check: "test" },
+    { from: "review", to: "done", authority: "note", note: "reviewed", check: undefined },
+    { from: "done", to: "finished", authority: "note", note: "released", check: undefined },
+  ]);
+  govern(e, ["new", "lib2", "--process", "dev"]);
+  govern(e, ["cmd", "lib2", "test", "--", "sh", "-c", "exit 0"]);
+  govern(e, ["work", "lib2", "test"]);
+  govern(e, ["advance", "lib2"]);
+  const last = ledger(e, "lib2").filter((x) => x.kind === "advance").pop();
+  assert.equal(last?.authority, "check");
+  assert.ok(!("note" in last!), "no note given, none recorded");
+});
+
+test("a stage that requires a check cannot be passed on a note or skipped while it has none", () => {
+  const e = env();
+  write(join(e.root, "PALS-Notes", "processes", "strict.json"), JSON.stringify({
+    version: 1, name: "strict", description: "a verified stage",
+    stages: [{ name: "draft" }, { name: "verify", requires: "check" }, { name: "out" }],
+  }));
+  assert.match(govern(e, ["process", "show", "strict"]).out, /2 verify\s+requires a check/);
+  assert.match(govern(e, ["process", "show", "dev"]).out, /3 test\s+.*check: command "test"\s+requires a check/);
+  govern(e, ["new", "s", "--process", "strict"]);
+  const skip = govern(e, ["work", "s", "out"]);
+  assert.equal(skip.code, 2);
+  assert.match(skip.err, /s: cannot skip stage verify: it requires a check and has none \(set one: govern check s --set <command> --stage verify\)/);
+  assert.match(govern(e, ["advance", "s", "--note", "drafted"]).out, /s: draft → verify/);
+  const r = govern(e, ["advance", "s", "--note", "looks fine to me"]);
+  assert.equal(r.code, 2);
+  assert.match(r.err, /s: stage verify requires a check and has none: a note cannot pass it \(set one: govern check s --set <command> --stage verify\)/);
+  assert.match(govern(e, ["status"]).out, /s\s+strict\s+2\/3 verify/);
+  govern(e, ["cmd", "s", "ok", "--", "sh", "-c", "exit 0"]);
+  govern(e, ["check", "s", "--set", "ok", "--stage", "verify"]);
+  assert.match(govern(e, ["advance", "s"]).out, /s: verify → out \(check ok ok\)/);
+  assert.equal(ledger(e, "s").filter((x) => x.kind === "advance").pop()?.authority, "check");
+});
+
+test("a process whose stage requires anything but a check is refused, naming the file and stage", () => {
+  const e = env();
+  const f = write(join(e.root, "PALS-Notes", "processes", "loose.json"), JSON.stringify({
+    version: 1, name: "loose", stages: [{ name: "a" }, { name: "b", requires: "note" }],
+  }));
+  const r = govern(e, ["process", "list"]);
+  assert.equal(r.code, 2);
+  assert.ok(r.err.includes(`${f}: stage b: requires must be "check" (got "note")`), r.err);
+});

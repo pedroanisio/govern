@@ -10,7 +10,8 @@ import { PROJECTS, CONFIG, type Project } from "./project.ts";
 const HERE = dirname(fileURLToPath(import.meta.url));
 const BUILTIN = resolve(HERE, "..", "processes");
 
-export interface StageDef { name: string; exit?: string; check?: string }
+/** `requires: "check"`: only a passing check moves a lane past the stage, never a note, never a skip. */
+export interface StageDef { name: string; exit?: string; check?: string; requires?: "check" }
 export interface GateDef { name: string; stage?: string; needs?: string[]; message?: string }
 export interface Process {
   version: 1;
@@ -35,6 +36,7 @@ function readDir(dir: string): Process[] {
       || (p.gates !== undefined && !Array.isArray(p.gates));
     if (bad) fail(`${join(dir, f)}: a process needs a name and a non-empty stages list of {name}`);
     const names = p.stages.map((s) => s.name);
+    for (const s of p.stages) if (s.requires !== undefined && s.requires !== "check") fail(`${join(dir, f)}: stage ${s.name}: requires must be "check" (got ${JSON.stringify(s.requires)})`);
     for (const g of p.gates ?? []) if (g.stage && !names.includes(g.stage)) fail(`${join(dir, f)}: gate ${g.name} names unknown stage ${g.stage}`);
     return { ...p, description: p.description ?? "", gates: p.gates ?? [] };
   });
@@ -62,7 +64,8 @@ export function listLine(p: Process): string {
 export function show(p: Process): string {
   const L = [`${p.name}: ${p.description}`];
   p.stages.forEach((s, i) => {
-    const bits = [s.exit ? `exit: ${s.exit}` : p.exitFrom === "workflow" ? "exit: from WORKFLOW.md" : "", s.check ? `check: command "${s.check}"` : ""].filter(Boolean);
+    const bits = [s.exit ? `exit: ${s.exit}` : p.exitFrom === "workflow" ? "exit: from WORKFLOW.md" : "", s.check ? `check: command "${s.check}"` : "",
+      s.requires ? "requires a check" : ""].filter(Boolean);
     L.push(`  ${i + 1} ${s.name.padEnd(14)} ${bits.join("  ")}`.trimEnd());
   });
   L.push(p.gates.length ? `gates: ${p.gates.map((g) => `${g.name}${g.stage ? ` (holds ${g.stage})` : ""}${g.needs?.length ? ` after ${g.needs.join(", ")}` : ""}`).join(" · ")}` : "gates: none");

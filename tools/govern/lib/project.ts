@@ -187,6 +187,17 @@ export function resolveFile(p: Project, name: string): string | undefined {
   return existsSync(f) ? f : undefined;
 }
 
+/** The check-set entries for the lane's current stage written since the lane last moved into that stage (by work or
+ *  advance from another stage; a new segment on the same stage does not count), oldest first. */
+function checkSetsSinceEntered(p: Project, led: Record<string, unknown>[]): Record<string, unknown>[] {
+  let at = stagesOf(p)[0], entered = -1;
+  led.forEach((e, i) => {
+    const to = e.kind === "advance" ? e.to : e.kind === "work" ? e.stage : undefined;
+    if (typeof to === "string" && to !== "finished" && to !== at) { at = to; entered = i; }
+  });
+  return led.filter((e, i) => i > entered && e.kind === "check-set" && e.stage === p.stage);
+}
+
 /** The compact context an AI session starts from instead of exploring the repo. */
 export function brief(p: Project, o: { notes?: number } = {}): string {
   const dir = projectDir(p.slug);
@@ -203,13 +214,16 @@ export function brief(p: Project, o: { notes?: number } = {}): string {
   if (ex) L.push(`exit when: ${ex}`);
   const chk = checkOf(p);
   if (chk) L.push(`check: command "${chk}"${p.commands[chk] ? "" : ` (not set: govern cmd ${p.slug} ${chk} -- …)`}`);
+  const led = readJsonl(ledgerFile(p.slug));
+  const sets = checkSetsSinceEntered(p, led);
+  if (sets.length) L.push(`⚠ the check of stage ${p.stage} changed after the lane entered it: ${[sets[0].from ?? "none", ...sets.map((x) => x.to)].join(" → ")}`);
   if (pr.gates.length) L.push(`approvals: ${pr.gates.map((g) => (p.approvals[g.name] ? `${g.name} ✓ ${p.approvals[g.name].at.slice(0, 10)}` : `${g.name} –`)).join(" · ")}`);
   if (p.after?.length) L.push(`after: ${p.after.map(afterMet).map((x) => `${x.label} (${x.met ? "done" : "waiting"})`).join(" · ")}`);
   const files = Object.keys(p.files).map((k) => { const f = resolveFile(p, k); return `${k}=${f ? rel(f) : "(none)"}`; });
   if (files.length) L.push(`files: ${files.join(" · ")}`);
   const cmds = Object.keys(p.commands);
   L.push(`commands: ${cmds.length ? cmds.join(", ") : "(none — add with govern cmd)"}`);
-  const jobs = readJsonl(ledgerFile(p.slug)).filter((e) => e.kind === "job").slice(-3);
+  const jobs = led.filter((e) => e.kind === "job").slice(-3);
   if (jobs.length) L.push(`last jobs: ${jobs.map((j) => `${j.id} ${j.status ?? "started"}${j.exit != null ? ` exit ${j.exit}` : ""}`).join(" · ")}`);
   const notes = p.notes.slice(-(o.notes ?? 8));
   if (notes.length) {

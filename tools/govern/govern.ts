@@ -37,8 +37,8 @@ start / state
 
 process: stages, exit checks, gates, dependencies
   govern process list  ·  govern process show <name>      built-in and workspace processes (processes/*.json)
-  govern check <slug> [--set <command> --stage <stage>]   run the stage's exit check (or set the lane's own)
-  govern advance <slug> [--note "<evidence>"]             next stage: needs the check to pass (or --note when none) and the gate
+  govern check <slug> [--set <command> --stage <stage>]   run the stage's exit check (or set the lane's own: ledgered, the brief flags it)
+  govern advance <slug> [--note "<evidence>"]             next stage: needs the check to pass (or --note when none and none is required) and the gate
   govern dep <slug> [--after <lane>[:<stage>]] [--rm <lane>]   this lane waits on another (all of it, or past a stage)
   govern hook stop               Claude Code Stop hook: keeps a session on its lane until the stage's check passes (3 tries)
 
@@ -95,8 +95,12 @@ function engineOf(a: Args): "claude" | "codex" {
   return e as "claude" | "codex";
 }
 
+/** Whether the process lets only a passing check move the lane past `stage` (no note, no skip). */
+const requiresCheck = (p: Project, stage: string) => processOf(p).stages.find((s) => s.name === stage)?.requires === "check";
+const setCheckHint = (p: Project, stage: string) => `set one: govern check ${p.slug} --set <command> --stage ${stage}`;
+
 /** Moving forward skips stages, so each skipped stage must be passable the way advance would pass it: not while
- *  blocked, a passing check where the stage has one, and no open gate. Going back, or staying, is always allowed. */
+ *  blocked, a passing check where the stage has one (or requires one), and no open gate. Going back, or staying, is always allowed. */
 function passSkipped(p: Project, to: string): void {
   const list = stagesOf(p);
   const from = list.indexOf(p.stage), target = list.indexOf(to);
@@ -108,7 +112,7 @@ function passSkipped(p: Project, to: string): void {
     if (chk) {
       const r = runCheck(p, chk, s);
       if (!r.ok) fail(`${p.slug}: cannot skip stage ${s}: check ${chk} failed (exit ${r.exit})\n${r.text}\nnext: fix it, then govern advance ${p.slug}`);
-    }
+    } else if (requiresCheck(p, s)) fail(`${p.slug}: cannot skip stage ${s}: it requires a check and has none (${setCheckHint(p, s)})`);
     const gate = processOf(p).gates.find((g) => g.stage === s && !p.approvals[g.name]);
     if (gate) fail(`${p.slug}: cannot skip stage ${s}: needs the owner's ${gate.name} approval (govern approve ${p.slug} ${gate.name} --quote "…")`);
   }
@@ -179,8 +183,10 @@ function cmdCheck(a: Args): void {
   const set = opt(a, "set");
   if (set) {
     const stage = stageOf(opt(a, "stage") ?? p.stage, p);
+    const from = checkOf(p, stage) ?? null;
     p.checks = { ...(p.checks ?? {}), [stage]: set };
     save(p);
+    appendLedger(p.slug, { kind: "check-set", stage, from, to: set });
     return out(`${p.slug}: stage ${stage} checked by "${set}"${p.commands[set] ? "" : ` (name it: govern cmd ${p.slug} ${set} -- …)`}`);
   }
   const name = checkOf(p);
@@ -190,7 +196,8 @@ function cmdCheck(a: Args): void {
   if (!r.ok) process.exitCode = 1;
 }
 
-/** Move the lane to its next stage: not while blocked, only with a passing check (or evidence when none), never past an open gate. */
+/** Move the lane to its next stage: not while blocked, only with a passing check (or evidence when none and none is
+ *  required), never past an open gate. The ledger entry records which of the two passed it, and the note. */
 function cmdAdvance(a: Args): void {
   const p = load(a._[1]);
   const b = blockedBy(p);
@@ -201,21 +208,23 @@ function cmdAdvance(a: Args): void {
   if (chk) {
     const r = runCheck(p, chk);
     if (!r.ok) fail(`${p.slug}: check ${chk} failed (exit ${r.exit})\n${r.text}`);
-  } else if (!note) fail(`${p.slug}: stage ${p.stage} has no check: give the evidence with --note "…"`);
+  } else if (requiresCheck(p, p.stage)) fail(`${p.slug}: stage ${p.stage} requires a check and has none: a note cannot pass it (${setCheckHint(p, p.stage)})`);
+  else if (!note) fail(`${p.slug}: stage ${p.stage} has no check: give the evidence with --note "…"`);
   const gate = processOf(p).gates.find((g) => g.stage === p.stage && !p.approvals[g.name]);
   if (gate) fail(`${p.slug}: needs the owner's ${gate.name} approval (govern approve ${p.slug} ${gate.name} --quote "…")`);
   const list = stagesOf(p);
   const from = p.stage, i = list.indexOf(from);
+  const passed = { authority: chk ? "check" : "note", ...(chk ? { check: chk } : {}), ...(note ? { note } : {}) };
   if (note) p.notes.push({ at: nowIso(), stage: from, text: note });
   if (i === list.length - 1) {
     p.finished = nowIso();
     save(p);
-    appendLedger(p.slug, { kind: "advance", from, to: "finished", ...(chk ? { check: chk } : {}) });
+    appendLedger(p.slug, { kind: "advance", from, to: "finished", ...passed });
     return out(`${p.slug}: ${from} was the last stage — lane finished`);
   }
   p.stage = list[i + 1];
   save(p);
-  appendLedger(p.slug, { kind: "advance", from, to: p.stage, ...(chk ? { check: chk } : {}) });
+  appendLedger(p.slug, { kind: "advance", from, to: p.stage, ...passed });
   out(`${p.slug}: ${from} → ${p.stage}${chk ? ` (check ${chk} ok)` : ""}`);
 }
 
