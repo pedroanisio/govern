@@ -2,7 +2,7 @@
 // field, a key govern does not know is refused, and every failure names the file and the JSON path of the wrong field.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readdirSync, readFileSync } from "node:fs";
+import { readdirSync, readFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { makeEnv, govern, write, HERE, tempDir } from "./helpers.ts";
 import { parseFile, check, obj, arr, record, str, name, posInt, literal } from "../lib/shape.ts";
@@ -163,6 +163,19 @@ test("a parse keeps the file's key order, so a load and save does not reorder go
   write(f, JSON.stringify(Object.fromEntries(Object.entries(JSON.parse(readFileSync(f, "utf8"))).reverse()), null, 2) + "\n");
   assert.equal(govern(e, ["note", "lane", "kept in order"]).code, 0);
   assert.deepEqual(Object.keys(JSON.parse(readFileSync(f, "utf8"))), order, "a save writes the keys in the order the file had them");
+});
+
+test("save never writes a govern.json that load would refuse: an empty --lang exits 2 and writes nothing", () => {
+  const e = makeEnv();
+  const r = govern(e, ["new", "l9", "--kind", "long", "--lang="]);
+  assert.equal(r.code, 2, r.err);
+  const f = join(e.projects, "l9", "govern.json");
+  assert.match(r.err, /\$\.lang: must be a non-empty string \(got ""\)/);
+  assert.ok(r.err.includes(f), r.err);
+  assert.equal(existsSync(f), false, "no govern.json");
+  assert.equal(existsSync(join(e.projects, "l9")), false, "no lane folder either");
+  assert.equal(govern(e, ["status"]).code, 0, "status still works");
+  assert.equal(govern(e, ["new", "l9", "--kind", "long", "--lang=pt"]).code, 0, "the lane can then be made");
 });
 
 test("a bad govern.json stops the commands that read it with exit 2, naming the file and the path", () => {

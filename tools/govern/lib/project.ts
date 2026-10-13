@@ -2,7 +2,7 @@
 import { existsSync, readFileSync, appendFileSync, mkdirSync } from "node:fs";
 import { join, dirname, resolve, relative } from "node:path";
 import { fileURLToPath } from "node:url";
-import { fail, readJson, writeJson, nowIso, latest, plain, clip, readJsonl } from "./util.ts";
+import { GovernError, fail, readJson, writeJson, nowIso, latest, plain, clip, readJsonl } from "./util.ts";
 import { getProcess, processOf, processes, processName } from "./process.ts";
 import { obj, arr, record, str, name, posInt, literal, parseFile, reject, keyPath, type Shape } from "./shape.ts";
 
@@ -134,7 +134,18 @@ export function load(slug: string): Project {
   if (!existsSync(f)) fail(`${slug}: no govern.json — start it with: govern new ${slug} --process NAME (or --kind long|short|ops) --title "…"`);
   return parseProject(f, readFileSync(f, "utf8"), slug);
 }
-export const save = (p: Project) => writeJson(stateFile(p.slug), p);
+/** Write lane `p`'s govern.json, only after the same parse load() runs (shape and the semantic checks) passes over the
+ *  exact text: govern never writes a file it would then refuse to read. A failure is that GovernError, and nothing is
+ *  written. */
+export function save(p: Project): void {
+  const f = stateFile(checkSlug(p.slug));
+  try { parseProject(f, JSON.stringify(p), p.slug); }
+  catch (e) {
+    if (e instanceof GovernError) fail(`${e.message} (not saved: govern writes no govern.json it would refuse to read)`, e.code);
+    throw e;
+  }
+  writeJson(f, p);
+}
 
 export function create(slug: string, o: { kind?: string; process?: string; title?: string; lang?: string; parent?: string }): Project {
   checkSlug(slug);
@@ -153,7 +164,6 @@ export function create(slug: string, o: { kind?: string; process?: string; title
     proc = kind === "ops" ? "ops" : "video";
   }
   const dir = projectDir(slug);
-  mkdirSync(dir, { recursive: true });
   const commands: Record<string, string[]> = {};
   const files: Record<string, string> = {};
   if (proc === "video") {
