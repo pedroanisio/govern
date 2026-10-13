@@ -3,7 +3,8 @@
 import { existsSync, readFileSync, globSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { readJsonl, kTok, clip } from "./util.ts";
-import { PROJECTS, GATES, ledgerFile, stagesOf, type Project } from "./project.ts";
+import { PROJECTS, ledgerFile, stagesOf, laneState, type Project } from "./project.ts";
+import { processOf } from "./process.ts";
 import * as queue from "./queue.ts";
 import { tuningState } from "./tune.ts";
 
@@ -33,10 +34,12 @@ export function desk(): string {
     const led = readJsonl(ledgerFile(s));
     const lastWork = [...led].reverse().find((e) => e.kind === "work" || e.kind === "done");
     const open = lastWork?.kind === "work" ? `● ${lastWork.engine} ${ago(lastWork.t)}` : "";
-    const gate = p.kind === "ops" ? "" : (() => { const g = GATES.find((x) => !p.approvals[x]); return g ? `needs ${g}` : "all approved"; })();
+    const gates = processOf(p).gates;
+    const gate = !gates.length ? "" : (() => { const g = gates.find((x) => !p.approvals[x.name]); return g ? `needs ${g.name}` : "all approved"; })();
     const note = p.notes.at(-1);
-    const list = stagesOf(p.kind);
-    L.push(`  ${s.padEnd(40)} ${p.kind.padEnd(5)} ${`${list.indexOf(p.stage) + 1}/${list.length} ${p.stage}`.padEnd(16)} ${gate.padEnd(13)} ${open.padEnd(14)} ${note ? `${ago(note.at)}: ${clip(note.text, 60)}` : ""}`);
+    const list = stagesOf(p);
+    const state = laneState(p);
+    L.push(`  ${s.padEnd(40)} ${p.kind.padEnd(5)} ${`${list.indexOf(p.stage) + 1}/${list.length} ${p.stage}`.padEnd(16)} ${gate.padEnd(13)} ${open.padEnd(14)} ${state ? `${state} · ` : ""}${note ? `${ago(note.at)}: ${clip(note.text, 60)}` : ""}`.trimEnd());
   }
   // ---- owner inbox
   const msgs = queue.all();
@@ -46,7 +49,8 @@ export function desk(): string {
   // ---- queue
   const count = (state: string, to?: string) => msgs.filter((x) => x.state === state && (!to || x.m.to === to)).length;
   L.push("", tuningState());
-  L.push("", `QUEUE  codex: ${count("open", "codex")} waiting, ${count("claimed", "codex")} running · claude: ${count("open", "claude")} waiting, ${count("claimed", "claude")} running · failed: ${count("failed")} · ${dispatcherState()}`);
+  const perRunner = queue.runners().map((r) => `${r}: ${count("open", r)} waiting, ${count("claimed", r)} running`);
+  L.push("", `QUEUE  ${perRunner.join(" · ")} · failed: ${count("failed")} · ${dispatcherState()}`);
   // ---- tokens today (queue runs and codex asks; chat sessions: govern usage)
   const byLane = new Map<string, { calls: number; input: number; output: number; usd: number }>();
   const add = (lane: string, u: any, calls = 1) => {

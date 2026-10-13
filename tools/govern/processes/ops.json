@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "name": "ops",
+  "description": "operations work with no owner gates: engine, lab, docs, channel set-up",
+  "stages": [
+    { "name": "plan", "exit": "the change and how to check it are written down" },
+    { "name": "doing", "exit": "the change is made and its check passes" },
+    { "name": "review", "exit": "someone other than the author has read the change" },
+    { "name": "done" }
+  ],
+  "gates": []
+}

@@ -1,6 +1,6 @@
 ---
 name: govern
-description: Work on a PALS Notes video (script, sound, preview, fixes, metadata, publishing) with the owner through the govern CLI, at a fraction of the tokens. Use whenever the conversation is about making, changing, checking or publishing a specific video or Short.
+description: Work on a PALS Notes video (script, sound, preview, fixes, metadata, publishing), or any other lane of agent work (software, ops, govern itself) that follows a process, through the govern CLI at a fraction of the tokens. Use whenever the conversation is about making, changing, checking or publishing a specific video or Short, or about moving a govern lane through its stages.
 ---
 
 # Working on a video with govern
@@ -18,7 +18,7 @@ The rules below remove those four.
 The owner's one screen is `govern desk`: every lane (videos and `ops/*` work), their inbox, the queue and today's tokens. One session works one lane; the other lanes wait in their files, not in open chat tabs.
 
 1. `govern status` lists the videos. If the video is not there, run `govern new <slug> --kind long|short --title "…" --lang en|pt-BR [--parent <film>]`. The slug is its folder under `PALS-Notes/projects/`, for example `a-millionth-apart/shorts`.
-2. `govern work <slug> <stage>`. For a video, stage is one of plan, script, script-check, sound, preview, produce, final or deliver. For an `ops` lane (engine, lab, docs, channel set-up), it is plan, doing, review or done. This opens a measured work segment and prints the **brief**:
+2. `govern work <slug> <stage>`. For a video, stage is one of plan, script, script-check, sound, preview, produce, final or deliver. For an `ops` lane (engine, lab, docs, channel set-up), it is plan, doing, review or done. Other lanes use their process's stages (`govern process show <name>`). This opens a measured work segment and prints the **brief**:
    - stage and exit condition;
    - approvals;
    - named files;
@@ -31,6 +31,19 @@ The owner's one screen is `govern desk`: every lane (videos and `ops/*` work), t
    - `govern cmd <slug> preview -- {python} build_short1.py --preview`. Placeholders: `{python}`, `{repo}`, `{dir}`.
    - `govern file <slug> script short-1.screenplay.json`
    - `govern file <slug> sheet "renders/**/*sheet*.png"`. A glob means its newest match.
+
+## Any process, any group of agents
+
+govern is not tied to video. A lane follows a **process**: stages, the exit condition of each, the command that checks it, and the owner's gates.
+
+- `govern process list` shows them; built in are `video`, `ops` and `dev` (plan → build → test → review → done). `govern process show <name>` prints the stages, checks and gates. A workspace adds its own as JSON in its processes folder; a file with a built-in's name overrides it.
+- `govern new <slug> --process dev --title "…"` starts a lane on that process. A folder with a `govern.config.json` (`{"projects", "queue", "processes"}`) is its own workspace, so a different team or project runs govern without PALS Notes.
+- **Exit checks.** A stage whose process names a check (dev's test stage checks `test`) is done only when that command passes: `govern cmd <slug> test -- <command>` names it once, and `govern check <slug> --set <cmd> --stage <stage>` points any other stage at a command. `govern check <slug>` runs the check now.
+- **Advance.** `govern advance <slug>` runs the stage's check and moves on only if it passes, no owner gate holds the stage and no lane it waits on is behind. A stage with no check needs `--note "<evidence>"`. `govern work <slug> <later stage>` holds every skipped stage to the same rules and refuses otherwise; going back to rework a stage is always allowed. Never edit govern.json to skip a stage.
+- **Dependencies.** `govern dep <slug> --after <lane>[:<stage>]`. `govern status` and the desk show each lane as ready or blocked, and on what. A dependency that would close a cycle is refused.
+- **Stop hook.** `govern hook stop` runs as a Claude Code Stop hook. While this session's lane has a failing check, it refuses the stop and prints the failure and the next command (at most 3 times per work segment). Fix the cause, don't argue with the hook.
+- **Runners.** The queue's `config.json` can add runners beside codex and claude (`"runners": {NAME: {"argv": [...], "format": "text"|"json-result"}}`) and caps a thread at `maxRuns` (default 4), after which it goes to the owner as BLOCKED.
+- govern improves itself this way: its own work runs as the `ops/govern` lane on the `dev` process, with the govern test suite as the test check.
 
 ## The loop
 
@@ -74,7 +87,7 @@ Do not message other sessions, and do not start subagents. Put the request in th
 govern task send --to codex|claude|<session> --project <slug> --task <name> --kind TASK --summary "…" --body "…" --file <repo-relative path>
 ```
 
-- `govern task dispatch`, or the timer `govern task dispatch --loop`, starts one fresh headless session per message: `codex exec` or `claude -p` (Sonnet). The session gets only the message, its thread and the named files. The reply is verified JSON (ACK, REVIEW, HANDOFF, BLOCKED…) and is filed back to the sender. A reply that fails verification becomes a BLOCKED notice from the dispatcher, never an answer.
+- `govern task dispatch`, or the timer `govern task dispatch --loop`, starts one fresh headless session per message: `codex exec` or `claude -p` (Sonnet). The session gets only the message, its thread and the named files. The reply is verified JSON (ACK, REVIEW, HANDOFF, BLOCKED…) and is filed back to the sender. A reply that fails verification becomes a BLOCKED notice from the dispatcher, never an answer; the whole reply is kept in the file the notice names (`whole reply: …`), so read it there instead of re-running the task.
 - Nothing runs while the queue waits. Read replies with `govern task list --to <you>` and `govern task show <id>`, once, when the owner asks or the work needs them, not in a loop.
 - `--to` must be `codex`, `claude`, `auto`, `owner` or the name of a live Claude Code session (`~/.claude/sessions`); an unknown or dead name fails and lists the live ones. **Sessions are not woken by the queue** (the dispatcher runs only codex and claude): after sending to one, also tell it `govern task show <id>` with SendMessage.
 - Your own mail: `govern task inbox` (open messages for you; `--all` adds closed). Answer with `govern task reply <id> --kind ACK|REVIEW|HANDOFF|... --summary … --body …` (files the reply to the sender and closes the original), `govern task close <id> --note …` when nothing needs saying, `govern task forward <id> --to <name>` when it went to the wrong name. Your name is `GOVERN_AS`, else found from your process tree; pass `--as NAME` if neither works. `govern task inbox --hook` prints a short block only when mail waits, for a UserPromptSubmit/SessionStart hook.
@@ -84,7 +97,7 @@ govern task send --to codex|claude|<session> --project <slug> --task <name> --ki
 
 ## The owner's gates
 
-- **Approvals** come only from the owner's own words. Record them verbatim: `govern approve <slug> script|final|publish --quote "<exactly what the owner said>"`. Never infer an approval, and never approve for the owner.
+- **Approvals** come only from the owner's own words. Record them verbatim: `govern approve <slug> <gate> --quote "<exactly what the owner said>"`. Never infer an approval, and never approve for the owner.
 - **The owner sees complete drafts,** not intermediate passes. State the farm pass cost and the film's total when you deliver.
 - **Publish.** `govern publish <slug>` checks the approvals and the filed package, then prints the smm commands. Run those printed commands through Bash, unchanged, so the publish guard sees them. Only do this after the owner's go in this session.
 

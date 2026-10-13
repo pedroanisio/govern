@@ -1,0 +1,16 @@
+{
+  "version": 1,
+  "name": "video",
+  "description": "a PALS Notes video, idea to published (exit conditions from WORKFLOW.md)",
+  "kinds": ["long", "short"],
+  "exitFrom": "workflow",
+  "stages": [
+    { "name": "plan" }, { "name": "script" }, { "name": "script-check" }, { "name": "sound" },
+    { "name": "preview" }, { "name": "produce" }, { "name": "final" }, { "name": "deliver" }
+  ],
+  "gates": [
+    { "name": "script", "stage": "script-check" },
+    { "name": "final", "stage": "final", "needs": ["script"], "message": "no script approval recorded yet" },
+    { "name": "publish", "stage": "deliver", "needs": ["final"], "message": "no final-cut approval recorded yet" }
+  ]
+}

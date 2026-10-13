@@ -9,15 +9,33 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, writeFile
 import { join, resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { fail, stamp, nowIso, clip } from "./util.ts";
-import { REPO, PROJECTS } from "./project.ts";
+import { REPO, PROJECTS, CONFIG } from "./project.ts";
 import { parseEvents, execArgs, validate, type Usage } from "./codex.ts";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
-export const QUEUE = () => process.env.GOVERN_QUEUE ?? join(REPO, "PALS-Notes", "queue");
+export const QUEUE = () => process.env.GOVERN_QUEUE ?? CONFIG.queue ?? join(REPO, "PALS-Notes", "queue");
 export const KINDS = ["TASK", "ACK", "PROGRESS", "BLOCKED", "HANDOFF", "REVIEW", "DECISION", "NOTICE"] as const;
 export const REPLY_KINDS = ["ACK", "PROGRESS", "BLOCKED", "HANDOFF", "REVIEW", "DECISION", "NOTICE"] as const;
+/** Agents the dispatcher always knows. A workspace adds its own in the queue's config.json (`runners`). */
+export const BUILTIN_RUNNERS = ["codex", "claude"] as const;
+/** A runner named in config.json: any command that reads the prompt on stdin and prints the reply.
+ *  `{repo}` and `{dir}` (the project folder) are expanded in argv. format "text": stdout is the reply;
+ *  "json-result": stdout is a `claude -p --output-format json` result. */
+export interface RunnerDef { argv: string[]; format?: "text" | "json-result" }
+export interface QueueConfig {
+  /** How the prompt names the queue ("the PALS Notes production queue"). */
+  name?: string;
+  /** Dispatched runs one thread may use before it goes to the owner instead (default 4): a stop for agent ping-pong. */
+  maxRuns?: number;
+  runners?: Record<string, RunnerDef>;
+}
+export function config(): QueueConfig {
+  const f = join(QUEUE(), "config.json");
+  if (!existsSync(f)) return {};
+  try { return JSON.parse(readFileSync(f, "utf8")); } catch (e) { return fail(`${f}: not JSON (${(e as Error).message})`); }
+}
 /** Agents the dispatcher can run. Anyone else (owner, a named session) only reads the queue. */
-export const RUNNERS = ["codex", "claude"] as const;
+export const runners = (): string[] => [...BUILTIN_RUNNERS, ...Object.keys(config().runners ?? {})];
 const STATES = ["open", "claimed", "done", "failed"] as const;
 type State = (typeof STATES)[number];
 
@@ -129,18 +147,20 @@ export function prompt(m: Message): string {
   });
   const brief = existsSync(join(PROJECTS, m.project, "govern.json")) ? `The project has a govern brief: run \`govern brief ${m.project}\` if you need its stage and decisions.\n` : "";
   return [
-    `You are the "${m.to}" agent of the PALS Notes production queue. You get one message, do what it asks, and answer once.`,
+    `You are the "${m.to}" agent of ${config().name ?? "the govern task queue"}. You get one message, do what it asks, and answer once.`,
     `Work only on what the message asks. ${m.access === "write" ? `You may change files under ${join(PROJECTS, m.project)} only.` : "Do not change any file: this task is read-only."}`,
     "Do not start other agents, do not message other sessions, do not publish anything. Facts must come from files you open; say what you could not verify.",
     brief,
     `Thread (oldest first):`,
     ...t.map((x) => `--- ${x.id} [${x.kind}] from ${x.from} to ${x.to}: ${x.summary}\n${x.body}`),
     files.length ? `Files named by the message:\n${files.join("\n")}` : "",
-    `Answer with JSON only: {"kind": one of ${REPLY_KINDS.join("|")}, "summary": one line, "body": the full answer}. Use BLOCKED when you cannot do it, saying exactly what is missing.`,
+    `Answer with JSON only: {"kind": one of ${REPLY_KINDS.join("|")}, "summary": one line of at most ${SUMMARY_MAX} characters, "body": the full answer}. Use BLOCKED when you cannot do it, saying exactly what is missing.`,
   ].filter(Boolean).join("\n");
 }
 
 const REPLY_SCHEMA = resolve(HERE, "..", "schemas", "queue-reply.json");
+/** The summary limit, read from the schema so the prompt states exactly what verification enforces. */
+const SUMMARY_MAX: number = JSON.parse(readFileSync(REPLY_SCHEMA, "utf8")).properties.summary.maxLength;
 
 /**
  * ⚠ ARCHITECTURAL CONTRACT (PALS's LAW) — LLM OUTPUT IS UNVERIFIED BY DEFAULT
@@ -157,6 +177,14 @@ const REPLY_SCHEMA = resolve(HERE, "..", "schemas", "queue-reply.json");
  * Here: the reply must parse as JSON and match queue-reply.json; otherwise the message is failed and the
  * sender gets a BLOCKED notice from the dispatcher, never the agent's unverified text as an answer.
  */
+/** A reply that failed verification is kept whole beside the failed message, so a long paid answer is never lost to the clip. */
+function keepRaw(m: Message, text: string | undefined): string {
+  const f = join(QUEUE(), "failed", `${m.id}.reply.txt`);
+  mkdirSync(dirname(f), { recursive: true });
+  writeFileSync(f, String(text ?? ""));
+  return f;
+}
+
 export function parseReply(text: string | undefined): { kind: string; summary: string; body: string } | { error: string } {
   if (!text) return { error: "empty reply" };
   let v: any;
@@ -190,25 +218,60 @@ function runClaude(m: Message, p: string, timeoutSec: number): RunOut {
   if (m.access === "write") args.push("--permission-mode", "acceptEdits");
   else args.push("--allowedTools", "Read,Grep,Glob");
   const r = spawnSync(process.env.GOVERN_CLAUDE_BIN ?? "claude", args, { cwd, input: p, encoding: "utf8", timeout: timeoutSec * 1000, maxBuffer: 64 << 20, env: childEnv() });
+  const o = claudeResult(r.stdout, r.status, r.stderr, r.error);
+  return o.error ? { ...o, error: `claude: ${o.error}` } : o;
+}
+
+function claudeResult(stdout: string | undefined, status: number | null, stderr: string | undefined, error?: Error): RunOut {
   let o: any;
-  try { o = JSON.parse(r.stdout ?? ""); } catch { return { error: `claude gave no JSON result (exit ${r.status}): ${clip(r.stderr ?? r.stdout ?? "", 300)}` }; }
+  try { o = JSON.parse(stdout ?? ""); } catch { return { error: `no JSON result (exit ${status}): ${clip(stderr ?? stdout ?? "", 300)}` }; }
   const u = o.usage ?? {};
   return {
     text: o.result, turns: o.num_turns,
     usage: { input: (u.input_tokens ?? 0) + (u.cache_read_input_tokens ?? 0) + (u.cache_creation_input_tokens ?? 0), cached: u.cache_read_input_tokens ?? 0, cacheWrite: u.cache_creation_input_tokens ?? 0, output: u.output_tokens ?? 0, reasoning: 0, costUsd: o.total_cost_usd },
-    error: o.is_error ? `claude: ${clip(String(o.result ?? o.subtype), 300)}` : r.error ? r.error.message : undefined,
+    error: o.is_error ? `${clip(String(o.result ?? o.subtype), 300)}` : error ? error.message : undefined,
   };
+}
+
+/** A runner from config.json. Its reply goes through parseReply like every other runner's (PALS's LAW). */
+function runConfigured(def: RunnerDef, m: Message, p: string, timeoutSec: number): RunOut {
+  const cwd = existsSync(join(PROJECTS, m.project)) ? join(PROJECTS, m.project) : REPO;
+  const argv = def.argv.map((x) => x.replaceAll("{repo}", REPO).replaceAll("{dir}", cwd));
+  if (!argv.length) return { error: `runner ${m.to} has an empty argv in ${join(QUEUE(), "config.json")}` };
+  const r = spawnSync(argv[0], argv.slice(1), { cwd, input: p, encoding: "utf8", timeout: timeoutSec * 1000, maxBuffer: 64 << 20, env: childEnv() });
+  if (def.format === "json-result") return claudeResult(r.stdout, r.status, r.stderr, r.error);
+  if (r.error) return { error: r.error.message };
+  if (r.status !== 0) return { text: r.stdout, error: `${m.to} exit ${r.status}: ${clip(r.stderr ?? "", 300)}` };
+  return { text: r.stdout };
+}
+
+/** Dispatched runs already used by the thread `m` belongs to (not counting m itself). */
+function threadRuns(m: Message): number {
+  return thread(m).filter((x) => x.id !== m.id && x.result?.agent && !x.result.closedBy).length;
 }
 
 /** Run every open message addressed to a runner, oldest first, at most `max`. Returns what happened, one line each. */
 export function dispatch(o: { max?: number; only?: string; timeoutSec?: number } = {}): string[] {
   const lines: string[] = [];
-  const todo = all().filter((x) => x.state === "open" && (RUNNERS as readonly string[]).includes(x.m.to) && (!o.only || x.m.to === o.only))
+  const cfg = config();
+  const names = runners();
+  const maxRuns = cfg.maxRuns ?? 4;
+  const todo = all().filter((x) => x.state === "open" && names.includes(x.m.to) && (!o.only || x.m.to === o.only))
     .slice(0, o.max ?? Infinity);
   for (const { m } of todo) {
     if (!move(m, "open", "claimed")) continue; // another dispatcher took it
+    const used = threadRuns(m);
+    if (used >= maxRuns) {
+      const stop = send({ project: m.project, task: m.task, kind: "BLOCKED", from: "dispatcher", to: "owner", summary: `thread reached maxRuns ${maxRuns}`, body: `${m.id} (${m.kind} from ${m.from} to ${m.to}) was not run: its thread already used ${used} dispatched run(s), the limit in ${join(QUEUE(), "config.json")} (maxRuns, default 4). Decide whether it goes on: send it again yourself, or close it.`, files: [], replyTo: m.id, access: "read-only" });
+      m.result = { agent: "dispatcher", ok: false, seconds: 0, error: `thread reached maxRuns ${maxRuns}`, reply: stop.id, closedBy: "dispatcher" };
+      save(m, "claimed");
+      move(m, "claimed", "failed");
+      lines.push(`${m.id} → ${m.to}: stopped: thread already ran ${used} time${used === 1 ? "" : "s"} (maxRuns ${maxRuns}) · to owner ${stop.id}`);
+      continue;
+    }
     const t0 = Date.now();
-    const run = m.to === "codex" ? runCodex : runClaude;
+    const def = cfg.runners?.[m.to];
+    const run = m.to === "codex" ? runCodex : m.to === "claude" ? runClaude : (mm: Message, p: string, t: number) => runConfigured(def!, mm, p, t);
     const r = run(m, prompt(m), o.timeoutSec ?? 900);
     const reply = r.error ? { error: r.error } : parseReply(r.text);
     const seconds = Math.round((Date.now() - t0) / 1000);
@@ -216,7 +279,7 @@ export function dispatch(o: { max?: number; only?: string; timeoutSec?: number }
     m.result = { agent: m.to, ok, usage: r.usage, turns: r.turns, seconds, ...(ok ? {} : { error: (reply as any).error }) };
     const answer = ok
       ? send({ project: m.project, task: m.task, kind: (reply as any).kind, from: m.to, to: m.from, summary: (reply as any).summary, body: (reply as any).body, files: [], replyTo: m.id, access: "read-only" })
-      : send({ project: m.project, task: m.task, kind: "BLOCKED", from: "dispatcher", to: m.from, summary: `${m.to} reply failed verification`, body: `${(reply as any).error}\nRaw reply (unverified, not an answer):\n${clip(String(r.text ?? ""), 4000)}`, files: [], replyTo: m.id, access: "read-only" });
+      : send({ project: m.project, task: m.task, kind: "BLOCKED", from: "dispatcher", to: m.from, summary: `${m.to} reply failed verification`, body: `${(reply as any).error}\nwhole reply: ${keepRaw(m, r.text)}\nRaw reply (unverified, not an answer):\n${clip(String(r.text ?? ""), 4000)}`, files: [], replyTo: m.id, access: "read-only" });
     m.result.reply = answer.id;
     save(m, "claimed");
     move(m, "claimed", ok ? "done" : "failed");

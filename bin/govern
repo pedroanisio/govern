@@ -1,11 +1,13 @@
 #!/usr/bin/env sh
 # MANPAGE >>>
 # NAME
-#     govern — run a PALS Notes video through its workflow from a conversation, with few tokens
+#     govern — run lanes of agent work (videos, software, ops, any process) through checked stages, with few tokens
 # SYNOPSIS
-#     govern new SLUG --kind long|short [--title T] [--lang L] [--parent SLUG]
+#     govern new SLUG (--process NAME | --kind long|short|ops) [--title T] [--lang L] [--parent SLUG]
 #     govern work SLUG STAGE [--engine claude|codex] [--open]  |  brief SLUG  |  status [SLUG]
-#     govern note SLUG TEXT  |  approve SLUG script|final|publish --quote "owner's words"  |  done SLUG
+#     govern note SLUG TEXT  |  approve SLUG GATE --quote "owner's words"  |  done SLUG
+#     govern process list|show NAME  |  check SLUG [--set CMD --stage S]  |  advance SLUG [--note EVIDENCE]
+#     govern dep SLUG [--after LANE[:STAGE]] [--rm LANE]  |  hook stop
 #     govern cmd SLUG [NAME -- ARGV...]  |  file SLUG [NAME PATH-OR-GLOB]
 #     govern run SLUG CMD [--bg] [-- ARGS]  |  wait SLUG [JOB] [--timeout S]  |  jobs SLUG  |  log SLUG [JOB]
 #     govern prompts  |  ask SLUG STEP [--file F]... [--var K=V]... [--image PNG]... [--effort E]
@@ -23,8 +25,21 @@
 #     one repair. `usage` attributes the tokens of Claude Code and Codex sessions to (video, stage)
 #     segments opened by `govern work`, against the chat baseline of REPORT-2026-10-11. The operating
 #     manual for the AI is tools/govern/SKILL.md (`govern manual`).
+#     A lane follows a process: a JSON file (tools/govern/processes/*.json built in: video, ops, dev; a workspace
+#     adds or overrides its own in its processes folder) naming the stages, each stage's exit condition and the
+#     command that checks it, and the owner's gates. `advance` moves a lane on only when the stage's check passes
+#     (or, when the stage has none, with --note evidence), no gate holds the stage and no lane it waits on (`dep`)
+#     is behind. `work` to a later stage holds every stage it skips to the same rules (a failing check, an open
+#     gate or a pending dependency refuses it, exit 2); going back is always allowed. `dep` refuses a cycle.
+#     `hook stop` is a Claude Code Stop hook: while the session's lane has a failing check it refuses
+#     the stop (exit 2, the check's log as the reason), at most 3 times per work segment.
+#     A govern.config.json in the working directory or above it ({"projects", "queue", "processes"}, relative
+#     to the file) makes any folder a govern workspace, so govern runs any group of agents, itself included.
 #     The task queue carries messages between agents. `task send --to` accepts codex, claude, auto, owner or the
-#     name of a live Claude Code session (~/.claude/sessions); the dispatcher runs only codex and claude, so a
+#     name of a live Claude Code session (~/.claude/sessions); the dispatcher runs codex, claude and the runners named in
+#     QUEUE/config.json ({"name", "maxRuns" (default 4 runs per thread, then BLOCKED to the owner),
+#     "runners": {NAME: {"argv": [...], "format": "text"|"json-result"}}}), and the prompt goes on stdin. A
+#     reply that fails verification is kept whole in QUEUE/failed/<id>.reply.txt, named in the BLOCKED notice. A
 #     session is NOT woken: it reads its mail with `task inbox` (or a UserPromptSubmit hook running
 #     `task inbox --hook`), answers with `reply`, and `close`s or `forward`s what is not for it. NAME defaults to
 #     GOVERN_AS, else the registered session found up this process's parent chain.
@@ -33,17 +48,21 @@
 #     --timeout S   wait at most S seconds (default 540); exit 124 if the job is still running
 #     --quote Q     approve: the owner's own words (required; only the owner approves)
 #     --open        work: launch a fresh interactive claude or codex session for this video
+#     --process P   new: the process the lane follows (govern process list)
+#     --note T      advance: the evidence that a stage with no check is done (also recorded as a decision)
 # EXIT STATUS
 #     0 ok · 2 usage or state error · 3 a Codex reply failed verification · a job's exit code for run/wait · 124 wait timed out
 # ENVIRONMENT
 #     GOVERN_PROJECTS (default REPO/PALS-Notes/projects) · GOVERN_CODEX_BIN · GOVERN_PYTHON · GOVERN_CTX_WARN (150000)
 #     GOVERN_CLAUDE_PROJECTS (~/.claude/projects) · GOVERN_CODEX_SESSIONS (~/.codex/sessions)
-#     GOVERN_QUEUE (default REPO/PALS-Notes/queue) · GOVERN_SESSIONS_DIR (~/.claude/sessions) · GOVERN_AS (session name)
+#     GOVERN_PROCESSES (workspace processes folder) · GOVERN_QUEUE (default REPO/PALS-Notes/queue) · GOVERN_SESSIONS_DIR (~/.claude/sessions) · GOVERN_AS (session name)
 # EXAMPLES
 #     govern work a-millionth-apart/shorts script
 #     govern run golden-pixel fb gates sheets --bg && govern wait golden-pixel
 #     govern ask you-vs-the-sun metadata --file publication.txt --file timings.json
 #     govern usage --since 2026-10-12
+#     govern new ops/govern --process dev && govern cmd ops/govern test -- node --test tools/govern/test/
+#     govern advance ops/govern            # runs the test check; moves to review only when it passes
 # KEYWORDS
 #     video workflow codex claude tokens usage orchestration pals-notes youtube
 # SEE ALSO

@@ -247,6 +247,7 @@ test("usage attributes Claude calls to the segment, dedupes per message id, coun
 
 test("usage flags a segment whose average context is over the limit and subagent calls", () => {
   const { e, slug } = video();
+  govern(e, ["approve", slug, "script", "--quote", "ok"]);
   govern(e, ["work", slug, "preview"], { CLAUDE_CODE_SESSION_ID: "S2" });
   const t0 = Date.parse(ledger(e, slug).find((x) => x.kind === "work").t);
   claudeTranscript(e, "S2", [asst(new Date(t0 + 1000).toISOString(), "a", 300000, 0)]);
