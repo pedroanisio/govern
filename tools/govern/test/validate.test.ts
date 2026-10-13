@@ -4,7 +4,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readdirSync, readFileSync, existsSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { makeEnv, govern, write, present, HERE, tempDir } from "./helpers.ts";
+import { makeEnv, govern, write, present, reply, jsonl, HERE, tempDir } from "./helpers.ts";
 import { parseFile, check, obj, arr, record, emptyRecord, str, name, posInt, literal } from "../lib/shape.ts";
 import { parseProcess } from "../lib/process.ts";
 import { parseProject } from "../lib/project.ts";
@@ -157,6 +157,47 @@ test("Object.prototype names are unknown keys in govern.json and in a process fi
     refused(() => parseProcess("/w/p.json", withKey(proc({}), k)), `/w/p.json: $.${k}: unknown key "${k}"`);
     refused(() => parseProcess("/w/p.json", proc({}).replace(`{"name":"b"}`, withKey(`{"name":"b"}`, k))), `/w/p.json: $.stages[1].${k}: unknown key "${k}"`);
   }
+});
+
+test("__proto__ is no name: a process's stage or gate, a govern.json map key, and a cmd, file, check or --var name are refused", () => {
+  const NOT_NAME = `"__proto__" is not a name`, NOT_KEY = `"__proto__" is not a key`;
+  bad({ stages: [{ name: "a" }, { name: "__proto__" }] }, `$.stages[1].name: ${NOT_NAME}`);
+  bad({ stages: [{ name: "a", check: "__proto__" }] }, `$.stages[0].check: ${NOT_NAME}`);
+  bad({ gates: [{ name: "__proto__", stage: "a" }] }, `$.gates[0].name: ${NOT_NAME}`);
+  bad({ gates: [{ name: "g", stage: "__proto__" }] }, `$.gates[0].stage: ${NOT_NAME}`);
+  bad({ gates: [{ name: "g", needs: ["__proto__"] }] }, `$.gates[0].needs[0]: ${NOT_NAME}`);
+  badLane({ lang: "__proto__" }, `$.lang: ${NOT_NAME}`);
+  badLane({ checks: { build: "__proto__" } }, `$.checks.build: ${NOT_NAME}`);
+  // a map key is text: `__proto__` in an object literal sets the prototype and is no key
+  const value = { approvals: { at: "2026-01-05T00:00:00.000Z", quote: "x" }, commands: ["true"], files: "x.md", checks: "slow" };
+  for (const [m, v] of Object.entries(value)) {
+    const text = JSON.stringify(lane()).replace(`"${m}":{`, `"${m}":{"__proto__":${JSON.stringify(v)},`);
+    refused(() => parseProject("/p/full/govern.json", text, "full"), `/p/full/govern.json: $.${m}.__proto__: ${NOT_KEY}`);
+  }
+  // from the command line: refused before anything is saved or codex is called
+  const e = makeEnv();
+  assert.equal(govern(e, ["new", "lane", "--process", "dev"]).code, 0);
+  const f = join(e.projects, "lane", "govern.json");
+  const before = readFileSync(f, "utf8");
+  const cli = [
+    [["cmd", "lane", "__proto__", "--", "true"], `$.commands.__proto__: ${NOT_KEY}`],
+    [["file", "lane", "__proto__", "x.md"], `$.files.__proto__: ${NOT_KEY}`],
+    [["check", "lane", "--set", "__proto__", "--stage", "build"], `$.checks.build: ${NOT_NAME}`],
+    [["approve", "lane", "__proto__", "--quote", "go ahead"], "gate must be one of"],
+    [["work", "lane", "__proto__"], "stage must be one of"],
+  ] as const;
+  for (const [args, text] of cli) {
+    const r = govern(e, [...args]);
+    assert.equal(r.code, 2, `${args.join(" ")}: ${r.out}`);
+    assert.ok(r.err.includes(text), `${args.join(" ")}: "${r.err}" should include "${text}"`);
+    assert.equal(readFileSync(f, "utf8"), before, `${args.join(" ")}: govern.json is unchanged`);
+  }
+  const prompts = join(e.root, "prompts");
+  write(join(prompts, "free.md"), "Say {{opt.__proto__}} as JSON.\n");
+  const r = govern(e, ["ask", "lane", "free", "--var", "__proto__=x"], { GOVERN_PROMPTS: prompts, FAKE_CODEX_SCRIPTS: reply(e, "free", { said: "hi" }) });
+  assert.equal(r.code, 2, r.out);
+  assert.match(r.err, /--var __proto__=x: "__proto__" is not a name/);
+  assert.equal(jsonl(join(e.root, "argv.log")).length, 0, "codex was never called");
 });
 
 test("a parse keeps the file's key order, so a load and save does not reorder govern.json", () => {

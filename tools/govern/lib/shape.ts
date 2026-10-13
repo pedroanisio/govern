@@ -15,8 +15,14 @@ const show = (v: unknown) => (v === null ? "null" : Array.isArray(v) ? "an array
 const want = (path: string, what: string, v: unknown): never => { throw new ShapeError(path, `must be ${what} (got ${show(v)})`); };
 
 export const str: Shape<string> = (v, p) => (typeof v === "string" ? v : want(p, "a string", v));
-/** A string with at least one character. */
-export const name: Shape<string> = (v, p) => (typeof v === "string" && v.length ? v : want(p, "a non-empty string", v));
+/** The one string that is no name or map key: assigned as a key of a plain object, `__proto__` sets its prototype. */
+export const PROTO = "__proto__";
+/** A string with at least one character, and not `__proto__`: every name (a stage, gate, check, kind, lane) may be a key. */
+export const name: Shape<string> = (v, p) => {
+  if (typeof v !== "string" || !v.length) return want(p, "a non-empty string", v);
+  if (v === PROTO) throw new ShapeError(p, `"${PROTO}" is not a name`);
+  return v;
+};
 export const posInt: Shape<number> = (v, p) => (Number.isInteger(v) && (v as number) > 0 ? (v as number) : want(p, "a whole number, 1 or more", v));
 export const literal = <T extends string | number>(...values: T[]): Shape<T> => (v, p) =>
   (values.includes(v as T) ? (v as T) : want(p, values.map((x) => JSON.stringify(x)).join(" or "), v));
@@ -39,11 +45,15 @@ export const keyPath = (p: string, k: string) => (/^[A-Za-z_$][\w$]*$/.test(k) ?
  *  undefined until set (a `{}` would answer with Object.prototype's). Every name → value map govern keeps is one. */
 export function emptyRecord<T>(): Record<string, T> { return Object.create(null) as Record<string, T>; }
 
-/** An object whose keys are any strings, each value of one shape; built as an emptyRecord, so it holds only those keys. */
+/** An object whose keys are any strings but `__proto__`, each value of one shape; built as an emptyRecord, so it holds
+ *  only those keys. */
 export const record = <T>(item: Shape<T>): Shape<Record<string, T>> => (v, p) => {
   if (!isObj(v)) return want(p, "an object", v);
   const out = emptyRecord<T>();
-  for (const [k, x] of Object.entries(v)) out[k] = item(x, keyPath(p, k));
+  for (const [k, x] of Object.entries(v)) {
+    if (k === PROTO) throw new ShapeError(keyPath(p, k), `"${PROTO}" is not a key`);
+    out[k] = item(x, keyPath(p, k));
+  }
   return out;
 };
 

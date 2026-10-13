@@ -9,7 +9,7 @@ import { randomUUID } from "node:crypto";
 import { GovernError, fail, parseArgs, opt, flag, many, flagNames, secondsOpt, nowIso, readJsonl, kTok, clip, type Args, type FlagSpec } from "./lib/util.ts";
 import { REPO, PROJECTS, stagesOf, load, save, create, stageOf, brief, appendLedger, resolveFile, ledgerFile, projectDir, checkSlug, checkOf, pendingCheckChanges, blockedBy, laneState, laneSlugs, laneRows, stateFile, argvOf, commandLine, type Project, type Command } from "./lib/project.ts";
 import { processes, getProcess, processOf, listLine, show } from "./lib/process.ts";
-import { emptyRecord } from "./lib/shape.ts";
+import { emptyRecord, PROTO } from "./lib/shape.ts";
 import * as jobs from "./lib/jobs.ts";
 import { ask, readPrompt, PROMPTS } from "./lib/codex.ts";
 import { report, currentCtx, CTX_WARN } from "./lib/usage.ts";
@@ -337,8 +337,13 @@ function cmdAsk(a: Args): void {
   const p = load(a._[1]);
   const step = a._[2];
   if (!step) fail("govern ask <slug> <step> (see govern prompts)");
-  const vars: Record<string, string> = {};
-  for (const kv of many(a, "var")) { const i = kv.indexOf("="); if (i < 1) fail(`--var needs NAME=VALUE: ${kv}`); vars[kv.slice(0, i)] = kv.slice(i + 1); }
+  const vars = emptyRecord<string>();
+  for (const kv of many(a, "var")) {
+    const i = kv.indexOf("=");
+    if (i < 1) fail(`--var needs NAME=VALUE: ${kv}`);
+    if (kv.slice(0, i) === PROTO) fail(`--var ${kv}: "${PROTO}" is not a name`);
+    vars[kv.slice(0, i)] = kv.slice(i + 1);
+  }
   const r = ask(p, step, { files: many(a, "file"), vars, images: many(a, "image"), effort: opt(a, "effort"), model: opt(a, "model") });
   const u = r.usage;
   const meter = `codex ${step}: ${r.calls} call${r.calls > 1 ? "s" : ""}, ${r.turns} turns, ${kTok(u.input)} in (${u.input ? Math.round((u.cached / u.input) * 100) : 0}% cached), ${kTok(u.output)} out, ${r.seconds}s`;
