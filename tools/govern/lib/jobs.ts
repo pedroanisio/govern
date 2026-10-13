@@ -2,11 +2,11 @@
 import { spawn } from "node:child_process";
 import { existsSync, readFileSync, readdirSync, openSync, closeSync, statSync, readSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
-import { fail, readJson, writeJson, stamp, nowIso, sleepSync, shq, changedSince, clip, procStat, hasProc, exited } from "./util.ts";
+import { fail, readJson, writeJson, stamp, nowIso, sleepSync, shq, changedSince, clip, procStat, hasProc, exited, type ProcStat } from "./util.ts";
 import { type Project, projectDir, governDir, appendLedger, argvOf, REPO } from "./project.ts";
 
-/** pid, pgid (the job leads its own process group) and procStart (field 22 of /proc/<pid>/stat) identify the job's
- *  process, so a recycled pid is never taken for it. timeout: a foreground job's limit (s). stopped/end: govern stopped it. */
+/** pid and procStart (field 22 of /proc/<pid>/stat) identify the job's process, so a recycled pid is never taken for it.
+ *  pgid: a background job leads its own process group; a foreground job stays in its caller's, so Ctrl-C reaches it. timeout: a foreground job's limit (s). stopped/end: govern stopped it. */
 export interface Job {
   id: string; slug: string; name: string; argv: string[]; cwd: string; start: string; pid?: number; pgid?: number; procStart?: string; bg: boolean;
   timeout?: number; stopped?: "timeout" | "killed"; end?: string;
@@ -50,14 +50,15 @@ export function start(p: Project, name: string, extra: string[], bg: boolean): J
   const job: Job = { id, slug: p.slug, name, argv, cwd, start: nowIso(), bg, ...(bg ? {} : { timeout }) };
   writeJson(f, job);
   const script = `${argv.map(shq).join(" ")} > ${shq(join(dir, "log"))} 2>&1; echo $? > ${shq(exitF)}`;
-  // Foreground jobs are detached too and then waited on synchronously: spawnSync can neither make the child a process-group
-  // leader (so a timeout reaches its grandchildren) nor give its pid while it runs (so govern kill can find it).
-  const child = spawn("sh", ["-c", script], { cwd, detached: true, stdio: "ignore", env: { ...process.env, GOVERN_JOB_ID: id } });
+  // A foreground job is spawned, not spawnSync'd, and then waited on synchronously: spawnSync gives no pid while the child
+  // runs, so neither a timeout nor govern kill could find it. It is not detached: it stays in govern's process group, so a
+  // terminal's Ctrl-C (or anything else that signals the caller's group) stops it with govern. Its timeout stops its tree.
+  const child = spawn("sh", ["-c", script], { cwd, detached: bg, stdio: "ignore", env: { ...process.env, GOVERN_JOB_ID: id } });
   if (!child.pid) fail(`${p.slug}: could not start sh for command "${name}"`);
   // Read before the event loop runs again: the child cannot have been reaped yet, so its /proc entry is still there.
   const ps = procStat(child.pid!);
-  // detached means setsid(): the child leads a new session and process group whose id is its pid.
-  Object.assign(job, { pid: child.pid, pgid: child.pid, ...(ps ? { procStart: ps.start } : {}) });
+  // detached means setsid(): a background child leads a new session and process group whose id is its pid.
+  Object.assign(job, { pid: child.pid, ...(bg ? { pgid: child.pid } : {}), ...(ps ? { procStart: ps.start } : {}) });
   writeJson(f, job);
   child.unref();
   if (bg) {
@@ -66,7 +67,7 @@ export function start(p: Project, name: string, extra: string[], bg: boolean): J
   }
   const running = () => !existsSync(exitF) && alive(job) && !readJson<Job>(f).stopped;
   for (const end = Date.now() + timeout * 1000; running() && Date.now() < end;) sleepSync(POLL_MS);
-  if (running()) { stopGroup(job.pgid!); writeJson(f, { ...readJson<Job>(f), stopped: "timeout", end: nowIso() }); }
+  if (running()) { stopTree(job.pid!, job.procStart); writeJson(f, { ...readJson<Job>(f), stopped: "timeout", end: nowIso() }); }
   const st = state(p.slug, id);
   appendLedger(p.slug, { kind: "job", id, name, bg: false, status: st.status, exit: st.exit, seconds: st.seconds });
   return st;
@@ -123,6 +124,50 @@ function stopGroup(pgid: number, graceMs = KILL_GRACE_MS): "terminated" | "kille
   return "killed";
 }
 
+/** The live processes among `known` (each still the process its start time says) and every live descendant of them, by
+ *  parent pid. Known members are kept even once their parent has died and they were reparented away from the tree. */
+function tree(known: Map<number, string | undefined>): Map<number, string> {
+  const all = new Map<number, ProcStat>();
+  for (const d of readdirSync("/proc")) {
+    if (!/^\d+$/.test(d)) continue;
+    const s = procStat(Number(d));
+    if (s && !exited(s)) all.set(Number(d), s);
+  }
+  const out = new Map<number, string>();
+  for (const [pid, start] of known) { const s = all.get(pid); if (s && (start === undefined || s.start === start)) out.set(pid, s.start); }
+  for (let grew = true; grew;) {
+    grew = false;
+    for (const [pid, s] of all) if (!out.has(pid) && out.has(s.ppid)) { out.set(pid, s.start); grew = true; }
+  }
+  return out;
+}
+const signalPid = (pid: number, sig: NodeJS.Signals) => {
+  try { process.kill(pid, sig); } catch (e) { if ((e as NodeJS.ErrnoException).code !== "ESRCH") throw e; }
+};
+/** A foreground job's way to stop: SIGTERM to the job and everything descending from it (it shares its caller's group, so
+ *  no group signal), the same to anything it forks during the grace, then SIGKILL to whatever is left. Without /proc only
+ *  the job's own pid can be found. Called only on govern's own unreaped child or a pid owner() verified. */
+function stopTree(pid: number, start: string | undefined, graceMs = KILL_GRACE_MS): "terminated" | "killed" {
+  if (!hasProc()) {
+    signalPid(pid, "SIGTERM");
+    for (const end = Date.now() + graceMs; Date.now() < end; sleepSync(POLL_MS)) if (!signal0(pid)) return "terminated";
+    if (!signal0(pid)) return "terminated";
+    signalPid(pid, "SIGKILL");
+    return "killed";
+  }
+  let t = tree(new Map([[pid, start]]));
+  for (const p of t.keys()) signalPid(p, "SIGTERM");
+  for (const end = Date.now() + graceMs; t.size && Date.now() < end; sleepSync(POLL_MS)) {
+    const now = tree(t);
+    for (const p of now.keys()) if (!t.has(p)) signalPid(p, "SIGTERM");
+    t = now;
+  }
+  t = tree(t);
+  if (!t.size) return "terminated";
+  for (const p of t.keys()) signalPid(p, "SIGKILL");
+  return "killed";
+}
+
 export function state(slug: string, id: string): JobState {
   const dir = join(jobsDir(slug), id);
   const job = readJson<Job>(join(dir, "job.json"));
@@ -140,7 +185,8 @@ export function state(slug: string, id: string): JobState {
   return { ...job, status: alive(job) ? "running" : job.bg ? "lost" : "failed" };
 }
 
-/** Stop a lane's job (default: its latest running one) by process group, after checking the pid is still the job's. */
+/** Stop a lane's job (default: its latest running one), after checking the pid is still the job's: a background job by its
+ *  process group, a foreground one by its process tree. */
 export function kill(slug: string, ref?: string): { id: string; outcome: KillOutcome } {
   const ids = list(slug);
   const id = ref ? find(slug, ref) : [...ids].reverse().find((i) => state(slug, i).status === "running")
@@ -154,13 +200,16 @@ export function kill(slug: string, ref?: string): { id: string; outcome: KillOut
     record("not-owned");
     return fail(who === "other"
       ? `job ${id}: pid ${job.pid} now belongs to another process: not signalling it (the job is gone)`
-      : `job ${id}: ${hasProc() ? "no start time recorded" : "no /proc to read start times from"}: cannot verify pid ${job.pid} is still this job, not signalling it (stop it by hand if you are sure: kill -TERM -${job.pgid ?? job.pid})`);
+      : `job ${id}: ${hasProc() ? "no start time recorded" : "no /proc to read start times from"}: cannot verify pid ${job.pid} is still this job, not signalling it (stop it by hand if you are sure: kill -TERM ${job.bg ? "-" : ""}${job.pgid ?? job.pid})`);
   }
-  const outcome = stopGroup(job.pgid ?? job.pid!);
+  // Marked before the signal: a govern waiting on a foreground job reads it as soon as the job dies.
+  writeJson(f, { ...readJson<Job>(f), stopped: "killed" });
+  const outcome = job.bg ? stopGroup(job.pgid ?? job.pid!) : stopTree(job.pid!, job.procStart);
   const end = nowIso();
-  writeJson(f, { ...readJson<Job>(f), stopped: "killed", end });
+  writeJson(f, { ...readJson<Job>(f), end });
   record(outcome);
-  appendLedger(slug, { kind: "job", id, name: job.name, bg: job.bg, status: "killed", seconds: Math.round((Date.parse(end) - Date.parse(job.start)) / 1000) });
+  // A foreground job's own govern, waiting on it, records how it ended; a background job has no one else to.
+  if (job.bg) appendLedger(slug, { kind: "job", id, name: job.name, bg: true, status: "killed", seconds: Math.round((Date.parse(end) - Date.parse(job.start)) / 1000) });
   return { id, outcome };
 }
 

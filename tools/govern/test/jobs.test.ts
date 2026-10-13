@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { readFileSync, readdirSync, existsSync } from "node:fs";
 import { join } from "node:path";
-import { makeEnv, govern, jsonl, write } from "./helpers.ts";
+import { makeEnv, govern, jsonl, write, childEnv, GOVERN } from "./helpers.ts";
 import { parseStat, procStat, sleepSync, stamp } from "../lib/util.ts";
 
 const ledger = (e: ReturnType<typeof makeEnv>, slug: string) => jsonl(join(e.projects, slug, "govern", "ledger.jsonl"));
@@ -32,26 +32,27 @@ function fakeJob(e: ReturnType<typeof makeEnv>, slug: string, id: string, extra:
 
 test("parseStat reads state, process group and start time even when the command name holds spaces and parentheses", () => {
   const tail = "S 1 4242 4242 0 -1 4194560 100 0 0 0 5 6 0 0 20 0 1 0 987654 1000 200";
-  assert.deepEqual(parseStat(`42 (node) ${tail}`), { state: "S", pgrp: 4242, start: "987654" });
-  assert.deepEqual(parseStat(`42 (my (odd) name) x) ${tail}`), { state: "S", pgrp: 4242, start: "987654" });
+  assert.deepEqual(parseStat(`42 (node) ${tail}`), { state: "S", ppid: 1, pgrp: 4242, start: "987654" });
+  assert.deepEqual(parseStat(`42 (my (odd) name) x) ${tail}`), { state: "S", ppid: 1, pgrp: 4242, start: "987654" });
   assert.equal(parseStat("garbage"), undefined);
   assert.equal(parseStat("42 (short) S 1 2"), undefined);
   const self = readFileSync("/proc/self/stat", "utf8");
   assert.equal(procStat(process.pid)?.start, self.slice(self.lastIndexOf(")") + 1).trim().split(/\s+/)[19]);
 });
 
-test("every job records its pid, process group and start time, and sees GOVERN_JOB_ID", () => {
+test("every job records its pid and start time, and sees GOVERN_JOB_ID; a foreground job has no group of its own", () => {
   const { e, slug } = lane();
   govern(e, ["cmd", slug, "who", "--", "sh", "-c", "echo id=$GOVERN_JOB_ID"]);
   const r = govern(e, ["run", slug, "who"]);
   assert.equal(r.code, 0, r.err);
   const j = jobJson(e, slug);
   assert.match(r.out, new RegExp(`id=${j.id}`));
-  assert.ok(Number.isInteger(j.pid) && j.pgid === j.pid, "a job leads its own process group");
+  assert.ok(Number.isInteger(j.pid));
+  assert.equal(j.pgid, undefined, "a foreground job stays in govern's process group");
   assert.match(j.procStart, /^\d+$/);
 });
 
-test("a foreground job past its timeout has its whole process group stopped and fails the check as timed out", () => {
+test("a foreground job past its timeout has its whole process tree stopped and fails the check as timed out", () => {
   const { e, slug } = lane();
   const c = govern(e, ["cmd", slug, "hang", "--timeout", "1", "--", "sh", "-c", "echo $$ > kids; sleep 30 & echo $! >> kids; sleep 30"]);
   assert.equal(c.code, 0, c.err);
@@ -71,6 +72,44 @@ test("a foreground job past its timeout has its whole process group stopped and 
   const a = govern(e, ["advance", slug]);
   assert.equal(a.code, 2);
   assert.match(a.err, /check hang failed \(timed out after 1s\)/);
+});
+
+test("a foreground job stays in its caller's process group: Ctrl-C to govern stops the job and what it started", () => {
+  const { e, slug } = lane();
+  govern(e, ["cmd", slug, "hang", "--", "sh", "-c", "echo $$ > kids; sleep 30"]);
+  govern(e, ["check", slug, "--set", "hang", "--stage", "plan"]);
+  // govern leads a group of its own, as a terminal's foreground job does; the terminal's Ctrl-C goes to that group
+  const g = spawn(process.execPath, ["--disable-warning=ExperimentalWarning", GOVERN, "check", slug], { env: childEnv(e), detached: true, stdio: "ignore" });
+  g.unref();
+  const kidsF = join(e.projects, slug, "kids");
+  for (const end = Date.now() + 10000; !existsSync(kidsF) && Date.now() < end;) sleepSync(20);
+  const j = jobJson(e, slug);
+  const kids = readFileSync(kidsF, "utf8").trim().split("\n").map(Number);
+  assert.equal(procStat(j.pid)?.pgrp, g.pid, "the job is in govern's group");
+  process.kill(-g.pid!, "SIGINT");
+  assert.ok(allGone([g.pid!, j.pid, ...kids]), `govern, the job and its child must be gone: ${[g.pid, j.pid, ...kids]}`);
+});
+
+test("kill stops a foreground job another govern waits on, tree and all, and only that govern records how it ended", () => {
+  const { e, slug } = lane();
+  govern(e, ["cmd", slug, "hang", "--", "sh", "-c", "echo $$ > kids; sleep 30 & echo $! >> kids; sleep 30"]);
+  govern(e, ["check", slug, "--set", "hang", "--stage", "plan"]);
+  const out = join(e.root, "check.out");
+  const g = spawn("sh", ["-c", `${process.execPath} --disable-warning=ExperimentalWarning ${GOVERN} check ${slug} > ${out} 2>&1; echo $? >> ${out}`], { env: childEnv(e), detached: true, stdio: "ignore" });
+  g.unref();
+  const kidsF = join(e.projects, slug, "kids");
+  for (const end = Date.now() + 10000; !(existsSync(kidsF) && readFileSync(kidsF, "utf8").trim().split("\n").length === 2) && Date.now() < end;) sleepSync(20);
+  const j = jobJson(e, slug);
+  const kids = readFileSync(kidsF, "utf8").trim().split("\n").map(Number);
+  const k = govern(e, ["kill", slug]);
+  assert.equal(k.code, 0, k.err);
+  assert.match(k.out, new RegExp(`job ${j.id} terminated`));
+  assert.ok(allGone([j.pid, ...kids]), `the job and its children must be gone: ${[j.pid, ...kids]}`);
+  for (const end = Date.now() + 10000; !/^\d+$/m.test(existsSync(out) ? readFileSync(out, "utf8") : "") && Date.now() < end;) sleepSync(20);
+  const o = readFileSync(out, "utf8");
+  assert.match(o, /check hang: failed \(killed by govern kill\)/);
+  assert.match(o, /^1$/m);
+  assert.deepEqual(ledger(e, slug).filter((x) => x.kind === "job" && x.id === j.id).map((x) => x.status), ["killed"]);
 });
 
 test("a second run of a command in the same second gets its own job, never the earlier one's exit", () => {
