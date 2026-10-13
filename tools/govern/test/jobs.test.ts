@@ -5,6 +5,7 @@ import { readFileSync, readdirSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { makeEnv, govern, jsonl, write, childEnv, GOVERN } from "./helpers.ts";
 import { parseStat, procStat, procTable, sleepSync, stamp } from "../lib/util.ts";
+import { signal } from "../lib/jobs.ts";
 
 type E = ReturnType<typeof makeEnv>;
 const ledger = (e: E, slug: string) => jsonl(join(e.projects, slug, "govern", "ledger.jsonl"));
@@ -482,4 +483,40 @@ test("a complete exit file is authoritative unless govern stopped the job and th
   }
   const out = govern(e, ["jobs", slug]).out;
   for (const [, , , re] of cases) assert.match(out, re);
+});
+
+test("a job that runs govern kill on its own lane stops what it started, never the govern doing it or that govern's callers", { skip: NO_PROC }, () => {
+  const { e, slug } = lane();
+  const pids: number[] = [];
+  try {
+    const kill = `${process.execPath} --disable-warning=ExperimentalWarning ${GOVERN} kill ${slug}`;
+    govern(e, ["cmd", slug, "self", "--", "sh", "-c", `sleep 30 & echo $! > kids; ${kill}; echo kill-exit=$?`]);
+    const r = govern(e, ["run", slug, "self"]);
+    const [sib] = pidsIn(join(e.projects, slug, "kids"), 1);
+    pids.push(sib);
+    const j = jobJson(e, slug);
+    assert.equal(r.code, 0, r.out + r.err);
+    assert.match(r.out, new RegExp(`job ${j.id} · ok \\(exit 0\\)`));
+    assert.match(r.out, new RegExp(`job ${j.id} terminated`));
+    assert.match(r.out, /kill-exit=0/);
+    assert.ok(allGone([sib]), "the job's other process must be gone");
+    assert.deepEqual(ledger(e, slug).filter((x) => x.kind === "kill").map((x) => [x.job, x.outcome]), [[j.id, "terminated"]]);
+    assert.deepEqual(ends(e, slug, j.id).map((x) => [x.status, x.exit]), [["ok", 0]]);
+  } finally { cleanup(e, pids); }
+});
+
+test("signalling a process that is gone (ESRCH) or not ours to signal (EPERM) is skipped, never thrown", { skip: NO_PROC || (process.getuid?.() === 0 && "as root, no process is out of reach") }, () => {
+  // signal 0 delivers nothing: it only asks whether a signal could be sent
+  assert.throws(() => process.kill(1, 0), { code: "EPERM" });
+  assert.equal(signal(1, 0), false);
+  // a child of this test, exited and reaped: its pid names no process
+  const gone = spawn("true", { stdio: "ignore" });
+  return new Promise<void>((done, reject) => gone.on("exit", () => setImmediate(() => {
+    try {
+      assert.throws(() => process.kill(gone.pid!, 0), { code: "ESRCH" });
+      assert.equal(signal(gone.pid!, 0), false);
+      assert.equal(signal(process.pid, 0), true);
+      done();
+    } catch (err) { reject(err); }
+  })));
 });

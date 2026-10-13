@@ -176,24 +176,39 @@ function members(job: Job, dir: string, snap = snapshot(), known: Map<number, st
   }
   return out;
 }
-const signalPid = (pid: number, sig: NodeJS.Signals) => {
-  try { process.kill(pid, sig); } catch (e) { if ((e as NodeJS.ErrnoException).code !== "ESRCH") throw e; }
+/** Send `sig` to one pid; whether it was sent. A pid that is gone (ESRCH) or not this user's to signal (EPERM) is skipped,
+ *  never thrown: a stop goes on to the job's other processes either way. */
+export const signal = (pid: number, sig: NodeJS.Signals | 0): boolean => {
+  try { process.kill(pid, sig); return true; } catch { return false; }
 };
+/** This govern and every process it runs under (its parent, theirs, up to init): never signalled, so a job that runs
+ *  govern kill (or a timeout's govern inside a job) cannot stop the govern doing the stopping or the job waiting on it. */
+function selfAndAncestors(snap: Snapshot): Set<number> {
+  const out = new Set<number>();
+  for (let pid: number | undefined = process.pid; pid && !out.has(pid); pid = snap.live.get(pid)?.ppid) out.add(pid);
+  return out;
+}
 /** Stop a job: SIGTERM to each of its members, the same to every member that appears during the grace, then SIGKILL to
  *  whatever is left, until nothing is (up to a second more). Each pid is signalled on its own, never a whole group: a
- *  background job's group can hold the govern that is stopping it. */
+ *  background job's group can hold the govern that is stopping it. This govern and its ancestors are left out. */
 function stop(job: Job, dir: string, graceMs = KILL_GRACE_MS): "terminated" | "killed" {
-  let m = members(job, dir);
-  for (const p of m.keys()) signalPid(p, "SIGTERM");
+  const first = snapshot(), mine = selfAndAncestors(first);
+  const targets = (snap: Snapshot, known?: Map<number, string>) => {
+    const m = members(job, dir, snap, known);
+    for (const p of mine) m.delete(p);
+    return m;
+  };
+  let m = targets(first);
+  for (const p of m.keys()) signal(p, "SIGTERM");
   for (const end = Date.now() + graceMs; m.size && Date.now() < end;) {
     sleepSync(POLL_MS);
-    const now = members(job, dir, snapshot(), m);
-    for (const p of now.keys()) if (!m.has(p)) signalPid(p, "SIGTERM");
+    const now = targets(snapshot(), m);
+    for (const p of now.keys()) if (!m.has(p)) signal(p, "SIGTERM");
     m = now;
   }
   if (!m.size) return "terminated";
-  for (const end = Date.now() + 1000; m.size && Date.now() < end; m = members(job, dir, snapshot(), m)) {
-    for (const p of m.keys()) signalPid(p, "SIGKILL");
+  for (const end = Date.now() + 1000; m.size && Date.now() < end; m = targets(snapshot(), m)) {
+    for (const p of m.keys()) signal(p, "SIGKILL");
     sleepSync(POLL_MS);
   }
   return "killed";
