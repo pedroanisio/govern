@@ -42,6 +42,11 @@ export const KINDS = ["long", "short", "ops"] as const;
 /** The video process's owner gates, in order (other processes name their own). */
 export const GATES = ["script", "final", "publish"] as const;
 
+/** A command with settings: its argv and how long it may run in the foreground (seconds). A plain argv array is the same
+ *  command with the default timeout. */
+export interface Command { argv: string[]; timeout?: number }
+export const argvOf = (c: string[] | Command): string[] => (Array.isArray(c) ? c : c.argv);
+
 export interface Approval { at: string; quote: string }
 export interface Note { at: string; stage: string; text: string }
 /** Another lane this one waits on: met when that lane is finished, or (with `stage`) has moved past that stage. */
@@ -60,8 +65,8 @@ export interface Project {
   created: string;
   /** Set when `govern advance` moves past the last stage. */
   finished?: string;
-  /** name → argv; `{repo}`, `{dir}`, `{python}` are expanded. Extra args from `govern run` are appended. */
-  commands: Record<string, string[]>;
+  /** name → argv, or {argv, timeout}; `{repo}`, `{dir}`, `{python}` are expanded. Extra args from `govern run` are appended. */
+  commands: Record<string, string[] | Command>;
   /** name → path or glob relative to the project folder; a glob resolves to its newest match. */
   files: Record<string, string>;
   /** stage → command name: the lane's own exit check, over the process's. */

@@ -7,7 +7,7 @@ import { join, dirname, resolve, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
 import { GovernError, fail, parseArgs, opt, nowIso, readJsonl, kTok, clip, type Args } from "./lib/util.ts";
-import { REPO, PROJECTS, stagesOf, load, save, create, stageOf, brief, appendLedger, resolveFile, ledgerFile, projectDir, checkSlug, checkOf, blockedBy, laneState, stateFile, type Project } from "./lib/project.ts";
+import { REPO, PROJECTS, stagesOf, load, save, create, stageOf, brief, appendLedger, resolveFile, ledgerFile, projectDir, checkSlug, checkOf, blockedBy, laneState, stateFile, argvOf, type Project, type Command } from "./lib/project.ts";
 import { processes, getProcess, processOf, listLine, show } from "./lib/process.ts";
 import * as jobs from "./lib/jobs.ts";
 import { ask, readPrompt, PROMPTS } from "./lib/codex.ts";
@@ -32,7 +32,7 @@ start / state
   govern note <slug> "<decision>"          record a decision (state lives in files, not in the chat)
   govern approve <slug> <gate> --quote "<the owner's words>"   (gates come from the lane's process)
   govern done <slug>             end the current work segment
-  govern cmd <slug> [<name> -- <argv…>] | --rm <name>      list or set the video's commands
+  govern cmd <slug> [<name> [--timeout S] -- <argv…>] | --rm <name>   list or set the video's commands (S: foreground limit, default 1800)
   govern file <slug> <name> <path-or-glob>                 name a file (a glob means its newest match)
 
 process: stages, exit checks, gates, dependencies
@@ -46,6 +46,7 @@ run without a model in the loop
   govern run <slug> <command> [--bg] [-- extra args]      foreground prints a summary; --bg returns a job id
   govern wait <slug> [<job>|last] [--timeout 540]          block until it ends; exit code = the job's (124 = still running)
   govern jobs <slug>  ·  govern log <slug> [<job>] [--tail 40] [--grep RE]
+  govern kill <slug> [<job>]     stop a job's process group (default: the latest running), only if its pid is still that job
 
 codex one-shot steps (verified JSON)
   govern prompts                 list the steps
@@ -111,7 +112,7 @@ function passSkipped(p: Project, to: string): void {
     const chk = checkOf(p, s);
     if (chk) {
       const r = runCheck(p, chk, s);
-      if (!r.ok) fail(`${p.slug}: cannot skip stage ${s}: check ${chk} failed (exit ${r.exit})\n${r.text}\nnext: fix it, then govern advance ${p.slug}`);
+      if (!r.ok) fail(`${p.slug}: cannot skip stage ${s}: check ${chk} failed (${r.why})\n${r.text}\nnext: fix it, then govern advance ${p.slug}`);
     } else if (requiresCheck(p, s)) fail(`${p.slug}: cannot skip stage ${s}: it requires a check and has none (${setCheckHint(p, s)})`);
     const gate = processOf(p).gates.find((g) => g.stage === s && !p.approvals[g.name]);
     if (gate) fail(`${p.slug}: cannot skip stage ${s}: needs the owner's ${gate.name} approval (govern approve ${p.slug} ${gate.name} --quote "…")`);
@@ -171,11 +172,11 @@ function cmdApprove(a: Args): void {
 }
 
 /** Run the stage's exit check as a foreground job; records it in the ledger, prints nothing. */
-function runCheck(p: Project, name: string, stage = p.stage): { ok: boolean; exit: number | null | undefined; text: string } {
+function runCheck(p: Project, name: string, stage = p.stage): { ok: boolean; exit: number | null | undefined; why: string; text: string } {
   const st = jobs.start(p, name, [], false);
   const ok = st.exit === 0;
   appendLedger(p.slug, { kind: "check", stage, name, ok, exit: st.exit, job: st.id });
-  return { ok, exit: st.exit, text: jobs.summary(p, st) };
+  return { ok, exit: st.exit, why: jobs.ending(st), text: jobs.summary(p, st) };
 }
 
 function cmdCheck(a: Args): void {
@@ -192,7 +193,7 @@ function cmdCheck(a: Args): void {
   const name = checkOf(p);
   if (!name) return out(`${p.slug}: stage ${p.stage} has no check (set one: govern check ${p.slug} --set <command> --stage ${p.stage})`);
   const r = runCheck(p, name);
-  out(`check ${name}: ${r.ok ? "ok" : `failed (exit ${r.exit})`}\n${r.text}`);
+  out(`check ${name}: ${r.ok ? "ok" : `failed (${r.why})`}\n${r.text}`);
   if (!r.ok) process.exitCode = 1;
 }
 
@@ -207,7 +208,7 @@ function cmdAdvance(a: Args): void {
   const chk = checkOf(p);
   if (chk) {
     const r = runCheck(p, chk);
-    if (!r.ok) fail(`${p.slug}: check ${chk} failed (exit ${r.exit})\n${r.text}`);
+    if (!r.ok) fail(`${p.slug}: check ${chk} failed (${r.why})\n${r.text}`);
   } else if (requiresCheck(p, p.stage)) fail(`${p.slug}: stage ${p.stage} requires a check and has none: a note cannot pass it (${setCheckHint(p, p.stage)})`);
   else if (!note) fail(`${p.slug}: stage ${p.stage} has no check: give the evidence with --note "…"`);
   const gate = processOf(p).gates.find((g) => g.stage === p.stage && !p.approvals[g.name]);
@@ -290,7 +291,7 @@ function cmdHook(a: Args): void {
     const r = runCheck(p, chk);
     if (r.ok) return;
     appendLedger(p.slug, { kind: "stop-block", session: sid, stage: p.stage, check: chk });
-    process.stderr.write(`${p.slug}: stage ${p.stage} is not done — check ${chk} failed (exit ${r.exit})\n${r.text}\n` +
+    process.stderr.write(`${p.slug}: stage ${p.stage} is not done — check ${chk} failed (${r.why})\n${r.text}\n` +
       `next: govern check ${p.slug} after fixing, or govern advance ${p.slug} / govern note ${p.slug} "…" if the stage changed\n`);
     process.exitCode = 2;
   } catch { process.exitCode = 0; }
@@ -301,12 +302,15 @@ function cmdCmd(a: Args): void {
   const rm = opt(a, "rm");
   if (rm) { delete p.commands[rm]; save(p); return out(`${p.slug}: removed command ${rm}`); }
   const name = a._[2];
-  if (!name) { for (const [k, v] of Object.entries(p.commands)) out(`${k}: ${v.join(" ")}`); return; }
+  const line = (c: string[] | Command) => `${argvOf(c).join(" ")}${!Array.isArray(c) && c.timeout ? ` (timeout ${c.timeout}s)` : ""}`;
+  if (!name) { for (const [k, v] of Object.entries(p.commands)) out(`${k}: ${line(v)}`); return; }
   const argv = a._.slice(3);
   if (!argv.length) fail(`give the argv after --: govern cmd ${p.slug} ${name} -- {python} build.py --preview`);
-  p.commands[name] = argv;
+  const t = opt(a, "timeout"), timeout = Number(t);
+  if (t !== undefined && !(Number.isFinite(timeout) && timeout > 0)) fail(`--timeout must be a number of seconds: ${t}`);
+  p.commands[name] = t === undefined ? argv : { argv, timeout };
   save(p);
-  out(`${p.slug}: ${name} = ${argv.join(" ")}`);
+  out(`${p.slug}: ${name} = ${line(p.commands[name])}`);
 }
 
 function cmdFile(a: Args): void {
@@ -540,6 +544,7 @@ function main(argv: string[]): void {
     case "file": cmdFile(a); break;
     case "run": cmdRun(a); break;
     case "wait": cmdWait(a); break;
+    case "kill": { const p = load(a._[1]); const k = jobs.kill(p.slug, a._[2]); out(`job ${k.id} ${k.outcome}`); break; }
     case "jobs": { const p = load(a._[1]); for (const id of jobs.list(p.slug).slice(-15)) { const s = jobs.state(p.slug, id); out(`${id} ${s.status}${s.exit != null ? ` exit ${s.exit}` : ""}${s.seconds != null ? ` ${s.seconds}s` : ""}`); } break; }
     case "log": { const p = load(a._[1]); const id = jobs.find(p.slug, a._[2]); out(jobs.tail(p.slug, id, Number(opt(a, "tail") ?? 40), opt(a, "grep")).join("\n") || "(empty log)"); break; }
     case "prompts": return cmdPrompts();

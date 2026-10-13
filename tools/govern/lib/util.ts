@@ -42,6 +42,23 @@ export const nowIso = () => new Date().toISOString();
 export const stamp = (d = new Date()) => d.toISOString().replace(/[-:]/g, "").replace(/\.\d+Z$/, "Z");
 export const sleepSync = (ms: number) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 
+/** What /proc/<pid>/stat says about a process: state (field 3), process group (5), start time in ticks after boot (22). */
+export interface ProcStat { state: string; pgrp: number; start: string }
+/** Parse the text of /proc/<pid>/stat. comm (field 2) may hold spaces and parentheses: fields count from the last ")". */
+export function parseStat(stat: string): ProcStat | undefined {
+  const i = stat.lastIndexOf(")");
+  const f = i < 0 ? [] : stat.slice(i + 1).trim().split(/\s+/);
+  return f.length >= 20 && /^\d+$/.test(f[19]) ? { state: f[0], pgrp: Number(f[2]), start: f[19] } : undefined;
+}
+/** Whether this system has /proc to read process identities from. */
+export const hasProc = () => existsSync("/proc/self/stat");
+/** /proc/<pid>/stat parsed, or undefined when the pid does not exist (or there is no /proc). */
+export function procStat(pid: number): ProcStat | undefined {
+  try { return parseStat(readFileSync(`/proc/${pid}/stat`, "utf8")); } catch { return undefined; }
+}
+/** A zombie (exited, not yet reaped) or dead process no longer runs anything. */
+export const exited = (s: ProcStat) => s.state === "Z" || s.state === "X";
+
 /** Single-quote for sh. */
 export const shq = (s: string) => (/^[\w@%+=:,./-]+$/.test(s) ? s : `'${s.replace(/'/g, `'\\''`)}'`);
 

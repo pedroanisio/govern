@@ -1,9 +1,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { writeFileSync } from "node:fs";
+import { writeFileSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
-import { liveSessions, pidChain, resolveAs, parsePpid } from "../lib/sessions.ts";
+import { liveSessions, pidChain, resolveAs, parsePpid, isAlive } from "../lib/sessions.ts";
 import { tempDir } from "./helpers.ts";
 
 const deadPid = () => spawnSync("true").pid!; // a pid that has just exited
@@ -45,4 +45,18 @@ test("resolveAs: --as wins, then GOVERN_AS, then the first pid of the parent cha
   const dead = deadPid();
   const d2 = registry([{ pid: dead, name: "ghost", cwd: "/x", kind: "interactive" }]);
   assert.equal(resolveAs({ env: {}, dir: d2, chain: () => [dead] }), undefined);
+});
+
+test("a session whose recorded procStart differs from its pid's start time is a recycled pid, not the session", () => {
+  const self = readFileSync("/proc/self/stat", "utf8");
+  const procStart = self.slice(self.lastIndexOf(")") + 1).trim().split(/\s+/)[19];
+  const dir = registry([
+    { pid: process.pid, name: "same", cwd: "/x", kind: "interactive", procStart },
+    { pid: process.pid, name: "recycled", cwd: "/x", kind: "interactive", procStart: "1" },
+    { pid: process.pid, name: "unrecorded", cwd: "/x", kind: "interactive" },
+  ]);
+  assert.deepEqual(liveSessions(dir).map((x) => x.name).sort(), ["same", "unrecorded"]);
+  assert.equal(isAlive(process.pid, "1"), false);
+  assert.equal(isAlive(process.pid, procStart), true);
+  assert.equal(isAlive(process.pid), true);
 });
