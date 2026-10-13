@@ -35,10 +35,16 @@ export function arr<T>(item: Shape<T>, o: { nonEmpty?: boolean } = {}): Shape<T[
 const isObj = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
 export const keyPath = (p: string, k: string) => (/^[A-Za-z_$][\w$]*$/.test(k) ? `${p}.${k}` : `${p}[${JSON.stringify(k)}]`);
 
-/** An object whose keys are any strings, each value of one shape. */
+/** An empty map with no prototype: a key is in it only once it is set, so `constructor` or `toString` read from it is
+ *  undefined until set (a `{}` would answer with Object.prototype's). Every name → value map govern keeps is one. */
+export function emptyRecord<T>(): Record<string, T> { return Object.create(null) as Record<string, T>; }
+
+/** An object whose keys are any strings, each value of one shape; built as an emptyRecord, so it holds only those keys. */
 export const record = <T>(item: Shape<T>): Shape<Record<string, T>> => (v, p) => {
   if (!isObj(v)) return want(p, "an object", v);
-  return Object.fromEntries(Object.entries(v).map(([k, x]) => [k, item(x, keyPath(p, k))]));
+  const out = emptyRecord<T>();
+  for (const [k, x] of Object.entries(v)) out[k] = item(x, keyPath(p, k));
+  return out;
 };
 
 type Fields = Record<string, Shape<unknown>>;

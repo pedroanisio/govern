@@ -42,6 +42,45 @@ test("a lane can follow any process, including one defined in the workspace", ()
   assert.match(govern(e, ["new", "x", "--process", "video"]).err, /--kind must be long or short/);
 });
 
+test("gates and stages named after Object.prototype members (constructor, toString, valueOf) start open and unset", () => {
+  const e = env();
+  write(join(e.root, "PALS-Notes", "processes", "proto.json"), JSON.stringify({
+    version: 1, name: "proto", description: "names every object inherits",
+    stages: [{ name: "draft" }, { name: "valueOf" }, { name: "done" }],
+    gates: [{ name: "constructor", stage: "draft" }, { name: "toString", stage: "valueOf", needs: ["constructor"] }],
+  }));
+  const n = govern(e, ["new", "p1", "--process", "proto", "--title", "P1"]);
+  assert.equal(n.code, 0, n.err);
+  assert.match(n.out, /approvals: constructor – · toString –/, "new prints the fresh lane's brief");
+  for (const args of [["brief", "p1"], ["status", "p1"]]) {
+    const r = govern(e, args);
+    assert.equal(r.code, 0, `${args.join(" ")}: ${r.err}`);
+    assert.match(r.out, /approvals: constructor – · toString –/, args.join(" "));
+  }
+  const row = (cmd: string, re: RegExp) => { const r = govern(e, [cmd]); assert.equal(r.code, 0, `${cmd}: ${r.err}`); assert.match(r.out, re, cmd); };
+  row("status", /^p1 +proto +1\/3 draft +approvals ··/m);
+  row("desk", /^ +p1 +proto +1\/3 draft +needs constructor/m);
+  // a lane check on one stage is no check on a stage named like an inherited member
+  govern(e, ["cmd", "p1", "smoke", "--", "sh", "-c", "exit 0"]);
+  assert.equal(govern(e, ["check", "p1", "--set", "smoke", "--stage", "draft"]).code, 0);
+  assert.match(govern(e, ["advance", "p1"]).err, /p1: needs the owner's constructor approval/);
+  assert.match(govern(e, ["work", "p1", "valueOf"]).err, /cannot skip stage draft: needs the owner's constructor approval/);
+  assert.match(govern(e, ["approve", "p1", "toString", "--quote", "ok"]).err, /needs the constructor approval first/);
+  assert.match(govern(e, ["approve", "p1", "constructor", "--quote", "draft ok"]).out, /p1: constructor approved/);
+  assert.match(govern(e, ["brief", "p1"]).out, /approvals: constructor ✓ \d{4}-\d{2}-\d{2} · toString –/);
+  row("desk", /^ +p1 +proto +1\/3 draft +needs toString/m);
+  assert.match(govern(e, ["advance", "p1"]).out, /p1: draft → valueOf \(check smoke ok\)/);
+  assert.match(govern(e, ["check", "p1"]).out, /p1: stage valueOf has no check/);
+  assert.match(govern(e, ["advance", "p1", "--note", "reviewed"]).err, /p1: needs the owner's toString approval/);
+  assert.match(govern(e, ["approve", "p1", "toString", "--quote", "review ok"]).out, /p1: toString approved/);
+  assert.match(govern(e, ["advance", "p1", "--note", "reviewed"]).out, /p1: valueOf → done/);
+  row("status", /^p1 +proto +3\/3 done +approvals CT/m);
+  row("desk", /^ +p1 +proto +3\/3 done +all approved/m);
+  const saved = JSON.parse(readFileSync(join(e.projects, "p1", "govern.json"), "utf8"));
+  assert.deepEqual(Object.keys(saved.approvals), ["constructor", "toString"]);
+  assert.deepEqual(Object.keys(saved.checks), ["draft"]);
+});
+
 test("check runs the stage's exit check; advance needs the check, the gate or the evidence", () => {
   const e = env();
   govern(e, ["new", "lib", "--process", "dev", "--title", "A library"]);

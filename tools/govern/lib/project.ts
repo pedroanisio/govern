@@ -4,7 +4,7 @@ import { join, dirname, resolve, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import { GovernError, fail, readJson, writeJson, nowIso, latest, plain, clip, readJsonl } from "./util.ts";
 import { getProcess, processOf, processes, processName } from "./process.ts";
-import { obj, arr, record, str, name, posInt, literal, parseFile, reject, keyPath, type Shape } from "./shape.ts";
+import { obj, arr, record, emptyRecord, str, name, posInt, literal, parseFile, reject, keyPath, type Shape } from "./shape.ts";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 /** Settings a workspace keeps in govern.config.json: where its lanes, queue and processes live (relative to the file). */
@@ -176,8 +176,8 @@ export function create(given: string, o: { kind?: string; process?: string; titl
     proc = kind === "ops" ? "ops" : "video";
   }
   const dir = projectDir(slug);
-  const commands: Record<string, string[]> = {};
-  const files: Record<string, string> = {};
+  const commands = emptyRecord<string[]>();
+  const files = emptyRecord<string>();
   if (proc === "video") {
     if (existsSync(join(dir, "film.json"))) {
       commands.fb = ["{python}", "{repo}/PALS-Notes/videos/lib/tools/film_build.py", "film.json"];
@@ -188,7 +188,7 @@ export function create(given: string, o: { kind?: string; process?: string; titl
   }
   const p: Project = {
     version: 1, slug, title: o.title ?? slug, kind, process: proc, lang: o.lang ?? "en", ...(o.parent ? { parent: o.parent } : {}),
-    stage: getProcess(proc).stages[0].name, created: nowIso(), commands, files, approvals: {}, notes: [],
+    stage: getProcess(proc).stages[0].name, created: nowIso(), commands, files, approvals: emptyRecord<Approval>(), notes: [],
   };
   save(p);
   return p;

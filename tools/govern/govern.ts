@@ -9,6 +9,7 @@ import { randomUUID } from "node:crypto";
 import { GovernError, fail, parseArgs, opt, flag, many, flagNames, secondsOpt, nowIso, readJsonl, kTok, clip, type Args, type FlagSpec } from "./lib/util.ts";
 import { REPO, PROJECTS, stagesOf, load, save, create, stageOf, brief, appendLedger, resolveFile, ledgerFile, projectDir, checkSlug, checkOf, pendingCheckChanges, blockedBy, laneState, laneSlugs, laneRows, stateFile, argvOf, commandLine, type Project, type Command } from "./lib/project.ts";
 import { processes, getProcess, processOf, listLine, show } from "./lib/process.ts";
+import { emptyRecord } from "./lib/shape.ts";
 import * as jobs from "./lib/jobs.ts";
 import { ask, readPrompt, PROMPTS } from "./lib/codex.ts";
 import { report, currentCtx, CTX_WARN } from "./lib/usage.ts";
@@ -148,7 +149,9 @@ function cmdCheck(a: Args): void {
     const stage = stageOf(opt(a, "stage") ?? p.stage, p);
     const from = checkOf(p, stage) ?? null;
     if (from === set) return out(`${p.slug}: stage ${stage} is already checked by "${set}" — nothing changed`);
-    p.checks = { ...(p.checks ?? {}), [stage]: set };
+    const checks = p.checks ?? emptyRecord<string>();
+    checks[stage] = set;
+    p.checks = checks;
     save(p);
     appendLedger(p.slug, { kind: "check-set", stage, from, to: set });
     return out(`${p.slug}: stage ${stage} checked by "${set}"${p.commands[set] ? "" : ` (name it: govern cmd ${p.slug} ${set} -- …)`}`);

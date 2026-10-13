@@ -5,13 +5,16 @@ import assert from "node:assert/strict";
 import { readdirSync, readFileSync, existsSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { makeEnv, govern, write, present, HERE, tempDir } from "./helpers.ts";
-import { parseFile, check, obj, arr, record, str, name, posInt, literal } from "../lib/shape.ts";
+import { parseFile, check, obj, arr, record, emptyRecord, str, name, posInt, literal } from "../lib/shape.ts";
 import { parseProcess } from "../lib/process.ts";
 import { parseProject } from "../lib/project.ts";
 import { GovernError } from "../lib/util.ts";
 
 // parseProject looks processes up: only the built-ins, never a real workspace's processes folder
 process.env.GOVERN_PROCESSES = tempDir("no-processes");
+
+/** `o`'s keys and values in a map with no prototype, as record() returns them (a strict deepEqual compares prototypes). */
+const bare = (o: unknown) => Object.assign(emptyRecord<unknown>(), o);
 
 const refused = (f: () => unknown, text: string) => {
   assert.throws(f, (e: unknown) => {
@@ -24,7 +27,7 @@ const refused = (f: () => unknown, text: string) => {
 
 test("shape: objects refuse unknown and missing keys, every field is typed, the path names the field", () => {
   const s = obj({ a: str, n: posInt, xs: arr(name, { nonEmpty: true }) }, { m: record(str), l: literal("x") });
-  assert.deepEqual(check("f", { a: "", n: 2, xs: ["q"], m: { "k k": "v" } }, s), { a: "", n: 2, xs: ["q"], m: { "k k": "v" } });
+  assert.deepEqual(check("f", { a: "", n: 2, xs: ["q"], m: { "k k": "v" } }, s), { a: "", n: 2, xs: ["q"], m: bare({ "k k": "v" }) });
   refused(() => check("f", { a: "", n: 2, xs: ["q"], extra: 1 }, s), `f: $.extra: unknown key "extra" (known: a, n, xs, m, l)`);
   refused(() => check("f", { a: "", xs: ["q"] }, s), "f: $.n: missing");
   refused(() => check("f", { a: "", n: 0, xs: ["q"] }, s), "f: $.n: must be a whole number, 1 or more (got 0)");
@@ -94,14 +97,20 @@ const lane = (o: Record<string, unknown> = {}) => ({
   notes: [{ at: "2026-01-04T00:00:00.000Z", stage: "plan", text: "planned" }],
   ...o,
 });
+/** What a parse of lane text `o` returns: the same keys and values, its maps (record()s) with no prototype. */
+const parsed = (o: Record<string, unknown>) => {
+  const out = { ...o };
+  for (const m of ["commands", "files", "checks", "approvals"]) if (out[m] !== undefined) out[m] = bare(out[m]);
+  return out;
+};
 const badLane = (o: Record<string, unknown>, text: string, slug = "full") =>
   refused(() => parseProject(`/p/${slug}/govern.json`, JSON.stringify(lane(o)), slug), `/p/${slug}/govern.json: ${text}`);
 
 test("govern.json: every key and both command shapes parse; the parse keeps the values", () => {
   const p = parseProject("/p/full/govern.json", JSON.stringify(lane()), "full");
-  assert.deepEqual(p, lane());
+  assert.deepEqual(p, parsed(lane()));
   const { process: _p, parent: _a, finished: _f, checks: _c, after: _d, ...minimal } = lane({ kind: "ops", stage: "plan" });
-  assert.deepEqual(parseProject("/p/full/govern.json", JSON.stringify(minimal), "full"), minimal, "the optional keys may be absent (no process: ops)");
+  assert.deepEqual(parseProject("/p/full/govern.json", JSON.stringify(minimal), "full"), parsed(minimal), "the optional keys may be absent (no process: ops)");
   assert.equal(parseProject("/p/v/govern.json", JSON.stringify(lane({ slug: "v", kind: "long", process: undefined, stage: "script-check", checks: undefined })), "v").kind, "long");
 });
 
@@ -163,6 +172,34 @@ test("a parse keeps the file's key order, so a load and save does not reorder go
   write(f, JSON.stringify(Object.fromEntries(Object.entries(JSON.parse(readFileSync(f, "utf8"))).reverse()), null, 2) + "\n");
   assert.equal(govern(e, ["note", "lane", "kept in order"]).code, 0);
   assert.deepEqual(Object.keys(JSON.parse(readFileSync(f, "utf8"))), order, "a save writes the keys in the order the file had them");
+});
+
+test("a govern.json map (approvals, commands, files, checks) holds only its own keys, and a load and save writes it unchanged", () => {
+  const maps = ["approvals", "commands", "files", "checks"] as const;
+  const p = parseProject("/p/full/govern.json", JSON.stringify(lane()), "full");
+  for (const m of maps) {
+    const v = present(p[m], m);
+    assert.equal(Object.getPrototypeOf(v), null, `${m} inherits nothing`);
+    for (const k of PROTO_KEYS) assert.equal(k in v, false, `${m} has no "${k}"`);
+  }
+  const rec = check("f", { a: "x" }, record(str));
+  assert.equal(Object.getPrototypeOf(rec), null, "record() inherits nothing");
+  assert.equal(rec.constructor, undefined);
+  assert.equal(JSON.stringify(p), JSON.stringify(lane()), "a parse serializes as the text it read");
+  const e = makeEnv();
+  assert.equal(govern(e, ["new", "lane", "--process", "dev"]).code, 0);
+  const f = join(e.projects, "lane", "govern.json");
+  const stored = {
+    ...JSON.parse(readFileSync(f, "utf8")),
+    approvals: { owner: { at: "2026-01-05T00:00:00.000Z", quote: "ship it" } },
+    commands: { test: ["node", "--test"], slow: { argv: ["make", "all"], timeout: 900 } },
+    files: { spec: "SPEC.md" },
+    checks: { build: "slow" },
+  };
+  write(f, JSON.stringify(stored, null, 2) + "\n");
+  assert.equal(govern(e, ["note", "lane", "saved again"]).code, 0);
+  const saved = JSON.parse(readFileSync(f, "utf8"));
+  for (const m of maps) assert.equal(JSON.stringify(saved[m]), JSON.stringify(stored[m]), `${m} is written back unchanged`);
 });
 
 test("save never writes a govern.json that load would refuse: an empty --lang exits 2 and writes nothing", () => {
