@@ -1,7 +1,9 @@
 // The command table: one declaration per command drives dispatch, flag parsing and the help text.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { makeEnv, govern } from "./helpers.ts";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import { makeEnv, govern, HERE } from "./helpers.ts";
 import { parseArgs, opt, flag, many } from "../lib/util.ts";
 import { COMMANDS, HELP, commandHelp } from "../govern.ts";
 
@@ -101,6 +103,36 @@ test("HELP is generated from the table: every command, every subcommand, every d
       assert.ok(text.includes(`--${f}`), `${c.name}: --${f} is declared but not in its help`);
   }
   assert.equal(new Set(COMMANDS.map((c) => c.name)).size, COMMANDS.length, "command names are unique");
+});
+
+/** Every `govern <command> [<sub>]` in SKILL.md's code (inline code spans and fenced blocks), as [command, word after it]. */
+function skillMentions(): [string, string | undefined][] {
+  const md = readFileSync(join(HERE, "..", "SKILL.md"), "utf8");
+  const code = [...md.matchAll(/```[^\n]*\n([\s\S]*?)```/g)].map((m) => m[1]);
+  const rest = md.replace(/```[^\n]*\n[\s\S]*?```/g, "");
+  code.push(...[...rest.matchAll(/`([^`\n]+)`/g)].map((m) => m[1]));
+  return code.flatMap((c) => [...c.matchAll(/(?:^|[\s(])govern ([a-z][a-z-]*)(?: ([a-z][a-z-]*))?/g)].map((m) => [m[1], m[2]] as [string, string | undefined]));
+}
+
+test("drift: every command and subcommand is in SKILL.md and HELP; SKILL.md names no command that does not exist", () => {
+  const mentions = skillMentions();
+  assert.ok(mentions.length > 20, "SKILL.md's govern mentions are found");
+  const said = new Set(mentions.map(([c]) => c));
+  const saidSub = new Set(mentions.map(([c, s]) => `${c} ${s}`));
+  for (const c of COMMANDS) {
+    assert.ok(said.has(c.name), `SKILL.md never mentions \`govern ${c.name}\``);
+    assert.match(HELP, new RegExp(`govern ${c.name}\\b`), `HELP lacks govern ${c.name}`);
+    for (const s of Object.keys(c.subs ?? {})) {
+      assert.ok(saidSub.has(`${c.name} ${s}`), `SKILL.md never mentions \`govern ${c.name} ${s}\``);
+      assert.match(HELP, new RegExp(`govern ${c.name} ${s}\\b`), `HELP lacks govern ${c.name} ${s}`);
+    }
+  }
+  const byName = new Map(COMMANDS.map((c) => [c.name, c]));
+  for (const [c, s] of mentions) {
+    const cmd = byName.get(c);
+    assert.ok(cmd, `SKILL.md mentions \`govern ${c}\`, which is not a command`);
+    if (cmd.subs && s !== undefined) assert.ok(s in cmd.subs, `SKILL.md mentions \`govern ${c} ${s}\`, which is not a subcommand of ${c}`);
+  }
 });
 
 test("parseArgs: strict, typed accessors refuse a flag the spec does not declare", () => {

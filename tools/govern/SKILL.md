@@ -26,13 +26,13 @@ The owner's one screen is `govern desk`: every lane (videos and `ops/*` work), t
    - last jobs;
    - recent decisions.
 
-   Work from the brief. Do not read WORKFLOW.md, CHECKLIST.md, the style guide or old reports in full. The brief carries the exit condition, and `govern ask` carries the rules each step needs.
+   `govern brief <slug>` prints the brief again without opening a segment. Work from the brief. Do not read WORKFLOW.md, CHECKLIST.md, the style guide or old reports in full. The brief carries the exit condition, and `govern ask` carries the rules each step needs.
 3. If the video's build commands or files are not named yet, name them once:
    - `govern cmd <slug> preview -- {python} build_short1.py --preview`. Placeholders: `{python}`, `{repo}`, `{dir}`.
    - `govern file <slug> script short-1.screenplay.json`
    - `govern file <slug> sheet "renders/**/*sheet*.png"`. A glob means its newest match.
 
-`govern help` lists every command with its flags; `govern help <command>` (or `govern <command> --help`) shows one. The command comes first, then its subcommand (`govern task send …`), then arguments and flags. A flag the command does not take, a switch given a value other than true or false, and a value flag with no value are refused (exit 2) with the command's valid flags; give a value that starts with `--` as `--flag=VALUE`.
+`govern help` lists every command with its flags; `govern help <command>` (or `govern <command> --help`) shows one. The command comes first, then its subcommand (`govern task send …`), then arguments and flags. A flag the command does not take, a switch given a value other than true or false, and a value flag with no value are refused (exit 2) with the command's valid flags; give a value that starts with `--` as `--flag=VALUE`. `govern manual` prints this manual; `govern install-skill [<skills dir>]` installs it as the govern skill (default: the repo's `.claude/skills`).
 
 ## Any process, any group of agents
 
@@ -58,6 +58,7 @@ The owner says what to change. Then:
 3. **Build without waiting in the model.** Run `govern run <slug> preview --bg`, then `govern wait <slug>`.
    - In Claude Code, run the wait as one Bash call with `run_in_background: true`. You are notified when it ends, and no tokens are spent while it runs. Never write sleep or poll loops, and never check a job repeatedly.
    - `wait` prints the exit code, the new files and the last 12 log lines. Use `govern log <slug> --grep RE` only if those lines don't explain a failure.
+   - `govern jobs <slug>` lists the lane's latest jobs (status, exit code, seconds), for when you need a job id or an older result.
 4. **Show the result.**
    - Give the owner the sheet's or preview's path to open.
    - Read an image yourself only when you must judge it. An image stays in the context for the rest of the session, so read one sheet once, not every frame.
@@ -91,7 +92,7 @@ Do not message other sessions, and do not start subagents. Put the request in th
 govern task send --to codex|claude|<session> --project <slug> --task <name> --kind TASK --summary "…" --body "…" --file <repo-relative path>
 ```
 
-- `govern task dispatch`, or the timer `govern task dispatch --loop`, starts one fresh headless session per message: `codex exec` or `claude -p` (Sonnet). The session gets only the message, its thread and the named files. The reply is verified JSON (ACK, REVIEW, HANDOFF, BLOCKED…) and is filed back to the sender. A reply that fails verification becomes a BLOCKED notice from the dispatcher, never an answer; the whole reply is kept in the file the notice names (`whole reply: …`), so read it there instead of re-running the task.
+- `govern task dispatch`, or the timer `govern task dispatch --loop`, starts one fresh headless session per message: `codex exec` or `claude -p` (Sonnet). The session gets only the message, its thread and the named files. The reply is verified JSON (ACK, REVIEW, HANDOFF, BLOCKED…) and is filed back to the sender. A reply that fails verification becomes a BLOCKED notice from the dispatcher, never an answer; the whole reply is kept in the file the notice names (`whole reply: …`), so read it there instead of re-running the task. `govern task install-service [--interval 30]` writes a user systemd service that runs the loop across sessions and reboots, and prints the `systemctl --user` line that enables it.
 - Nothing runs while the queue waits. Read replies with `govern task list --to <you>` and `govern task show <id>`, once, when the owner asks or the work needs them, not in a loop.
 - `--to` must be `codex`, `claude`, `auto`, `owner` or the name of a live Claude Code session (`~/.claude/sessions`); an unknown or dead name fails and lists the live ones. **Sessions are not woken by the queue** (the dispatcher runs only codex and claude): after sending to one, also tell it `govern task show <id>` with SendMessage.
 - Your own mail: `govern task inbox` (open messages for you; `--all` adds closed). Answer with `govern task reply <id> --kind ACK|REVIEW|HANDOFF|... --summary … --body …` (files the reply to the sender and closes the original), `govern task close <id> --note …` when nothing needs saying, `govern task forward <id> --to <name>` when it went to the wrong name. Your name is `GOVERN_AS`, else found from your process tree; pass `--as NAME` if neither works. `govern task inbox --hook` prints a short block only when mail waits, for a UserPromptSubmit/SessionStart hook.
