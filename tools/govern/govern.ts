@@ -6,7 +6,7 @@ import { readFileSync, globSync, mkdirSync, copyFileSync } from "node:fs";
 import { join, dirname, resolve, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
-import { GovernError, fail, parseArgs, opt, secondsOpt, nowIso, readJsonl, kTok, clip, type Args } from "./lib/util.ts";
+import { GovernError, fail, parseArgs, opt, flag, many, flagNames, secondsOpt, nowIso, readJsonl, kTok, clip, type Args, type FlagSpec } from "./lib/util.ts";
 import { REPO, PROJECTS, stagesOf, load, save, create, stageOf, brief, appendLedger, resolveFile, ledgerFile, projectDir, checkSlug, checkOf, pendingCheckChanges, blockedBy, laneState, stateFile, argvOf, commandLine, type Project, type Command } from "./lib/project.ts";
 import { processes, getProcess, processOf, listLine, show } from "./lib/process.ts";
 import * as jobs from "./lib/jobs.ts";
@@ -21,64 +21,6 @@ import { homedir } from "node:os";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const SKILL = resolve(HERE, "SKILL.md");
-
-const HELP = `govern — run lanes of work (videos, software, ops, any process) through their stages with agents (manual: govern manual)
-
-start / state
-  govern new <slug> (--process NAME | --kind long|short|ops) [--title T] [--lang en|pt-BR] [--parent <slug>]
-  govern work <slug> <stage> [--engine claude|codex] [--open]   start a work segment, print the brief
-  govern brief <slug>            the compact context (stage, exit condition, approvals, files, decisions)
-  govern status [<slug>]         one line per video, or the brief of one
-  govern note <slug> "<decision>"          record a decision (state lives in files, not in the chat)
-  govern approve <slug> <gate> --quote "<the owner's words>"   (gates come from the lane's process)
-  govern done <slug>             end the current work segment
-  govern cmd <slug> [<name> [--timeout S] -- <argv…>] | --rm <name>   list or set the lane's commands (S: foreground limit, default 1800; ledgered; redefining or removing a stage's check command is flagged)
-  govern file <slug> <name> <path-or-glob>                 name a file (a glob means its newest match)
-
-process: stages, exit checks, gates, dependencies
-  govern process list  ·  govern process show <name>      built-in and workspace processes (processes/*.json)
-  govern check <slug> [--set <command> --stage <stage>]   run the stage's exit check (or set the lane's own: ledgered; a swap is flagged)
-  govern check <slug> <stage> --accept --quote "<the owner's words>"   the owner accepts that stage's flagged check changes
-  govern advance <slug> [--note "<evidence>"]             next stage: needs the check to pass (or --note when none and none is required) and the gate
-  govern dep <slug> [--after <lane>[:<stage>]] [--rm <lane>]   this lane waits on another (all of it, or past a stage)
-  govern hook stop               Claude Code Stop hook: keeps a session on its lane until the stage's check passes (3 tries)
-
-run without a model in the loop
-  govern run <slug> <command> [--bg] [-- extra args]      foreground prints a summary; --bg returns a job id
-  govern wait <slug> [<job>|last] [--timeout 540]          block until it ends; exit code = the job's (124 = still running)
-  govern jobs <slug>  ·  govern log <slug> [<job>] [--tail 40] [--grep RE]
-  govern kill <slug> [<job>]     stop a job (default: the latest running) and what it started: its process tree, a --bg job's group,
-                                 and (Linux) every process marked with its GOVERN_JOB_DIR; its own pid only while still that job
-  <job> is an id, a unique id prefix, or a command name (that command's newest job)
-
-codex one-shot steps (verified JSON)
-  govern prompts                 list the steps
-  govern ask <slug> <step> [--file F]… [--var K=V]… [--image PNG]… [--effort low|medium|high] [--model M]
-
-measure
-  govern usage [<slug>…] [--since YYYY-MM-DD]   tokens and tool calls per video and segment, against the chat baseline
-  govern ctx                     this Claude Code session's context size now
-  govern manual  ·  govern install-skill [<skills dir>]   the AI's operating manual (SKILL.md)
-
-task queue between agents (one fresh headless session per message; nothing runs while the queue waits)
-  govern task send --to auto|codex|claude|owner|<session> --project P --task T --kind TASK --summary S (--body B | --body-file F)
-                   [--file REPO-RELATIVE-PATH]… [--reply-to ID] [--write] [--from NAME]     --to must be a runner, owner or a LIVE session name
-  govern task list [--to X] [--state open|claimed|done|failed] [--project P]  ·  govern task show <id>
-  govern task inbox [--as NAME] [--all] [--hook]    open messages for NAME (default: GOVERN_AS, else this session); --hook is silent when empty
-  govern task close <id> [--as NAME] [--note T]  ·  govern task forward <id> --to NAME [--as NAME]
-  govern task reply <id> --kind K --summary S (--body B | --body-file F) [--as NAME]   answer the sender, then close <id>
-  govern task dispatch [--max N] [--only codex|claude] [--loop --interval 30]  ·  govern task install-service
-  (sessions are not woken by the queue: tell them "govern task show <id>" with SendMessage; the dispatcher runs codex, claude
-   and the runners named in the queue's config.json, and stops a thread after maxRuns dispatched runs)
-
-the owner's screen
-  govern desk                    every lane, your inbox, the queue, today's tokens (reads files only)
-  govern tune                    measure the last 24 h and record the tuning decision (the dispatcher runs it hourly)
-
-publish (prints the commands; the publish guard hook must see them)
-  govern publish <slug>
-
-stages: govern process list`;
 
 // A reader that stops early (govern brief x | head) is not an error.
 process.stdout.on("error", (e: NodeJS.ErrnoException) => { if (e.code === "EPIPE") process.exit(0); throw e; });
@@ -129,7 +71,7 @@ function cmdWork(a: Args): void {
   p.stage = stage;
   save(p);
   const engine = engineOf(a);
-  if (a.opts.open) {
+  if (flag(a, "open")) {
     const session = engine === "claude" ? randomUUID() : undefined;
     appendLedger(p.slug, { kind: "work", stage, engine, session });
     const first = `Video work session (registered by govern work ${p.slug} ${stage}). Use the govern skill: run \`govern brief ${p.slug}\` first and work from it; do not explore the repository. Then ask me what we change.`;
@@ -186,7 +128,7 @@ function runCheck(p: Project, name: string, stage = p.stage): { ok: boolean; exi
  *  check changes (lib/project.ts, pendingCheckChanges). A set's `from` is the stage's effective check before it. */
 function cmdCheck(a: Args): void {
   const p = load(a._[1]);
-  if (a.opts.accept) {
+  if (flag(a, "accept")) {
     const stage = stageOf(a._[2], p);
     const quote = opt(a, "quote");
     if (!quote || quote.trim().length < 2) fail(`--quote is required: the owner's own words accepting the change to the check of stage ${stage} (only the owner accepts)`);
@@ -362,7 +304,7 @@ function cmdRun(a: Args): void {
   const p = load(a._[1]);
   const name = a._[2];
   if (!name) fail(`govern run ${p.slug} <command> (have: ${Object.keys(p.commands).join(", ") || "none"})`);
-  const st = jobs.start(p, name, a._.slice(3), Boolean(a.opts.bg));
+  const st = jobs.start(p, name, a._.slice(3), flag(a, "bg"));
   if (st.status === "running") return out(`job ${st.id} started in the background · wait with: govern wait ${p.slug} ${st.id}`);
   out(jobs.summary(p, st));
   process.exitCode = st.exit ?? 1;
@@ -384,8 +326,8 @@ function cmdAsk(a: Args): void {
   const step = a._[2];
   if (!step) fail("govern ask <slug> <step> (see govern prompts)");
   const vars: Record<string, string> = {};
-  for (const kv of a.multi.var ?? []) { const i = kv.indexOf("="); if (i < 1) fail(`--var needs NAME=VALUE: ${kv}`); vars[kv.slice(0, i)] = kv.slice(i + 1); }
-  const r = ask(p, step, { files: a.multi.file, vars, images: a.multi.image, effort: opt(a, "effort"), model: opt(a, "model") });
+  for (const kv of many(a, "var")) { const i = kv.indexOf("="); if (i < 1) fail(`--var needs NAME=VALUE: ${kv}`); vars[kv.slice(0, i)] = kv.slice(i + 1); }
+  const r = ask(p, step, { files: many(a, "file"), vars, images: many(a, "image"), effort: opt(a, "effort"), model: opt(a, "model") });
   const u = r.usage;
   const meter = `codex ${step}: ${r.calls} call${r.calls > 1 ? "s" : ""}, ${r.turns} turns, ${kTok(u.input)} in (${u.input ? Math.round((u.cached / u.input) * 100) : 0}% cached), ${kTok(u.output)} out, ${r.seconds}s`;
   if (!r.ok) { out(`${meter}\nFAILED verification (nothing to use):\n- ${r.errors.join("\n- ")}\nraw: ${relative(REPO, r.out)}`); process.exitCode = 3; return; }
@@ -439,7 +381,7 @@ const rowLine = ({ state, m }: { state: string; m: queue.Message }) => {
 };
 
 function cmdInbox(a: Args): void {
-  if (a.opts.hook) {
+  if (flag(a, "hook")) {
     // For a UserPromptSubmit/SessionStart hook: silent unless there is something to say, and it never fails.
     try {
       const name = resolveAs({ as: opt(a, "as") });
@@ -453,7 +395,7 @@ function cmdInbox(a: Args): void {
     return;
   }
   const name = requireAs(opt(a, "as"));
-  const rows = queue.all().filter((x) => x.m.to === name && (a.opts.all || x.state === "open"));
+  const rows = queue.all().filter((x) => x.m.to === name && (flag(a, "all") || x.state === "open"));
   if (!rows.length) return out("(no messages)");
   rows.forEach((r) => out(rowLine(r)));
 }
@@ -466,8 +408,8 @@ function cmdTask(a: Args): void {
     const { to, routed } = recipient(opt(a, "to") ?? "");
     const m = queue.send({
       project: opt(a, "project") ?? "", task: opt(a, "task") ?? "", kind: opt(a, "kind") ?? "TASK", from: opt(a, "from") ?? resolveAs() ?? fail("cannot tell who is sending (no parent process is a registered Claude Code session): pass --from NAME"),
-      to, ...(routed ? { routed: true } : {}), summary: opt(a, "summary") ?? "", body, files: a.multi.file ?? [], replyTo: opt(a, "reply-to"),
-      access: a.opts.write ? "write" : "read-only",
+      to, ...(routed ? { routed: true } : {}), summary: opt(a, "summary") ?? "", body, files: many(a, "file"), replyTo: opt(a, "reply-to"),
+      access: flag(a, "write") ? "write" : "read-only",
     });
     out(`queued ${m.id} (${m.kind} to ${m.to})`);
     return wakeNote(m);
@@ -505,7 +447,7 @@ function cmdTask(a: Args): void {
   if (sub === "dispatch") {
     const max = opt(a, "max") ? Number(opt(a, "max")) : undefined;
     const once = () => queue.dispatch({ max, only: opt(a, "only") }).forEach((l) => out(l));
-    if (!a.opts.loop) { once(); return; }
+    if (!flag(a, "loop")) { once(); return; }
     const secs = Number(opt(a, "interval") ?? 30);
     const pidf = join(queue.QUEUE(), "dispatcher.json");
     mkdirSync(queue.QUEUE(), { recursive: true });
@@ -536,30 +478,61 @@ function cmdTask(a: Args): void {
     ].join("\n"));
     return out(`wrote ${unit}\nenable with: systemctl --user daemon-reload && systemctl --user enable --now govern-dispatch`);
   }
-  fail("govern task send|list|show|inbox|close|reply|forward|dispatch|install-service (govern help)");
+  fail(TASK_SUBS);
 }
 
-function main(argv: string[]): void {
-  const a = parseArgs(argv, { bool: ["bg", "open", "help", "write", "loop", "hook", "all", "accept"], multi: ["file", "var", "image"] });
-  const c = a._[0];
-  switch (c) {
-    case undefined: case "help": case "-h": return out(HELP);
-    case "manual": return out(readFileSync(SKILL, "utf8"));
-    case "install-skill": {
-      const dest = join(a._[1] ?? join(REPO, ".claude", "skills"), "govern", "SKILL.md");
-      mkdirSync(dirname(dest), { recursive: true });
-      copyFileSync(SKILL, dest);
-      return out(`installed ${dest} (refresh with govern install-skill after editing tools/govern/SKILL.md)`);
-    }
-    case "new": {
+// ── The command table ────────────────────────────────────────────────────────────────────────────────────────────────
+// One entry per command drives dispatch, flag parsing (every flag a command reads is declared on it: lib/util.ts parseArgs
+// refuses any other, and opt/flag/many refuse to read an undeclared one) and the help text below.
+
+/** One help line: the usage after `govern <command>[ <sub>]`, and what it does. */
+type Line = readonly [usage: string, help?: string];
+export interface Sub { lines: readonly Line[]; flags?: FlagSpec; run: (a: Args) => void }
+export interface Cmd {
+  name: string;
+  section: number;
+  lines?: readonly Line[];
+  flags?: FlagSpec;
+  run?: (a: Args) => void;
+  /** Subcommands: the word right after the command, each with its own flags. */
+  subs?: Record<string, Sub>;
+  /** The subcommand a bare `govern <name>` runs; without one, a missing or unknown subcommand is refused with `noSub`. */
+  defaultSub?: string;
+  noSub?: string;
+  /** Print the context-size warning after the command (default true). */
+  footer?: boolean;
+}
+
+const SECTIONS: readonly (readonly [title: string, notes?: readonly string[]])[] = [
+  ["start / state"],
+  ["process: stages, exit checks, gates, dependencies"],
+  ["run without a model in the loop", ["<job> is an id, a unique id prefix, or a command name (that command's newest job)"]],
+  ["codex one-shot steps (verified JSON)"],
+  ["measure"],
+  ["this help and the operating manual"],
+  ["task queue between agents (one fresh headless session per message; nothing runs while the queue waits)", [
+    "(sessions are not woken by the queue: tell them \"govern task show <id>\" with SendMessage; the dispatcher runs codex, claude",
+    " and the runners named in the queue's config.json, and stops a thread after maxRuns dispatched runs)"]],
+  ["the owner's screen"],
+  ["publish (prints the commands; the publish guard hook must see them)"],
+];
+
+const TASK_SUBS = "govern task send|list|show|inbox|close|reply|forward|dispatch|install-service (govern help)";
+
+export const COMMANDS: readonly Cmd[] = [
+  { name: "new", section: 0, footer: false, flags: { value: ["kind", "process", "title", "lang", "parent"] },
+    lines: [["<slug> (--process NAME | --kind long|short|ops) [--title T] [--lang en|pt-BR] [--parent <slug>]", "create a lane and print its brief"]],
+    run: (a) => {
       const p = create(checkSlug(a._[1]), { kind: opt(a, "kind"), process: opt(a, "process"), title: opt(a, "title"), lang: opt(a, "lang"), parent: opt(a, "parent") });
       out(`created ${relative(REPO, join(projectDir(p.slug), "govern.json"))}`);
-      return out(brief(p));
-    }
-    case "work": cmdWork(a); break;
-    case "brief": out(brief(load(a._[1]))); break;
-    case "status": cmdStatus(a); break;
-    case "note": {
+      out(brief(p));
+    } },
+  { name: "work", section: 0, flags: { value: ["engine"], bool: ["open"] },
+    lines: [["<slug> <stage> [--engine claude|codex] [--open]", "start a work segment, print the brief"]], run: cmdWork },
+  { name: "brief", section: 0, lines: [["<slug>", "the compact context (stage, exit condition, approvals, files, decisions)"]], run: (a) => out(brief(load(a._[1]))) },
+  { name: "status", section: 0, lines: [["[<slug>]", "one line per lane, or the brief of one"]], run: cmdStatus },
+  { name: "note", section: 0, lines: [["<slug> \"<decision>\"", "record a decision (state lives in files, not in the chat)"]],
+    run: (a) => {
       const p = load(a._[1]);
       const text = a._.slice(2).join(" ").trim();
       if (!text) fail("govern note <slug> \"<decision>\"");
@@ -567,37 +540,158 @@ function main(argv: string[]): void {
       save(p);
       appendLedger(p.slug, { kind: "note", text });
       out(`${p.slug}: noted (${p.notes.length})`);
-      break;
-    }
-    case "approve": cmdApprove(a); break;
-    case "check": cmdCheck(a); break;
-    case "advance": cmdAdvance(a); break;
-    case "dep": cmdDep(a); break;
-    case "process": cmdProcess(a); break;
-    case "hook": return cmdHook(a);
-    case "done": { const p = load(a._[1]); appendLedger(p.slug, { kind: "done", engine: engineOf(a), session: process.env.CLAUDE_CODE_SESSION_ID }); out(`${p.slug}: segment closed`); break; }
-    case "cmd": cmdCmd(a); break;
-    case "file": cmdFile(a); break;
-    case "run": cmdRun(a); break;
-    case "wait": cmdWait(a); break;
-    case "kill": { const p = load(a._[1]); const k = jobs.kill(p.slug, a._[2]); out(`job ${k.id} ${k.outcome}`); break; }
-    case "jobs": { const p = load(a._[1]); for (const id of jobs.list(p.slug).slice(-15)) { const s = jobs.state(p.slug, id); out(`${id} ${s.status}${s.exit != null ? ` exit ${s.exit}` : ""}${s.seconds != null ? ` ${s.seconds}s` : ""}`); } break; }
-    case "log": { const p = load(a._[1]); const id = jobs.find(p.slug, a._[2]); out(jobs.tail(p.slug, id, Number(opt(a, "tail") ?? 40), opt(a, "grep")).join("\n") || "(empty log)"); break; }
-    case "prompts": return cmdPrompts();
-    case "ask": cmdAsk(a); break;
-    case "usage": { const since = opt(a, "since"); return out(report(a._.length > 1 ? a._.slice(1).map(checkSlug) : undefined, since ? Date.parse(since) : undefined)); }
-    case "ctx": { const x = currentCtx(); return out(x ? `context now ${kTok(x.ctx)} per call (limit ${kTok(CTX_WARN)})${x.ctx > CTX_WARN ? ` ⚠ over: ${CTX_ADVICE}` : ""}` : "not in a Claude Code session (no CLAUDE_CODE_SESSION_ID) or no transcript yet"); }
-    case "publish": cmdPublish(a); break;
-    case "task": cmdTask(a); break;
-    case "desk": out(desk()); break;
-    case "tune": out(tune()); break;
-    default: fail(`unknown command "${c}" (govern help)`);
+    } },
+  { name: "approve", section: 0, flags: { value: ["quote"] },
+    lines: [["<slug> <gate> --quote \"<the owner's words>\"", "(gates come from the lane's process)"]], run: cmdApprove },
+  { name: "done", section: 0, flags: { value: ["engine"] }, lines: [["<slug> [--engine claude|codex]", "end the current work segment"]],
+    run: (a) => { const p = load(a._[1]); appendLedger(p.slug, { kind: "done", engine: engineOf(a), session: process.env.CLAUDE_CODE_SESSION_ID }); out(`${p.slug}: segment closed`); } },
+  { name: "cmd", section: 0, flags: { value: ["timeout", "rm"] },
+    lines: [["<slug> [<name> [--timeout S] -- <argv…>] | --rm <name>", "list or set the lane's commands (S: foreground limit, default 1800; ledgered;\nredefining or removing a stage's check command is flagged)"]],
+    run: cmdCmd },
+  { name: "file", section: 0, lines: [["<slug> <name> <path-or-glob>", "name a file (a glob means its newest match)"]], run: cmdFile },
+
+  { name: "process", section: 1, defaultSub: "list", noSub: "govern process list|show <name>",
+    subs: {
+      list: { lines: [["", "built-in and workspace processes (processes/*.json)"]], run: cmdProcess },
+      show: { lines: [["<name>", "one process: its stages, exit checks and gates"]], run: cmdProcess },
+    } },
+  { name: "check", section: 1, flags: { value: ["set", "stage", "quote"], bool: ["accept"] },
+    lines: [["<slug> [--set <command> --stage <stage>]", "run the stage's exit check (or set the lane's own: ledgered; a swap is flagged)"],
+      ["<slug> <stage> --accept --quote \"<the owner's words>\"", "the owner accepts that stage's flagged check changes"]], run: cmdCheck },
+  { name: "advance", section: 1, flags: { value: ["note"] },
+    lines: [["<slug> [--note \"<evidence>\"]", "next stage: needs the check to pass (or --note when none and none is required) and the gate"]], run: cmdAdvance },
+  { name: "dep", section: 1, flags: { value: ["after", "rm"] },
+    lines: [["<slug> [--after <lane>[:<stage>]] [--rm <lane>]", "this lane waits on another (all of it, or past a stage)"]], run: cmdDep },
+  { name: "hook", section: 1, footer: false, noSub: "govern hook stop",
+    subs: { stop: { lines: [["", "Claude Code Stop hook: keeps a session on its lane until the stage's check passes (3 tries)"]], run: cmdHook } } },
+
+  { name: "run", section: 2, flags: { bool: ["bg"] },
+    lines: [["<slug> <command> [--bg] [-- extra args]", "foreground prints a summary; --bg returns a job id"]], run: cmdRun },
+  { name: "wait", section: 2, flags: { value: ["timeout"] },
+    lines: [["<slug> [<job>|last] [--timeout 540]", "block until it ends; exit code = the job's (124 = still running)"]], run: cmdWait },
+  { name: "jobs", section: 2, lines: [["<slug>", "the lane's latest jobs: status, exit code, seconds"]],
+    run: (a) => { const p = load(a._[1]); for (const id of jobs.list(p.slug).slice(-15)) { const s = jobs.state(p.slug, id); out(`${id} ${s.status}${s.exit != null ? ` exit ${s.exit}` : ""}${s.seconds != null ? ` ${s.seconds}s` : ""}`); } } },
+  { name: "log", section: 2, flags: { value: ["tail", "grep"] }, lines: [["<slug> [<job>] [--tail 40] [--grep RE]", "a job's log"]],
+    run: (a) => { const p = load(a._[1]); const id = jobs.find(p.slug, a._[2]); out(jobs.tail(p.slug, id, Number(opt(a, "tail") ?? 40), opt(a, "grep")).join("\n") || "(empty log)"); } },
+  { name: "kill", section: 2,
+    lines: [["<slug> [<job>]", "stop a job (default: the latest running) and what it started: its process tree, a --bg job's group,\n" +
+      "and (Linux) every process marked with its GOVERN_JOB_DIR; its own pid only while still that job"]],
+    run: (a) => { const p = load(a._[1]); const k = jobs.kill(p.slug, a._[2]); out(`job ${k.id} ${k.outcome}`); } },
+
+  { name: "prompts", section: 3, footer: false, lines: [["", "list the steps"]], run: cmdPrompts },
+  { name: "ask", section: 3, flags: { multi: ["file", "var", "image"], value: ["effort", "model"] },
+    lines: [["<slug> <step> [--file F]… [--var K=V]… [--image PNG]… [--effort low|medium|high] [--model M]", "one codex step, its reply verified"]], run: cmdAsk },
+
+  { name: "usage", section: 4, footer: false, flags: { value: ["since"] },
+    lines: [["[<slug>…] [--since YYYY-MM-DD]", "tokens and tool calls per lane and segment, against the chat baseline"]],
+    run: (a) => { const since = opt(a, "since"); out(report(a._.length > 1 ? a._.slice(1).map(checkSlug) : undefined, since ? Date.parse(since) : undefined)); } },
+  { name: "ctx", section: 4, footer: false, lines: [["", "this Claude Code session's context size now"]],
+    run: () => { const x = currentCtx(); out(x ? `context now ${kTok(x.ctx)} per call (limit ${kTok(CTX_WARN)})${x.ctx > CTX_WARN ? ` ⚠ over: ${CTX_ADVICE}` : ""}` : "not in a Claude Code session (no CLAUDE_CODE_SESSION_ID) or no transcript yet"); } },
+
+  { name: "help", section: 5, footer: false, lines: [["[<command>]", "this text, or one command's lines (also: govern <command> --help)"]],
+    run: (a) => out(a._[1] ? commandHelp(a._[1]) : HELP) },
+  { name: "manual", section: 5, footer: false, lines: [["", "the AI's operating manual (SKILL.md)"]], run: () => out(readFileSync(SKILL, "utf8")) },
+  { name: "install-skill", section: 5, footer: false, lines: [["[<skills dir>]", "install SKILL.md as the govern skill (default: the repo's .claude/skills)"]],
+    run: (a) => {
+      const dest = join(a._[1] ?? join(REPO, ".claude", "skills"), "govern", "SKILL.md");
+      mkdirSync(dirname(dest), { recursive: true });
+      copyFileSync(SKILL, dest);
+      out(`installed ${dest} (refresh with govern install-skill after editing tools/govern/SKILL.md)`);
+    } },
+
+  { name: "task", section: 6, noSub: TASK_SUBS,
+    subs: {
+      send: { flags: { value: ["to", "project", "task", "kind", "summary", "body", "body-file", "reply-to", "from"], multi: ["file"], bool: ["write"] },
+        lines: [["--to auto|codex|claude|owner|<session> --project P --task T --kind TASK --summary S (--body B | --body-file F)\n" +
+          "[--file REPO-RELATIVE-PATH]… [--reply-to ID] [--write] [--from NAME]", "--to must be a runner, owner or a LIVE session name"]], run: cmdTask },
+      list: { flags: { value: ["to", "state", "project"] }, lines: [["[--to X] [--state open|claimed|done|failed] [--project P]", "the queue's messages"]], run: cmdTask },
+      show: { lines: [["<id>", "a message and its thread"]], run: cmdTask },
+      inbox: { flags: { value: ["as"], bool: ["all", "hook"] },
+        lines: [["[--as NAME] [--all] [--hook]", "open messages for NAME (default: GOVERN_AS, else this session);\n--hook is silent when empty"]], run: cmdTask },
+      close: { flags: { value: ["as", "note"] }, lines: [["<id> [--as NAME] [--note T]", "close a message addressed to NAME"]], run: cmdTask },
+      forward: { flags: { value: ["to", "as"] }, lines: [["<id> --to NAME [--as NAME]", "pass a message on to another recipient"]], run: cmdTask },
+      reply: { flags: { value: ["kind", "summary", "body", "body-file", "as"] },
+        lines: [["<id> --kind K --summary S (--body B | --body-file F) [--as NAME]", "answer the sender, then close <id>"]], run: cmdTask },
+      dispatch: { flags: { value: ["max", "only", "interval"], bool: ["loop"] },
+        lines: [["[--max N] [--only codex|claude] [--loop --interval 30]", "run the open messages addressed to runners"]], run: cmdTask },
+      "install-service": { flags: { value: ["interval"] }, lines: [["[--interval 30]", "a user systemd service running dispatch --loop"]], run: cmdTask },
+    } },
+
+  { name: "desk", section: 7, lines: [["", "every lane, your inbox, the queue, today's tokens (reads files only)"]], run: () => out(desk()) },
+  { name: "tune", section: 7, lines: [["", "measure the last 24 h and record the tuning decision (the dispatcher runs it hourly)"]], run: () => out(tune()) },
+
+  { name: "publish", section: 8, lines: [["<slug>", "the publish commands, once the final and publish gates are approved and the package is filed"]], run: cmdPublish },
+];
+
+const byName = new Map(COMMANDS.map((c) => [c.name, c]));
+
+/** Help lines: `  govern <name>[ <sub>] <usage>`, then the help after it (on lines of its own when the usage is long). */
+function helpLines(head: string, lines: readonly Line[]): string[] {
+  const r: string[] = [];
+  for (const [usage, help] of lines) {
+    const [first, ...more] = `  govern ${head}${usage ? ` ${usage}` : ""}`.split("\n");
+    const left = [first, ...more.map((m) => `${" ".repeat(head.length + 10)}${m}`)];
+    const helps = (help ?? "").split("\n").filter(Boolean);
+    const last = left.length - 1;
+    if (helps.length && left[last].length <= 46) {
+      left[last] = `${left[last].padEnd(48)}${helps.shift()}`;
+      r.push(...left, ...helps.map((h) => `${" ".repeat(48)}${h}`));
+    } else r.push(...left, ...helps.map((h) => `      ${h}`));
   }
-  ctxFooter();
+  return r;
+}
+const cmdLines = (c: Cmd, only?: string): string[] =>
+  c.subs ? Object.entries(c.subs).filter(([s]) => !only || s === only).flatMap(([s, sub]) => helpLines(`${c.name} ${s}`, sub.lines)) : helpLines(c.name, c.lines ?? []);
+
+function unknownCommand(name: string): never {
+  return fail(`unknown command "${name}" (commands: ${COMMANDS.map((c) => c.name).join(", ")}; govern help)`);
 }
 
-try { main(process.argv.slice(2)); }
-catch (e) {
-  if (e instanceof GovernError) { process.stderr.write(`govern: ${e.message}\n`); process.exitCode = e.code; }
-  else throw e;
+/** One command's help lines: all its subcommands, or only `sub`. */
+export function commandHelp(name: string, sub?: string): string {
+  const c = byName.get(name) ?? unknownCommand(name);
+  return cmdLines(c, sub).join("\n");
 }
+
+export const HELP = [
+  "govern — run lanes of work (videos, software, ops, any process) through their stages with agents (manual: govern manual)",
+  ...SECTIONS.flatMap(([title, notes], i) => ["", title, ...COMMANDS.filter((c) => c.section === i).flatMap((c) => cmdLines(c)), ...(notes ?? []).map((n) => `  ${n}`)]),
+  "",
+  "stages: govern process list",
+].join("\n");
+
+/** Every command takes --help: its own help lines instead of running. */
+const withHelp = (f: FlagSpec | undefined): FlagSpec => ({ ...f, bool: [...(f?.bool ?? []), "help"] });
+
+function main(argv: string[]): void {
+  const name = argv[0];
+  if (name === undefined || name === "-h" || name === "--help") return void out(HELP);
+  if (name.startsWith("--")) fail(`the command comes first: govern <command> [<args>] [--flags] (got ${name} first; govern help)`);
+  const c = byName.get(name) ?? unknownCommand(name);
+  let entry: { flags?: FlagSpec; run?: (a: Args) => void } = c, label = c.name, sub: string | undefined, rest = argv.slice(1);
+  const lead = [name];
+  if (c.subs) {
+    const word = argv[1];
+    const given = word !== undefined && !word.startsWith("--");
+    if (!given && word === "--help" && argv.length === 2) return void out(commandHelp(c.name));
+    sub = given ? word : c.defaultSub;
+    if (!sub || !Object.hasOwn(c.subs, sub)) fail(c.noSub ?? `govern ${c.name} ${Object.keys(c.subs).join("|")}`);
+    entry = c.subs[sub!];
+    label = `${c.name} ${sub}`;
+    if (given) { rest = argv.slice(2); lead.push(word); }
+  }
+  const a = parseArgs(rest, withHelp(entry.flags), label);
+  if (flag(a, "help")) return void out(commandHelp(c.name, sub));
+  a._.unshift(...lead);
+  entry.run!(a);
+  if (c.footer !== false) ctxFooter();
+}
+
+if (import.meta.main) {
+  try { main(process.argv.slice(2)); }
+  catch (e) {
+    if (e instanceof GovernError) { process.stderr.write(`govern: ${e.message}\n`); process.exitCode = e.code; }
+    else throw e;
+  }
+}
+

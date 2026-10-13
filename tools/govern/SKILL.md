@@ -32,6 +32,8 @@ The owner's one screen is `govern desk`: every lane (videos and `ops/*` work), t
    - `govern file <slug> script short-1.screenplay.json`
    - `govern file <slug> sheet "renders/**/*sheet*.png"`. A glob means its newest match.
 
+`govern help` lists every command with its flags; `govern help <command>` (or `govern <command> --help`) shows one. The command comes first, then its subcommand (`govern task send …`), then arguments and flags. A flag the command does not take, a switch given a value other than true or false, and a value flag with no value are refused (exit 2) with the command's valid flags; give a value that starts with `--` as `--flag=VALUE`.
+
 ## Any process, any group of agents
 
 govern is not tied to video. A lane follows a **process**: stages, the exit condition of each, the command that checks it, and the owner's gates.

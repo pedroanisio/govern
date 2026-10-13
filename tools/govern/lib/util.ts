@@ -9,25 +9,57 @@ export class GovernError extends Error {
 }
 export const fail = (msg: string, code = 2): never => { throw new GovernError(msg, code); };
 
-export interface Args { _: string[]; opts: Record<string, string | boolean>; multi: Record<string, string[]> }
+/** The flags a command takes: switches (`--k`, `--k=true|false`), value flags (`--k V`, `--k=V`; the last one wins)
+ *  and repeatable value flags (every occurrence kept). A flag outside the spec is a usage error. */
+export interface FlagSpec { bool?: readonly string[]; value?: readonly string[]; multi?: readonly string[] }
+export interface Args { _: string[]; opts: Record<string, string | boolean>; multi: Record<string, string[]>; spec: FlagSpec; label: string }
 
-/** Parse argv: positionals, `--k v`, `--k=v`, boolean flags, repeatable flags, and `--` (rest kept raw). */
-export function parseArgs(argv: string[], spec: { bool?: string[]; multi?: string[] } = {}): Args {
-  const bool = new Set(spec.bool ?? []), multi = new Set(spec.multi ?? []);
-  const out: Args = { _: [], opts: {}, multi: {} };
+/** The flags of a spec in declaration order (value, multi, then switches), as `--a, --b`, or "" for none. */
+export const flagNames = (spec: FlagSpec) => [...(spec.value ?? []), ...(spec.multi ?? []), ...(spec.bool ?? [])].map((f) => `--${f}`).join(", ");
+
+/** A word that reads as a long flag: it cannot be the value of the flag before it (give that one as --k=VALUE). */
+const looksLikeFlag = (s: string) => /^--[A-Za-z]/.test(s);
+
+/** Parse argv against `spec`: positionals, `--k v`, `--k=v`, switches, repeatable flags, and `--` (rest kept raw).
+ *  `label` names the command in every error. An unknown flag, a switch given a value other than true/false, and a
+ *  value flag without its value are usage errors (GovernError, exit 2) naming the flag and the valid ones. */
+export function parseArgs(argv: string[], spec: FlagSpec, label: string): Args {
+  const bool = new Set(spec.bool ?? []), value = new Set(spec.value ?? []), multi = new Set(spec.multi ?? []);
+  const out: Args = { _: [], opts: {}, multi: {}, spec, label };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === "--") { out._.push(...argv.slice(i + 1)); break; }
-    if (!a.startsWith("--") || a === "-") { out._.push(a); continue; }
+    if (!a.startsWith("--")) { out._.push(a); continue; }
     let [k, v] = a.slice(2).split(/=(.*)/s, 2) as [string, string | undefined];
-    if (bool.has(k)) { out.opts[k] = v === undefined ? true : v !== "false"; continue; }
-    if (v === undefined) { v = argv[++i]; if (v === undefined) fail(`--${k} needs a value`); }
+    if (bool.has(k)) {
+      if (v !== undefined && v !== "true" && v !== "false") fail(`${label}: --${k} is a switch: it takes no value (got ${JSON.stringify(v)})`);
+      out.opts[k] = v !== "false";
+      continue;
+    }
+    if (!value.has(k) && !multi.has(k)) {
+      const valid = flagNames(spec);
+      fail(`${label}: unknown flag ${k ? `--${k}` : a} ${valid ? `(valid: ${valid})` : "(takes no flags)"}`);
+    }
+    if (v === undefined) {
+      v = argv[++i];
+      if (v === undefined || v === "--" || looksLikeFlag(v)) fail(`${label}: --${k} needs a value (give --${k}=VALUE when the value starts with --)`);
+    }
     if (multi.has(k)) (out.multi[k] ??= []).push(v);
     else out.opts[k] = v;
   }
   return out;
 }
-export const opt = (a: Args, k: string): string | undefined => (typeof a.opts[k] === "string" ? (a.opts[k] as string) : undefined);
+
+/** Reading a flag the command did not declare (or declared as another kind) is a bug in govern, not a usage error. */
+function declared(a: Args, k: string, kind: keyof FlagSpec, what: string): void {
+  if (!(a.spec[kind] ?? []).includes(k)) throw new Error(`${a.label} reads --${k} as ${what}, but it is not declared as one`);
+}
+/** A value flag's value, or undefined when not given. */
+export const opt = (a: Args, k: string): string | undefined => { declared(a, k, "value", "a value flag"); return a.opts[k] as string | undefined; };
+/** Whether a switch is on. */
+export const flag = (a: Args, k: string): boolean => { declared(a, k, "bool", "a switch"); return a.opts[k] === true; };
+/** Every value of a repeatable flag, in order. */
+export const many = (a: Args, k: string): string[] => { declared(a, k, "multi", "a repeatable flag"); return a.multi[k] ?? []; };
 /** A `--<k>` count of seconds: digits only, 1 or more, no sign, fraction, exponent or padding. Undefined when not given. */
 export function secondsOpt(a: Args, k: string): number | undefined {
   const v = opt(a, k);
