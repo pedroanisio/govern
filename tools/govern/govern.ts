@@ -7,7 +7,7 @@ import { join, dirname, resolve, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
 import { GovernError, fail, parseArgs, opt, nowIso, readJsonl, kTok, clip, type Args } from "./lib/util.ts";
-import { REPO, PROJECTS, stagesOf, load, save, create, stageOf, brief, appendLedger, resolveFile, ledgerFile, projectDir, checkSlug, checkOf, blockedBy, laneState, stateFile, argvOf, commandLine, type Project, type Command } from "./lib/project.ts";
+import { REPO, PROJECTS, stagesOf, load, save, create, stageOf, brief, appendLedger, resolveFile, ledgerFile, projectDir, checkSlug, checkOf, pendingCheckChanges, blockedBy, laneState, stateFile, argvOf, commandLine, type Project, type Command } from "./lib/project.ts";
 import { processes, getProcess, processOf, listLine, show } from "./lib/process.ts";
 import * as jobs from "./lib/jobs.ts";
 import { ask, readPrompt, PROMPTS } from "./lib/codex.ts";
@@ -32,12 +32,13 @@ start / state
   govern note <slug> "<decision>"          record a decision (state lives in files, not in the chat)
   govern approve <slug> <gate> --quote "<the owner's words>"   (gates come from the lane's process)
   govern done <slug>             end the current work segment
-  govern cmd <slug> [<name> [--timeout S] -- <argv…>] | --rm <name>   list or set the lane's commands (S: foreground limit, default 1800; ledgered, the brief flags a change behind a check)
+  govern cmd <slug> [<name> [--timeout S] -- <argv…>] | --rm <name>   list or set the lane's commands (S: foreground limit, default 1800; ledgered; redefining or removing a stage's check command is flagged)
   govern file <slug> <name> <path-or-glob>                 name a file (a glob means its newest match)
 
 process: stages, exit checks, gates, dependencies
   govern process list  ·  govern process show <name>      built-in and workspace processes (processes/*.json)
-  govern check <slug> [--set <command> --stage <stage>]   run the stage's exit check (or set the lane's own: ledgered, the brief flags it)
+  govern check <slug> [--set <command> --stage <stage>]   run the stage's exit check (or set the lane's own: ledgered; a swap is flagged)
+  govern check <slug> <stage> --accept --quote "<the owner's words>"   the owner accepts that stage's flagged check changes
   govern advance <slug> [--note "<evidence>"]             next stage: needs the check to pass (or --note when none and none is required) and the gate
   govern dep <slug> [--after <lane>[:<stage>]] [--rm <lane>]   this lane waits on another (all of it, or past a stage)
   govern hook stop               Claude Code Stop hook: keeps a session on its lane until the stage's check passes (3 tries)
@@ -179,8 +180,20 @@ function runCheck(p: Project, name: string, stage = p.stage): { ok: boolean; exi
   return { ok, exit: st.exit, why: jobs.ending(st), text: jobs.summary(p, st) };
 }
 
+/** Run the stage's check, set the lane's own check for a stage, or record the owner's acceptance of a stage's pending
+ *  check changes (lib/project.ts, pendingCheckChanges). A set's `from` is the stage's effective check before it. */
 function cmdCheck(a: Args): void {
   const p = load(a._[1]);
+  if (a.opts.accept) {
+    const stage = stageOf(a._[2], p);
+    const quote = opt(a, "quote");
+    if (!quote || quote.trim().length < 2) fail(`--quote is required: the owner's own words accepting the change to the check of stage ${stage} (only the owner accepts)`);
+    if (!pendingCheckChanges(p, readJsonl(ledgerFile(p.slug))).some((x) => x.stage === stage)) return out(`${p.slug}: stage ${stage} has no change to accept — nothing changed`);
+    p.notes.push({ at: nowIso(), stage: p.stage, text: `owner accepted the changes to the check of stage ${stage}: "${quote}"` });
+    save(p);
+    appendLedger(p.slug, { kind: "check-accept", stage, quote });
+    return out(`${p.slug}: the owner accepted the changes to the check of stage ${stage}`);
+  }
   const set = opt(a, "set");
   if (set) {
     const stage = stageOf(opt(a, "stage") ?? p.stage, p);
@@ -302,9 +315,12 @@ function cmdHook(a: Args): void {
 const sameCommand = (a: string[] | Command, b: string[] | Command) =>
   JSON.stringify([argvOf(a), Array.isArray(a) ? null : a.timeout ?? null]) === JSON.stringify([argvOf(b), Array.isArray(b) ? null : b.timeout ?? null]);
 
+/** The stages of the lane's process whose effective check is the command `name`. */
+const stagesChecking = (p: Project, name: string) => stagesOf(p).filter((s) => checkOf(p, s) === name);
+
 /** List, set or remove a lane's commands. A set or a removal is ledgered with the command as govern.json stores it
- *  (an argv array, or {argv, timeout}), because a check is only as good as the command it names: the brief flags a
- *  change to the command behind the stage's check the same way as a change of the check itself. */
+ *  (an argv array, or {argv, timeout}) and the stages it is the check of, because a check is only as good as the
+ *  command it names: redefining or removing such a command is flagged like a swap of the check itself. */
 function cmdCmd(a: Args): void {
   const p = load(a._[1]);
   const rm = opt(a, "rm");
@@ -313,7 +329,7 @@ function cmdCmd(a: Args): void {
     if (from === undefined) return out(`${p.slug}: no command ${rm} — nothing changed`);
     delete p.commands[rm];
     save(p);
-    appendLedger(p.slug, { kind: "cmd-rm", name: rm, from });
+    appendLedger(p.slug, { kind: "cmd-rm", name: rm, from, stages: stagesChecking(p, rm) });
     return out(`${p.slug}: removed command ${rm}`);
   }
   const name = a._[2];
@@ -327,7 +343,7 @@ function cmdCmd(a: Args): void {
   if (from && sameCommand(from, to)) return out(`${p.slug}: ${name} is already ${commandLine(to)} — nothing changed`);
   p.commands[name] = to;
   save(p);
-  appendLedger(p.slug, { kind: "cmd-set", name, from, to });
+  appendLedger(p.slug, { kind: "cmd-set", name, from, to, stages: stagesChecking(p, name) });
   out(`${p.slug}: ${name} = ${commandLine(to)}`);
 }
 
@@ -522,7 +538,7 @@ function cmdTask(a: Args): void {
 }
 
 function main(argv: string[]): void {
-  const a = parseArgs(argv, { bool: ["bg", "open", "help", "write", "loop", "hook", "all"], multi: ["file", "var", "image"] });
+  const a = parseArgs(argv, { bool: ["bg", "open", "help", "write", "loop", "hook", "all", "accept"], multi: ["file", "var", "image"] });
   const c = a._[0];
   switch (c) {
     case undefined: case "help": case "-h": return out(HELP);

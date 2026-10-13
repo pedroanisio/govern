@@ -230,55 +230,86 @@ test("the prompt states the reply limits, and a reply that fails verification is
   assert.match(readFileSync(raw, "utf8"), /TAIL-MARKER/);
 });
 
-test("check --set is in the ledger, and the brief warns while the current stage's check changed and has not passed since", () => {
+// The rule these tests hold (lib/project.ts, pendingCheckChanges): a swap of a stage's check, or a redefinition or removal
+// of a command that is some stage's check, is flagged until the owner accepts it or the lane is finished. A pass does not
+// clear it: a gamed check is exactly what produces that pass.
+const accepted = "the owner has not accepted it";
+
+test("check --set is ledgered with the stage's effective check; a swap is flagged at every stage, a first check is setup", () => {
   const e = env();
   govern(e, ["new", "lib", "--process", "dev"]);
-  govern(e, ["work", "lib", "test"]);
-  assert.match(govern(e, ["check", "lib", "--set", "true", "--stage", "test"]).out, /lib: stage test checked by "true"/);
-  govern(e, ["check", "lib", "--set", "lint", "--stage", "plan"]);
+  // A swap made before the lane reaches the stage. The first version of this test expected "none → smoke" here, i.e. a
+  // `from` taken from the lane's own overrides; the stage's effective check before the change was the process's "test".
+  assert.match(govern(e, ["check", "lib", "--set", "smoke", "--stage", "test"]).out, /lib: stage test checked by "smoke"/);
   const sets = ledger(e, "lib").filter((x) => x.kind === "check-set").map(({ stage, from, to }) => ({ stage, from, to }));
-  assert.deepEqual(sets, [{ stage: "test", from: "test", to: "true" }, { stage: "plan", from: null, to: "lint" }]);
-  assert.match(govern(e, ["brief", "lib"]).out, /^⚠ the check of stage test changed and has not passed since: test → true$/m);
-  govern(e, ["work", "lib", "test"]);
-  assert.match(govern(e, ["brief", "lib"]).out, /⚠ the check of stage test changed .*: test → true/, "a new segment on the same stage keeps the warning");
-
-  // Deliberately reversed from the first version, which hid a check set before the lane reached the stage: that set
-  // is exactly as unchecked as one made at the stage, so it is shown when the lane gets there.
-  govern(e, ["new", "ops/x", "--kind", "ops"]);
-  govern(e, ["check", "ops/x", "--set", "smoke", "--stage", "doing"]);
-  govern(e, ["work", "ops/x", "doing"]);
-  assert.match(govern(e, ["brief", "ops/x"]).out, /^⚠ the check of stage doing changed and has not passed since: none → smoke$/m, "set before the lane reached the stage");
-  govern(e, ["check", "ops/x", "--set", "other", "--stage", "doing"]);
-  govern(e, ["check", "ops/x", "--set", "smoke", "--stage", "doing"]);
-  assert.match(govern(e, ["brief", "ops/x"]).out, /⚠ the check of stage doing changed and has not passed since: none → smoke → other → smoke/);
-});
-
-test("a changed check stays flagged until it passes, however the lane moves; only a pass of that stage's check clears it", () => {
-  const e = env();
-  govern(e, ["new", "lib", "--process", "dev"]);
-  govern(e, ["work", "lib", "test"]);
-  govern(e, ["check", "lib", "--set", "lint", "--stage", "test"]);
-  const warned = /^⚠ the check of stage test changed and has not passed since: test → lint$/m;
+  assert.deepEqual(sets, [{ stage: "test", from: "test", to: "smoke" }]);
+  const warned = new RegExp(`^⚠ the check of stage test changed and ${accepted}: test → smoke$`, "m");
+  assert.match(govern(e, ["brief", "lib"]).out, warned, "shown at every stage, not only the one it checks");
+  govern(e, ["cmd", "lib", "smoke", "--", "sh", "-c", "exit 0"]);
+  assert.match(govern(e, ["work", "lib", "test"]).out, warned, "shown when the lane arrives");
+  assert.equal(govern(e, ["check", "lib"]).code, 0);
+  assert.match(govern(e, ["brief", "lib"]).out, warned, "a pass does not clear it");
   govern(e, ["work", "lib", "build"]);
   assert.match(govern(e, ["work", "lib", "test"]).out, warned, "leaving the stage and coming back does not clear it");
-  govern(e, ["work", "lib", "plan"]);
-  govern(e, ["work", "lib", "test"]);
-  assert.match(govern(e, ["brief", "lib"]).out, warned);
-  govern(e, ["cmd", "lib", "lint", "--", "sh", "-c", "exit 1"]);
+  assert.match(govern(e, ["advance", "lib"]).out, /lib: test → review/);
+  assert.match(govern(e, ["brief", "lib"]).out, warned, "leaving the stage forward does not clear it");
+  govern(e, ["check", "lib", "--set", "other", "--stage", "test"]);
+  govern(e, ["check", "lib", "--set", "smoke", "--stage", "test"]);
+  assert.match(govern(e, ["brief", "lib"]).out, new RegExp(`^⚠ the check of stage test changed and ${accepted}: test → smoke → other → smoke$`, "m"));
+
+  // A stage with no check at all getting one is setup: ledgered, not flagged. Changing it afterwards is a swap.
+  govern(e, ["new", "ops/x", "--kind", "ops"]);
+  govern(e, ["check", "ops/x", "--set", "smoke", "--stage", "doing"]);
+  assert.deepEqual(ledger(e, "ops/x").filter((x) => x.kind === "check-set").map(({ stage, from, to }) => ({ stage, from, to })), [{ stage: "doing", from: null, to: "smoke" }]);
+  assert.doesNotMatch(govern(e, ["work", "ops/x", "doing"]).out, /⚠/);
+  govern(e, ["check", "ops/x", "--set", "other", "--stage", "doing"]);
+  assert.match(govern(e, ["brief", "ops/x"]).out, new RegExp(`^⚠ the check of stage doing changed and ${accepted}: smoke → other$`, "m"));
+});
+
+test("a gamed command stays flagged through its own pass; only the owner's accept clears it, for that stage and what came before", () => {
+  const e = env();
+  govern(e, ["new", "lib", "--process", "dev"]);
+  govern(e, ["cmd", "lib", "test", "--", "sh", "-c", "echo 2 failing; exit 1"]);
+  govern(e, ["check", "lib", "--set", "test", "--stage", "review"]);
+  assert.doesNotMatch(govern(e, ["work", "lib", "test"]).out, /⚠/, "a first definition and a first check are setup");
   assert.equal(govern(e, ["check", "lib"]).code, 1);
-  assert.match(govern(e, ["brief", "lib"]).out, warned, "a failing check does not clear it");
-  govern(e, ["cmd", "lib", "smoke", "--", "sh", "-c", "exit 0"]);
-  govern(e, ["check", "lib", "--set", "smoke", "--stage", "build"]);
-  govern(e, ["work", "lib", "build"]);
-  assert.equal(govern(e, ["check", "lib"]).code, 0);
-  assert.match(govern(e, ["work", "lib", "test"]).out, warned, "another stage's passing check does not clear it");
-  govern(e, ["cmd", "lib", "lint", "--", "sh", "-c", "exit 0"]);
-  assert.equal(govern(e, ["check", "lib"]).code, 0);
-  assert.doesNotMatch(govern(e, ["brief", "lib"]).out, /⚠/, "the check passed after the change");
-  govern(e, ["work", "lib", "build"]);
-  assert.doesNotMatch(govern(e, ["work", "lib", "test"]).out, /⚠/);
-  govern(e, ["check", "lib", "--set", "test", "--stage", "test"]);
-  assert.match(govern(e, ["brief", "lib"]).out, /^⚠ the check of stage test changed and has not passed since: lint → test$/m, "only the changes after the pass");
+  govern(e, ["cmd", "lib", "test", "--", "true"]);
+  assert.equal(govern(e, ["check", "lib"]).code, 0, "the gamed check passes");
+  const onTest = new RegExp(`^⚠ command "test" behind the check of stage test changed and ${accepted}: sh -c echo 2 failing; exit 1 → true$`, "m");
+  const onReview = new RegExp(`^⚠ command "test" behind the check of stage review changed and ${accepted}: sh -c echo 2 failing; exit 1 → true$`, "m");
+  assert.match(govern(e, ["brief", "lib"]).out, onTest, "its own pass does not clear it");
+  assert.match(govern(e, ["advance", "lib"]).out, /lib: test → review/);
+  const b = govern(e, ["brief", "lib"]).out;
+  assert.match(b, onTest, "still shown at review");
+  assert.match(b, onReview, "the command is the check of every stage that names it");
+  assert.match(b, /^only the owner accepts a change: govern check lib <stage> --accept --quote "<the owner's words>"$/m);
+
+  const before = ledger(e, "lib").length;
+  const bare = govern(e, ["check", "lib", "test", "--accept"]);
+  assert.equal(bare.code, 2);
+  assert.match(bare.err, /--quote is required: the owner's own words accepting the change to the check of stage test \(only the owner accepts\)/);
+  assert.equal(govern(e, ["check", "lib", "test", "--accept", "--quote", " "]).code, 2, "an empty quote is no quote");
+  assert.match(govern(e, ["check", "lib", "--accept", "--quote", "ok"]).err, /stage must be one of: plan, build, test, review, done/);
+  assert.equal(ledger(e, "lib").length, before, "a refused accept writes nothing");
+
+  const quote = "true is fine for test while the suite is rebuilt";
+  assert.match(govern(e, ["check", "lib", "test", "--accept", "--quote", quote]).out, /^lib: the owner accepted the changes to the check of stage test$/m);
+  const acc = ledger(e, "lib").filter((x) => x.kind === "check-accept").map(({ stage, quote }) => ({ stage, quote }));
+  assert.deepEqual(acc, [{ stage: "test", quote }]);
+  const after = govern(e, ["brief", "lib"]).out;
+  assert.doesNotMatch(after, onTest, "accepted for test");
+  assert.match(after, onReview, "an accept clears only its own stage");
+  assert.match(govern(e, ["check", "lib", "test", "--accept", "--quote", quote]).out, /^lib: stage test has no change to accept — nothing changed$/m);
+  assert.equal(ledger(e, "lib").filter((x) => x.kind === "check-accept").length, 1);
+
+  govern(e, ["cmd", "lib", "test", "--", "sh", "-c", "exit 0"]);
+  const again = govern(e, ["brief", "lib"]).out;
+  assert.match(again, new RegExp(`^⚠ command "test" behind the check of stage test changed and ${accepted}: true → sh -c exit 0$`, "m"), "a later change is flagged again, from where the accept left it");
+  assert.match(again, new RegExp(`^⚠ command "test" behind the check of stage review changed and ${accepted}: sh -c echo 2 failing; exit 1 → true → sh -c exit 0$`, "m"));
+
+  assert.match(govern(e, ["advance", "lib"]).out, /lib: review → done/);
+  assert.match(govern(e, ["advance", "lib", "--note", "released"]).out, /lane finished/);
+  assert.doesNotMatch(govern(e, ["brief", "lib"]).out, /⚠|only the owner accepts/, "a finished lane shows no warning");
 });
 
 test("the advance entry says what passed the stage, the check or a note, with the note's words", () => {
@@ -340,42 +371,44 @@ test("a process whose stage requires anything but a check is refused, naming the
   assert.ok(r.err.includes(`${f}: stage b: requires must be "check" (got "note")`), r.err);
 });
 
-test("cmd set and rm are in the ledger, and redefining the command behind the stage's check is flagged until it passes", () => {
+test("cmd set and rm are in the ledger with the stages they check; redefining or removing a check's command is flagged, defining it is not", () => {
   const e = env();
   govern(e, ["new", "lib", "--process", "dev"]);
   govern(e, ["work", "lib", "test"]);
   assert.match(govern(e, ["cmd", "lib", "test", "--", "sh", "-c", "echo 2 failing; exit 1"]).out, /lib: test = sh -c echo 2 failing; exit 1/);
-  assert.match(govern(e, ["brief", "lib"]).out, /^⚠ command "test" behind the check of stage test changed and has not passed since: none → sh -c echo 2 failing; exit 1$/m);
+  assert.doesNotMatch(govern(e, ["brief", "lib"]).out, /⚠/, "defining the command behind a check is setup");
   assert.equal(govern(e, ["check", "lib"]).code, 1);
   // the swap: the check still names "test", and "test" now passes whatever the code does
   govern(e, ["cmd", "lib", "test", "--timeout", "5", "--", "true"]);
-  assert.match(govern(e, ["brief", "lib"]).out, /^⚠ command "test" behind the check of stage test changed and has not passed since: none → sh -c echo 2 failing; exit 1 → true \(timeout 5s\)$/m, "a failed run does not clear it");
+  assert.match(govern(e, ["brief", "lib"]).out, new RegExp(`^⚠ command "test" behind the check of stage test changed and ${accepted}: sh -c echo 2 failing; exit 1 → true \\(timeout 5s\\)$`, "m"));
   assert.match(govern(e, ["cmd", "lib", "--rm", "test"]).out, /lib: removed command test/);
-  assert.match(govern(e, ["brief", "lib"]).out, /: none → sh -c echo 2 failing; exit 1 → true \(timeout 5s\) → \(removed\)$/m);
+  assert.match(govern(e, ["brief", "lib"]).out, /: sh -c echo 2 failing; exit 1 → true \(timeout 5s\) → \(removed\)$/m);
   govern(e, ["cmd", "lib", "lint", "--", "true"]);
-  assert.doesNotMatch(govern(e, ["brief", "lib"]).out, /command "lint"/, "a command no check names is ledgered, not flagged");
-  const cmds = ledger(e, "lib").filter((x) => String(x.kind).startsWith("cmd-")).map(({ kind, name, from, to }) => ({ kind, name, from, to }));
+  govern(e, ["cmd", "lib", "lint", "--", "false"]);
+  assert.doesNotMatch(govern(e, ["brief", "lib"]).out, /command "lint"/, "a command no stage checks is ledgered, not flagged");
+  const cmds = ledger(e, "lib").filter((x) => String(x.kind).startsWith("cmd-")).map(({ kind, name, from, to, stages }) => ({ kind, name, from, to, stages }));
   assert.deepEqual(cmds, [
-    { kind: "cmd-set", name: "test", from: null, to: ["sh", "-c", "echo 2 failing; exit 1"] },
-    { kind: "cmd-set", name: "test", from: ["sh", "-c", "echo 2 failing; exit 1"], to: { argv: ["true"], timeout: 5 } },
-    { kind: "cmd-rm", name: "test", from: { argv: ["true"], timeout: 5 }, to: undefined },
-    { kind: "cmd-set", name: "lint", from: null, to: ["true"] },
+    { kind: "cmd-set", name: "test", from: null, to: ["sh", "-c", "echo 2 failing; exit 1"], stages: ["test"] },
+    { kind: "cmd-set", name: "test", from: ["sh", "-c", "echo 2 failing; exit 1"], to: { argv: ["true"], timeout: 5 }, stages: ["test"] },
+    { kind: "cmd-rm", name: "test", from: { argv: ["true"], timeout: 5 }, to: undefined, stages: ["test"] },
+    { kind: "cmd-set", name: "lint", from: null, to: ["true"], stages: [] },
+    { kind: "cmd-set", name: "lint", from: ["true"], to: ["false"], stages: [] },
   ]);
   govern(e, ["cmd", "lib", "test", "--", "sh", "-c", "exit 0"]);
-  assert.equal(govern(e, ["check", "lib"]).code, 0);
-  assert.doesNotMatch(govern(e, ["brief", "lib"]).out, /⚠/, "the check passed after the change");
+  assert.match(govern(e, ["brief", "lib"]).out, /: sh -c echo 2 failing; exit 1 → true \(timeout 5s\) → \(removed\) → sh -c exit 0$/m, "defining it again after a removal does not end the warning");
 
-  // a command redefined before the lane reaches the stage it checks is flagged when the lane gets there
+  // a redefinition is flagged whatever stage the lane is at
   govern(e, ["new", "lib2", "--process", "dev"]);
   govern(e, ["cmd", "lib2", "test", "--", "true"]);
-  assert.doesNotMatch(govern(e, ["brief", "lib2"]).out, /⚠/, "plan has no check");
-  assert.match(govern(e, ["work", "lib2", "test"]).out, /^⚠ command "test" behind the check of stage test changed and has not passed since: none → true$/m);
-  // the command behind a check the lane set itself, for any stage
+  assert.doesNotMatch(govern(e, ["brief", "lib2"]).out, /⚠/);
+  govern(e, ["cmd", "lib2", "test", "--", "sh", "-c", "exit 0"]);
+  assert.match(govern(e, ["brief", "lib2"]).out, new RegExp(`stage 1/5 plan[\\s\\S]*^⚠ command "test" behind the check of stage test changed and ${accepted}: true → sh -c exit 0$`, "m"));
+  // the command behind a check the lane set itself
   govern(e, ["check", "lib2", "--set", "smoke", "--stage", "review"]);
   govern(e, ["cmd", "lib2", "smoke", "--", "sh", "-c", "exit 0"]);
-  const r = govern(e, ["work", "lib2", "review"]).out;
-  assert.match(r, /^⚠ the check of stage review changed and has not passed since: none → smoke$/m);
-  assert.match(r, /^⚠ command "smoke" behind the check of stage review changed and has not passed since: none → sh -c exit 0$/m);
+  assert.doesNotMatch(govern(e, ["brief", "lib2"]).out, /stage review/, "a first check and its first command are setup");
+  govern(e, ["cmd", "lib2", "smoke", "--", "true"]);
+  assert.match(govern(e, ["brief", "lib2"]).out, new RegExp(`^⚠ command "smoke" behind the check of stage review changed and ${accepted}: sh -c exit 0 → true$`, "m"));
 });
 
 test("setting a check or a command to what it already is changes nothing: no ledger entry, no warning", () => {

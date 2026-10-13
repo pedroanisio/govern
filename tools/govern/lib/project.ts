@@ -195,20 +195,39 @@ export function resolveFile(p: Project, name: string): string | undefined {
 }
 
 type Entry = Record<string, unknown>;
-/** The changes to the current stage's check that no passing run of that check has followed, oldest first: `sets`, the
- *  check-set entries for the stage, and `cmds`, the cmd-set / cmd-rm entries for the command that now backs its check.
- *  Rule: a change is pending from the moment it is ledgered until a `check` entry for the same stage passes after it.
- *  Where the lane was meanwhile does not matter: leaving the stage and coming back does not clear a change, and a change
- *  made before the lane reached the stage is pending when it gets there. Only a pass vouches for the check as it now is;
- *  a failed run, a new segment or another stage's pass does not. */
-function pendingCheckChanges(p: Project, led: Entry[]): { sets: Entry[]; cmds: Entry[] } {
-  let passed = -1;
-  led.forEach((e, i) => { if (e.kind === "check" && e.stage === p.stage && e.ok === true) passed = i; });
-  const since = led.slice(passed + 1), chk = checkOf(p);
-  return {
-    sets: since.filter((e) => e.kind === "check-set" && e.stage === p.stage),
-    cmds: chk ? since.filter((e) => (e.kind === "cmd-set" || e.kind === "cmd-rm") && e.name === chk) : [],
-  };
+/** A stage's changes that wait on the owner: `sets`, its check-set entries, and `cmds`, per command name, the cmd-set /
+ *  cmd-rm entries of a command that was the stage's check when it changed. Each list starts at its first swap. */
+export interface PendingChanges { stage: string; sets: Entry[]; cmds: { name: string; changes: Entry[] }[] }
+/** The stages a ledgered change concerns: a check-set its own stage; a cmd-set or cmd-rm the stages whose effective
+ *  check named the command when it changed (recorded in the entry as `stages`). */
+const stagesOfChange = (e: Entry): string[] =>
+  e.kind === "check-set" ? [String(e.stage)] : (e.kind === "cmd-set" || e.kind === "cmd-rm") && Array.isArray(e.stages) ? e.stages.map(String) : [];
+/** The changes from the first swap on; [] when there is none. */
+function fromFirstSwap(xs: Entry[]): Entry[] {
+  const i = xs.findIndex((e) => e.from != null);
+  return i < 0 ? [] : xs.slice(i);
+}
+/** The check changes that wait on the owner, per stage of the lane's process, in process order.
+ *  Rule: a change is a swap when what it replaces existed — a check-set whose `from` (the stage's effective check before
+ *  it: the lane's own, else the process's) is not null, or a cmd-set / cmd-rm of a command that existed and was then the
+ *  effective check of some stage. A swap is pending for its stages until (a) the lane is finished or (b) the owner
+ *  accepts it: a `check-accept` entry for a stage clears every change for that stage ledgered before it. Nothing else
+ *  clears it: not a passing check (a gamed check is what produces that pass), not moving back and forth, not leaving the
+ *  stage. Setup — a stage with no check getting one, a command defined for the first time — is ledgered but is no swap;
+ *  after a pending swap it still shows in the chain, which runs from the first swap on. */
+export function pendingCheckChanges(p: Project, led: Entry[]): PendingChanges[] {
+  if (p.finished) return [];
+  const res: PendingChanges[] = [];
+  for (const stage of stagesOf(p)) {
+    let accepted = -1;
+    led.forEach((e, i) => { if (e.kind === "check-accept" && e.stage === stage) accepted = i; });
+    const since = led.slice(accepted + 1).filter((e) => stagesOfChange(e).includes(stage));
+    const sets = fromFirstSwap(since.filter((e) => e.kind === "check-set"));
+    const names = [...new Set(since.filter((e) => e.kind !== "check-set").map((e) => String(e.name)))];
+    const cmds = names.map((name) => ({ name, changes: fromFirstSwap(since.filter((e) => e.kind !== "check-set" && e.name === name)) })).filter((x) => x.changes.length);
+    if (sets.length || cmds.length) res.push({ stage, sets, cmds });
+  }
+  return res;
 }
 const shownCommand = (c: unknown) => (c == null ? "none" : commandLine(c as string[] | Command));
 
@@ -229,9 +248,13 @@ export function brief(p: Project, o: { notes?: number } = {}): string {
   const chk = checkOf(p);
   if (chk) L.push(`check: command "${chk}"${p.commands[chk] ? "" : ` (not set: govern cmd ${p.slug} ${chk} -- …)`}`);
   const led = readJsonl(ledgerFile(p.slug));
-  const { sets, cmds: cmdChanges } = pendingCheckChanges(p, led);
-  if (sets.length) L.push(`⚠ the check of stage ${p.stage} changed and has not passed since: ${[sets[0].from ?? "none", ...sets.map((x) => x.to)].join(" → ")}`);
-  if (cmdChanges.length) L.push(`⚠ command "${chk}" behind the check of stage ${p.stage} changed and has not passed since: ${[shownCommand(cmdChanges[0].from), ...cmdChanges.map((x) => (x.kind === "cmd-rm" ? "(removed)" : shownCommand(x.to)))].join(" → ")}`);
+  const pending = pendingCheckChanges(p, led), unaccepted = "changed and the owner has not accepted it";
+  for (const { stage, sets, cmds } of pending) {
+    if (sets.length) L.push(`⚠ the check of stage ${stage} ${unaccepted}: ${[sets[0].from ?? "none", ...sets.map((x) => x.to ?? "none")].join(" → ")}`);
+    for (const { name, changes } of cmds)
+      L.push(`⚠ command "${name}" behind the check of stage ${stage} ${unaccepted}: ${[shownCommand(changes[0].from), ...changes.map((x) => (x.kind === "cmd-rm" ? "(removed)" : shownCommand(x.to)))].join(" → ")}`);
+  }
+  if (pending.length) L.push(`only the owner accepts a change: govern check ${p.slug} <stage> --accept --quote "<the owner's words>"`);
   if (pr.gates.length) L.push(`approvals: ${pr.gates.map((g) => (p.approvals[g.name] ? `${g.name} ✓ ${p.approvals[g.name].at.slice(0, 10)}` : `${g.name} –`)).join(" · ")}`);
   if (p.after?.length) L.push(`after: ${p.after.map(afterMet).map((x) => `${x.label} (${x.met ? "done" : "waiting"})`).join(" · ")}`);
   const files = Object.keys(p.files).map((k) => { const f = resolveFile(p, k); return `${k}=${f ? rel(f) : "(none)"}`; });
