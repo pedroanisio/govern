@@ -135,6 +135,36 @@ test("govern.json: unknown keys, wrong types and dangling references are refused
   refused(() => parseProject("/p/full/govern.json", "[1", "full"), "/p/full/govern.json: not JSON (");
 });
 
+/** Object.prototype's names: a key is known only when the shape itself declares it, never because every object has it. */
+const PROTO_KEYS = ["constructor", "toString", "hasOwnProperty", "__proto__"];
+/** `json` (an object's text) with `"k": 1` as its first key: text, because `__proto__` in an object literal is no key. */
+const withKey = (json: string, k: string) => json.replace(/^\{/, `{${JSON.stringify(k)}:1,`);
+
+test("Object.prototype names are unknown keys in govern.json and in a process file, never kept-then-dropped", () => {
+  for (const k of PROTO_KEYS) {
+    refused(() => parseProject("/p/full/govern.json", withKey(JSON.stringify(lane()), k), "full"), `/p/full/govern.json: $.${k}: unknown key "${k}"`);
+    const nested = JSON.stringify(lane()).replace(`{"lane":"other"}`, withKey(`{"lane":"other"}`, k));
+    refused(() => parseProject("/p/full/govern.json", nested, "full"), `/p/full/govern.json: $.after[0].${k}: unknown key "${k}"`);
+    refused(() => parseProcess("/w/p.json", withKey(proc({}), k)), `/w/p.json: $.${k}: unknown key "${k}"`);
+    refused(() => parseProcess("/w/p.json", proc({}).replace(`{"name":"b"}`, withKey(`{"name":"b"}`, k))), `/w/p.json: $.stages[1].${k}: unknown key "${k}"`);
+  }
+});
+
+test("a parse keeps the file's key order, so a load and save does not reorder govern.json", () => {
+  const full = lane({ commands: { slow: { timeout: 900, argv: ["make"] } } });
+  const reversed = Object.fromEntries(Object.entries(full).reverse());
+  const p = parseProject("/p/full/govern.json", JSON.stringify(reversed), "full");
+  assert.deepEqual(Object.keys(p), Object.keys(reversed));
+  assert.deepEqual(Object.keys(p.commands.slow), ["timeout", "argv"]);
+  const e = makeEnv();
+  assert.equal(govern(e, ["new", "lane", "--process", "dev"]).code, 0);
+  const f = join(e.projects, "lane", "govern.json");
+  const order = Object.keys(JSON.parse(readFileSync(f, "utf8"))).reverse();
+  write(f, JSON.stringify(Object.fromEntries(Object.entries(JSON.parse(readFileSync(f, "utf8"))).reverse()), null, 2) + "\n");
+  assert.equal(govern(e, ["note", "lane", "kept in order"]).code, 0);
+  assert.deepEqual(Object.keys(JSON.parse(readFileSync(f, "utf8"))), order, "a save writes the keys in the order the file had them");
+});
+
 test("a bad govern.json stops the commands that read it with exit 2, naming the file and the path", () => {
   const e = makeEnv();
   assert.equal(govern(e, ["new", "lane", "--process", "dev"]).code, 0);

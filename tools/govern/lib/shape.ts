@@ -39,18 +39,18 @@ export const record = <T>(item: Shape<T>): Shape<Record<string, T>> => (v, p) =>
 type Fields = Record<string, Shape<unknown>>;
 type Out<R extends Fields, O extends Fields> = { [K in keyof R]: ReturnType<R[K]> } & { [K in keyof O]?: ReturnType<O[K]> };
 /** An object with these required and optional keys, and no other. An optional key that is present is checked like a
- *  required one (null is not "absent"). */
+ *  required one (null is not "absent"). A key is known only when the shape declares it as its own (Object.hasOwn):
+ *  `constructor` or `__proto__` is no field just because every object inherits one. The result keeps the input's key
+ *  order, so a load and save writes a file back in the order it had. */
 export const obj = <R extends Fields, O extends Fields = {}>(required: R, optional: O = {} as O): Shape<Out<R, O>> => (v, p) => {
   if (!isObj(v)) return want(p, "an object", v);
-  for (const k of Object.keys(v)) if (!(k in required) && !(k in optional)) {
+  const shapeOf = (k: string) => (Object.hasOwn(required, k) ? required[k] : Object.hasOwn(optional, k) ? optional[k] : undefined);
+  for (const k of Object.keys(v)) if (!shapeOf(k)) {
     throw new ShapeError(keyPath(p, k), `unknown key "${k}" (known: ${[...Object.keys(required), ...Object.keys(optional)].join(", ")})`);
   }
+  for (const k of Object.keys(required)) if (!Object.hasOwn(v, k)) throw new ShapeError(keyPath(p, k), "missing");
   const out: Record<string, unknown> = {};
-  for (const [k, s] of Object.entries(required)) {
-    if (!(k in v)) throw new ShapeError(keyPath(p, k), "missing");
-    out[k] = s(v[k], keyPath(p, k));
-  }
-  for (const [k, s] of Object.entries(optional)) if (k in v) out[k] = s(v[k], keyPath(p, k));
+  for (const k of Object.keys(v)) out[k] = shapeOf(k)!(v[k], keyPath(p, k));
   return out as Out<R, O>;
 };
 
