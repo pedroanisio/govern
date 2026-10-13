@@ -74,7 +74,7 @@ function cmdWork(a: Args): void {
   const engine = engineOf(a);
   if (flag(a, "open")) {
     const session = engine === "claude" ? randomUUID() : undefined;
-    appendLedger(p.slug, { kind: "work", stage, engine, session });
+    appendLedger(p.slug, { kind: "work", stage, engine, session, skillSha: sha256File(SKILL) });
     const first = `Video work session (registered by govern work ${p.slug} ${stage}). Use the govern skill: run \`govern brief ${p.slug}\` first and work from it; do not explore the repository. Then ask me what we change.`;
     const args = engine === "claude" ? ["--session-id", session!, first] : ["-C", REPO, first];
     const r = spawnSync(engine, args, { cwd: REPO, stdio: "inherit" });
@@ -82,7 +82,7 @@ function cmdWork(a: Args): void {
     process.exitCode = r.status ?? 0;
     return;
   }
-  appendLedger(p.slug, { kind: "work", stage, engine, session: engine === "claude" ? process.env.CLAUDE_CODE_SESSION_ID : undefined });
+  appendLedger(p.slug, { kind: "work", stage, engine, session: engine === "claude" ? process.env.CLAUDE_CODE_SESSION_ID : undefined, skillSha: sha256File(SKILL) });
   out(brief(p));
 }
 

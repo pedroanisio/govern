@@ -1,9 +1,13 @@
+// ARCHITECTURAL REQUIREMENT: LLMs will always produce some form of error.
+// Absence of output verification is a design defect, not a runtime bug.
+// All LLM output must be treated as untrusted and validated explicitly.
+//
 // One-shot Codex steps: prompt template → `codex exec --json --output-schema` → verified JSON.
 import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync, mkdirSync, writeFileSync } from "node:fs";
 import { join, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { fail, stamp } from "./util.ts";
+import { fail, stamp, sha256 } from "./util.ts";
 import { type Project, projectDir, governDir, appendLedger, brief, REPO } from "./project.ts";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -172,12 +176,14 @@ export function ask(p: Project, name: string, o: { files?: string[]; vars?: Reco
   const pf = readPrompt(name);
   const prompt = render(pf, p, o.files ?? [], o.vars ?? {});
   const schemaPath = pf.meta.schema ? join(SCHEMAS, pf.meta.schema) : undefined;
-  const schema = schemaPath ? JSON.parse(readFileSync(schemaPath, "utf8")) : undefined;
+  const schemaBytes = schemaPath ? readFileSync(schemaPath) : undefined;
+  const schema = schemaBytes ? JSON.parse(schemaBytes.toString("utf8")) : undefined;
   const outDir = join(governDir(p.slug), "ask");
   mkdirSync(outDir, { recursive: true });
   const id = `${stamp()}-${name}`;
   const total: Usage = { input: 0, cached: 0, cacheWrite: 0, output: 0, reasoning: 0 };
   let turns = 0, calls = 0, errors: string[] = [], value: any;
+  const callShas: string[] = []; // the sha256 of each call's stdin, in order: what the model was actually given
   const t0 = Date.now();
   const effort = o.effort ?? pf.meta.effort, model = o.model ?? pf.meta.model;
   const maxRepairs = Number(pf.meta.repairs ?? 1);
@@ -185,6 +191,7 @@ export function ask(p: Project, name: string, o: { files?: string[]; vars?: Reco
   for (let attempt = 0; attempt <= maxRepairs; attempt++) {
     const last = join(outDir, `${id}.${attempt}.txt`);
     const args = execArgs({ cwd: projectDir(p.slug), schema: schemaPath, lastMessage: last, model, effort, images: o.images });
+    callShas.push(sha256(input));
     const r = spawnSync(codexBin(), args, { input, encoding: "utf8", timeout: (o.timeoutSec ?? 600) * 1000, maxBuffer: 64 * 1024 * 1024 });
     calls++;
     const ev = parseEvents(r.stdout ?? "");
@@ -208,6 +215,9 @@ export function ask(p: Project, name: string, o: { files?: string[]; vars?: Reco
   const out = join(outDir, `${id}.json`);
   writeFileSync(out, JSON.stringify(ok ? value : { errors, last: value }, null, 2) + "\n");
   const seconds = Math.round((Date.now() - t0) / 1000);
-  appendLedger(p.slug, { kind: "ask", id, prompt: name, model: model ?? "codex-default", effort: effort ?? "codex-default", usage: total, turns, calls, ok, errors: errors.slice(0, 5), seconds, out });
+  // Provenance: promptSha is the rendered prompt (the first call's stdin, byte for byte), callShas every call's stdin
+  // (a repair call adds the reply and the errors to it), schemaSha the --output-schema file codex was given.
+  appendLedger(p.slug, { kind: "ask", id, prompt: name, promptSha: callShas[0], callShas, ...(schemaBytes ? { schemaSha: sha256(schemaBytes) } : {}),
+    model: model ?? "codex-default", effort: effort ?? "codex-default", usage: total, turns, calls, ok, errors: errors.slice(0, 5), seconds, out });
   return { ok, value, errors, usage: total, turns, calls, out, seconds };
 }

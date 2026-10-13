@@ -26,6 +26,8 @@ The owner's one screen is `govern desk`: every lane (videos and `ops/*` work), t
    - last jobs;
    - recent decisions.
 
+   The segment's `work` ledger entry carries `skillSha`, the sha256 of this manual (tools/govern/SKILL.md) when the segment opened, so a segment can be matched to the rules it ran under; `--open` records it too.
+
    `govern brief <slug>` prints the brief again without opening a segment. Work from the brief. Do not read WORKFLOW.md, CHECKLIST.md, the style guide or old reports in full. The brief carries the exit condition, and `govern ask` carries the rules each step needs.
 3. If the video's build commands or files are not named yet, name them once:
    - `govern cmd <slug> preview -- {python} build_short1.py --preview`. Placeholders: `{python}`, `{repo}`, `{dir}`.
@@ -83,6 +85,7 @@ These steps run as one verified Codex call each, not as chat work in this sessio
 - Exit 3 means it failed verification. Say so; don't patch the output by hand and present it as verified.
 - Present the result in a few lines, and give the owner the JSON path for the full text.
 - Images can be added with `--image sheet.png`. `govern prompts` lists the steps.
+- The ledger's `ask` entry records what was sent: `promptSha` (sha256 of the rendered prompt, the first call's stdin byte for byte), `callShas` (every call's stdin, a repair included) and `schemaSha` (sha256 of the schema file codex was given; absent for a step with no schema).
 
 ## Asking another agent: the task queue
 

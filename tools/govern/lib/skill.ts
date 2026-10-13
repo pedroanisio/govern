@@ -2,10 +2,9 @@
 // back and compared by sha256 before and after the rename, and a check that the installed copy is the current one.
 import { readFileSync, writeFileSync, renameSync, rmSync, mkdirSync, existsSync } from "node:fs";
 import { dirname, join, basename } from "node:path";
-import { createHash, randomUUID } from "node:crypto";
-import { fail } from "./util.ts";
+import { randomUUID } from "node:crypto";
+import { fail, sha256 } from "./util.ts";
 
-export const sha256 = (b: string | Buffer) => createHash("sha256").update(b).digest("hex");
 export const sha256File = (f: string) => sha256(readFileSync(f));
 
 /** The file operations the install uses; a test swaps one to prove a bad write is caught. */

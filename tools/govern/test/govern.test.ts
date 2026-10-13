@@ -207,6 +207,62 @@ test("ask: metadata rules for a long film (Source line, chapters from 0:00, no p
   assert.match(r.out, /production text "\.xml"/);
 });
 
+const sha256 = (b: string | Buffer) => createHash("sha256").update(b).digest("hex");
+const stdinLog = (e: ReturnType<typeof makeEnv>): string[] => jsonl(join(e.root, "stdin.log"));
+
+test("ask: the ledger names the exact prompt sent (promptSha) and the schema codex was given (schemaSha)", () => {
+  const { e, slug } = video();
+  const r = govern(e, ["ask", slug, "hooks", "--var", "direction=keep it dry"], { FAKE_CODEX_SCRIPTS: reply(e, "ok", goodHooks) });
+  assert.equal(r.code, 0, r.err + r.out);
+  const [sent] = stdinLog(e);
+  const argv: string[] = jsonl(join(e.root, "argv.log"))[0];
+  const schemaFile = argv[argv.indexOf("--output-schema") + 1];
+  const l = ledger(e, slug).find((x) => x.kind === "ask");
+  assert.equal(l.promptSha, sha256(sent));
+  assert.deepEqual(l.callShas, [sha256(sent)]);
+  assert.equal(l.schemaSha, sha256(readFileSync(schemaFile)));
+  assert.equal(l.schemaSha, sha256(readFileSync(join(HERE, "..", "schemas", "hooks.json"))));
+});
+
+test("ask: a repair call's input is hashed too; promptSha stays the first call's", () => {
+  const { e, slug } = video();
+  const bad = { ...goodHooks, hooks: [{ text: "In this video we will see why your phone lies to you", approach: "a", on_screen: "s", risk: "r" }, ...goodHooks.hooks] };
+  const r = govern(e, ["ask", slug, "hooks"], { FAKE_CODEX_SCRIPTS: `${reply(e, "bad", bad)},${reply(e, "good", goodHooks)}` });
+  assert.equal(r.code, 0, r.out);
+  const sent = stdinLog(e);
+  assert.equal(sent.length, 2);
+  const l = ledger(e, slug).find((x) => x.kind === "ask");
+  assert.equal(l.promptSha, sha256(sent[0]));
+  assert.deepEqual(l.callShas, sent.map(sha256));
+});
+
+test("ask: a step without a schema records no schemaSha", () => {
+  const { e, slug } = video();
+  const prompts = join(e.root, "prompts");
+  write(join(prompts, "free.md"), "---\neffort: low\n---\nSay something about {{title}} as JSON.\n");
+  const r = govern(e, ["ask", slug, "free"], { GOVERN_PROMPTS: prompts, FAKE_CODEX_SCRIPTS: reply(e, "free", { said: "hi" }) });
+  assert.equal(r.code, 0, r.err + r.out);
+  const l = ledger(e, slug).find((x) => x.kind === "ask");
+  assert.equal(l.promptSha, sha256(stdinLog(e)[0]));
+  assert.equal("schemaSha" in l, false);
+  assert.equal(jsonl(join(e.root, "argv.log"))[0].includes("--output-schema"), false);
+});
+
+test("work: both segment entries name the manual in force (skillSha of tools/govern/SKILL.md)", () => {
+  const { e, slug } = video();
+  const skill = sha256(readFileSync(join(HERE, "..", "SKILL.md")));
+  assert.equal(govern(e, ["work", slug, "script"], { CLAUDE_CODE_SESSION_ID: "sess-1" }).code, 0);
+  assert.equal(ledger(e, slug).filter((x) => x.kind === "work")[0].skillSha, skill);
+  const bin = join(e.root, "bin");
+  write(join(bin, "codex"), "#!/bin/sh\nexit 0\n");
+  spawnSync("chmod", ["755", join(bin, "codex")]);
+  const o = govern(e, ["work", slug, "script", "--engine", "codex", "--open"], { PATH: `${bin}:${process.env.PATH}` });
+  assert.equal(o.code, 0, o.err);
+  const opened = ledger(e, slug).filter((x) => x.kind === "work")[1];
+  assert.equal(opened.engine, "codex");
+  assert.equal(opened.skillSha, skill);
+});
+
 test("ask: unfilled required placeholders and unknown steps are refused before calling codex", () => {
   const { e, slug } = video();
   assert.match(govern(e, ["ask", slug, "nope"]).err, /no prompt "nope"/);

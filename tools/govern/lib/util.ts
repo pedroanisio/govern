@@ -2,6 +2,10 @@
 import { existsSync, readFileSync, writeFileSync, renameSync, mkdirSync, statSync, globSync, readdirSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { dirname, join, isAbsolute } from "node:path";
+import { createHash } from "node:crypto";
+
+/** The hex sha256 of a text (hashed as UTF-8) or of bytes. */
+export const sha256 = (b: string | Buffer) => createHash("sha256").update(b).digest("hex");
 
 export class GovernError extends Error {
   code: number;
