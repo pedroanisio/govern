@@ -7,6 +7,7 @@ import { makeEnv, govern, jsonl, childEnv, HERE } from "./helpers.ts";
 import { spawnSync } from "node:child_process";
 import { parseArgs, opt, flag, many } from "../lib/util.ts";
 import { COMMANDS, HELP, commandHelp } from "../govern.ts";
+import { skillMentions, skillProblems } from "../lib/skill.ts";
 
 const e = makeEnv();
 govern(e, ["new", "lane", "--process", "dev"]);
@@ -127,34 +128,35 @@ test("HELP is generated from the table: every command, every subcommand, every d
   assert.equal(new Set(COMMANDS.map((c) => c.name)).size, COMMANDS.length, "command names are unique");
 });
 
-/** Every `govern <command> [<sub>]` in SKILL.md's code (inline code spans and fenced blocks), as [command, word after it]. */
-function skillMentions(): [string, string | undefined][] {
-  const md = readFileSync(join(HERE, "..", "SKILL.md"), "utf8");
-  const code = [...md.matchAll(/```[^\n]*\n([\s\S]*?)```/g)].map((m) => m[1]);
-  const rest = md.replace(/```[^\n]*\n[\s\S]*?```/g, "");
-  code.push(...[...rest.matchAll(/`([^`\n]+)`/g)].map((m) => m[1]));
-  return code.flatMap((c) => [...c.matchAll(/(?:^|[\s(])govern ([a-z][a-z-]*)(?: ([a-z][a-z-]*))?/g)].map((m) => [m[1], m[2]] as [string, string | undefined]));
-}
-
 test("drift: every command and subcommand is in SKILL.md and HELP; SKILL.md names no command that does not exist", () => {
-  const mentions = skillMentions();
-  assert.ok(mentions.length > 20, "SKILL.md's govern mentions are found");
-  const said = new Set(mentions.map(([c]) => c));
-  const saidSub = new Set(mentions.map(([c, s]) => `${c} ${s}`));
+  const md = readFileSync(join(HERE, "..", "SKILL.md"), "utf8");
+  assert.ok(skillMentions(md).length > 20, "SKILL.md's govern mentions are found");
+  assert.deepEqual(skillProblems(md, COMMANDS), [], "SKILL.md against the command table");
   for (const c of COMMANDS) {
-    assert.ok(said.has(c.name), `SKILL.md never mentions \`govern ${c.name}\``);
     assert.match(HELP, new RegExp(`govern ${c.name}\\b`), `HELP lacks govern ${c.name}`);
-    for (const s of Object.keys(c.subs ?? {})) {
-      assert.ok(saidSub.has(`${c.name} ${s}`), `SKILL.md never mentions \`govern ${c.name} ${s}\``);
-      assert.match(HELP, new RegExp(`govern ${c.name} ${s}\\b`), `HELP lacks govern ${c.name} ${s}`);
-    }
+    for (const s of Object.keys(c.subs ?? {})) assert.match(HELP, new RegExp(`govern ${c.name} ${s}\\b`), `HELP lacks govern ${c.name} ${s}`);
   }
-  const byName = new Map(COMMANDS.map((c) => [c.name, c]));
-  for (const [c, s] of mentions) {
-    const cmd = byName.get(c);
-    assert.ok(cmd, `SKILL.md mentions \`govern ${c}\`, which is not a command`);
-    if (cmd.subs && s !== undefined) assert.ok(s in cmd.subs, `SKILL.md mentions \`govern ${c} ${s}\`, which is not a subcommand of ${c}`);
-  }
+});
+
+test("the SKILL.md check catches each kind of drift in a synthetic manual", () => {
+  const table = [
+    { name: "advance", flags: { value: ["note"] } },
+    { name: "task", flags: undefined, subs: { send: { flags: { value: ["to", "body"], bool: ["write"] } }, list: { flags: { value: ["state"] } } } },
+  ];
+  const good = "Run `govern advance l1 --note \"--verbose ok\"`, then `govern task send --to x --body=y --write --help` and `govern task list --state open`.\n"
+    + "```\ngovern advance l1 -- node --test x\n```\n";
+  const all = (extra: string) => skillProblems(good + extra, table);
+  assert.deepEqual(all(""), [], "a manual that agrees with the table has no problems");
+  assert.deepEqual(all("`govern frobnicate`"), ["mentions `govern frobnicate`, which is not a command"]);
+  assert.deepEqual(all("`govern task frob`"), ["mentions `govern task frob`, which is not a subcommand of task"]);
+  assert.deepEqual(all("`govern task constructor`"), ["mentions `govern task constructor`, which is not a subcommand of task"]);
+  assert.deepEqual(all("`govern task toString`"), [], "a capitalised word is not read as a subcommand");
+  assert.deepEqual(all("`govern advance l1 --nte x`"), ["`govern advance l1 --nte x`: advance takes no --nte (valid: --note, --help)"]);
+  assert.deepEqual(all("`govern task list --to x`"), ["`govern task list --to x`: task list takes no --to (valid: --state, --help)"]);
+  assert.deepEqual(all("```\ngovern advance l1 -- --anything\ngovern task send --to x --tooo\n```\n"),
+    ["`govern task send --to x --tooo`: task send takes no --tooo (valid: --to, --body, --write, --help)"], "after -- is argv; each line is its own mention");
+  assert.deepEqual(skillProblems("`govern advance` only", table), ["never mentions `govern task`", "never mentions `govern task send`", "never mentions `govern task list`"]);
+  assert.deepEqual(skillProblems(good.replace("`govern task list --state open`", "`task list`"), table), ["never mentions `govern task list`"]);
 });
 
 const BIN = join(HERE, "..", "..", "..", "bin", "govern");

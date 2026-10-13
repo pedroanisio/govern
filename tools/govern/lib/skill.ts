@@ -3,7 +3,7 @@
 import { readFileSync, writeFileSync, renameSync, rmSync, mkdirSync, existsSync } from "node:fs";
 import { dirname, join, basename } from "node:path";
 import { randomUUID } from "node:crypto";
-import { fail, sha256 } from "./util.ts";
+import { fail, sha256, type FlagSpec } from "./util.ts";
 
 export const sha256File = (f: string) => sha256(readFileSync(f));
 
@@ -36,6 +36,57 @@ export function installSkill(src: string, dest: string, io: InstallIo = {}): str
     rmSync(tmp, { force: true });
   }
   return want;
+}
+
+/** What the SKILL.md check needs of a command-table entry (govern.ts's Cmd fits it). */
+export interface SkillCmd { name: string; flags?: FlagSpec; subs?: Record<string, { flags?: FlagSpec }>; defaultSub?: string }
+
+/** One `govern <command> [<word>] …` in a manual's code: the command, the word after it, and the mention's own text (to the
+ *  end of its line, a `&&` or `;`, or the next `govern `). */
+export interface Mention { cmd: string; sub?: string; text: string }
+
+/** Every `govern <command> …` in the code of `md`: fenced blocks and inline code spans. Prose is not read. */
+export function skillMentions(md: string): Mention[] {
+  const code = [...md.matchAll(/```[^\n]*\n([\s\S]*?)```/g)].map((m) => m[1]);
+  const rest = md.replace(/```[^\n]*\n[\s\S]*?```/g, "");
+  code.push(...[...rest.matchAll(/`([^`\n]+)`/g)].map((m) => m[1]));
+  return code.flatMap((c) => [...c.matchAll(/(?:^|[\s(])(govern ([a-z][a-z-]*)(?![\w-])(?: ([a-z][a-z-]*)(?![\w-]))?(?:(?!govern |&&|;)[^\n])*)/g)]
+    .map((m) => ({ cmd: m[2], sub: m[3], text: m[1].trim() })));
+}
+
+/** The flags written in a mention: not inside a quoted value, not after `--` (that is the argv's). */
+const flagsIn = (text: string): string[] => {
+  const words = text.replace(/"[^"]*"|'[^']*'/g, " ").split(/(?:^|\s)--(?:\s|$)/)[0];
+  return [...words.matchAll(/(?:^|[\s[(|])--([A-Za-z][\w-]*)/g)].map((m) => m[1]);
+};
+
+/** The drift between a manual's text and the command table, as one line per problem; empty when they agree:
+ *  - a command or subcommand the text never mentions;
+ *  - a mention of a command, or of a subcommand, the table does not have (an own key: `constructor` is no subcommand);
+ *  - a `--flag` in a mention that the command (or the subcommand named) does not declare. */
+export function skillProblems(md: string, commands: readonly SkillCmd[]): string[] {
+  const problems: string[] = [];
+  const mentions = skillMentions(md);
+  const said = new Set(mentions.map((m) => m.cmd));
+  const saidSub = new Set(mentions.map((m) => `${m.cmd} ${m.sub}`));
+  for (const c of commands) {
+    if (!said.has(c.name)) problems.push(`never mentions \`govern ${c.name}\``);
+    for (const s of Object.keys(c.subs ?? {})) if (!saidSub.has(`${c.name} ${s}`)) problems.push(`never mentions \`govern ${c.name} ${s}\``);
+  }
+  const byName = new Map(commands.map((c) => [c.name, c]));
+  for (const { cmd: c, sub: s, text } of mentions) {
+    const cmd = byName.get(c);
+    if (!cmd) { problems.push(`mentions \`govern ${c}\`, which is not a command`); continue; }
+    let spec = cmd.flags, label = c;
+    if (cmd.subs) {
+      if (s !== undefined && Object.hasOwn(cmd.subs, s)) { spec = cmd.subs[s].flags; label = `${c} ${s}`; }
+      else if (s !== undefined && !cmd.defaultSub) { problems.push(`mentions \`govern ${c} ${s}\`, which is not a subcommand of ${c}`); continue; }
+      else if (cmd.defaultSub) spec = { ...cmd.subs[cmd.defaultSub]?.flags, ...spec };
+    }
+    const known = [...(spec?.value ?? []), ...(spec?.multi ?? []), ...(spec?.bool ?? []), "help"];
+    for (const f of flagsIn(text)) if (!known.includes(f)) problems.push(`\`${text}\`: ${label} takes no --${f} (valid: ${known.map((k) => `--${k}`).join(", ")})`);
+  }
+  return problems;
 }
 
 /** Whether `dest` is byte for byte `src`: null when it is, else the reason, naming both paths and both sha256s. */
