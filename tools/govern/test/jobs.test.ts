@@ -222,7 +222,44 @@ test("cmd --timeout stores the timeout beside the argv; plain commands stay argv
   assert.deepEqual(s.commands.p, ["echo", "plain"]);
   assert.match(govern(e, ["cmd", slug]).out, /^t: echo hi \(timeout 5s\)$/m);
   assert.match(govern(e, ["run", slug, "t"]).out, /ok \(exit 0\)/);
-  assert.match(govern(e, ["cmd", slug, "u", "--timeout", "soon", "--", "echo"]).err, /--timeout must be a number of seconds/);
+  for (const bad of ["soon", "0", "1.5", "-2", "1e3", "0x10", "07", " 5", ""]) {
+    const r = govern(e, ["cmd", slug, "u", "--timeout", bad, "--", "echo"]);
+    assert.equal(r.code, 2, `--timeout ${JSON.stringify(bad)}`);
+    assert.match(r.err, /--timeout must be a whole number of seconds, 1 or more/);
+  }
+  assert.equal(JSON.parse(readFileSync(join(e.projects, slug, "govern.json"), "utf8")).commands.u, undefined);
+});
+
+test("wait --timeout takes only a whole number of seconds: anything else is refused, never a wait without end", () => {
+  const { e, slug } = lane();
+  govern(e, ["cmd", slug, "t", "--", "true"]);
+  govern(e, ["run", slug, "t"]);
+  for (const bad of ["soon", "0", "2.5", "-1", ""]) {
+    const w = govern(e, ["wait", slug, "last", "--timeout", bad]);
+    assert.equal(w.code, 2, `--timeout ${JSON.stringify(bad)}`);
+    assert.match(w.err, /--timeout must be a whole number of seconds, 1 or more/);
+  }
+  assert.equal(govern(e, ["wait", slug, "last", "--timeout", "3"]).code, 0);
+});
+
+test("a job ref is an exact id, else a unique id prefix, else a command name meaning that command's newest job", () => {
+  const { e, slug } = lane();
+  const mk = (id: string, name: string) => {
+    write(join(jobsDir(e, slug), id, "job.json"), JSON.stringify({ id, slug, name, argv: ["true"], cwd: e.root, start: new Date().toISOString(), bg: false }));
+    write(join(jobsDir(e, slug), id, "exit"), "0\n");
+    write(join(jobsDir(e, slug), id, "log"), `log of ${id}\n`);
+  };
+  mk("20260101T000000Z-build", "build");
+  mk("20260101T000000Z-build.002", "build");
+  mk("20260101T000003Z-test", "test");
+  mk("20260101T000005Z-build", "build");
+  const log = (ref: string) => govern(e, ["log", slug, ref]);
+  assert.equal(log("20260101T000000Z-build").out.trim(), "log of 20260101T000000Z-build");
+  assert.equal(log("20260101T000003").out.trim(), "log of 20260101T000003Z-test");
+  assert.equal(log("build").out.trim(), "log of 20260101T000005Z-build");
+  assert.equal(log("test").out.trim(), "log of 20260101T000003Z-test");
+  assert.match(log("20260101T000000Z-b").err, /is ambiguous/);
+  assert.match(log("deploy").err, /not found/);
 });
 
 for (const [src, env] of SOURCES) test(`kill stops the lane's running background job, group and all, and records the outcome (${src})`, { skip: NO_PROC }, () => {
@@ -327,7 +364,8 @@ test("a foreground job's timeout also stops what left its process tree by double
   try {
     govern(e, ["cmd", slug, "hang", "--timeout", "1", "--", "sh", "-c", "(sleep 37 & echo $! > esc); sleep 30"]);
     const r = govern(e, ["run", slug, "hang"]);
-    assert.match(r.out, /· timeout/);
+    assert.match(r.out, /· timed out after 1s/);
+    assert.doesNotMatch(r.out, /timeout \(timed out/);
     const [esc] = pidsIn(join(e.projects, slug, "esc"), 1);
     pids.push(esc);
     assert.ok(allGone([esc]), `the double-forked sleep must be gone: ${esc}`);
@@ -424,7 +462,8 @@ test("a job's end is ledgered once: kill, then wait, then wait again add no seco
     assert.equal(govern(e, ["kill", slug]).code, 0);
     for (let i = 0; i < 2; i++) {
       const w = govern(e, ["wait", slug, j.id, "--timeout", "5"]);
-      assert.match(w.out, new RegExp(`job ${j.id} · killed`));
+      assert.match(w.out, new RegExp(`job ${j.id} · killed by govern kill`));
+      assert.doesNotMatch(w.out, /killed \(killed/);
     }
     const got = ends(e, slug, j.id);
     assert.equal(got.length, 1, JSON.stringify(got));

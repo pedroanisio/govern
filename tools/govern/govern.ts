@@ -6,7 +6,7 @@ import { readFileSync, globSync, mkdirSync, copyFileSync } from "node:fs";
 import { join, dirname, resolve, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
-import { GovernError, fail, parseArgs, opt, nowIso, readJsonl, kTok, clip, type Args } from "./lib/util.ts";
+import { GovernError, fail, parseArgs, opt, secondsOpt, nowIso, readJsonl, kTok, clip, type Args } from "./lib/util.ts";
 import { REPO, PROJECTS, stagesOf, load, save, create, stageOf, brief, appendLedger, resolveFile, ledgerFile, projectDir, checkSlug, checkOf, pendingCheckChanges, blockedBy, laneState, stateFile, argvOf, commandLine, type Project, type Command } from "./lib/project.ts";
 import { processes, getProcess, processOf, listLine, show } from "./lib/process.ts";
 import * as jobs from "./lib/jobs.ts";
@@ -47,7 +47,9 @@ run without a model in the loop
   govern run <slug> <command> [--bg] [-- extra args]      foreground prints a summary; --bg returns a job id
   govern wait <slug> [<job>|last] [--timeout 540]          block until it ends; exit code = the job's (124 = still running)
   govern jobs <slug>  ·  govern log <slug> [<job>] [--tail 40] [--grep RE]
-  govern kill <slug> [<job>]     stop a job's process group (default: the latest running), only if its pid is still that job
+  govern kill <slug> [<job>]     stop a job (default: the latest running) and what it started: its process tree, a --bg job's group,
+                                 and (Linux) every process marked with its GOVERN_JOB_DIR; its own pid only while still that job
+  <job> is an id, a unique id prefix, or a command name (that command's newest job)
 
 codex one-shot steps (verified JSON)
   govern prompts                 list the steps
@@ -336,10 +338,9 @@ function cmdCmd(a: Args): void {
   if (!name) { for (const [k, v] of Object.entries(p.commands)) out(`${k}: ${commandLine(v)}`); return; }
   const argv = a._.slice(3);
   if (!argv.length) fail(`give the argv after --: govern cmd ${p.slug} ${name} -- {python} build.py --preview`);
-  const t = opt(a, "timeout"), timeout = Number(t);
-  if (t !== undefined && !(Number.isFinite(timeout) && timeout > 0)) fail(`--timeout must be a number of seconds: ${t}`);
+  const timeout = secondsOpt(a, "timeout");
   const from = p.commands[name] ?? null;
-  const to: string[] | Command = t === undefined ? argv : { argv, timeout };
+  const to: string[] | Command = timeout === undefined ? argv : { argv, timeout };
   if (from && sameCommand(from, to)) return out(`${p.slug}: ${name} is already ${commandLine(to)} — nothing changed`);
   p.commands[name] = to;
   save(p);
@@ -370,8 +371,9 @@ function cmdRun(a: Args): void {
 function cmdWait(a: Args): void {
   const p = load(a._[1]);
   const id = jobs.find(p.slug, a._[2]);
-  const st = jobs.wait(p.slug, id, Number(opt(a, "timeout") ?? 540));
-  if (st.timedOut) { out(`job ${id} still running after ${opt(a, "timeout") ?? 540}s · wait again with: govern wait ${p.slug} ${id}`); process.exitCode = 124; return; }
+  const timeout = secondsOpt(a, "timeout") ?? 540;
+  const st = jobs.wait(p.slug, id, timeout);
+  if (st.timedOut) { out(`job ${id} still running after ${timeout}s · wait again with: govern wait ${p.slug} ${id}`); process.exitCode = 124; return; }
   jobs.recordEnd(p.slug, id);
   out(jobs.summary(p, st));
   process.exitCode = st.exit ?? 1;

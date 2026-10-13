@@ -12,7 +12,7 @@ export interface Job {
   timeout?: number; stopped?: "timeout" | "killed"; end?: string;
 }
 export interface JobState extends Job { status: "running" | "ok" | "failed" | "lost" | "timeout" | "killed"; exit?: number; seconds?: number }
-/** What `govern kill` did: the group exited on SIGTERM, needed SIGKILL, had already exited, or the pid is not provably the job's. */
+/** What `govern kill` did: its processes exited on SIGTERM, needed SIGKILL, had already exited, or the pid is not provably the job's. */
 export type KillOutcome = "terminated" | "killed" | "already-exited" | "not-owned";
 
 /** How long a foreground job (a check, `govern run`) may run when its command sets no --timeout: room for a test suite. */
@@ -112,9 +112,11 @@ export function find(slug: string, ref: string | undefined): string {
   const ids = list(slug);
   if (!ids.length) fail(`${slug}: no jobs yet`);
   if (!ref || ref === "last") return ids[ids.length - 1];
-  const hits = ids.filter((i) => i === ref || i.startsWith(ref) || i.endsWith(ref));
-  if (hits.length !== 1) fail(`${slug}: job "${ref}" ${hits.length ? "is ambiguous" : "not found"} (have ${ids.slice(-5).join(", ")})`);
-  return hits[0];
+  if (ids.includes(ref)) return ref;
+  const hits = ids.filter((i) => i.startsWith(ref));
+  if (hits.length === 1) return hits[0];
+  const named = hits.length ? undefined : ids.findLast((i) => readJson<Job>(join(jobDir(slug, i), "job.json")).name === ref);
+  return named ?? fail(`${slug}: job "${ref}" ${hits.length ? "is ambiguous" : "not found"} (have ${ids.slice(-5).join(", ")})`);
 }
 
 /** Whose the job's pid is now: the job's (live), nobody's (gone), a recycled pid (other), or no start time to tell
@@ -310,8 +312,10 @@ export function wait(slug: string, id: string, timeoutSec: number, pollMs = 2000
 }
 
 export function summary(p: Project, st: JobState, n = 12): string {
-  const how = st.status === "timeout" || st.status === "killed" ? ` (${ending(st)})` : st.exit != null ? ` (exit ${st.exit})` : "";
-  const L = [`job ${st.id} · ${st.status}${how}${st.seconds != null ? ` · ${st.seconds}s` : ""}`];
+  // A stopped job's line says how once ("timed out after 60s", "killed by govern kill"), not its status and then again.
+  const stopped = st.status === "timeout" || st.status === "killed";
+  const how = `${stopped ? ending(st) : st.status}${st.exit != null ? ` (exit ${st.exit})` : ""}`;
+  const L = [`job ${st.id} · ${how}${st.seconds != null ? ` · ${st.seconds}s` : ""}`];
   if (st.status !== "running") {
     // File mtimes come from the kernel's coarse clock (one tick, a few ms), which can read slightly before the
     // Date.now() taken at start: a file the job wrote can look older than the job. One second of slack covers it.

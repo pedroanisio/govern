@@ -28,6 +28,13 @@ export function parseArgs(argv: string[], spec: { bool?: string[]; multi?: strin
   return out;
 }
 export const opt = (a: Args, k: string): string | undefined => (typeof a.opts[k] === "string" ? (a.opts[k] as string) : undefined);
+/** A `--<k>` count of seconds: digits only, 1 or more, no sign, fraction, exponent or padding. Undefined when not given. */
+export function secondsOpt(a: Args, k: string): number | undefined {
+  const v = opt(a, k);
+  if (v === undefined) return undefined;
+  if (!/^[1-9]\d*$/.test(v)) fail(`--${k} must be a whole number of seconds, 1 or more: ${JSON.stringify(v)}`);
+  return Number(v);
+}
 
 export const readJson = <T>(p: string): T => JSON.parse(readFileSync(p, "utf8")) as T;
 export function writeJson(p: string, v: unknown): void {
