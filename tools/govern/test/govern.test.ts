@@ -248,6 +248,41 @@ test("ask: a step without a schema records no schemaSha", () => {
   assert.equal(jsonl(join(e.root, "argv.log"))[0].includes("--output-schema"), false);
 });
 
+test("ask: {{var.constructor}} is a required var not given until --var sets it (an Object.prototype name is not a var)", () => {
+  const { e, slug } = video();
+  const prompts = join(e.root, "prompts");
+  const env = { GOVERN_PROMPTS: prompts, FAKE_CODEX_SCRIPTS: reply(e, "free", { said: "hi" }) };
+  write(join(prompts, "need.md"), "Use {{var.constructor}} as JSON.\n");
+  const r = govern(e, ["ask", slug, "need"], env);
+  assert.equal(r.code, 2, r.out);
+  assert.match(r.err, /prompt need: unfilled var\.constructor \(pass --var NAME=VALUE\)/);
+  assert.equal(jsonl(join(e.root, "argv.log")).length, 0, "codex was never called");
+  assert.equal(govern(e, ["ask", slug, "need", "--var", "constructor=the builder"], env).code, 0);
+  assert.match(present(stdinLog(e)[0], "the prompt sent"), /Use the builder as JSON\./);
+});
+
+test("ask: {{opt.toString}} renders (none) until --var sets it (an Object.prototype name is not a var)", () => {
+  const { e, slug } = video();
+  const prompts = join(e.root, "prompts");
+  const env = { GOVERN_PROMPTS: prompts, FAKE_CODEX_SCRIPTS: reply(e, "free", { said: "hi" }) };
+  write(join(prompts, "maybe.md"), "Hint: {{opt.toString}}; also {{opt.valueOf}}.\n");
+  assert.equal(govern(e, ["ask", slug, "maybe"], env).code, 0);
+  assert.match(present(stdinLog(e)[0], "the prompt sent"), /Hint: \(none\); also \(none\)\./);
+  assert.equal(govern(e, ["ask", slug, "maybe", "--var", "toString=short"], env).code, 0);
+  assert.match(present(stdinLog(e)[1], "the prompt sent"), /Hint: short; also \(none\)\./);
+});
+
+test("ask: a prompt named constructor has no house-rule checks and its reply is verified", () => {
+  const { e, slug } = video();
+  const prompts = join(e.root, "prompts");
+  write(join(prompts, "constructor.md"), "Say something as JSON.\n");
+  const c = govern(e, ["ask", slug, "constructor"], { GOVERN_PROMPTS: prompts, FAKE_CODEX_SCRIPTS: reply(e, "free", { said: "hi" }) });
+  assert.equal(c.code, 0, c.err + c.out);
+  assert.match(c.out, /verified/);
+  assert.doesNotMatch(c.out, /FAILED/);
+  assert.equal(ledger(e, slug).find((x) => x.kind === "ask").ok, true);
+});
+
 test("ask: a prompt whose repairs is not a whole number 0 or more is refused before calling codex, never passed as verified", () => {
   const { e, slug } = video();
   const prompts = join(e.root, "prompts");

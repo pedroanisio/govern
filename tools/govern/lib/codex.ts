@@ -8,6 +8,7 @@ import { existsSync, readFileSync, mkdirSync, writeFileSync } from "node:fs";
 import { join, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { fail, stamp, sha256 } from "./util.ts";
+import { emptyRecord } from "./shape.ts";
 import { type Project, projectDir, governDir, appendLedger, brief, REPO } from "./project.ts";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -58,7 +59,7 @@ export function readPrompt(name: string): PromptFile {
   if (!existsSync(f)) fail(`no prompt "${name}" (see govern prompts)`);
   const text = readFileSync(f, "utf8");
   const m = /^---\n([\s\S]*?)\n---\n/.exec(text);
-  const meta: Record<string, string> = {};
+  const meta = emptyRecord<string>();
   for (const l of (m?.[1] ?? "").split("\n")) { const i = l.indexOf(":"); if (i > 0) meta[l.slice(0, i).trim()] = l.slice(i + 1).trim(); }
   // ask() loops 1 + repairs times and an ask with no call has no errors: a repairs value that is not a whole number 0 or
   // more would make zero calls and pass as verified, so it is refused here.
@@ -90,9 +91,12 @@ export function render(pf: PromptFile, p: Project, files: string[], vars: Record
       if (!f.startsWith(REPO + "/") || !existsSync(f)) fail(`prompt ${pf.name}: include not found: ${key.slice(8)}`);
       return readFileSync(f, "utf8").replace(/^---\n[\s\S]*?\n---\n/, "");
     }
-    const given = key.startsWith("var.") ? vars[key.slice(4)] : undefined;
-    if (given !== undefined) return given;
-    if (key.startsWith("opt.")) return vars[key.slice(4)] ?? "(none)";
+    // only a var given with --var fills a placeholder: `constructor` or `toString` is not given just because vars,
+    // like any object, inherits a member by that name
+    const name = key.slice(4);
+    const given = Object.hasOwn(vars, name) ? vars[name] : undefined;
+    if (key.startsWith("var.") && given !== undefined) return given;
+    if (key.startsWith("opt.")) return given ?? "(none)";
     return all;
   });
   const left = [...out.matchAll(/\{\{\s*([\w.:\/-]+)\s*\}\}/g)].map((m) => m[1]);
@@ -211,7 +215,8 @@ export function ask(p: Project, name: string, o: { files?: string[]; vars?: Reco
       catch { errors.push("reply is not JSON"); }
     }
     if (!errors.length && schema) errors.push(...validate(schema, value));
-    if (!errors.length && CHECKS[name]) errors.push(...CHECKS[name](value, p));
+    const houseRules = Object.hasOwn(CHECKS, name) ? CHECKS[name] : undefined;
+    if (!errors.length && houseRules) errors.push(...houseRules(value, p));
     if (!errors.length || r.error || r.status !== 0) break;
     input = `${prompt}\n\nYour previous reply:\n${text}\n\nIt failed these checks; reply again with the whole corrected JSON and change only what the checks require:\n- ${errors.join("\n- ")}\n`;
   }
