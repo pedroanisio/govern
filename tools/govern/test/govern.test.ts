@@ -248,6 +248,21 @@ test("ask: a step without a schema records no schemaSha", () => {
   assert.equal(jsonl(join(e.root, "argv.log"))[0].includes("--output-schema"), false);
 });
 
+test("ask: a prompt whose repairs is not a whole number 0 or more is refused before calling codex, never passed as verified", () => {
+  const { e, slug } = video();
+  const prompts = join(e.root, "prompts");
+  for (const bad of ["lots", "-1", "1.5", ""]) {
+    write(join(prompts, "free.md"), `---\nrepairs: ${bad}\n---\nSay something as JSON.\n`);
+    const r = govern(e, ["ask", slug, "free"], { GOVERN_PROMPTS: prompts, FAKE_CODEX_SCRIPTS: reply(e, "free", { said: "hi" }) });
+    assert.equal(r.code, 2, `repairs: ${bad}: ${r.out}`);
+    assert.match(r.err, new RegExp(`free\\.md: repairs must be a whole number, 0 or more \\(got "${bad.replace(".", "\\.")}"\\)`));
+  }
+  assert.equal(jsonl(join(e.root, "argv.log")).length, 0, "codex was never called");
+  assert.equal(ledger(e, slug).some((x) => x.kind === "ask"), false, "no ask is recorded");
+  write(join(prompts, "free.md"), "---\nrepairs: 0\n---\nSay something as JSON.\n");
+  assert.equal(govern(e, ["ask", slug, "free"], { GOVERN_PROMPTS: prompts, FAKE_CODEX_SCRIPTS: reply(e, "free", { said: "hi" }) }).code, 0);
+});
+
 test("work: both segment entries name the manual in force (skillSha of tools/govern/SKILL.md)", () => {
   const { e, slug } = video();
   const skill = sha256(readFileSync(join(HERE, "..", "SKILL.md")));

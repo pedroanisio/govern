@@ -60,6 +60,9 @@ export function readPrompt(name: string): PromptFile {
   const m = /^---\n([\s\S]*?)\n---\n/.exec(text);
   const meta: Record<string, string> = {};
   for (const l of (m?.[1] ?? "").split("\n")) { const i = l.indexOf(":"); if (i > 0) meta[l.slice(0, i).trim()] = l.slice(i + 1).trim(); }
+  // ask() loops 1 + repairs times and an ask with no call has no errors: a repairs value that is not a whole number 0 or
+  // more would make zero calls and pass as verified, so it is refused here.
+  if (meta.repairs !== undefined && !/^\d+$/.test(meta.repairs)) fail(`${f}: repairs must be a whole number, 0 or more (got ${JSON.stringify(meta.repairs)})`);
   return { name, meta, body: m ? text.slice(m[0].length) : text };
 }
 
