@@ -22,7 +22,8 @@ export interface Process {
   kinds?: string[];
   /** "workflow": the exit conditions come from WORKFLOW.md's stage table. */
   exitFrom?: "workflow";
-  stages: StageDef[];
+  /** At least one: the process file's check refuses an empty list. */
+  stages: [StageDef, ...StageDef[]];
   gates: GateDef[];
 }
 

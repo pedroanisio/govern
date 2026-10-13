@@ -11,7 +11,8 @@ export class GovernError extends Error {
   code: number;
   constructor(message: string, code = 2) { super(message); this.code = code; }
 }
-export const fail = (msg: string, code = 2): never => { throw new GovernError(msg, code); };
+/** Raise a GovernError. A function declaration, not an arrow const, so a call narrows the code after it (asserts never). */
+export function fail(msg: string, code = 2): never { throw new GovernError(msg, code); }
 
 /** The flags a command takes: switches (`--k`, `--k=true|false`), value flags (`--k V`, `--k=V`; the last one wins)
  *  and repeatable value flags (every occurrence kept). A flag outside the spec is a usage error. */
@@ -31,10 +32,12 @@ export function parseArgs(argv: string[], spec: FlagSpec, label: string, vocabul
   // The one word a value flag will not take as its value: a flag (`--x` or `--x=…`) this command declares or that is in
   // `vocabulary` (govern passes every flag any command declares). That is the user forgetting the value, not giving
   // one. Any other word is the value, `--verbose test passes` included; `--k=--bg` gives a value that is a flag word.
-  const isDeclaredFlag = (w: string) => w.startsWith("--") && known.has(w.slice(2).split("=", 1)[0]);
-  for (let i = 0; i < argv.length; i++) {
-    const a = argv[i];
-    if (a === "--") { out._.push(...argv.slice(i + 1)); break; }
+  const isDeclaredFlag = (w: string) => w.startsWith("--") && known.has(w.slice(2).replace(/=.*/s, ""));
+  // next() reads the word at i and moves past it: the loop's word, or a value flag's value
+  let i = 0;
+  const next = (): string | undefined => argv[i++];
+  for (let a = next(); a !== undefined; a = next()) {
+    if (a === "--") { out._.push(...argv.slice(i)); break; }
     if (!a.startsWith("--")) { out._.push(a); continue; }
     let [k, v] = a.slice(2).split(/=(.*)/s, 2) as [string, string | undefined];
     if (bool.has(k)) {
@@ -47,7 +50,7 @@ export function parseArgs(argv: string[], spec: FlagSpec, label: string, vocabul
       fail(`${label}: unknown flag ${k ? `--${k}` : a} ${valid ? `(valid: ${valid})` : "(takes no flags)"}`);
     }
     if (v === undefined) {
-      v = argv[++i];
+      v = next();
       if (v === undefined || v === "--" || isDeclaredFlag(v)) fail(`${label}: --${k} needs a value (give --${k}=VALUE when the value starts with --)`);
     }
     if (multi.has(k)) (out.multi[k] ??= []).push(v);
@@ -96,7 +99,9 @@ export interface ProcStat { state: string; ppid: number; pgrp: number; start: st
 export function parseStat(stat: string): ProcStat | undefined {
   const i = stat.lastIndexOf(")");
   const f = i < 0 ? [] : stat.slice(i + 1).trim().split(/\s+/);
-  return f.length >= 20 && /^\d+$/.test(f[19]) ? { state: f[0], ppid: Number(f[1]), pgrp: Number(f[2]), start: f[19] } : undefined;
+  const [state, ppid, pgrp] = f, start = f[19];
+  return state !== undefined && ppid !== undefined && pgrp !== undefined && start !== undefined && /^\d+$/.test(start)
+    ? { state, ppid: Number(ppid), pgrp: Number(pgrp), start } : undefined;
 }
 /** Whether this system has /proc to read process identities from. */
 export const hasProc = () => existsSync("/proc/self/stat");
@@ -116,8 +121,10 @@ function psTable(pids?: number[]): Map<number, ProcStat> {
   if (r.error || (r.status !== 0 && !(pids && r.status === 1 && !r.stdout.trim()))) fail(`cannot read the process table: ps ${r.error?.message ?? `exited ${r.status}: ${r.stderr.trim()}`}`);
   const out = new Map<number, ProcStat>();
   for (const line of r.stdout.split("\n")) {
-    const m = PS_LINE.exec(line);
-    if (m) out.set(Number(m[1]), { state: m[4][0], ppid: Number(m[2]), pgrp: Number(m[3]), start: m[5] });
+    const [, pid, ppid, pgid, state, start] = PS_LINE.exec(line) ?? [];
+    // every group of PS_LINE is mandatory: a match has all five
+    if (pid !== undefined && ppid !== undefined && pgid !== undefined && state !== undefined && start !== undefined)
+      out.set(Number(pid), { state: state.charAt(0), ppid: Number(ppid), pgrp: Number(pgid), start });
   }
   return out;
 }

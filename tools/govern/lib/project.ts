@@ -138,7 +138,7 @@ export function parseProject(file: string, text: string, slug: string): Project 
   });
 }
 
-export function load(given: string): Project {
+export function load(given: string | undefined): Project {
   const slug = checkSlug(given);
   const f = stateFile(slug);
   if (!existsSync(f)) fail(`${slug}: no govern.json — start it with: govern new ${slug} --process NAME (or --kind long|short|ops) --title "…"`);
@@ -262,7 +262,8 @@ function workflowExit(stage: string): string | undefined {
   const row = readFileSync(WORKFLOW, "utf8").split("\n").find((l) => l.startsWith(`| ${n} |`));
   if (!row) return undefined;
   const cells = row.split(/(?<!\\)\|/).map((c) => c.trim()).filter((_, i, a) => i > 0 && i < a.length - 1);
-  return cells.length >= 4 ? plain(cells[3]) : undefined;
+  const exit = cells[3];
+  return exit === undefined ? undefined : plain(exit);
 }
 /** What "done" means for the lane's current stage: the process's text, or WORKFLOW.md's for the video process. */
 export function exitCondition(p: Project, stage = p.stage): string | undefined {
@@ -335,12 +336,15 @@ export function brief(p: Project, o: { notes?: number } = {}): string {
   const led = readJsonl(ledgerFile(p.slug));
   const pending = pendingCheckChanges(p, led), unaccepted = "changed and the owner has not accepted it";
   for (const { stage, sets, cmds } of pending) {
-    if (sets.length) L.push(`⚠ the check of stage ${stage} ${unaccepted}: ${[sets[0].from ?? "none", ...sets.map((x) => x.to ?? "none")].join(" → ")}`);
-    for (const { name, changes } of cmds)
-      L.push(`⚠ command "${name}" behind the check of stage ${stage} ${unaccepted}: ${[shownCommand(changes[0].from), ...changes.map((x) => (x.kind === "cmd-rm" ? "(removed)" : shownCommand(x.to)))].join(" → ")}`);
+    const [firstSet] = sets;
+    if (firstSet) L.push(`⚠ the check of stage ${stage} ${unaccepted}: ${[firstSet.from ?? "none", ...sets.map((x) => x.to ?? "none")].join(" → ")}`);
+    for (const { name, changes } of cmds) {
+      const [first] = changes; // pendingCheckChanges keeps only commands with changes: always there
+      if (first) L.push(`⚠ command "${name}" behind the check of stage ${stage} ${unaccepted}: ${[shownCommand(first.from), ...changes.map((x) => (x.kind === "cmd-rm" ? "(removed)" : shownCommand(x.to)))].join(" → ")}`);
+    }
   }
   if (pending.length) L.push(`only the owner accepts a change: govern check ${p.slug} <stage> --accept --quote "<the owner's words>"`);
-  if (pr.gates.length) L.push(`approvals: ${pr.gates.map((g) => (p.approvals[g.name] ? `${g.name} ✓ ${p.approvals[g.name].at.slice(0, 10)}` : `${g.name} –`)).join(" · ")}`);
+  if (pr.gates.length) L.push(`approvals: ${pr.gates.map((g) => { const a = p.approvals[g.name]; return a ? `${g.name} ✓ ${a.at.slice(0, 10)}` : `${g.name} –`; }).join(" · ")}`);
   if (p.after?.length) L.push(`after: ${p.after.map(afterMet).map((x) => `${x.label} (${x.met ? "done" : "waiting"})`).join(" · ")}`);
   const files = Object.keys(p.files).map((k) => { const f = resolveFile(p, k); return `${k}=${f ? rel(f) : "(none)"}`; });
   if (files.length) L.push(`files: ${files.join(" · ")}`);

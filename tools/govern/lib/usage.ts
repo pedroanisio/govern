@@ -75,7 +75,7 @@ function scan(s: string, i: number, stop: "" | ")" | "`"): { cmds: string[][]; e
   const endCmd = () => { if (word !== null) cmd.push(word); word = null; if (cmd.length) cmds.push(cmd); cmd = []; };
   const nested = (j: number, close: ")" | "`") => { const r = scan(s, j, close); cmds.push(...r.cmds); add("$"); return r.end; };
   for (; i < s.length; i++) {
-    const c = s[i];
+    const c = s.charAt(i);
     if (c === stop && (stop === "`" || depth === 0)) { endCmd(); return { cmds, end: i }; }
     if (c === "\\") { if (s[i + 1] !== "\n") add(s[i + 1] ?? ""); i++; }
     else if (c === "'") { const j = s.indexOf("'", i + 1) < 0 ? s.length : s.indexOf("'", i + 1); add(s.slice(i + 1, j)); i = j; }
@@ -85,7 +85,7 @@ function scan(s: string, i: number, stop: "" | ")" | "`"): { cmds: string[][]; e
         if (s[i] === "\\") add(s[++i] ?? "");
         else if (s.startsWith("$(", i)) i = nested(i + 2, ")");
         else if (s[i] === "`") i = nested(i + 1, "`");
-        else add(s[i]);
+        else add(s.charAt(i));
       }
     }
     else if (s.startsWith("$(", i)) i = nested(i + 2, ")");
@@ -111,11 +111,12 @@ const SHELLS = new Set(["sh", "bash", "zsh", "dash", "ksh"]);
 /** A simple command's words from the command it runs: leading assignments, keywords and wrappers are skipped. */
 function invoked(words: string[]): string[] {
   let i = 0;
-  while (i < words.length) {
-    const w = base(words[i]);
-    if (KEYWORDS.has(words[i]) || /^[A-Za-z_]\w*=/.test(words[i])) { i++; continue; }
-    if (!Object.hasOwn(WRAPPERS, w)) break;
-    for (i++; words[i]?.startsWith("-"); ) i += WRAPPERS[w].includes(words[i]) ? 2 : 1;
+  for (let word = words[i]; word !== undefined; word = words[i]) {
+    const w = base(word);
+    if (KEYWORDS.has(word) || /^[A-Za-z_]\w*=/.test(word)) { i++; continue; }
+    const withArg = Object.hasOwn(WRAPPERS, w) ? WRAPPERS[w] : undefined;
+    if (withArg === undefined) break;
+    for (let o = words[++i]; o?.startsWith("-"); o = words[i]) i += withArg.includes(o) ? 2 : 1;
     if (w === "timeout") i++;
   }
   return words.slice(i);
@@ -234,9 +235,8 @@ export function attribute(segs: Segment[]): Segment[] {
 }
 
 export const cost = (c: { model: string; input: number; cacheRead: number; cacheWrite: number; output: number }): number | undefined => {
-  const key = Object.keys(PRICES).find((k) => c.model.startsWith(k));
-  if (!key) return undefined;
-  const p = PRICES[key];
+  const p = Object.entries(PRICES).find(([k]) => c.model.startsWith(k))?.[1];
+  if (!p) return undefined;
   return (c.input * p.in + c.cacheRead * p.cr + c.cacheWrite * p.cw + c.output * p.out) / 1e6;
 };
 

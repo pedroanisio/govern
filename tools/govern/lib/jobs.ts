@@ -110,11 +110,13 @@ export function list(slug: string): string[] {
 
 export function find(slug: string, ref: string | undefined): string {
   const ids = list(slug);
-  if (!ids.length) fail(`${slug}: no jobs yet`);
-  if (!ref || ref === "last") return ids[ids.length - 1];
+  const last = ids.at(-1);
+  if (last === undefined) fail(`${slug}: no jobs yet`);
+  if (!ref || ref === "last") return last;
   if (ids.includes(ref)) return ref;
   const hits = ids.filter((i) => i.startsWith(ref));
-  if (hits.length === 1) return hits[0];
+  const [only, ...others] = hits;
+  if (only !== undefined && !others.length) return only;
   const named = hits.length ? undefined : ids.findLast((i) => readJson<Job>(join(jobDir(slug, i), "job.json")).name === ref);
   return named ?? fail(`${slug}: job "${ref}" ${hits.length ? "is ambiguous" : "not found"} (have ${ids.slice(-5).join(", ")})`);
 }

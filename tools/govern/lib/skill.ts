@@ -56,17 +56,20 @@ export interface Mention { cmd: string; sub?: string; text: string }
 
 /** Every `govern <command> …` in the code of `md`: fenced blocks and inline code spans. Prose is not read. */
 export function skillMentions(md: string): Mention[] {
-  const code = [...md.matchAll(/```[^\n]*\n([\s\S]*?)```/g)].map((m) => m[1]);
+  // group 1 of each pattern below is mandatory: flatMap only states that to the type checker, it drops nothing
+  const code = [...md.matchAll(/```[^\n]*\n([\s\S]*?)```/g)].flatMap((m) => m[1] ?? []);
   const rest = md.replace(/```[^\n]*\n[\s\S]*?```/g, "");
-  code.push(...[...rest.matchAll(/`([^`\n]+)`/g)].map((m) => m[1]));
+  code.push(...[...rest.matchAll(/`([^`\n]+)`/g)].flatMap((m) => m[1] ?? []));
   return code.flatMap((c) => [...c.matchAll(/(?:^|[\s(])(govern ([a-z][a-z-]*)(?![\w-])(?: ([a-z][a-z-]*)(?![\w-]))?(?:(?!govern |&&|;)[^\n])*)/g)]
-    .map((m) => ({ cmd: m[2], sub: m[3], text: m[1].trim() })));
+    .flatMap(({ 1: text, 2: cmd, 3: sub }) => (text === undefined || cmd === undefined ? [] : [{ cmd, sub, text: text.trim() }])));
 }
 
 /** The flags written in a mention: not inside a quoted value, not after `--` (that is the argv's). */
 const flagsIn = (text: string): string[] => {
-  const words = text.replace(/"[^"]*"|'[^']*'/g, " ").split(/(?:^|\s)--(?:\s|$)/)[0];
-  return [...words.matchAll(/(?:^|[\s[(|])--([A-Za-z][\w-]*)/g)].map((m) => m[1]);
+  const unquoted = text.replace(/"[^"]*"|'[^']*'/g, " ");
+  const argvAt = unquoted.search(/(?:^|\s)--(?:\s|$)/);
+  const words = argvAt < 0 ? unquoted : unquoted.slice(0, argvAt);
+  return [...words.matchAll(/(?:^|[\s[(|])--([A-Za-z][\w-]*)/g)].flatMap((m) => m[1] ?? []);
 };
 
 /** The drift between a manual's text and the command table, as one line per problem; empty when they agree:
@@ -88,7 +91,8 @@ export function skillProblems(md: string, commands: readonly SkillCmd[]): string
     if (!cmd) { problems.push(`mentions \`govern ${c}\`, which is not a command`); continue; }
     let spec = cmd.flags, label = c;
     if (cmd.subs) {
-      if (s !== undefined && Object.hasOwn(cmd.subs, s)) { spec = cmd.subs[s].flags; label = `${c} ${s}`; }
+      const named = s !== undefined && Object.hasOwn(cmd.subs, s) ? cmd.subs[s] : undefined;
+      if (named) { spec = named.flags; label = `${c} ${s}`; }
       else if (s !== undefined && !cmd.defaultSub) { problems.push(`mentions \`govern ${c} ${s}\`, which is not a subcommand of ${c}`); continue; }
       else if (cmd.defaultSub) spec = { ...cmd.subs[cmd.defaultSub]?.flags, ...spec };
     }

@@ -63,7 +63,8 @@ export function measure(hours = 24): Metrics {
     }
   }
   ctx.sort((a, b) => a - b);
-  const q = (p: number) => (ctx.length ? ctx[Math.min(ctx.length - 1, Math.floor(p * ctx.length))] : 0);
+  // with no calls the index is -1, which holds nothing: 0
+  const q = (p: number) => ctx[Math.min(ctx.length - 1, Math.floor(p * ctx.length))] ?? 0;
   return { ...m, calls: ctx.length, medianCtx: q(0.5), p90Ctx: q(0.9) };
 }
 

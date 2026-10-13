@@ -25,7 +25,7 @@ const SKILL = resolve(HERE, "SKILL.md");
 
 // A reader that stops early (govern brief x | head) is not an error.
 process.stdout.on("error", (e: NodeJS.ErrnoException) => { if (e.code === "EPIPE") process.exit(0); throw e; });
-const out = (s: string) => process.stdout.write(s.endsWith("\n") ? s : s + "\n");
+const out = (s: string): void => { process.stdout.write(s.endsWith("\n") ? s : s + "\n"); };
 
 // What the session does about it by itself: the owner is never asked to /clear (context is the session's job).
 const CTX_ADVICE = "keep state in files (govern note, memory), offload model work with `govern task send --to codex`, " +
@@ -93,7 +93,7 @@ function cmdStatus(a: Args): void {
   const { rows, failed } = laneRows(slugs, (s, p) => {
     const lastJob = readJsonl(ledgerFile(s)).filter((e) => e.kind === "job").pop();
     const gates = processOf(p).gates;
-    const ap = gates.map((g) => (p.approvals[g.name] ? g.name[0].toUpperCase() : "·")).join("");
+    const ap = gates.map((g) => (p.approvals[g.name] ? g.name.charAt(0).toUpperCase() : "·")).join("");
     const list = stagesOf(p);
     const parts = [`${s.padEnd(36)} ${p.kind.padEnd(5)} ${list.indexOf(p.stage) + 1}/${list.length} ${p.stage.padEnd(12)}`, gates.length ? `approvals ${ap}` : "",
       laneState(p), lastJob ? `last job ${lastJob.name} ${lastJob.status}` : ""];
@@ -104,7 +104,7 @@ function cmdStatus(a: Args): void {
 }
 
 /** After a listing printed every lane: some could not be read, which is a failed check (exit 1), not a usage error. */
-const unreadable = (failed: number, total: number): never => fail(`${failed} of ${total} lanes could not be read (shown above with ✖)`, 1);
+function unreadable(failed: number, total: number): never { return fail(`${failed} of ${total} lanes could not be read (shown above with ✖)`, 1); }
 
 function cmdApprove(a: Args): void {
   const p = load(a._[1]);
@@ -180,13 +180,14 @@ function cmdAdvance(a: Args): void {
   const from = p.stage, i = list.indexOf(from);
   const passed = { authority: chk ? "check" : "note", ...(chk ? { check: chk } : {}), ...(note ? { note } : {}) };
   if (note) p.notes.push({ at: nowIso(), stage: from, text: note });
-  if (i === list.length - 1) {
+  const next = list[i + 1];
+  if (next === undefined) {
     p.finished = nowIso();
     save(p);
     appendLedger(p.slug, { kind: "advance", from, to: "finished", ...passed });
     return out(`${p.slug}: ${from} was the last stage — lane finished`);
   }
-  p.stage = list[i + 1];
+  p.stage = next;
   save(p);
   appendLedger(p.slug, { kind: "advance", from, to: p.stage, ...passed });
   out(`${p.slug}: ${from} → ${p.stage}${chk ? ` (check ${chk} ok)` : ""}`);
@@ -237,14 +238,16 @@ function cmdHook(a: Args): void {
     const sid = String(JSON.parse(readFileSync(0, "utf8")).session_id ?? "");
     if (!sid) return;
     // This session's lane: the one whose latest work/done entry for the session is a work entry.
-    let hit: { slug: string; at: number; entries: Record<string, unknown>[] } | undefined;
+    let hit: { slug: string; at: number; t: string; entries: Record<string, unknown>[] } | undefined;
     for (const f of globSync("**/govern.json", { cwd: PROJECTS })) {
       const slug = dirname(f);
       const entries = readJsonl(ledgerFile(slug));
       let at = -1;
       entries.forEach((e, i) => { if ((e.kind === "work" || e.kind === "done") && e.session === sid) at = i; });
-      if (at < 0 || entries[at].kind !== "work") continue;
-      if (!hit || String(entries[at].t) > String(hit.entries[hit.at].t)) hit = { slug, at, entries };
+      const latest = entries[at];
+      if (latest === undefined || latest.kind !== "work") continue;
+      const t = String(latest.t);
+      if (!hit || t > hit.t) hit = { slug, at, t, entries };
     }
     if (!hit) return;
     const blocks = hit.entries.slice(hit.at + 1).filter((e) => e.kind === "stop-block" && e.session === sid).length;
@@ -357,7 +360,7 @@ function cmdPublish(a: Args): void {
   if (!release) fail(`${p.slug}: name the release manifest: govern file ${p.slug} release <path>/release.json`);
   const pkgs = join(REPO, "PALS-Notes", "packages");
   if (dirname(vpkg!) !== pkgs) fail(`${relative(REPO, vpkg!)} is not filed in PALS-Notes/packages`);
-  const sha = spawnSync("sha256sum", [vpkg!], { encoding: "utf8" }).stdout.split(" ")[0];
+  const sha = spawnSync("sha256sum", [vpkg!], { encoding: "utf8" }).stdout.replace(/ .*/s, "");
   const sums = globSync("channel-vpkg-SHA256SUMS-*.txt", { cwd: pkgs }).some((f) => readFileSync(join(pkgs, f), "utf8").includes(sha));
   if (!sha || !sums) fail(`${relative(REPO, vpkg!)}: sha256 not in any channel-vpkg-SHA256SUMS-*.txt (file the package first)`);
   const base = vpkg!.split("/").pop();
@@ -646,14 +649,12 @@ const byName = new Map(COMMANDS.map((c) => [c.name, c]));
 function helpLines(head: string, lines: readonly Line[]): string[] {
   const r: string[] = [];
   for (const [usage, help] of lines) {
-    const [first, ...more] = `  govern ${head}${usage ? ` ${usage}` : ""}`.split("\n");
-    const left = [first, ...more.map((m) => `${" ".repeat(head.length + 10)}${m}`)];
+    const left = `  govern ${head}${usage ? ` ${usage}` : ""}`.split("\n").map((m, i) => (i ? `${" ".repeat(head.length + 10)}${m}` : m));
     const helps = (help ?? "").split("\n").filter(Boolean);
-    const last = left.length - 1;
-    if (helps.length && left[last].length <= 46) {
-      left[last] = `${left[last].padEnd(48)}${helps.shift()}`;
-      r.push(...left, ...helps.map((h) => `${" ".repeat(48)}${h}`));
-    } else r.push(...left, ...helps.map((h) => `      ${h}`));
+    const lastLeft = left.at(-1), [firstHelp, ...moreHelps] = helps;
+    if (firstHelp !== undefined && lastLeft !== undefined && lastLeft.length <= 46)
+      r.push(...left.slice(0, -1), `${lastLeft.padEnd(48)}${firstHelp}`, ...moreHelps.map((h) => `${" ".repeat(48)}${h}`));
+    else r.push(...left, ...helps.map((h) => `      ${h}`));
   }
   return r;
 }
@@ -699,8 +700,9 @@ function main(argv: string[]): void {
     const given = word !== undefined && !word.startsWith("--");
     if (!given && word === "--help" && argv.length === 2) return void out(commandHelp(c.name));
     sub = given ? word : c.defaultSub;
-    if (!sub || !Object.hasOwn(c.subs, sub)) fail(c.noSub ?? `govern ${c.name} ${Object.keys(c.subs).join("|")}`);
-    entry = c.subs[sub!];
+    const named = sub && Object.hasOwn(c.subs, sub) ? c.subs[sub] : undefined;
+    if (!named) fail(c.noSub ?? `govern ${c.name} ${Object.keys(c.subs).join("|")}`);
+    entry = named;
     label = `${c.name} ${sub}`;
     if (given) { rest = argv.slice(2); lead.push(word); }
   }

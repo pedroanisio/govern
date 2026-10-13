@@ -90,7 +90,8 @@ export function render(pf: PromptFile, p: Project, files: string[], vars: Record
       if (!f.startsWith(REPO + "/") || !existsSync(f)) fail(`prompt ${pf.name}: include not found: ${key.slice(8)}`);
       return readFileSync(f, "utf8").replace(/^---\n[\s\S]*?\n---\n/, "");
     }
-    if (key.startsWith("var.") && vars[key.slice(4)] !== undefined) return vars[key.slice(4)];
+    const given = key.startsWith("var.") ? vars[key.slice(4)] : undefined;
+    if (given !== undefined) return given;
     if (key.startsWith("opt.")) return vars[key.slice(4)] ?? "(none)";
     return all;
   });

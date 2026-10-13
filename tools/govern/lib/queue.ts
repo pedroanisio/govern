@@ -237,8 +237,9 @@ function claudeResult(stdout: string | undefined, status: number | null, stderr:
 function runConfigured(def: RunnerDef, m: Message, p: string, timeoutSec: number): RunOut {
   const cwd = existsSync(join(PROJECTS, m.project)) ? join(PROJECTS, m.project) : REPO;
   const argv = def.argv.map((x) => x.replaceAll("{repo}", REPO).replaceAll("{dir}", cwd));
-  if (!argv.length) return { error: `runner ${m.to} has an empty argv in ${join(QUEUE(), "config.json")}` };
-  const r = spawnSync(argv[0], argv.slice(1), { cwd, input: p, encoding: "utf8", timeout: timeoutSec * 1000, maxBuffer: 64 << 20, env: childEnv() });
+  const [bin, ...args] = argv;
+  if (bin === undefined) return { error: `runner ${m.to} has an empty argv in ${join(QUEUE(), "config.json")}` };
+  const r = spawnSync(bin, args, { cwd, input: p, encoding: "utf8", timeout: timeoutSec * 1000, maxBuffer: 64 << 20, env: childEnv() });
   if (def.format === "json-result") return claudeResult(r.stdout, r.status, r.stderr, r.error);
   if (r.error) return { error: r.error.message };
   if (r.status !== 0) return { text: r.stdout, error: `${m.to} exit ${r.status}: ${clip(r.stderr ?? "", 300)}` };

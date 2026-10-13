@@ -21,11 +21,16 @@ export const posInt: Shape<number> = (v, p) => (Number.isInteger(v) && (v as num
 export const literal = <T extends string | number>(...values: T[]): Shape<T> => (v, p) =>
   (values.includes(v as T) ? (v as T) : want(p, values.map((x) => JSON.stringify(x)).join(" or "), v));
 
-export const arr = <T>(item: Shape<T>, o: { nonEmpty?: boolean } = {}): Shape<T[]> => (v, p) => {
-  if (!Array.isArray(v)) return want(p, o.nonEmpty ? "a non-empty array" : "an array", v);
-  if (o.nonEmpty && !v.length) want(p, "a non-empty array", v);
-  return v.map((x, i) => item(x, `${p}[${i}]`));
-};
+/** An array of `item`s; with nonEmpty, at least one, which its type then states (its first item needs no guard). */
+export function arr<T>(item: Shape<T>, o: { nonEmpty: true }): Shape<[T, ...T[]]>;
+export function arr<T>(item: Shape<T>, o?: { nonEmpty?: boolean }): Shape<T[]>;
+export function arr<T>(item: Shape<T>, o: { nonEmpty?: boolean } = {}): Shape<T[]> {
+  return (v, p) => {
+    if (!Array.isArray(v)) return want(p, o.nonEmpty ? "a non-empty array" : "an array", v);
+    if (o.nonEmpty && !v.length) want(p, "a non-empty array", v);
+    return v.map((x, i) => item(x, `${p}[${i}]`));
+  };
+}
 
 const isObj = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
 export const keyPath = (p: string, k: string) => (/^[A-Za-z_$][\w$]*$/.test(k) ? `${p}.${k}` : `${p}[${JSON.stringify(k)}]`);
@@ -69,4 +74,4 @@ export function check<T>(file: string, raw: unknown, shape: Shape<T>): T {
   }
 }
 /** A failure the shape cannot express (duplicates, references): raise it as a ShapeError at `path`. */
-export const reject = (path: string, message: string): never => { throw new ShapeError(path, message); };
+export function reject(path: string, message: string): never { throw new ShapeError(path, message); }
