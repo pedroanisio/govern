@@ -377,3 +377,32 @@ test("cmd set and rm are in the ledger, and redefining the command behind the st
   assert.match(r, /^⚠ the check of stage review changed and has not passed since: none → smoke$/m);
   assert.match(r, /^⚠ command "smoke" behind the check of stage review changed and has not passed since: none → sh -c exit 0$/m);
 });
+
+test("setting a check or a command to what it already is changes nothing: no ledger entry, no warning", () => {
+  const e = env();
+  govern(e, ["new", "lib", "--process", "dev"]);
+  govern(e, ["cmd", "lib", "test", "--", "sh", "-c", "exit 0"]);
+  govern(e, ["work", "lib", "test"]);
+  assert.equal(govern(e, ["check", "lib"]).code, 0);
+  const before = ledger(e, "lib").length;
+  const same = govern(e, ["check", "lib", "--set", "test", "--stage", "test"]);
+  assert.equal(same.code, 0);
+  assert.match(same.out, /^lib: stage test is already checked by "test" — nothing changed$/m, "the process's own check");
+  assert.equal(JSON.parse(readFileSync(join(e.projects, "lib", "govern.json"), "utf8")).checks, undefined);
+  assert.match(govern(e, ["cmd", "lib", "test", "--", "sh", "-c", "exit 0"]).out, /^lib: test is already sh -c exit 0 — nothing changed$/m);
+  assert.match(govern(e, ["cmd", "lib", "--rm", "nope"]).out, /^lib: no command nope — nothing changed$/m);
+  assert.equal(ledger(e, "lib").length, before, "no entry for a change that is none");
+  assert.doesNotMatch(govern(e, ["brief", "lib"]).out, /⚠/);
+
+  govern(e, ["check", "lib", "--set", "lint", "--stage", "review"]);
+  assert.match(govern(e, ["check", "lib", "--set", "lint", "--stage", "review"]).out, /stage review is already checked by "lint" — nothing changed/, "the lane's own check");
+  govern(e, ["cmd", "lib", "slow", "--timeout", "5", "--", "true"]);
+  assert.match(govern(e, ["cmd", "lib", "slow", "--timeout", "5", "--", "true"]).out, /^lib: slow is already true \(timeout 5s\) — nothing changed$/m);
+  assert.match(govern(e, ["cmd", "lib", "slow", "--", "true"]).out, /^lib: slow = true$/m, "the same argv with another timeout is a change");
+  const changes = ledger(e, "lib").slice(before).map(({ kind, to }) => ({ kind, to }));
+  assert.deepEqual(changes, [
+    { kind: "check-set", to: "lint" },
+    { kind: "cmd-set", to: { argv: ["true"], timeout: 5 } },
+    { kind: "cmd-set", to: ["true"] },
+  ]);
+});

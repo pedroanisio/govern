@@ -7,7 +7,7 @@ import { join, dirname, resolve, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
 import { GovernError, fail, parseArgs, opt, nowIso, readJsonl, kTok, clip, type Args } from "./lib/util.ts";
-import { REPO, PROJECTS, stagesOf, load, save, create, stageOf, brief, appendLedger, resolveFile, ledgerFile, projectDir, checkSlug, checkOf, blockedBy, laneState, stateFile, commandLine, type Project, type Command } from "./lib/project.ts";
+import { REPO, PROJECTS, stagesOf, load, save, create, stageOf, brief, appendLedger, resolveFile, ledgerFile, projectDir, checkSlug, checkOf, blockedBy, laneState, stateFile, argvOf, commandLine, type Project, type Command } from "./lib/project.ts";
 import { processes, getProcess, processOf, listLine, show } from "./lib/process.ts";
 import * as jobs from "./lib/jobs.ts";
 import { ask, readPrompt, PROMPTS } from "./lib/codex.ts";
@@ -185,6 +185,7 @@ function cmdCheck(a: Args): void {
   if (set) {
     const stage = stageOf(opt(a, "stage") ?? p.stage, p);
     const from = checkOf(p, stage) ?? null;
+    if (from === set) return out(`${p.slug}: stage ${stage} is already checked by "${set}" — nothing changed`);
     p.checks = { ...(p.checks ?? {}), [stage]: set };
     save(p);
     appendLedger(p.slug, { kind: "check-set", stage, from, to: set });
@@ -297,6 +298,10 @@ function cmdHook(a: Args): void {
   } catch { process.exitCode = 0; }
 }
 
+/** Whether two stored commands run the same argv with the same timeout (a plain argv has the default one). */
+const sameCommand = (a: string[] | Command, b: string[] | Command) =>
+  JSON.stringify([argvOf(a), Array.isArray(a) ? null : a.timeout ?? null]) === JSON.stringify([argvOf(b), Array.isArray(b) ? null : b.timeout ?? null]);
+
 /** List, set or remove a lane's commands. A set or a removal is ledgered with the command as govern.json stores it
  *  (an argv array, or {argv, timeout}), because a check is only as good as the command it names: the brief flags a
  *  change to the command behind the stage's check the same way as a change of the check itself. */
@@ -305,6 +310,7 @@ function cmdCmd(a: Args): void {
   const rm = opt(a, "rm");
   if (rm) {
     const from = p.commands[rm];
+    if (from === undefined) return out(`${p.slug}: no command ${rm} — nothing changed`);
     delete p.commands[rm];
     save(p);
     appendLedger(p.slug, { kind: "cmd-rm", name: rm, from });
@@ -318,6 +324,7 @@ function cmdCmd(a: Args): void {
   if (t !== undefined && !(Number.isFinite(timeout) && timeout > 0)) fail(`--timeout must be a number of seconds: ${t}`);
   const from = p.commands[name] ?? null;
   const to: string[] | Command = t === undefined ? argv : { argv, timeout };
+  if (from && sameCommand(from, to)) return out(`${p.slug}: ${name} is already ${commandLine(to)} — nothing changed`);
   p.commands[name] = to;
   save(p);
   appendLedger(p.slug, { kind: "cmd-set", name, from, to });
