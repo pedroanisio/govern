@@ -2,7 +2,7 @@
 // govern — run a PALS Notes video through its workflow from inside a conversation, cheaply.
 // The manual for the AI operating it is SKILL.md (govern manual). Usage: govern help.
 import { spawnSync } from "node:child_process";
-import { readFileSync, globSync, mkdirSync, copyFileSync } from "node:fs";
+import { readFileSync, globSync, mkdirSync } from "node:fs";
 import { join, dirname, resolve, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
@@ -16,6 +16,7 @@ import * as queue from "./lib/queue.ts";
 import { desk } from "./lib/desk.ts";
 import { tune, chooseRunner } from "./lib/tune.ts";
 import { checkRecipient, requireAs, resolveAs } from "./lib/sessions.ts";
+import { installSkill, skillDrift, sha256File } from "./lib/skill.ts";
 import { writeFileSync, existsSync, unlinkSync } from "node:fs";
 import { homedir } from "node:os";
 
@@ -591,12 +592,19 @@ export const COMMANDS: readonly Cmd[] = [
   { name: "help", section: 5, footer: false, lines: [["[<command>]", "this text, or one command's lines (also: govern <command> --help)"]],
     run: (a) => out(a._[1] ? commandHelp(a._[1]) : HELP) },
   { name: "manual", section: 5, footer: false, lines: [["", "the AI's operating manual (SKILL.md)"]], run: () => out(readFileSync(SKILL, "utf8")) },
-  { name: "install-skill", section: 5, footer: false, lines: [["[<skills dir>]", "install SKILL.md as the govern skill (default: the repo's .claude/skills)"]],
+  { name: "install-skill", section: 5, footer: false, flags: { bool: ["check"] },
+    lines: [["[<skills dir>] [--check]", "install SKILL.md as the govern skill (default: the repo's .claude/skills), atomically and\n" +
+      "read back by sha256; --check installs nothing and exits 1 when the installed copy is missing or differs"]],
     run: (a) => {
       const dest = join(a._[1] ?? join(REPO, ".claude", "skills"), "govern", "SKILL.md");
-      mkdirSync(dirname(dest), { recursive: true });
-      copyFileSync(SKILL, dest);
-      out(`installed ${dest} (refresh with govern install-skill after editing tools/govern/SKILL.md)`);
+      if (flag(a, "check")) {
+        const drift = skillDrift(SKILL, dest);
+        if (drift) fail(drift, 1);
+        out(`${dest} is current (sha256 ${sha256File(SKILL)})`);
+        return;
+      }
+      const sha = installSkill(SKILL, dest);
+      out(`installed ${dest} (sha256 ${sha}); refresh it with govern install-skill after editing tools/govern/SKILL.md`);
     } },
 
   { name: "task", section: 6, noSub: TASK_SUBS,
