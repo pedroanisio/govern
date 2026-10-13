@@ -3,7 +3,8 @@ import { existsSync, readFileSync, appendFileSync, mkdirSync } from "node:fs";
 import { join, dirname, resolve, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import { fail, readJson, writeJson, nowIso, latest, plain, clip, readJsonl } from "./util.ts";
-import { getProcess, processOf } from "./process.ts";
+import { getProcess, processOf, processes, processName } from "./process.ts";
+import { obj, arr, record, str, name, posInt, literal, parseFile, reject, keyPath, type Shape } from "./shape.ts";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 /** Settings a workspace keeps in govern.config.json: where its lanes, queue and processes live (relative to the file). */
@@ -83,16 +84,55 @@ export const stateFile = (slug: string) => join(projectDir(slug), "govern.json")
 export const governDir = (slug: string) => join(projectDir(slug), "govern");
 export const ledgerFile = (slug: string) => join(governDir(slug), "ledger.jsonl");
 
+const badSlug = (slug: string) => slug.split("/").some((p) => p === ".." || p === "") || slug.startsWith("/");
 export function checkSlug(slug: string | undefined): string {
   if (!slug) fail(`missing <slug> (a folder under ${relative(REPO, PROJECTS) || PROJECTS}, e.g. a-millionth-apart or ops/engine)`);
-  if (slug!.split("/").some((p) => p === ".." || p === "") || slug!.startsWith("/")) fail(`bad slug: ${slug}`);
+  if (badSlug(slug!)) fail(`bad slug: ${slug}`);
   return slug!;
+}
+
+/** A timestamp as nowIso() writes it (an offset is accepted too). */
+const iso: Shape<string> = (v, at) =>
+  (typeof v === "string" && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})$/.test(v) && !Number.isNaN(Date.parse(v))
+    ? v : reject(at, `must be an ISO timestamp (got ${JSON.stringify(v)})`));
+const ARGV = arr(str, { nonEmpty: true });
+const COMMAND_OBJ = obj({ argv: ARGV }, { timeout: posInt });
+/** A command: a plain argv array, or {argv, timeout?}. */
+const COMMAND: Shape<string[] | Command> = (v, at) =>
+  (Array.isArray(v) ? ARGV(v, at) : typeof v === "object" && v !== null ? COMMAND_OBJ(v, at)
+    : reject(at, `must be an argv array or {argv, timeout?} (got ${JSON.stringify(v)})`));
+const PROJECT = obj(
+  { version: literal(1), slug: name, title: str, kind: name, lang: name, stage: name, created: iso,
+    commands: record(COMMAND), files: record(str), approvals: record(obj({ at: iso, quote: str })),
+    notes: arr(obj({ at: iso, stage: name, text: str })) },
+  { process: name, parent: str, finished: iso, checks: record(name), after: arr(obj({ lane: name }, { stage: name })) },
+);
+
+/** Parse the text of lane `slug`'s govern.json (`file`): typed, unknown keys refused, then checked against what the types
+ *  cannot say: the slug is the lane's folder, the process exists and the kind fits it, the stage and every stage a check
+ *  is set for are the process's, and every lane waited on is a valid slug. Every failure is a GovernError naming the
+ *  file and the JSON path of the wrong field. */
+export function parseProject(file: string, text: string, slug: string): Project {
+  return parseFile(file, text, (v, at) => {
+    const p: Project = PROJECT(v, at);
+    if (p.slug !== slug) reject(`${at}.slug`, `is ${JSON.stringify(p.slug)}, but the lane is ${JSON.stringify(slug)} (its folder)`);
+    const pname = processName(p);
+    const all = processes();
+    const pr = all.get(pname) ?? reject(p.process !== undefined ? `${at}.process` : `${at}.kind`, `no process "${pname}" (have: ${[...all.keys()].join(", ")})`);
+    if (p.process === undefined && !(KINDS as readonly string[]).includes(p.kind)) reject(`${at}.kind`, `must be long, short or ops when there is no process (got ${JSON.stringify(p.kind)})`);
+    if (pr.kinds && !pr.kinds.includes(p.kind)) reject(`${at}.kind`, `must be ${pr.kinds.join(" or ")} for process ${pr.name} (got ${JSON.stringify(p.kind)})`);
+    const stages = pr.stages.map((s) => s.name);
+    if (!stages.includes(p.stage)) reject(`${at}.stage`, `no stage "${p.stage}" in process ${pr.name}`);
+    for (const s of Object.keys(p.checks ?? {})) if (!stages.includes(s)) reject(keyPath(`${at}.checks`, s), `no stage "${s}" in process ${pr.name}`);
+    (p.after ?? []).forEach((x, i) => { if (badSlug(x.lane)) reject(`${at}.after[${i}].lane`, `bad slug: ${x.lane}`); });
+    return p;
+  });
 }
 
 export function load(slug: string): Project {
   const f = stateFile(checkSlug(slug));
   if (!existsSync(f)) fail(`${slug}: no govern.json — start it with: govern new ${slug} --process NAME (or --kind long|short|ops) --title "…"`);
-  return readJson<Project>(f);
+  return parseProject(f, readFileSync(f, "utf8"), slug);
 }
 export const save = (p: Project) => writeJson(stateFile(p.slug), p);
 

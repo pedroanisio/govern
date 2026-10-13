@@ -4,10 +4,14 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { makeEnv, govern, write, HERE } from "./helpers.ts";
+import { makeEnv, govern, write, HERE, tempDir } from "./helpers.ts";
 import { parseFile, check, obj, arr, record, str, name, posInt, literal } from "../lib/shape.ts";
 import { parseProcess } from "../lib/process.ts";
+import { parseProject } from "../lib/project.ts";
 import { GovernError } from "../lib/util.ts";
+
+// parseProject looks processes up: only the built-ins, never a real workspace's processes folder
+process.env.GOVERN_PROCESSES = tempDir("no-processes");
 
 const refused = (f: () => unknown, text: string) => {
   assert.throws(f, (e: unknown) => {
@@ -76,6 +80,74 @@ test("the built-in process files load under the strict parse", () => {
   const files = readdirSync(dir).filter((f) => f.endsWith(".json")).sort();
   assert.deepEqual(files, ["dev.json", "ops.json", "video.json"]);
   for (const f of files) assert.ok(parseProcess(join(dir, f), readFileSync(join(dir, f), "utf8")).stages.length, f);
+});
+
+/** A lane's govern.json with every key govern knows, both command shapes, and every optional key present. */
+const lane = (o: Record<string, unknown> = {}) => ({
+  version: 1, slug: "full", title: "Full", kind: "dev", process: "dev", lang: "en", parent: "upper", stage: "build",
+  created: "2026-01-02T03:04:05.000Z", finished: "2026-02-03T04:05:06.000Z",
+  commands: { test: ["node", "--test"], slow: { argv: ["make", "all"], timeout: 900 }, quick: { argv: ["true"] } },
+  files: { spec: "SPEC.md", sheet: "**/*sheet*.png" },
+  checks: { build: "slow" },
+  after: [{ lane: "other" }, { lane: "ops/x", stage: "test" }],
+  approvals: { owner: { at: "2026-01-05T00:00:00.000Z", quote: "ship it" } },
+  notes: [{ at: "2026-01-04T00:00:00.000Z", stage: "plan", text: "planned" }],
+  ...o,
+});
+const badLane = (o: Record<string, unknown>, text: string, slug = "full") =>
+  refused(() => parseProject(`/p/${slug}/govern.json`, JSON.stringify(lane(o)), slug), `/p/${slug}/govern.json: ${text}`);
+
+test("govern.json: every key and both command shapes parse; the parse keeps the values", () => {
+  const p = parseProject("/p/full/govern.json", JSON.stringify(lane()), "full");
+  assert.deepEqual(p, lane());
+  const { process: _p, parent: _a, finished: _f, checks: _c, after: _d, ...minimal } = lane({ kind: "ops", stage: "plan" });
+  assert.deepEqual(parseProject("/p/full/govern.json", JSON.stringify(minimal), "full"), minimal, "the optional keys may be absent (no process: ops)");
+  assert.equal(parseProject("/p/v/govern.json", JSON.stringify(lane({ slug: "v", kind: "long", process: undefined, stage: "script-check", checks: undefined })), "v").kind, "long");
+});
+
+test("govern.json: unknown keys, wrong types and dangling references are refused, naming the file and the JSON path", () => {
+  badLane({ colour: "red" }, `$.colour: unknown key "colour"`);
+  badLane({ version: 2 }, "$.version: must be 1 (got 2)");
+  badLane({ title: 7 }, "$.title: must be a string (got 7)");
+  badLane({ commands: { t: "node --test" } }, `$.commands.t: must be an argv array or {argv, timeout?} (got "node --test")`);
+  badLane({ commands: { t: [] } }, "$.commands.t: must be a non-empty array (got an array)");
+  badLane({ commands: { t: ["node", 1] } }, "$.commands.t[1]: must be a string (got 1)");
+  badLane({ commands: { t: { argv: ["x"], timeout: 0 } } }, "$.commands.t.timeout: must be a whole number, 1 or more (got 0)");
+  badLane({ commands: { t: { argv: ["x"], timeout: "5" } } }, `$.commands.t.timeout: must be a whole number, 1 or more (got "5")`);
+  badLane({ commands: { t: { argv: ["x"], timout: 5 } } }, `$.commands.t.timout: unknown key "timout" (known: argv, timeout)`);
+  badLane({ commands: { t: { timeout: 5 } } }, "$.commands.t.argv: missing");
+  badLane({ files: { spec: ["a"] } }, "$.files.spec: must be a string (got an array)");
+  badLane({ checks: { build: 1 } }, "$.checks.build: must be a non-empty string (got 1)");
+  badLane({ checks: { nosuch: "slow" } }, `$.checks.nosuch: no stage "nosuch" in process dev`);
+  badLane({ after: { lane: "x" } }, "$.after: must be an array (got an object)");
+  badLane({ after: [{ lane: "x", stag: "y" }] }, `$.after[0].stag: unknown key "stag" (known: lane, stage)`);
+  badLane({ after: [{ lane: "../x" }] }, "$.after[0].lane: bad slug: ../x");
+  badLane({ approvals: { owner: { at: "2026-01-05T00:00:00.000Z" } } }, "$.approvals.owner.quote: missing");
+  badLane({ approvals: { owner: { at: "yesterday", quote: "ok" } } }, `$.approvals.owner.at: must be an ISO timestamp (got "yesterday")`);
+  badLane({ notes: [{ at: "2026-01-04T00:00:00.000Z", stage: "plan" }] }, "$.notes[0].text: missing");
+  badLane({ notes: [{ at: "2026-01-04T00:00:00.000Z", stage: "plan", text: "x", by: "me" }] }, `$.notes[0].by: unknown key "by"`);
+  badLane({ created: 5 }, "$.created: must be an ISO timestamp (got 5)");
+  badLane({ slug: "other" }, `$.slug: is "other", but the lane is "full" (its folder)`);
+  badLane({ stage: "deliver" }, `$.stage: no stage "deliver" in process dev`);
+  badLane({ process: "nope" }, `$.process: no process "nope"`);
+  badLane({ process: undefined, kind: "medium" }, `$.kind: must be long, short or ops when there is no process (got "medium")`);
+  badLane({ process: "video", kind: "medium", stage: "plan", checks: undefined }, `$.kind: must be long or short for process video (got "medium")`);
+  refused(() => parseProject("/p/full/govern.json", "[1", "full"), "/p/full/govern.json: not JSON (");
+});
+
+test("a bad govern.json stops the commands that read it with exit 2, naming the file and the path", () => {
+  const e = makeEnv();
+  assert.equal(govern(e, ["new", "lane", "--process", "dev"]).code, 0);
+  const f = join(e.projects, "lane", "govern.json");
+  const good = JSON.parse(readFileSync(f, "utf8"));
+  write(f, JSON.stringify({ ...good, commands: { t: { argv: ["x"], timeout: -1 } } }));
+  for (const args of [["brief", "lane"], ["status"], ["desk"]]) {
+    const r = govern(e, args);
+    assert.equal(r.code, 2, args.join(" "));
+    assert.ok(r.err.includes(`${f}: $.commands.t.timeout: must be a whole number, 1 or more (got -1)`), `${args.join(" ")}: ${r.err}`);
+  }
+  write(f, JSON.stringify(good));
+  assert.equal(govern(e, ["desk"]).code, 0);
 });
 
 test("a workspace process with an unknown key stops every command that reads processes, naming file, path and key", () => {

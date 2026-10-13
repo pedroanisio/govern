@@ -28,7 +28,7 @@ export const arr = <T>(item: Shape<T>, o: { nonEmpty?: boolean } = {}): Shape<T[
 };
 
 const isObj = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
-const keyPath = (p: string, k: string) => (/^[A-Za-z_$][\w$]*$/.test(k) ? `${p}.${k}` : `${p}[${JSON.stringify(k)}]`);
+export const keyPath = (p: string, k: string) => (/^[A-Za-z_$][\w$]*$/.test(k) ? `${p}.${k}` : `${p}[${JSON.stringify(k)}]`);
 
 /** An object whose keys are any strings, each value of one shape. */
 export const record = <T>(item: Shape<T>): Shape<Record<string, T>> => (v, p) => {

@@ -3,7 +3,7 @@
 import { existsSync, readFileSync, globSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { readJsonl, kTok, clip } from "./util.ts";
-import { PROJECTS, ledgerFile, stagesOf, laneState, type Project } from "./project.ts";
+import { PROJECTS, ledgerFile, stagesOf, laneState, load } from "./project.ts";
 import { processOf } from "./process.ts";
 import * as queue from "./queue.ts";
 import { tuningState } from "./tune.ts";
@@ -30,7 +30,7 @@ export function desk(): string {
   // ---- lanes
   L.push(`LANES (${slugs.length})`);
   for (const s of slugs) {
-    const p: Project = JSON.parse(readFileSync(join(PROJECTS, s, "govern.json"), "utf8"));
+    const p = load(s);
     const led = readJsonl(ledgerFile(s));
     const lastWork = [...led].reverse().find((e) => e.kind === "work" || e.kind === "done");
     const open = lastWork?.kind === "work" ? `● ${lastWork.engine} ${ago(lastWork.t)}` : "";
