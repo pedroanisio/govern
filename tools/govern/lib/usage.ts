@@ -65,8 +65,76 @@ export function claudeFiles(session: string): string[] {
 
 /** A tool result read in full above this many characters (about 10k tokens) is a big read. */
 export const BIG_READ_CHARS = 40000;
-/** A poll: a shell `sleep <arg>` command, at the start or after whitespace, `;`, `&`, `|`, `(` or a backquote. `govern wait` is not one. */
-export const isPoll = (command: unknown): boolean => typeof command === "string" && /(?:^|[\s;&|(`])sleep\s+\S/.test(command);
+/** The simple commands of a shell script from `i` to `stop`, as word lists. A light scan: quotes, backslashes and comments
+ *  are honoured; `;` `&` `|` `(` `)` and newline separate commands; the bodies of `$( … )` and backquotes, in or out of
+ *  double quotes, are commands of their own. Not a full shell parser: here-documents and `case` patterns are not handled. */
+function scan(s: string, i: number, stop: "" | ")" | "`"): { cmds: string[][]; end: number } {
+  const cmds: string[][] = [];
+  let cmd: string[] = [], word: string | null = null, depth = 0;
+  const add = (x: string) => { word = (word ?? "") + x; };
+  const endCmd = () => { if (word !== null) cmd.push(word); word = null; if (cmd.length) cmds.push(cmd); cmd = []; };
+  const nested = (j: number, close: ")" | "`") => { const r = scan(s, j, close); cmds.push(...r.cmds); add("$"); return r.end; };
+  for (; i < s.length; i++) {
+    const c = s[i];
+    if (c === stop && (stop === "`" || depth === 0)) { endCmd(); return { cmds, end: i }; }
+    if (c === "\\") { if (s[i + 1] !== "\n") add(s[i + 1] ?? ""); i++; }
+    else if (c === "'") { const j = s.indexOf("'", i + 1) < 0 ? s.length : s.indexOf("'", i + 1); add(s.slice(i + 1, j)); i = j; }
+    else if (c === '"') {
+      add("");
+      for (i++; i < s.length && s[i] !== '"'; i++) {
+        if (s[i] === "\\") add(s[++i] ?? "");
+        else if (s.startsWith("$(", i)) i = nested(i + 2, ")");
+        else if (s[i] === "`") i = nested(i + 1, "`");
+        else add(s[i]);
+      }
+    }
+    else if (s.startsWith("$(", i)) i = nested(i + 2, ")");
+    else if (c === "`") i = nested(i + 1, "`");
+    else if (c === "#" && word === null) { while (i + 1 < s.length && s[i + 1] !== "\n") i++; }
+    else if (c === "&" && (s[i - 1] === ">" || s[i - 1] === "<" || s[i + 1] === ">")) add(c); // a redirection: 2>&1, &>f
+    else if (c === "(") { depth++; endCmd(); }
+    else if (c === ")") { depth = Math.max(0, depth - 1); endCmd(); }
+    else if (";&|\n".includes(c)) endCmd();
+    else if (c === " " || c === "\t") { if (word !== null) cmd.push(word); word = null; }
+    else add(c);
+  }
+  endCmd();
+  return { cmds, end: i };
+}
+
+const base = (w: string) => w.slice(w.lastIndexOf("/") + 1);
+const KEYWORDS = new Set(["!", "{", "}", "if", "then", "else", "elif", "while", "until", "do"]);
+/** Commands that run the command after them, with their options that take an argument. `timeout` also takes a duration. */
+const WRAPPERS: Record<string, string[]> = { env: ["-u", "-C", "-S"], nice: ["-n"], timeout: ["-s", "-k"], time: ["-f", "-o"], command: [], exec: ["-a"], nohup: [] };
+const SHELLS = new Set(["sh", "bash", "zsh", "dash", "ksh"]);
+
+/** A simple command's words from the command it runs: leading assignments, keywords and wrappers are skipped. */
+function invoked(words: string[]): string[] {
+  let i = 0;
+  while (i < words.length) {
+    const w = base(words[i]);
+    if (KEYWORDS.has(words[i]) || /^[A-Za-z_]\w*=/.test(words[i])) { i++; continue; }
+    if (!Object.hasOwn(WRAPPERS, w)) break;
+    for (i++; words[i]?.startsWith("-"); ) i += WRAPPERS[w].includes(words[i]) ? 2 : 1;
+    if (w === "timeout") i++;
+  }
+  return words.slice(i);
+}
+
+/** A poll: a Bash command that invokes `sleep` with an operand, by any path, at the start of any command in the script —
+ *  after `;` `&&` `||` `|` `&` `(` `{` a newline or `then`/`do`/`else`, in `$( … )` or backquotes, after assignments or the
+ *  wrappers env, nice, timeout, time, command, exec and nohup, or in the script given to `sh -c`/`bash -c`. `sleep` as an
+ *  argument, inside quotes or inside another word is not one, and neither is `govern wait`. */
+export function isPoll(command: unknown): boolean {
+  if (typeof command !== "string") return false;
+  return scan(command, 0, "").cmds.some((words) => {
+    const [name, ...args] = invoked(words);
+    if (name === undefined) return false;
+    if (base(name) === "sleep") return args.length > 0;
+    const c = SHELLS.has(base(name)) ? args.findIndex((a) => /^-[a-z]*c[a-z]*$/.test(a)) : -1;
+    return c >= 0 && isPoll(args[c + 1]);
+  });
+}
 /** JSON with object keys sorted, so the same input in another key order is the same call. */
 const canon = (v: unknown): string =>
   Array.isArray(v) ? `[${v.map(canon).join(",")}]`

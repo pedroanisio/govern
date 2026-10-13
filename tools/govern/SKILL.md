@@ -132,6 +132,6 @@ govern task send --to codex|claude|<session> --project <slug> --task <name> --ki
 - the owner's turns, and tokens per owner message;
 - `~usd` (where priced);
 - the Codex `ask` steps;
-- Claude Code tool calls, shown when non-zero: `tools`, `repeats` (same tool and input as an earlier call in the segment), `polls` (Bash commands that run `sleep`; `govern wait` is not one), `agents` (Agent or Task spawns) and `big reads` (a Read with no offset or limit that returned over 40,000 characters).
+- Claude Code tool calls, shown when non-zero: `tools`, `repeats` (same tool and input as an earlier call in the segment), `polls` (Bash commands that invoke `sleep` with an operand, by any path, as a command of their own: at the start, after `;`, `&&`, `||`, `|`, `&`, `(`, `{`, a newline or `then`/`do`/`else`, inside `$( … )` or backquotes, after `env`, `nice`, `timeout`, `time`, `command`, `exec` or `nohup`, or in a `bash -c`/`sh -c` script; `sleep` as an argument or inside quotes, such as `grep sleep` or `echo "sleep 5"`, is not a poll, and neither is `govern wait`), `agents` (Agent or Task spawns) and `big reads` (a Read with no offset or limit that returned over 40,000 characters).
 
 It compares these with the chat baseline (468k context per call). Report it when the owner asks, or when a video is delivered, alongside the farm cost per pass.

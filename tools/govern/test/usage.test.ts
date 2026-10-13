@@ -12,11 +12,35 @@ const tr = (id: unknown, content: unknown) => ({ type: "tool_result", tool_use_i
 const big = "x".repeat(BIG_READ_CHARS + 1);
 const lines = (xs: object[]) => xs.map((x) => JSON.stringify(x)).join("\n") + "\n";
 
-test("isPoll: a shell sleep command is a poll, govern wait and words containing sleep are not", () => {
-  for (const c of ["sleep 30", "sleep 30 && govern status", "while ! test -f out.mp4; do sleep 5; done", "until govern status x | grep done; do\n  sleep 10\ndone", "(sleep 2; echo x)", "true;sleep 1", "$(sleep 1)"])
-    assert.equal(isPoll(c), true, c);
-  for (const c of ["govern wait 42", "govern wait 42 --timeout 600", "grep -rn sleeper .", "echo asleep", "python3 -c 'import time; time.sleep(1)'", "run --sleep 5", "sleep", undefined, 42, { command: "sleep 1" }])
-    assert.equal(isPoll(c), false, String(c));
+test("isPoll: sleep invoked as a command is a poll, at any command start and with any path", () => {
+  for (const c of [
+    "sleep 30", "  sleep 30", "sleep 30 && govern status", "true;sleep 1", "true; sleep 1", "false || sleep 1", "make & sleep 1",
+    "govern status x | sleep 1", "(sleep 2; echo x)", "{ sleep 2; echo x; }", "echo a\nsleep 3", "sleep 5 2>&1 >/dev/null",
+    "/bin/sleep 5", "/usr/bin/sleep 5", "true && /usr/bin/sleep 0.5",
+    // loops and conditionals
+    "while ! test -f out.mp4; do sleep 5; done", "until govern status x | grep done; do\n  sleep 10\ndone",
+    "for i in 1 2 3; do govern status; sleep 2; done", "if govern status x; then sleep 1; fi", "if a; then b; else sleep 4; fi",
+    "while true; do if a; then break; fi; sleep 2; done",
+    // command substitution runs the command, in or out of double quotes
+    "$(sleep 1)", "echo `sleep 1`", "echo \"$(sleep 1)\"", "x=$(sleep 1; echo done)",
+    // wrappers and assignments before the command
+    "FOO=1 sleep 2", "timeout 60 sleep 5", "timeout -s KILL 60 sleep 5", "nice -n 5 sleep 1", "env FOO=1 sleep 3",
+    "command sleep 2", "exec sleep 2", "nohup sleep 9", "time sleep 1",
+    // a shell given a script with -c runs it
+    "bash -c 'sleep 5'", "sh -c \"echo hi; sleep 5\"", "/bin/bash -lc 'while true; do sleep 1; done'",
+  ]) assert.equal(isPoll(c), true, c);
+});
+
+test("isPoll: sleep as an argument, in quotes, inside another word or without an operand is not a poll", () => {
+  for (const c of [
+    "govern wait 42", "govern wait 42 --timeout 600",
+    "grep -rn sleep src", "rg sleep .", "git log --grep sleep", "echo sleep 5", "man sleep",
+    "echo 'do not sleep here'", "echo \"sleep 5\"", "echo 'sleep 5'", "echo '$(sleep 1)'", "printf '%s\\n' 'a; sleep 1'",
+    "bash -c 'echo \"sleep 5\"'", "echo \\`sleep 1\\`","echo x # sleep 5", "# sleep 5",
+    "sleepy 5", "nosleep 5", "grep -rn sleeper .", "echo asleep", "./sleeper 5", "/bin/sleepy 5",
+    "python3 -c 'import time; time.sleep(1)'", "run --sleep 5", "node -e 'sleep(5)'",
+    "sleep", "true; sleep", "", undefined, 42, { command: "sleep 1" },
+  ]) assert.equal(isPoll(c), false, String(c));
 });
 
 test("claudeCalls reads tool calls once per block id: repeats, polls, agents, big unbounded reads; malformed blocks are skipped", () => {
