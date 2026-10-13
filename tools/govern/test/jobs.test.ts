@@ -4,7 +4,7 @@ import { spawn } from "node:child_process";
 import { readFileSync, readdirSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { makeEnv, govern, jsonl, write, childEnv, GOVERN } from "./helpers.ts";
-import { parseStat, procStat, sleepSync, stamp } from "../lib/util.ts";
+import { parseStat, procStat, procTable, sleepSync, stamp } from "../lib/util.ts";
 
 type E = ReturnType<typeof makeEnv>;
 const ledger = (e: E, slug: string) => jsonl(join(e.projects, slug, "govern", "ledger.jsonl"));
@@ -53,6 +53,21 @@ function cleanup(e: E, pids: number[] = []): void {
   for (const pid of mine) if (!dead(pid)) { try { process.kill(pid, "SIGKILL"); } catch { /* already gone */ } }
   assert.ok(allGone(mine), `left running: ${mine.filter((p) => !dead(p))}`);
 }
+/** Where govern reads the process table from: /proc, or ps (GOVERN_PROC=ps, as on a system without /proc). */
+const SOURCES = [["proc", {}], ["ps", { GOVERN_PROC: "ps" }]] as const;
+/** ps -o lstart in the C locale: "Tue Oct 13 17:00:19 2026". */
+const LSTART = /^[A-Z][a-z]{2} [A-Z][a-z]{2} [ \d]\d \d\d:\d\d:\d\d \d{4}$/;
+/** Run govern in the background, its output and then its exit code going to `out`; returns the sh that waits on it. */
+function governBg(e: E, args: string[], out: string, env: Record<string, string> = {}) {
+  const g = spawn("sh", ["-c", `${process.execPath} --disable-warning=ExperimentalWarning ${GOVERN} ${args.join(" ")} > ${out} 2>&1; echo $? >> ${out}`], { env: childEnv(e, env), detached: true, stdio: "ignore" });
+  g.unref();
+  return g;
+}
+/** Poll up to `ms` for the background govern to finish; its output, the last line being its exit code. */
+function governDone(out: string, ms = 20000): string {
+  for (const end = Date.now() + ms; !/^\d+$/m.test(existsSync(out) ? readFileSync(out, "utf8") : "") && Date.now() < end;) sleepSync(20);
+  return readFileSync(out, "utf8");
+}
 function lane() {
   const e = makeEnv();
   assert.equal(govern(e, ["new", "lane", "--process", "dev", "--title", "L"]).code, 0);
@@ -75,6 +90,32 @@ test("parseStat reads state, process group and start time even when the command 
   assert.equal(procStat(process.pid)?.start, self.slice(self.lastIndexOf(")") + 1).trim().split(/\s+/)[19]);
 });
 
+test("procTable reads the same processes from /proc and from ps: parent, group, a zombie as exited", { skip: NO_PROC }, () => {
+  const sleeper = spawn("sleep", ["30"], { stdio: "ignore" });
+  const zombie = spawn("true", { stdio: "ignore" });
+  const prev = process.env.GOVERN_PROC;
+  try {
+    // the event loop does not run while sleepSync blocks, so the exited child stays an unreaped zombie
+    for (const end = Date.now() + 5000; procStat(zombie.pid!)?.state !== "Z" && Date.now() < end;) sleepSync(20);
+    const tables = SOURCES.map(([src]) => {
+      if (src === "ps") process.env.GOVERN_PROC = "ps"; else delete process.env.GOVERN_PROC;
+      return procTable();
+    });
+    for (const t of tables) {
+      assert.equal(t.get(process.pid)?.ppid, process.ppid);
+      assert.equal(t.get(process.pid)?.pgrp, procStat(process.pid)!.pgrp);
+      assert.equal(t.get(sleeper.pid!)?.ppid, process.pid);
+      assert.notEqual(t.get(sleeper.pid!)?.state, "Z");
+      assert.equal(t.get(zombie.pid!)?.state, "Z");
+    }
+    assert.equal(tables[0].get(process.pid)?.start, procStat(process.pid)!.start);
+    assert.match(tables[1].get(process.pid)!.start, LSTART);
+  } finally {
+    if (prev === undefined) delete process.env.GOVERN_PROC; else process.env.GOVERN_PROC = prev;
+    sleeper.kill("SIGKILL");
+  }
+});
+
 test("every job records its pid and start time, and sees GOVERN_JOB_ID; a foreground job has no group of its own", { skip: NO_PROC }, () => {
   const { e, slug } = lane();
   try {
@@ -89,14 +130,14 @@ test("every job records its pid and start time, and sees GOVERN_JOB_ID; a foregr
   } finally { cleanup(e); }
 });
 
-test("a foreground job past its timeout has its whole process tree stopped and fails the check as timed out", { skip: NO_PROC }, () => {
+for (const [src, env] of SOURCES) test(`a foreground job past its timeout has its whole process tree stopped and fails the check as timed out (${src})`, { skip: NO_PROC }, () => {
   const { e, slug } = lane();
   try {
     const c = govern(e, ["cmd", slug, "hang", "--timeout", "1", "--", "sh", "-c", "echo $$ > kids; sleep 30 & echo $! >> kids; sleep 30"]);
     assert.equal(c.code, 0, c.err);
     govern(e, ["check", slug, "--set", "hang", "--stage", "plan"]);
     const t0 = Date.now();
-    const r = govern(e, ["check", slug]);
+    const r = govern(e, ["check", slug], env);
     assert.ok(Date.now() - t0 < 15000, "the check must not wait for the children");
     assert.equal(r.code, 1, r.err);
     assert.match(r.out, /check hang: failed \(timed out after 1s\)/);
@@ -105,8 +146,8 @@ test("a foreground job past its timeout has its whole process tree stopped and f
     const kids = pidsIn(join(e.projects, slug, "kids"), 2);
     assert.ok(allGone([j.pid, ...kids]), `child and grandchild must be gone: ${kids}`);
     assert.equal(ledger(e, slug).filter((x) => x.kind === "job").at(-1).status, "timeout");
-    assert.match(govern(e, ["jobs", slug]).out, /-hang timeout/);
-    const a = govern(e, ["advance", slug]);
+    assert.match(govern(e, ["jobs", slug], env).out, /-hang timeout/);
+    const a = govern(e, ["advance", slug], env);
     assert.equal(a.code, 2);
     assert.match(a.err, /check hang failed \(timed out after 1s\)/);
   } finally { cleanup(e); }
@@ -131,25 +172,23 @@ test("a foreground job stays in its caller's process group: Ctrl-C to govern sto
   } finally { cleanup(e, pids); }
 });
 
-test("kill stops a foreground job another govern waits on, tree and all, and the job's end is ledgered once", { skip: NO_PROC }, () => {
+for (const [src, env] of SOURCES) test(`kill stops a foreground job another govern waits on, tree and all, and the job's end is ledgered once (${src})`, { skip: NO_PROC }, () => {
   const { e, slug } = lane();
   const pids: number[] = [];
   try {
     govern(e, ["cmd", slug, "hang", "--", "sh", "-c", "echo $$ > kids; sleep 30 & echo $! >> kids; sleep 30"]);
     govern(e, ["check", slug, "--set", "hang", "--stage", "plan"]);
     const out = join(e.root, "check.out");
-    const g = spawn("sh", ["-c", `${process.execPath} --disable-warning=ExperimentalWarning ${GOVERN} check ${slug} > ${out} 2>&1; echo $? >> ${out}`], { env: childEnv(e), detached: true, stdio: "ignore" });
-    g.unref();
+    const g = governBg(e, ["check", slug], out, env);
     pids.push(g.pid!);
     const kids = pidsIn(join(e.projects, slug, "kids"), 2);
     const j = jobWithPid(e, slug);
     pids.push(j.pid, ...kids);
-    const k = govern(e, ["kill", slug]);
+    const k = govern(e, ["kill", slug], env);
     assert.equal(k.code, 0, k.err);
     assert.match(k.out, new RegExp(`job ${j.id} terminated`));
     assert.ok(allGone([j.pid, ...kids]), `the job and its children must be gone: ${[j.pid, ...kids]}`);
-    for (const end = Date.now() + 10000; !/^\d+$/m.test(existsSync(out) ? readFileSync(out, "utf8") : "") && Date.now() < end;) sleepSync(20);
-    const o = readFileSync(out, "utf8");
+    const o = governDone(out);
     assert.match(o, /check hang: failed \(killed by govern kill\)/);
     assert.match(o, /^1$/m);
     assert.deepEqual(ledger(e, slug).filter((x) => x.kind === "job" && x.id === j.id).map((x) => x.status), ["killed"]);
@@ -184,28 +223,50 @@ test("cmd --timeout stores the timeout beside the argv; plain commands stay argv
   assert.match(govern(e, ["cmd", slug, "u", "--timeout", "soon", "--", "echo"]).err, /--timeout must be a number of seconds/);
 });
 
-test("kill stops the lane's running background job, group and all, and records the outcome", { skip: NO_PROC }, () => {
+for (const [src, env] of SOURCES) test(`kill stops the lane's running background job, group and all, and records the outcome (${src})`, { skip: NO_PROC }, () => {
   const { e, slug } = lane();
   try {
     govern(e, ["cmd", slug, "long", "--", "sh", "-c", "echo $$ > kids; sleep 30 & echo $! >> kids; sleep 30"]);
-    assert.match(govern(e, ["run", slug, "long", "--bg"]).out, /started in the background/);
+    assert.match(govern(e, ["run", slug, "long", "--bg"], env).out, /started in the background/);
     const j = jobJson(e, slug);
-    assert.equal(procStat(j.pid)?.start, j.procStart);
+    if (src === "proc") assert.equal(procStat(j.pid)?.start, j.procStart); else assert.match(j.procStart, LSTART);
     assert.equal(procStat(j.pid)?.pgrp, j.pgid);
     const kids = pidsIn(join(e.projects, slug, "kids"), 2);
-    const k = govern(e, ["kill", slug]);
+    const k = govern(e, ["kill", slug], env);
     assert.equal(k.code, 0, k.err);
     assert.match(k.out, new RegExp(`job ${j.id} (terminated|killed)`));
     assert.ok(allGone([j.pid, ...kids]));
     assert.equal(jobJson(e, slug).stopped, "killed");
-    assert.match(govern(e, ["jobs", slug]).out, /-long killed/);
-    assert.match(govern(e, ["status"]).out, /last job long killed/);
+    assert.match(govern(e, ["jobs", slug], env).out, /-long killed/);
+    assert.match(govern(e, ["status"], env).out, /last job long killed/);
     const kl = ledger(e, slug).filter((x) => x.kind === "kill");
     assert.deepEqual(kl.map((x) => [x.job, x.outcome]), [[j.id, "terminated"]]);
-    assert.match(govern(e, ["kill", slug, j.id]).out, /already-exited/);
+    assert.match(govern(e, ["kill", slug, j.id], env).out, /already-exited/);
     assert.equal(ledger(e, slug).filter((x) => x.kind === "kill").at(-1).outcome, "already-exited");
-    assert.match(govern(e, ["kill", slug]).err, /no running job/);
+    assert.match(govern(e, ["kill", slug], env).err, /no running job/);
   } finally { cleanup(e); }
+});
+
+for (const [src, env] of SOURCES) test(`a foreground job killed from outside ends its run at once as failed, not as a timeout (${src})`, { skip: NO_PROC }, () => {
+  const { e, slug } = lane();
+  const pids: number[] = [];
+  try {
+    govern(e, ["cmd", slug, "hang", "--timeout", "20", "--", "sh", "-c", "echo $$ > kids; exec sleep 30"]);
+    const out = join(e.root, "run.out");
+    const g = governBg(e, ["run", slug, "hang"], out, env);
+    pids.push(g.pid!);
+    const kids = pidsIn(join(e.projects, slug, "kids"), 1);
+    const j = jobWithPid(e, slug);
+    pids.push(j.pid, ...kids);
+    // the job's own process (the sh that runs the command and writes its exit file) dies without writing one
+    const t0 = Date.now();
+    process.kill(j.pid, "SIGKILL");
+    const o = governDone(out, 15000);
+    assert.ok(Date.now() - t0 < 5000, `govern run must notice the job is gone, not wait for its timeout: ${o}`);
+    assert.match(o, new RegExp(`job ${j.id} · failed`));
+    assert.doesNotMatch(o, /timeout|timed out/);
+    assert.equal(ledger(e, slug).filter((x) => x.kind === "job" && x.id === j.id).at(-1).status, "failed");
+  } finally { cleanup(e, pids); }
 });
 
 test("a recycled pid is not the job: it reads lost and kill refuses to signal it", { skip: NO_PROC }, () => {

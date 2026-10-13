@@ -1,5 +1,6 @@
 // Small helpers shared by the govern modules: errors, args, files, time.
-import { existsSync, readFileSync, writeFileSync, renameSync, mkdirSync, statSync, globSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync, renameSync, mkdirSync, statSync, globSync, readdirSync } from "node:fs";
+import { spawnSync } from "node:child_process";
 import { dirname, join, isAbsolute } from "node:path";
 
 export class GovernError extends Error {
@@ -42,7 +43,9 @@ export const nowIso = () => new Date().toISOString();
 export const stamp = (d = new Date()) => d.toISOString().replace(/[-:]/g, "").replace(/\.\d+Z$/, "Z");
 export const sleepSync = (ms: number) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 
-/** What /proc/<pid>/stat says about a process: state (field 3), parent (4), process group (5), start time in ticks after boot (22). */
+/** A process as the process table shows it: state, parent, process group, and a start time that tells a recycled pid
+ *  from the process that had it. From /proc/<pid>/stat: fields 3, 4, 5 and 22 (ticks after boot); from ps: stat, ppid,
+ *  pgid and lstart (its text, in the C locale and UTC). A start time is only ever compared with one from the same source. */
 export interface ProcStat { state: string; ppid: number; pgrp: number; start: string }
 /** Parse the text of /proc/<pid>/stat. comm (field 2) may hold spaces and parentheses: fields count from the last ")". */
 export function parseStat(stat: string): ProcStat | undefined {
@@ -56,6 +59,36 @@ export const hasProc = () => existsSync("/proc/self/stat");
 export function procStat(pid: number): ProcStat | undefined {
   try { return parseStat(readFileSync(`/proc/${pid}/stat`, "utf8")); } catch { return undefined; }
 }
+/** Where the jobs code reads the process table from: /proc where it exists, ps elsewhere (macOS, the BSDs).
+ *  GOVERN_PROC=ps forces ps where /proc exists: a test and diagnostic knob, so the ps path runs on Linux too. */
+export const procSource = (): "proc" | "ps" => (process.env.GOVERN_PROC === "ps" || !hasProc() ? "ps" : "proc");
+const PS_LINE = /^\s*(\d+)\s+(\d+)\s+(\d+)\s+(\S+)\s+(.+?)\s*$/;
+/** ps's view of the given pids (all processes when none are given), keyed by pid. */
+function psTable(pids?: number[]): Map<number, ProcStat> {
+  const sel = pids ? ["-p", pids.join(",")] : ["-A"];
+  const r = spawnSync("ps", [...sel, "-o", "pid=,ppid=,pgid=,stat=,lstart="], { encoding: "utf8", env: { ...process.env, LC_ALL: "C", TZ: "UTC" } });
+  // ps -p exits 1 when none of the pids exists; any other failure is ps not working, which nothing here may guess past
+  if (r.error || (r.status !== 0 && !(pids && r.status === 1 && !r.stdout.trim()))) fail(`cannot read the process table: ps ${r.error?.message ?? `exited ${r.status}: ${r.stderr.trim()}`}`);
+  const out = new Map<number, ProcStat>();
+  for (const line of r.stdout.split("\n")) {
+    const m = PS_LINE.exec(line);
+    if (m) out.set(Number(m[1]), { state: m[4][0], ppid: Number(m[2]), pgrp: Number(m[3]), start: m[5] });
+  }
+  return out;
+}
+/** Every process on the system, keyed by pid, from the one source procSource() names. Zombies are included (state Z). */
+export function procTable(): Map<number, ProcStat> {
+  if (procSource() === "ps") return psTable();
+  const out = new Map<number, ProcStat>();
+  for (const d of readdirSync("/proc")) {
+    if (!/^\d+$/.test(d)) continue;
+    const s = procStat(Number(d));
+    if (s) out.set(Number(d), s);
+  }
+  return out;
+}
+/** One process, from the same source as procTable(); undefined when the pid does not exist. */
+export const procOf = (pid: number): ProcStat | undefined => (procSource() === "ps" ? psTable([pid]).get(pid) : procStat(pid));
 /** A zombie (exited, not yet reaped) or dead process no longer runs anything. */
 export const exited = (s: ProcStat) => s.state === "Z" || s.state === "X";
 
