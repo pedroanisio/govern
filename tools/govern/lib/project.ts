@@ -192,15 +192,15 @@ export function resolveFile(p: Project, name: string): string | undefined {
   return existsSync(f) ? f : undefined;
 }
 
-/** The check-set entries for the lane's current stage written since the lane last moved into that stage (by work or
- *  advance from another stage; a new segment on the same stage does not count), oldest first. */
-function checkSetsSinceEntered(p: Project, led: Record<string, unknown>[]): Record<string, unknown>[] {
-  let at = stagesOf(p)[0], entered = -1;
-  led.forEach((e, i) => {
-    const to = e.kind === "advance" ? e.to : e.kind === "work" ? e.stage : undefined;
-    if (typeof to === "string" && to !== "finished" && to !== at) { at = to; entered = i; }
-  });
-  return led.filter((e, i) => i > entered && e.kind === "check-set" && e.stage === p.stage);
+/** The changes to the current stage's check that no passing run of that check has followed, oldest first.
+ *  Rule: a change is pending from the moment it is ledgered until a `check` entry for the same stage passes after it.
+ *  Where the lane was meanwhile does not matter: leaving the stage and coming back does not clear a change, and a change
+ *  made before the lane reached the stage is pending when it gets there. Only a pass vouches for the check as it now is;
+ *  a failed run, a new segment or another stage's pass does not. */
+function pendingCheckChanges(p: Project, led: Record<string, unknown>[]): Record<string, unknown>[] {
+  let passed = -1;
+  led.forEach((e, i) => { if (e.kind === "check" && e.stage === p.stage && e.ok === true) passed = i; });
+  return led.filter((e, i) => i > passed && e.kind === "check-set" && e.stage === p.stage);
 }
 
 /** The compact context an AI session starts from instead of exploring the repo. */
@@ -220,8 +220,8 @@ export function brief(p: Project, o: { notes?: number } = {}): string {
   const chk = checkOf(p);
   if (chk) L.push(`check: command "${chk}"${p.commands[chk] ? "" : ` (not set: govern cmd ${p.slug} ${chk} -- …)`}`);
   const led = readJsonl(ledgerFile(p.slug));
-  const sets = checkSetsSinceEntered(p, led);
-  if (sets.length) L.push(`⚠ the check of stage ${p.stage} changed after the lane entered it: ${[sets[0].from ?? "none", ...sets.map((x) => x.to)].join(" → ")}`);
+  const sets = pendingCheckChanges(p, led);
+  if (sets.length) L.push(`⚠ the check of stage ${p.stage} changed and has not passed since: ${[sets[0].from ?? "none", ...sets.map((x) => x.to)].join(" → ")}`);
   if (pr.gates.length) L.push(`approvals: ${pr.gates.map((g) => (p.approvals[g.name] ? `${g.name} ✓ ${p.approvals[g.name].at.slice(0, 10)}` : `${g.name} –`)).join(" · ")}`);
   if (p.after?.length) L.push(`after: ${p.after.map(afterMet).map((x) => `${x.label} (${x.met ? "done" : "waiting"})`).join(" · ")}`);
   const files = Object.keys(p.files).map((k) => { const f = resolveFile(p, k); return `${k}=${f ? rel(f) : "(none)"}`; });

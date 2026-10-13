@@ -230,7 +230,7 @@ test("the prompt states the reply limits, and a reply that fails verification is
   assert.match(readFileSync(raw, "utf8"), /TAIL-MARKER/);
 });
 
-test("check --set is in the ledger, and the brief warns when the current stage's check changed after the lane entered it", () => {
+test("check --set is in the ledger, and the brief warns while the current stage's check changed and has not passed since", () => {
   const e = env();
   govern(e, ["new", "lib", "--process", "dev"]);
   govern(e, ["work", "lib", "test"]);
@@ -238,17 +238,47 @@ test("check --set is in the ledger, and the brief warns when the current stage's
   govern(e, ["check", "lib", "--set", "lint", "--stage", "plan"]);
   const sets = ledger(e, "lib").filter((x) => x.kind === "check-set").map(({ stage, from, to }) => ({ stage, from, to }));
   assert.deepEqual(sets, [{ stage: "test", from: "test", to: "true" }, { stage: "plan", from: null, to: "lint" }]);
-  assert.match(govern(e, ["brief", "lib"]).out, /^⚠ the check of stage test changed after the lane entered it: test → true$/m);
+  assert.match(govern(e, ["brief", "lib"]).out, /^⚠ the check of stage test changed and has not passed since: test → true$/m);
   govern(e, ["work", "lib", "test"]);
   assert.match(govern(e, ["brief", "lib"]).out, /⚠ the check of stage test changed .*: test → true/, "a new segment on the same stage keeps the warning");
 
+  // Deliberately reversed from the first version, which hid a check set before the lane reached the stage: that set
+  // is exactly as unchecked as one made at the stage, so it is shown when the lane gets there.
   govern(e, ["new", "ops/x", "--kind", "ops"]);
   govern(e, ["check", "ops/x", "--set", "smoke", "--stage", "doing"]);
   govern(e, ["work", "ops/x", "doing"]);
-  assert.doesNotMatch(govern(e, ["brief", "ops/x"]).out, /⚠/, "set before the lane entered the stage");
+  assert.match(govern(e, ["brief", "ops/x"]).out, /^⚠ the check of stage doing changed and has not passed since: none → smoke$/m, "set before the lane reached the stage");
   govern(e, ["check", "ops/x", "--set", "other", "--stage", "doing"]);
   govern(e, ["check", "ops/x", "--set", "smoke", "--stage", "doing"]);
-  assert.match(govern(e, ["brief", "ops/x"]).out, /⚠ the check of stage doing changed after the lane entered it: smoke → other → smoke/);
+  assert.match(govern(e, ["brief", "ops/x"]).out, /⚠ the check of stage doing changed and has not passed since: none → smoke → other → smoke/);
+});
+
+test("a changed check stays flagged until it passes, however the lane moves; only a pass of that stage's check clears it", () => {
+  const e = env();
+  govern(e, ["new", "lib", "--process", "dev"]);
+  govern(e, ["work", "lib", "test"]);
+  govern(e, ["check", "lib", "--set", "lint", "--stage", "test"]);
+  const warned = /^⚠ the check of stage test changed and has not passed since: test → lint$/m;
+  govern(e, ["work", "lib", "build"]);
+  assert.match(govern(e, ["work", "lib", "test"]).out, warned, "leaving the stage and coming back does not clear it");
+  govern(e, ["work", "lib", "plan"]);
+  govern(e, ["work", "lib", "test"]);
+  assert.match(govern(e, ["brief", "lib"]).out, warned);
+  govern(e, ["cmd", "lib", "lint", "--", "sh", "-c", "exit 1"]);
+  assert.equal(govern(e, ["check", "lib"]).code, 1);
+  assert.match(govern(e, ["brief", "lib"]).out, warned, "a failing check does not clear it");
+  govern(e, ["cmd", "lib", "smoke", "--", "sh", "-c", "exit 0"]);
+  govern(e, ["check", "lib", "--set", "smoke", "--stage", "build"]);
+  govern(e, ["work", "lib", "build"]);
+  assert.equal(govern(e, ["check", "lib"]).code, 0);
+  assert.match(govern(e, ["work", "lib", "test"]).out, warned, "another stage's passing check does not clear it");
+  govern(e, ["cmd", "lib", "lint", "--", "sh", "-c", "exit 0"]);
+  assert.equal(govern(e, ["check", "lib"]).code, 0);
+  assert.doesNotMatch(govern(e, ["brief", "lib"]).out, /⚠/, "the check passed after the change");
+  govern(e, ["work", "lib", "build"]);
+  assert.doesNotMatch(govern(e, ["work", "lib", "test"]).out, /⚠/);
+  govern(e, ["check", "lib", "--set", "test", "--stage", "test"]);
+  assert.match(govern(e, ["brief", "lib"]).out, /^⚠ the check of stage test changed and has not passed since: lint → test$/m, "only the changes after the pass");
 });
 
 test("the advance entry says what passed the stage, the check or a note, with the note's words", () => {
