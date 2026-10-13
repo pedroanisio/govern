@@ -5,8 +5,19 @@ import { fileURLToPath } from "node:url";
 import { fail, readJson, writeJson, nowIso, latest, plain, clip, readJsonl } from "./util.ts";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
-/** render-frontend-js: tools/govern/lib → super-tools → repo. */
-export const REPO = process.env.GOVERN_REPO ?? resolve(HERE, "..", "..", "..", "..");
+/** The nearest folder at or above `dir` that holds PALS-Notes/projects, or undefined. */
+function workspaceAbove(dir: string): string | undefined {
+  for (let d = resolve(dir); ; d = dirname(d)) {
+    if (existsSync(join(d, "PALS-Notes", "projects"))) return d;
+    if (dirname(d) === d) return undefined;
+  }
+}
+/** The workspace (render-frontend-js). super-tools sits beside it (~/src/super-tools since 2026-10-13), so: GOVERN_REPO,
+ *  else the workspace above the cwd, else the sibling render-frontend-js (the dispatcher service), else the old parent. */
+export const REPO = process.env.GOVERN_REPO
+  ?? workspaceAbove(process.cwd())
+  ?? [resolve(HERE, "..", "..", "..", "..", "render-frontend-js"), resolve(HERE, "..", "..", "..", "..")].find((d) => existsSync(join(d, "PALS-Notes", "projects")))
+  ?? resolve(HERE, "..", "..", "..", "..", "render-frontend-js");
 export const PROJECTS = process.env.GOVERN_PROJECTS ?? join(REPO, "PALS-Notes", "projects");
 export const WORKFLOW = process.env.GOVERN_WORKFLOW ?? join(REPO, "var", "media-business", "channels", "palsnotes", "workflow", "WORKFLOW.md");
 export const FILM_BUILD = join(REPO, "PALS-Notes", "videos", "lib", "tools", "film_build.py");

@@ -328,7 +328,7 @@ function cmdTask(a: Args): void {
     const bin = resolve(HERE, "..", "..", "bin", "govern");
     writeFileSync(unit, [
       "[Unit]", "Description=govern task dispatcher (one fresh codex/claude session per queued message)", "",
-      "[Service]", `ExecStart=${bin} task dispatch --loop --interval ${opt(a, "interval") ?? 30}`,
+      "[Service]", `WorkingDirectory=${REPO}`, `ExecStart=${bin} task dispatch --loop --interval ${opt(a, "interval") ?? 30}`,
       `Environment=PATH=${process.env.PATH}`, `Environment=GOVERN_QUEUE=${queue.QUEUE()}`, "Restart=on-failure", "RestartSec=30", "",
       "[Install]", "WantedBy=default.target", "",
     ].join("\n"));
