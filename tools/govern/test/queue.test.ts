@@ -4,7 +4,7 @@ const require = createRequire(import.meta.url);
 import assert from "node:assert/strict";
 import { readFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
-import { makeEnv, govern, jsonl, write, reply, HERE } from "./helpers.ts";
+import { makeEnv, govern, childEnv, jsonl, write, reply, HERE } from "./helpers.ts";
 
 function env() {
   const e = makeEnv();
@@ -93,7 +93,7 @@ test("two dispatchers never run the same message (claim is an atomic rename)", (
   const { spawn } = require("node:child_process");
   return Promise.all([0, 1].map(() => new Promise<string>((res) => {
     let out = "";
-    const p = spawn(process.execPath, ["--disable-warning=ExperimentalWarning", join(HERE, "..", "govern.ts"), "task", "dispatch"], { env: { ...process.env, ...e.env, FAKE_CODEX_SCRIPTS: s } });
+    const p = spawn(process.execPath, ["--disable-warning=ExperimentalWarning", join(HERE, "..", "govern.ts"), "task", "dispatch"], { env: childEnv(e, { FAKE_CODEX_SCRIPTS: s }) });
     p.stdout.on("data", (d: Buffer) => (out += d));
     p.on("close", () => res(out));
   }))).then((outs) => {

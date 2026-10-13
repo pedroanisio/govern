@@ -39,8 +39,8 @@ test("dispatch --loop writes its pid for desk and removes it on SIGTERM", async 
   const e = env();
   const { spawn } = await import("node:child_process");
   const { existsSync } = await import("node:fs");
-  const { GOVERN } = await import("./helpers.ts");
-  const p = spawn(process.execPath, ["--disable-warning=ExperimentalWarning", GOVERN, "task", "dispatch", "--loop", "--interval", "1"], { env: { ...process.env, ...e.env } });
+  const { GOVERN, childEnv } = await import("./helpers.ts");
+  const p = spawn(process.execPath, ["--disable-warning=ExperimentalWarning", GOVERN, "task", "dispatch", "--loop", "--interval", "1"], { env: childEnv(e) });
   const pidf = join(e.root, "queue", "dispatcher.json");
   for (let i = 0; i < 50 && !existsSync(pidf); i++) await new Promise((r) => setTimeout(r, 100));
   assert.match(govern(e, ["desk"]).out, /dispatcher: running \(pid \d+/);

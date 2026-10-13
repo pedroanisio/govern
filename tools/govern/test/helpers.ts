@@ -1,5 +1,6 @@
+import { after } from "node:test";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -11,15 +12,23 @@ export const fixture = (name: string) => join(HERE, "fixtures", name);
 
 export interface Env { root: string; projects: string; env: Record<string, string> }
 
-/** A throwaway repo: PALS-Notes/projects, packages, a WORKFLOW.md with the stage table, empty transcript dirs. */
+// Every root makeEnv creates is removed when its test file finishes (a root-level hook of the file importing this).
+const roots: string[] = [];
+after(() => { for (const r of roots.splice(0)) rmSync(r, { recursive: true, force: true, maxRetries: 3 }); });
+
+/** A throwaway repo: PALS-Notes/projects, packages, a WORKFLOW.md with the stage table, empty transcript dirs, and a
+ *  HOME (with XDG dirs) of its own, so nothing reads or writes the developer's ~/.claude, ~/.codex or ~/.config. */
 export function makeEnv(): Env {
   const root = mkdtempSync(join(tmpdir(), "govern-test-"));
+  roots.push(root);
   const projects = join(root, "PALS-Notes", "projects");
   mkdirSync(projects, { recursive: true });
   mkdirSync(join(root, "PALS-Notes", "packages"), { recursive: true });
   const wf = join(root, "WORKFLOW.md");
   writeFileSync(wf, "| # | Stage | Use | Exit when |\n|---|---|---|---|\n| 1 | Plan | x | the subject passes the [depth test](a.md) |\n| 2 | Script | x | a timed screenplay; no *not verified* row |\n");
   for (const d of ["claude"]) mkdirSync(join(root, d), { recursive: true });
+  const home = join(root, "home");
+  mkdirSync(home, { recursive: true });
   const fakeBin = join(root, "fake-codex.sh");
   writeFileSync(fakeBin, `#!/bin/sh\nexec ${process.execPath} --disable-warning=ExperimentalWarning ${FAKE} "$@"\n`, { mode: 0o755 });
   return {
@@ -30,16 +39,25 @@ export function makeEnv(): Env {
       FAKE_CODEX_ARGV_OUT: join(root, "argv.log"), FAKE_CODEX_STDIN_OUT: join(root, "stdin.log"), FAKE_CODEX_COUNTER: join(root, "count"),
       CLAUDE_CODE_SESSION_ID: "",
       GOVERN_AS: "owner", // the sender of a test's `task send`, never the session running the tests
+      HOME: home, XDG_CONFIG_HOME: join(home, ".config"), XDG_DATA_HOME: join(home, ".local", "share"),
+      XDG_STATE_HOME: join(home, ".local", "state"), XDG_CACHE_HOME: join(home, ".cache"),
+      GOVERN_SESSIONS_DIR: join(home, ".claude", "sessions"), GOVERN_CLAUDE_SETTINGS: join(home, ".claude", "settings.json"),
     },
   };
 }
 
-export function govern(e: Env, args: string[], env: Record<string, string> = {}, input?: string) {
+/** A govern child's environment: the parent's without any GOVERN_* it set, then the test's own, then the call's. */
+export function childEnv(e: Env, env: Record<string, string> = {}): NodeJS.ProcessEnv {
   // The compaction window comes from the test, never from the session running it (Claude Code exports its settings env).
   const { CLAUDE_CODE_AUTO_COMPACT_WINDOW: _, ...inherited } = process.env;
+  for (const k of Object.keys(inherited)) if (k.startsWith("GOVERN_")) delete inherited[k];
   const base = { ...inherited, ...e.env, ...env };
   if (!base.CLAUDE_CODE_SESSION_ID) delete base.CLAUDE_CODE_SESSION_ID;
-  const r = spawnSync(process.execPath, ["--disable-warning=ExperimentalWarning", GOVERN, ...args], { env: base, encoding: "utf8", timeout: 60000, ...(input !== undefined ? { input } : {}) });
+  return base;
+}
+
+export function govern(e: Env, args: string[], env: Record<string, string> = {}, input?: string) {
+  const r = spawnSync(process.execPath, ["--disable-warning=ExperimentalWarning", GOVERN, ...args], { env: childEnv(e, env), encoding: "utf8", timeout: 60000, ...(input !== undefined ? { input } : {}) });
   return { code: r.status, out: r.stdout, err: r.stderr };
 }
 

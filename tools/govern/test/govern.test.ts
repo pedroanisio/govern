@@ -1,10 +1,10 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
+import { readFileSync, writeFileSync, mkdirSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
-import { makeEnv, govern, jsonl, write, reply, fixture, GOVERN } from "./helpers.ts";
+import { makeEnv, govern, childEnv, jsonl, write, reply, fixture, GOVERN, HERE } from "./helpers.ts";
 import { parseEvents, execArgs, validate } from "../lib/codex.ts";
 
 const state = (e: ReturnType<typeof makeEnv>, slug: string) => JSON.parse(readFileSync(join(e.projects, slug, "govern.json"), "utf8"));
@@ -339,7 +339,11 @@ test("the shipped prompts all render with a brief and their schemas compile", ()
   mkdirSync(join(e.root, "pals-notes-channel", "writing"), { recursive: true });
   for (const f of ["pals-notes-channel/writing/SCRIPT-STYLE-GUIDE.md", "var/media-business/channels/palsnotes/workflow/script/post-validation/en-US-writing.md", "var/media-business/channels/palsnotes/workflow/script/post-validation/pt-BR-writing.md"]) write(join(e.root, f), "rules");
   const steps = govern(e, ["prompts"]).out.split("\n").filter(Boolean).map((l) => l.split(/\s+/)[0]);
-  assert.deepEqual(steps.sort(), ["factcheck", "hooks", "metadata", "ptbr", "script-review"]);
+  // The inventory is prompts/*.md; each has its schemas/<name>.json, and schemas/ holds nothing else but the queue's.
+  const shipped = readdirSync(join(HERE, "..", "prompts")).filter((f) => f.endsWith(".md")).map((f) => f.slice(0, -3)).sort();
+  assert.ok(shipped.length > 0);
+  assert.deepEqual(steps.sort(), shipped);
+  assert.deepEqual(readdirSync(join(HERE, "..", "schemas")).sort(), [...shipped.map((s) => `${s}.json`), "queue-reply.json"].sort());
   for (const s of steps) {
     const r = govern(e, ["ask", slug, s], { FAKE_CODEX_SCRIPTS: reply(e, `r-${s}`, "{}") });
     assert.equal(r.code, 3, `${s}: ${r.err}`); // {} fails the schema, but the prompt rendered and codex was called
@@ -350,7 +354,7 @@ test("the shipped prompts all render with a brief and their schemas compile", ()
 test("a reader that stops early (| head) is not an error", () => {
   const { e, slug } = video();
   for (let i = 0; i < 50; i++) govern(e, ["note", slug, `decision number ${i} `.repeat(20)]);
-  const r = spawnSync("sh", ["-c", `${process.execPath} --disable-warning=ExperimentalWarning ${GOVERN} brief ${slug} | head -1`], { env: { ...process.env, ...e.env }, encoding: "utf8" });
+  const r = spawnSync("sh", ["-c", `${process.execPath} --disable-warning=ExperimentalWarning ${GOVERN} brief ${slug} | head -1`], { env: childEnv(e), encoding: "utf8" });
   assert.equal(r.stderr, "");
   assert.match(r.stdout, /^# film\/shorts/);
 });
