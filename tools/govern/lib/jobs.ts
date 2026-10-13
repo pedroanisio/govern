@@ -70,12 +70,37 @@ export function start(p: Project, name: string, extra: string[], bg: boolean): J
     appendLedger(p.slug, { kind: "job", id, name, bg: true, status: "started" });
     return { ...job, status: "running" };
   }
-  const running = () => !readExit(dir) && alive(job) && !readJson<Job>(f).stopped;
+  // Waits on the job's own process only: whether someone marked the job stopped is not whether it has stopped.
+  const running = () => !readExit(dir) && alive(job);
   for (const end = Date.now() + timeout * 1000; running() && Date.now() < end;) sleepSync(POLL_MS);
-  if (running()) { stop(job, dir); writeJson(f, { ...readJson<Job>(f), stopped: "timeout", end: nowIso() }); }
-  const st = state(p.slug, id);
-  appendLedger(p.slug, { kind: "job", id, name, bg: false, status: st.status, exit: st.exit, seconds: st.seconds });
-  return st;
+  if (running()) {
+    // Marked before the signal, as kill does; a kill already under way keeps its reason.
+    const cur = readJson<Job>(f);
+    writeJson(f, { ...cur, stopped: cur.stopped ?? "timeout" });
+    stop(job, dir);
+    if (!members(job, dir).size) writeJson(f, { ...readJson<Job>(f), end: nowIso() });
+  } else if (readJson<Job>(f).stopped) {
+    // A govern kill is stopping it: give that kill its grace, then stop whatever it left.
+    for (const end = Date.now() + KILL_GRACE_MS + 1000; state(p.slug, id).status === "running" && Date.now() < end;) sleepSync(POLL_MS);
+    if (state(p.slug, id).status === "running") stop(job, dir);
+  }
+  recordEnd(p.slug, id);
+  return state(p.slug, id);
+}
+
+/** Write the job's one end entry to the ledger, once it has ended: the first of its waiting govern, `govern wait` and
+ *  `govern kill` to get here claims it (an exclusive create of <job>/ledgered), and every later call is a no-op. Returns
+ *  whether this call wrote it. */
+export function recordEnd(slug: string, id: string): boolean {
+  const st = state(slug, id);
+  if (st.status === "running") return false;
+  try { closeSync(openSync(join(jobDir(slug, id), "ledgered"), "wx")); } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === "EEXIST") return false;
+    throw e;
+  }
+  const seconds = st.seconds ?? Math.round((Date.now() - Date.parse(st.start)) / 1000);
+  appendLedger(slug, { kind: "job", id, name: st.name, bg: st.bg, status: st.status, exit: st.exit, seconds });
+  return true;
 }
 
 export function list(slug: string): string[] {
@@ -184,15 +209,22 @@ function readExit(dir: string): { code: number; mtimeMs: number } | undefined {
   } catch { return undefined; }
 }
 
+/** How the job stands. `stopped` records that govern set out to stop it, not that it has stopped: while any of its
+ *  processes still runs, it is running. A complete exit file is how the job ended, unless govern stopped it and the code is
+ *  a signal's (128 and up): then it ended by govern's stop, and reads as that ("timeout", "killed"). */
 export function state(slug: string, id: string): JobState {
-  const dir = join(jobsDir(slug), id);
+  const dir = jobDir(slug, id);
   const job = readJson<Job>(join(dir, "job.json"));
-  if (job.stopped) {
-    const seconds = job.end ? Math.round((Date.parse(job.end) - Date.parse(job.start)) / 1000) : undefined;
-    return { ...job, status: job.stopped, ...(seconds != null ? { seconds } : {}) };
-  }
   const ex = readExit(dir);
-  if (ex) return { ...job, status: ex.code === 0 ? "ok" : "failed", exit: ex.code, seconds: Math.round((ex.mtimeMs - Date.parse(job.start)) / 1000) };
+  const ended = job.end ? Date.parse(job.end) : ex?.mtimeMs;
+  const took = ended != null ? { seconds: Math.round((ended - Date.parse(job.start)) / 1000) } : {};
+  const byExit = ex ? { status: ex.code === 0 ? "ok" as const : "failed" as const, exit: ex.code, ...took } : undefined;
+  if (job.stopped) {
+    if (members(job, dir).size) return { ...job, status: "running" };
+    if (byExit && ex!.code < 128) return { ...job, ...byExit };
+    return { ...job, status: job.stopped, ...(ex ? { exit: ex.code } : {}), ...took };
+  }
+  if (byExit) return { ...job, ...byExit };
   // A foreground job runs while its govern waits on it (a check, or another session's govern run).
   return { ...job, status: alive(job) ? "running" : job.bg ? "lost" : "failed" };
 }
@@ -217,16 +249,19 @@ export function kill(slug: string, ref?: string): { id: string; outcome: KillOut
         : `job ${id}: no start time recorded: cannot verify pid ${job.pid} is still this job, not signalling it (stop it by hand if you are sure: kill -TERM ${job.bg ? "-" : ""}${job.pgid ?? job.pid})`);
     }
     record("already-exited");
+    recordEnd(slug, id);
     return { id, outcome: "already-exited" };
   }
-  // Marked before the signal: a govern waiting on a foreground job reads it as soon as the job dies.
-  writeJson(f, { ...readJson<Job>(f), stopped: "killed" });
+  // Marked before the signal: a govern waiting on a foreground job reads it as soon as the job dies. A stop already under
+  // way (a timeout, an earlier kill) keeps its reason.
+  const cur = readJson<Job>(f);
+  writeJson(f, { ...cur, stopped: cur.stopped ?? "killed" });
   const outcome = stop(job, dir);
-  const end = nowIso();
-  writeJson(f, { ...readJson<Job>(f), end });
+  if (!members(job, dir).size) writeJson(f, { ...readJson<Job>(f), end: nowIso() });
   record(outcome);
-  // A foreground job's own govern, waiting on it, records how it ended; a background job has no one else to.
-  if (job.bg) appendLedger(slug, { kind: "job", id, name: job.name, bg: true, status: "killed", seconds: Math.round((Date.parse(end) - Date.parse(job.start)) / 1000) });
+  // The job's end goes into the ledger once, by whichever govern gets there first: its waiting govern (gone, if it died),
+  // a govern wait, or this kill.
+  recordEnd(slug, id);
   return { id, outcome };
 }
 

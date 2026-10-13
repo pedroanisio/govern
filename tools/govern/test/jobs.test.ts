@@ -386,3 +386,100 @@ test("a background job whose own process exited but left one running: kill stops
     assert.ok(allGone([esc]), "what the job left running must be gone");
   } finally { cleanup(e, pids); }
 });
+
+/** The job's end entries in the ledger (a background job's "started" entry is not an end). */
+const ends = (e: E, slug: string, id: string) => ledger(e, slug).filter((x) => x.kind === "job" && x.id === id && x.status !== "started");
+
+test("stopped is an intent, not an outcome: a job marked stopped whose processes still run reads running, and kill finishes it", { skip: NO_PROC }, () => {
+  const { e, slug } = lane();
+  const pids: number[] = [];
+  try {
+    govern(e, ["cmd", slug, "long", "--", "sh", "-c", "echo $$ > kids; sleep 30"]);
+    govern(e, ["run", slug, "long", "--bg"]);
+    const kids = pidsIn(join(e.projects, slug, "kids"), 1);
+    const j = jobWithPid(e, slug);
+    pids.push(j.pid, ...kids);
+    // a kill that marked the job and then died before its signals landed
+    write(join(jobsDir(e, slug), j.id, "job.json"), JSON.stringify({ ...jobJson(e, slug, j.id), stopped: "killed" }));
+    assert.match(govern(e, ["jobs", slug]).out, new RegExp(`${j.id} running`));
+    const k = govern(e, ["kill", slug]);
+    assert.equal(k.code, 0, k.err);
+    assert.match(k.out, new RegExp(`job ${j.id} terminated`));
+    assert.ok(allGone([j.pid, ...kids]));
+    assert.match(govern(e, ["jobs", slug]).out, new RegExp(`${j.id} killed`));
+    assert.deepEqual(ledger(e, slug).filter((x) => x.kind === "kill").map((x) => x.outcome), ["terminated"]);
+    assert.deepEqual(ends(e, slug, j.id).map((x) => x.status), ["killed"]);
+  } finally { cleanup(e, pids); }
+});
+
+test("a job's end is ledgered once: kill, then wait, then wait again add no second entry", { skip: NO_PROC }, () => {
+  const { e, slug } = lane();
+  const pids: number[] = [];
+  try {
+    govern(e, ["cmd", slug, "long", "--", "sh", "-c", "sleep 30"]);
+    govern(e, ["run", slug, "long", "--bg"]);
+    const j = jobWithPid(e, slug);
+    pids.push(j.pid);
+    assert.equal(govern(e, ["kill", slug]).code, 0);
+    for (let i = 0; i < 2; i++) {
+      const w = govern(e, ["wait", slug, j.id, "--timeout", "5"]);
+      assert.match(w.out, new RegExp(`job ${j.id} · killed`));
+    }
+    const got = ends(e, slug, j.id);
+    assert.equal(got.length, 1, JSON.stringify(got));
+    assert.equal(got[0].status, "killed");
+    assert.equal(got[0].bg, true);
+    assert.ok(Number.isInteger(got[0].seconds), JSON.stringify(got[0]));
+  } finally { cleanup(e, pids); }
+});
+
+test("a background job that ends on its own is ledgered once however many times it is waited on", () => {
+  const { e, slug } = lane();
+  govern(e, ["cmd", slug, "t", "--", "sh", "-c", "exit 3"]);
+  govern(e, ["run", slug, "t", "--bg"]);
+  const id = jobJson(e, slug).id;
+  for (let i = 0; i < 2; i++) assert.equal(govern(e, ["wait", slug, id, "--timeout", "10"]).code, 3);
+  assert.deepEqual(ends(e, slug, id).map((x) => [x.status, x.exit]), [["failed", 3]]);
+});
+
+test("a foreground job whose govern died is still ledgered: kill records its end, with its duration", { skip: NO_PROC }, () => {
+  const { e, slug } = lane();
+  const pids: number[] = [];
+  try {
+    govern(e, ["cmd", slug, "hang", "--", "sh", "-c", "echo $$ > kids; sleep 30"]);
+    const g = governBg(e, ["run", slug, "hang"], join(e.root, "run.out"));
+    pids.push(g.pid!);
+    const kids = pidsIn(join(e.projects, slug, "kids"), 1);
+    const j = jobWithPid(e, slug);
+    const waiter = procStat(j.pid)!.ppid;
+    pids.push(waiter, j.pid, ...kids);
+    process.kill(waiter, "SIGKILL");
+    assert.ok(allGone([waiter]));
+    assert.match(govern(e, ["jobs", slug]).out, new RegExp(`${j.id} running`));
+    const k = govern(e, ["kill", slug]);
+    assert.equal(k.code, 0, k.err);
+    assert.ok(allGone([j.pid, ...kids]));
+    const got = ends(e, slug, j.id);
+    assert.deepEqual(got.map((x) => [x.status, x.bg]), [["killed", false]]);
+    assert.ok(Number.isInteger(got[0].seconds), JSON.stringify(got[0]));
+    assert.match(govern(e, ["wait", slug, j.id]).out, new RegExp(`job ${j.id} · killed`));
+    assert.equal(ends(e, slug, j.id).length, 1);
+  } finally { cleanup(e, pids); }
+});
+
+test("a complete exit file is authoritative unless govern stopped the job and the code is a signal's (128 and up)", () => {
+  const { e, slug } = lane();
+  const cases: [string, Record<string, unknown>, string, RegExp][] = [
+    ["20260101T000000Z-a", { stopped: "timeout" }, "0", /-a ok exit 0/],
+    ["20260101T000001Z-b", { stopped: "killed" }, "1", /-b failed exit 1/],
+    ["20260101T000002Z-c", { stopped: "timeout" }, "143", /-c timeout exit 143/],
+    ["20260101T000003Z-d", { stopped: "killed" }, "137", /-d killed exit 137/],
+    ["20260101T000004Z-e", {}, "143", /-e failed exit 143/],
+  ];
+  for (const [id, extra, code] of cases) {
+    write(join(jobsDir(e, slug), id, "job.json"), JSON.stringify({ id, slug, name: "x", argv: ["true"], cwd: e.root, start: new Date().toISOString(), bg: false, ...extra }));
+    write(join(jobsDir(e, slug), id, "exit"), `${code}\n`);
+  }
+  const out = govern(e, ["jobs", slug]).out;
+  for (const [, , , re] of cases) assert.match(out, re);
+});

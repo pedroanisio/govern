@@ -372,7 +372,7 @@ function cmdWait(a: Args): void {
   const id = jobs.find(p.slug, a._[2]);
   const st = jobs.wait(p.slug, id, Number(opt(a, "timeout") ?? 540));
   if (st.timedOut) { out(`job ${id} still running after ${opt(a, "timeout") ?? 540}s · wait again with: govern wait ${p.slug} ${id}`); process.exitCode = 124; return; }
-  appendLedger(p.slug, { kind: "job", id, name: st.name, bg: true, status: st.status, exit: st.exit, seconds: st.seconds });
+  jobs.recordEnd(p.slug, id);
   out(jobs.summary(p, st));
   process.exitCode = st.exit ?? 1;
 }
