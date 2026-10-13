@@ -1,9 +1,9 @@
 // The owner's one screen: every lane, the owner's inbox, the queue and today's tokens. Reads files only: no model,
 // no transcript scan (that is `govern usage`).
-import { existsSync, readFileSync, globSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { existsSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 import { readJsonl, kTok, clip } from "./util.ts";
-import { PROJECTS, ledgerFile, stagesOf, laneState, load } from "./project.ts";
+import { ledgerFile, stagesOf, laneState, laneSlugs, laneRows } from "./project.ts";
 import { processOf } from "./process.ts";
 import * as queue from "./queue.ts";
 import { tuningState } from "./tune.ts";
@@ -23,14 +23,14 @@ export function dispatcherState(): string {
   return alive ? `dispatcher: running (pid ${d.pid}, since ${ago(d.started)} ago, every ${d.interval}s)` : `dispatcher: NOT running (last pid ${d.pid} gone)`;
 }
 
-export function desk(): string {
+/** The desk's text, with how many of its `lanes` could not be read (each shown as a ✖ row; the caller exits 1). */
+export function desk(): { text: string; failed: number; lanes: number } {
   const L: string[] = [];
-  const slugs = globSync("**/govern.json", { cwd: PROJECTS }).map((f) => dirname(f)).sort();
+  const slugs = laneSlugs();
   const day = today();
   // ---- lanes
   L.push(`LANES (${slugs.length})`);
-  for (const s of slugs) {
-    const p = load(s);
+  const { rows, failed } = laneRows(slugs, (s, p) => {
     const led = readJsonl(ledgerFile(s));
     const lastWork = [...led].reverse().find((e) => e.kind === "work" || e.kind === "done");
     const open = lastWork?.kind === "work" ? `● ${lastWork.engine} ${ago(lastWork.t)}` : "";
@@ -39,8 +39,9 @@ export function desk(): string {
     const note = p.notes.at(-1);
     const list = stagesOf(p);
     const state = laneState(p);
-    L.push(`  ${s.padEnd(40)} ${p.kind.padEnd(5)} ${`${list.indexOf(p.stage) + 1}/${list.length} ${p.stage}`.padEnd(16)} ${gate.padEnd(13)} ${open.padEnd(14)} ${state ? `${state} · ` : ""}${note ? `${ago(note.at)}: ${clip(note.text, 60)}` : ""}`.trimEnd());
-  }
+    return `  ${s.padEnd(40)} ${p.kind.padEnd(5)} ${`${list.indexOf(p.stage) + 1}/${list.length} ${p.stage}`.padEnd(16)} ${gate.padEnd(13)} ${open.padEnd(14)} ${state ? `${state} · ` : ""}${note ? `${ago(note.at)}: ${clip(note.text, 60)}` : ""}`.trimEnd();
+  }, "  ");
+  L.push(...rows);
   // ---- owner inbox
   const msgs = queue.all();
   const inbox = msgs.filter((x) => x.state === "open" && x.m.to === "owner");
@@ -64,5 +65,5 @@ export function desk(): string {
   if (!byLane.size) L.push("  (none)");
   for (const [lane, x] of [...byLane].sort((a, b) => b[1].input - a[1].input))
     L.push(`  ${lane.padEnd(40)} ${String(x.calls).padStart(3)} runs ${kTok(x.input).padStart(7)} in ${kTok(x.output).padStart(6)} out${x.usd ? `  $${x.usd.toFixed(2)}` : ""}`);
-  return L.join("\n");
+  return { text: L.join("\n"), failed, lanes: slugs.length };
 }

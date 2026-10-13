@@ -7,7 +7,7 @@ import { join, dirname, resolve, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
 import { GovernError, fail, parseArgs, opt, flag, many, flagNames, secondsOpt, nowIso, readJsonl, kTok, clip, type Args, type FlagSpec } from "./lib/util.ts";
-import { REPO, PROJECTS, stagesOf, load, save, create, stageOf, brief, appendLedger, resolveFile, ledgerFile, projectDir, checkSlug, checkOf, pendingCheckChanges, blockedBy, laneState, stateFile, argvOf, commandLine, type Project, type Command } from "./lib/project.ts";
+import { REPO, PROJECTS, stagesOf, load, save, create, stageOf, brief, appendLedger, resolveFile, ledgerFile, projectDir, checkSlug, checkOf, pendingCheckChanges, blockedBy, laneState, laneSlugs, laneRows, stateFile, argvOf, commandLine, type Project, type Command } from "./lib/project.ts";
 import { processes, getProcess, processOf, listLine, show } from "./lib/process.ts";
 import * as jobs from "./lib/jobs.ts";
 import { ask, readPrompt, PROMPTS } from "./lib/codex.ts";
@@ -88,19 +88,23 @@ function cmdWork(a: Args): void {
 
 function cmdStatus(a: Args): void {
   if (a._[1]) return out(brief(load(a._[1])));
-  const slugs = globSync("**/govern.json", { cwd: PROJECTS }).map((f) => dirname(f)).sort();
+  const slugs = laneSlugs();
   if (!slugs.length) return out("nothing under govern yet (govern new <slug> --process NAME, or --kind long|short|ops)");
-  for (const s of slugs) {
-    const p = load(s);
+  const { rows, failed } = laneRows(slugs, (s, p) => {
     const lastJob = readJsonl(ledgerFile(s)).filter((e) => e.kind === "job").pop();
     const gates = processOf(p).gates;
     const ap = gates.map((g) => (p.approvals[g.name] ? g.name[0].toUpperCase() : "·")).join("");
     const list = stagesOf(p);
     const parts = [`${s.padEnd(36)} ${p.kind.padEnd(5)} ${list.indexOf(p.stage) + 1}/${list.length} ${p.stage.padEnd(12)}`, gates.length ? `approvals ${ap}` : "",
       laneState(p), lastJob ? `last job ${lastJob.name} ${lastJob.status}` : ""];
-    out(parts.filter(Boolean).join("  ").trimEnd());
-  }
+    return parts.filter(Boolean).join("  ").trimEnd();
+  });
+  for (const r of rows) out(r);
+  if (failed) unreadable(failed, slugs.length);
 }
+
+/** After a listing printed every lane: some could not be read, which is a failed check (exit 1), not a usage error. */
+const unreadable = (failed: number, total: number): never => fail(`${failed} of ${total} lanes could not be read (shown above with ✖)`, 1);
 
 function cmdApprove(a: Args): void {
   const p = load(a._[1]);
@@ -625,7 +629,11 @@ export const COMMANDS: readonly Cmd[] = [
       "install-service": { flags: { value: ["interval"] }, lines: [["[--interval 30]", "a user systemd service running dispatch --loop"]], run: cmdTask },
     } },
 
-  { name: "desk", section: 7, lines: [["", "every lane, your inbox, the queue, today's tokens (reads files only)"]], run: () => out(desk()) },
+  { name: "desk", section: 7, lines: [["", "every lane, your inbox, the queue, today's tokens (reads files only)"]], run: () => {
+    const d = desk();
+    out(d.text);
+    if (d.failed) unreadable(d.failed, d.lanes);
+  } },
   { name: "tune", section: 7, lines: [["", "measure the last 24 h and record the tuning decision (the dispatcher runs it hourly)"]], run: () => out(tune()) },
 
   { name: "publish", section: 8, lines: [["<slug>", "the publish commands, once the final and publish gates are approved and the package is filed"]], run: cmdPublish },

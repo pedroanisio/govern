@@ -1,5 +1,5 @@
 // A lane: its folder, its govern.json (state, commands, process) and its brief. A lane follows a process (lib/process.ts).
-import { existsSync, readFileSync, appendFileSync, mkdirSync } from "node:fs";
+import { existsSync, readFileSync, appendFileSync, mkdirSync, globSync } from "node:fs";
 import { join, dirname, resolve, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import { GovernError, fail, readJson, writeJson, nowIso, latest, plain, clip, readJsonl } from "./util.ts";
@@ -193,6 +193,29 @@ export function stageOf(s: string | undefined, p: Pick<Project, "process" | "kin
 /** The command that checks a stage's exit condition: the lane's own, else the process's; undefined when none. */
 export function checkOf(p: Project, stage = p.stage): string | undefined {
   return p.checks?.[stage] ?? processOf(p).stages.find((s) => s.name === stage)?.check;
+}
+
+/** Every lane's slug under PROJECTS, sorted. */
+export const laneSlugs = (): string[] => globSync("**/govern.json", { cwd: PROJECTS }).map((f) => dirname(f)).sort();
+
+/** The rows of a command that lists every lane (status, desk): `row` formats a lane that loads; a lane whose
+ *  govern.json (or a lane its row reads, through `after`) fails its parse becomes one row, `<slug> ✖ <file>: <path>:
+ *  <message>`, and the other lanes still show. `failed` counts those rows; the caller exits 1 after printing them.
+ *
+ *  Process files are not degraded per lane: they are read once here, before any lane, and a bad one stops the whole
+ *  listing (exit 2). Every lane's stages, gates and checks come from that shared config, so with a broken process
+ *  file no lane's row would be trustworthy. */
+export function laneRows(slugs: string[], row: (slug: string, p: Project) => string, indent = ""): { rows: string[]; failed: number } {
+  processes();
+  let failed = 0;
+  const rows = slugs.map((s) => {
+    try { return row(s, load(s)); } catch (e) {
+      if (!(e instanceof GovernError)) throw e;
+      failed++;
+      return `${indent}${s} ✖ ${e.message}`;
+    }
+  });
+  return { rows, failed };
 }
 
 /** Whether one `after` entry is met, with a label for it. */
