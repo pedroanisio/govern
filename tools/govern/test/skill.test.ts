@@ -2,10 +2,10 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { readFileSync, readdirSync, writeFileSync, existsSync } from "node:fs";
+import { readFileSync, readdirSync, writeFileSync, existsSync, mkdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { makeEnv, govern, tempDir, write, HERE } from "./helpers.ts";
-import { installSkill } from "../lib/skill.ts";
+import { installSkill, skillDrift } from "../lib/skill.ts";
 import { GovernError } from "../lib/util.ts";
 
 const SRC = join(HERE, "..", "SKILL.md");
@@ -73,4 +73,30 @@ test("install: a destination that does not read back as the source after the ren
     return true;
   });
   assert.deepEqual(readdirSync(join(dir, "govern")), ["SKILL.md"], "the temp file is removed");
+});
+
+test("install-skill and --check with a directory where SKILL.md goes exit 1 naming it, with no stack trace, and change nothing", () => {
+  const dir = tempDir("skills");
+  const dest = join(dir, "govern", "SKILL.md");
+  mkdirSync(dest, { recursive: true });
+  for (const args of [["install-skill", dir], ["install-skill", dir, "--check"]]) {
+    const r = govern(e, args);
+    assert.equal(r.code, 1, `${args.join(" ")}: ${r.err}`);
+    assert.ok(r.err.includes(`${dest} is a directory, not a file`), r.err);
+    assert.doesNotMatch(r.err, /\n\s+at /, "no stack trace");
+    assert.ok(statSync(dest).isDirectory(), "the directory is left alone");
+    assert.deepEqual(readdirSync(join(dir, "govern")), ["SKILL.md"], "no temp file is left");
+  }
+});
+
+test("install-skill and --check with a missing (or non-file) source are a GovernError, exit 1, naming the source", () => {
+  const dir = tempDir("skills");
+  const dest = join(dir, "govern", "SKILL.md");
+  for (const src of [join(dir, "no-such-SKILL.md"), dir]) {
+    for (const [what, run] of [["install", () => installSkill(src, dest)], ["--check", () => skillDrift(src, dest)]] as const) {
+      assert.throws(run, (err: unknown) => err instanceof GovernError && err.code === 1 && err.message.includes(`source ${src} is missing or not a file`),
+        `${what} with source ${src}`);
+    }
+  }
+  assert.equal(existsSync(join(dir, "govern")), false, "nothing is created");
 });
