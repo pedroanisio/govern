@@ -18,7 +18,21 @@ A graph process declares `next` on **every** stage. Each route has `to`, a list 
 }
 ```
 
-Conditions support `eq`, `ne`, `gt`, `gte`, `lt`, `lte`, `in` (a list), and `exists` (no value). Combine them with `{"all": [...]}`, `{"any": [...]}`, and `{"not": ...}`. Values must match the declared field type; ordering requires numeric fields. Conditions are parsed data, never JavaScript or shell expressions. Missing data only satisfies conditions through explicit `exists`/`not` logic; it does not match `ne`.
+A condition names a declared `field`, an `op`, and a `value`:
+
+| Operator | Value | Field types | Matches when |
+|---|---|---|---|
+| `eq` | one scalar | string, number, integer, boolean | the field equals the value |
+| `ne` | one scalar | string, number, integer, boolean | the field is present and differs from the value |
+| `gt` | one number | number, integer | the field is greater than the value |
+| `gte` | one number | number, integer | the field is greater than or equal to the value |
+| `lt` | one number | number, integer | the field is less than the value |
+| `lte` | one number | number, integer | the field is less than or equal to the value |
+| `in` | a nonempty list of scalars | string, number, integer, boolean | the field equals one of the listed values |
+| `exists` | none | any, including `array` | the field is present |
+| `contains` | one scalar | `array` only | the collection includes an item equal to the value |
+
+Combine conditions with `{"all": [...]}`, `{"any": [...]}`, and `{"not": ...}`. Only `in` takes a list, and `exists` must omit `value`. Values must match the declared field type; for `contains` they must match the collection's `items` type. An `array` field accepts only `exists` and `contains`. Equality is exact: strings are case-sensitive and `1` does not equal `"1"`. Conditions are parsed data, never JavaScript or shell expressions. Missing data only satisfies conditions through explicit `exists`/`not` logic; it does not match `ne`.
 
 Conditional matches win over the single optional fallback route. Multiple matching conditional routes, or no match without a fallback, refuse advancement without changing lane state.
 
@@ -65,7 +79,9 @@ Types are `string`, `number`, `integer`, `boolean`, and flat scalar `array` coll
 
 `govern data SLUG` prints JSON. `--set JSON` atomically merges a JSON object. Global `required` fields are needed before any stage advances or human task completes. A stage's `requiredFields` adds requirements for that stage only. Defaults are installed when the lane is created. Finished cases are read-only through this command.
 
-Changing case data clears all policy votes and cached policy approvals, and clears completion of active human tasks while retaining their assignees. This prevents carrying a decision over to changed case data. It does not rewind completed branches or automatically recalculate a route already taken. Review upstream work explicitly or use a rejection route when a material change requires rework. Fields used for separation of duties must name process people and cannot be changed after first recording.
+Changing case data clears all policy votes and cached policy approvals, and clears completion of active human tasks while retaining their assignees. This prevents carrying a decision over to changed case data. It does not rewind completed branches or automatically recalculate a route already taken. Review upstream work explicitly or use a rejection route when a material change requires rework.
+
+Identity fields are the fields any policy gate lists in `excludeFields` (see [Approval policies](#approval-policies)); each must be a declared `string` field. Once an identity field has a value, `govern data --set` refuses to change it (setting the same value again is allowed), and a `govern process migrate --data` patch cannot change or clear it. Govern does not check that the value names a declared person: it compares the value with the voter's person id, so record the person id from the `people` map.
 
 ## Human tasks and identities
 
