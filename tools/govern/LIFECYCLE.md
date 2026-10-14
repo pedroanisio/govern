@@ -95,7 +95,7 @@ The server binds to `127.0.0.1`. It accepts `POST /events` with `Authorization: 
 }
 ```
 
-Successful receipt returns `{ "accepted": true, "duplicate": false }`; a replay returns `accepted: false, duplicate: true`. Unauthorized requests return 401, invalid JSON 400, oversized bodies 413, and contract/correlation conflicts 409. Payloads are capped at 64 KiB. The listener records the event but does not itself run an exit check; pair it with the scheduler when automatic resumption is wanted.
+Successful receipt returns `{ "accepted": true, "duplicate": false }`; a replay returns `accepted: false, duplicate: true`. Any method or path other than exactly `POST /events` returns 404 `{"error": "POST /events required"}`, checked before the token, so a wrong path gets 404 even without one. Unauthorized requests return 401, invalid JSON or an interrupted request body 400, oversized bodies 413, and contract/correlation conflicts 409. An unexpected failure returns 500 `{"error": "event delivery failed"}` without its detail. Payloads are capped at 64 KiB. The listener answers 408 and closes the connection when a request's headers have not arrived within 10 seconds or the whole request within 30 seconds (Node's `headersTimeout` and `requestTimeout`, which Node checks every 30 seconds, so the cut can come that much later). The listener records the event but does not itself run an exit check; pair it with the scheduler when automatic resumption is wanted.
 
 Put a TLS proxy and provider-signature adapter in front for remote use. The generic bearer-token endpoint is not a native Stripe/GitHub/etc. signature verifier. Never put tokens in process definitions, command arguments, tracked files or chat. This local adapter does not add enterprise identity isolation; any holder of its token can deliver events to the workspace's cases.
 
@@ -116,6 +116,8 @@ Exit-check failures can declare:
 ```
 
 `attempts` includes the first attempt. Retries are durable scheduled times, with delays of 60, 120, … elapsed seconds; the failing invocation returns nonzero and never loops or sleeps through the backoff. Try `advance` after the retry time, or use `tick --advance`. Unscheduled early attempts are refused. A successful check clears failure state. Missing/unusable check commands also follow a declared error policy.
+
+When the exit check fails, `advance` exits 1 if the stage declares `onError`: the failure has been recorded under that policy, as a scheduled retry or as compensation and the error route. Without `onError` it exits 2 and records no failure state. Refusals before the check, such as a blocked lane, missing required data, an unfinished human task, a retry not yet due or exhausted retries, also exit 2, as does an unapproved gate after a passing check.
 
 After retries are exhausted, the optional named compensation command runs through govern's existing job runner. Only exit 0 records successful compensation. Failed compensation blocks progress; a process interrupted while checking or compensating records an uncertain outcome and refuses blind repetition. Inspect the underlying job and external system before recovering:
 
