@@ -64,7 +64,7 @@ export function makeEnv(): Env {
  *  from the session running it (Claude Code exports its settings env). */
 export function parentEnv(): NodeJS.ProcessEnv {
   const { CLAUDE_CODE_AUTO_COMPACT_WINDOW: _, ...inherited } = process.env;
-  for (const k of Object.keys(inherited)) if (k.startsWith("GOVERN_") || k === "CLAUDECODE" || AGENT_MARKERS.includes(k)) delete inherited[k];
+  for (const k of Object.keys(inherited)) if (k.startsWith("GOVERN_") || k.startsWith("CLAUDE_CODE_") || k === "CLAUDECODE" || AGENT_MARKERS.includes(k)) delete inherited[k];
   return inherited;
 }
 

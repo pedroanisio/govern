@@ -17,38 +17,57 @@ export type Source =
  *  CODEX_SANDBOX_NETWORK_DISABLED), not observed in a live Codex shell: unverified, so a Claude check does not rely on them alone. */
 export const CODEX_MARKERS = ["CODEX_THREAD_ID", "CODEX_SESSION_ID", "CODEX_SANDBOX_NETWORK_DISABLED", "CODEX_SANDBOX"];
 
+/** Variables Claude Code sets in its shells (seen in a live session, 2026-10-14). Any one of them means "inside a session". */
+export const CLAUDE_MARKERS = ["CLAUDECODE", "CLAUDE_CODE_SESSION_ID", "CLAUDE_CODE_ENTRYPOINT"];
+
 const CLAUDE_DIR = () => process.env.GOVERN_CLAUDE_PROJECTS ?? join(homedir(), ".claude", "projects");
 
 /** Tags the harness adds around or inside a person's turn: their content is not the person's words. */
 const HARNESS_TAGS = ["pasted_content", "system-reminder", "ide_selection", "ide_opened_file", "ide_diagnostics", "local-command-stdout",
   "local-command-stderr", "local-command-caveat", "command-name", "command-message", "command-args", "task-notification",
   "user-prompt-submit-hook", "bash-input", "bash-stdout", "bash-stderr"];
-const BLOCK = new RegExp(`<(${HARNESS_TAGS.join("|")})\\b[^>]*>[\\s\\S]*?</\\1>`, "g");
+const BLOCK = new RegExp(`<(${HARNESS_TAGS.join("|")})\\b[^>]*>[\\s\\S]*?</\\1>`);
 const OPEN = new RegExp(`<(${HARNESS_TAGS.join("|")})\\b[^>]*>[\\s\\S]*$`);
+const ANY_TAG = new RegExp(`</?(${HARNESS_TAGS.join("|")})\\b[^>]*>`);
 
 /** Case, whitespace and typographic quotes folded, so a quote matches the words however they were typed. */
 export const normalize = (s: string): string =>
   s.normalize("NFKC").replace(/[‘’‚′]/g, "'").replace(/[“”„″]/g, '"').replace(/\s+/g, " ").trim().toLowerCase();
 
-/** The text of a message's content that the person typed: text parts only (no tool results), harness tags removed
- *  (a tag never closed removes the rest of the text). */
-export function typedText(content: unknown): string {
-  const text = typeof content === "string" ? content
-    : Array.isArray(content) ? content.filter((p): p is { type: "text"; text: string } => p?.type === "text" && typeof p.text === "string").map((p) => p.text).join("\n") : "";
-  return text.replace(BLOCK, "").replace(OPEN, "");
+/** The parts of a message's content that the person typed: text parts only (no tool results), split where a harness
+ *  block was removed, so a quote never spans one. A tag never closed removes the rest of its part. Tags that nest or do
+ *  not balance drop that whole part: it fails closed rather than guess which words were typed. */
+export function typedText(content: unknown): string[] {
+  const parts = typeof content === "string" ? [content]
+    : Array.isArray(content) ? content.filter((p): p is { type: "text"; text: string } => p?.type === "text" && typeof p.text === "string").map((p) => p.text) : [];
+  return parts.flatMap((part) => {
+    const kept: string[] = [];
+    let rest = part;
+    for (let m = BLOCK.exec(rest); m; m = BLOCK.exec(rest)) {
+      if (ANY_TAG.test(m[0].slice(m[0].indexOf(">") + 1, m[0].lastIndexOf("<")))) return [];
+      kept.push(rest.slice(0, m.index));
+      rest = rest.slice(m.index + m[0].length);
+    }
+    rest = rest.replace(OPEN, "");
+    return ANY_TAG.test(rest) ? [] : [...kept, rest];
+  }).filter((t) => t.length > 0);
 }
+
+const escape = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+/** `quote` as whole words in `text` (both already normalised): "ok" is not found in "look". */
+const hasWords = (text: string, q: string) => new RegExp(`(?<![\\p{L}\\p{N}])${escape(q)}(?![\\p{L}\\p{N}])`, "u").test(text);
 
 interface Line { type?: unknown; uuid?: unknown; timestamp?: unknown; isMeta?: unknown; isSidechain?: unknown; origin?: { kind?: unknown }; turnOrigin?: unknown; message?: { content?: unknown } }
 /** A line that records a message the person typed: not meta, not a sidechain, and from the human (origin.kind, or turnOrigin on older lines). */
 const isHuman = (l: Line): boolean =>
   l.type === "user" && !l.isMeta && !l.isSidechain && (l.origin ? l.origin.kind === "human" : l.turnOrigin === "human");
 
-/** The newest typed message that contains `quote`, as its uuid and timestamp; undefined when none does. */
+/** The newest typed message that contains `quote` as whole words, as its uuid and timestamp; undefined when none does. */
 export function findTyped(lines: unknown[], quote: string): { uuid: string; timestamp: string } | undefined {
   const q = normalize(quote);
   if (!q) return undefined;
   for (const l of [...lines].reverse() as Line[]) {
-    if (l && typeof l === "object" && isHuman(l) && normalize(typedText(l.message?.content)).includes(q))
+    if (l && typeof l === "object" && isHuman(l) && typedText(l.message?.content).some((t) => hasWords(normalize(t), q)))
       return { uuid: typeof l.uuid === "string" ? l.uuid : "", timestamp: typeof l.timestamp === "string" ? l.timestamp : "" };
   }
   return undefined;
@@ -63,7 +82,9 @@ function transcriptOf(sessionId: string): string | undefined {
 }
 
 function readLines(file: string): unknown[] {
-  return readFileSync(file, "utf8").split("\n").filter(Boolean).flatMap((l) => { try { return [JSON.parse(l)]; } catch { return []; } });
+  let text: string;
+  try { text = readFileSync(file, "utf8"); } catch (e) { return fail(`cannot read the transcript ${file} (${(e as Error).message}): the quote cannot be checked, so it is not accepted`, 1); }
+  return text.split("\n").filter(Boolean).flatMap((l) => { try { return [JSON.parse(l)]; } catch { return []; } });
 }
 
 /** Where the approval is being given, and whether it can be checked: a Claude session (its id), a terminal, or a refusal.
@@ -74,8 +95,9 @@ export function origin(o: { env?: NodeJS.ProcessEnv; dir?: string; chain?: () =>
   if (codex) fail(`an approval from a Codex session cannot be verified (${codex} is set, and Codex has no transcript format govern can rely on): ` +
     "ask the person to approve from their own terminal or a Claude session", 1);
   const reg = callingSession({ dir: o.dir, chain: o.chain });
-  if (reg || env.CLAUDECODE) {
-    const id = reg?.sessionId ?? env.CLAUDE_CODE_SESSION_ID;
+  if (reg || CLAUDE_MARKERS.some((k) => env[k])) {
+    // The variable is this process's own session; a registry entry can be stale (after /clear or a resume).
+    const id = env.CLAUDE_CODE_SESSION_ID || reg?.sessionId;
     if (!id) return fail("cannot tell which session this is (inside a Claude Code session, but no session id in the registry or CLAUDE_CODE_SESSION_ID): approve from the person's own terminal", 1);
     if (!/^[0-9A-Za-z][0-9A-Za-z_-]*$/.test(id)) return fail(`"${id}" is not a session id`, 1);
     return { kind: "session", sessionId: id };

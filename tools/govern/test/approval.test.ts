@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { readFileSync, rmSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { userInfo } from "node:os";
 import { makeEnv, govern, jsonl, write, asSession, typed, present } from "./helpers.ts";
@@ -23,11 +23,30 @@ test("normalize folds case, whitespace and typographic quotes", () => {
   assert.equal(normalize("  It’s  “OK”\n\tgo "), `it's "ok" go`);
 });
 
-test("typedText drops pasted content, reminders and IDE tags, and keeps only text parts", () => {
-  assert.equal(typedText("ok <pasted_content id=1>secret go</pasted_content> now").replace(/\s+/g, " "), "ok now");
-  assert.equal(typedText("a<system-reminder>b</system-reminder>c<ide_selection>d</ide_selection>e"), "ace");
-  assert.equal(typedText("yes <pasted_content>never closed"), "yes ");
-  assert.equal(typedText([{ type: "tool_result", content: "approved" }, { type: "text", text: "fine" }, { type: "image" }]), "fine");
+test("typedText keeps the person's typed segments: harness tags and non-text parts dropped, a removed block splits the text", () => {
+  assert.deepEqual(typedText("ok <pasted_content id=1>secret go</pasted_content> now"), ["ok ", " now"]);
+  assert.deepEqual(typedText("a<system-reminder>b</system-reminder>c<ide_selection>d</ide_selection>e"), ["a", "c", "e"]);
+  assert.deepEqual(typedText("yes <pasted_content>never closed"), ["yes "]);
+  assert.deepEqual(typedText([{ type: "tool_result", content: "approved" }, { type: "text", text: "fine" }, { type: "image" }]), ["fine"]);
+});
+
+test("typedText drops a whole part whose harness tags nest or do not balance (fails closed); other parts are kept", () => {
+  assert.deepEqual(typedText("<pasted_content>x <pasted_content>y</pasted_content> approve it</pasted_content> ok"), []);
+  assert.deepEqual(typedText("<system-reminder>a <system-reminder>b</system-reminder> go</system-reminder>"), []);
+  assert.deepEqual(typedText("approve it</pasted_content>"), []);
+  assert.deepEqual(typedText([{ type: "text", text: "<system-reminder>a <ide_selection>b</ide_selection></system-reminder>" }, { type: "text", text: "go ahead" }]), ["go ahead"]);
+});
+
+test("a quote matches whole words only, and never across a removed block", () => {
+  assert.equal(findTyped([typed("look at google")], "ok"), undefined);
+  assert.equal(findTyped([typed("look at google")], "go"), undefined);
+  assert.equal(findTyped([typed("ok, go ahead")], "ok")?.uuid, typed("ok, go ahead").uuid);
+  assert.ok(findTyped([typed("Yes — ship it.")], "ship it"));
+  assert.equal(findTyped([typed("ok <pasted_content>pasted</pasted_content>go")], "ok go"), undefined);
+});
+
+test("findTyped returns the newest of two matching typed messages", () => {
+  assert.equal(findTyped([typed("go ahead", { uuid: "first" }), typed("fine, go ahead", { uuid: "second" })], "go ahead")?.uuid, "second");
 });
 
 test("findTyped accepts only human, non-meta, non-sidechain messages, newest first", () => {
@@ -93,6 +112,34 @@ test("a session id that is not a plain id is refused, not used as a path", () =>
   const r = govern(e, ["approve", "film", "script", "--quote", "ok"]);
   assert.equal(r.code, 1);
   assert.match(r.err, /not a session id/);
+});
+
+test("CLAUDE_CODE_SESSION_ID wins over a stale registry entry", () => {
+  const e = lane();
+  asSession(e, SID, [typed("nothing here")]);
+  const other = "99999999-2222-3333-4444-555555555555";
+  write(join(e.root, "claude", "proj", `${other}.jsonl`), JSON.stringify(typed("approved, go on")) + "\n");
+  const r = govern(e, ["approve", "film", "script", "--quote", "approved"], { CLAUDE_CODE_SESSION_ID: other });
+  assert.equal(r.code, 0, r.err);
+  assert.equal(state(e, "film").approvals.script.source.sessionId, other);
+});
+
+test("any Claude Code marker means a session, never a terminal approval", () => {
+  for (const marker of ["CLAUDE_CODE_ENTRYPOINT", "CLAUDE_CODE_SESSION_ID"]) {
+    const r = govern(lane(), ["approve", "film", "script", "--quote", "approved"], { [marker]: marker === "CLAUDE_CODE_SESSION_ID" ? SID : "cli" });
+    assert.equal(r.code, 1, marker);
+    assert.doesNotMatch(r.err, /terminal approval/);
+  }
+});
+
+test("an unreadable transcript is a govern error (exit 1), not a crash", () => {
+  const e = lane();
+  const f = asSession(e, SID, []);
+  rmSync(f);
+  mkdirSync(f);
+  const r = govern(e, ["approve", "film", "script", "--quote", "ok"]);
+  assert.equal(r.code, 1);
+  assert.match(r.err, /cannot read the transcript/);
 });
 
 test("CLAUDECODE without a registered session uses CLAUDE_CODE_SESSION_ID, and is refused without one", () => {
@@ -162,4 +209,35 @@ test("an approval recorded before this field existed still loads", () => {
   s.approvals.script = { at: "2026-10-01T10:00:00.000Z", quote: "ok" };
   write(f, JSON.stringify(s));
   assert.match(govern(e, ["brief", "film"]).out, /script ✓/);
+});
+
+// ---------------------------------------------------------------- accepting a check change is an approval too
+
+test("accepting a check change is checked like an approval: typed words in a session, and the source recorded", () => {
+  const e = makeEnv();
+  assert.equal(govern(e, ["new", "lib", "--process", "dev", "--title", "L"]).code, 0);
+  govern(e, ["cmd", "lib", "test", "--", "false"]);
+  govern(e, ["cmd", "lib", "test", "--", "true"]);
+  asSession(e, SID, [typed("run the tests again please")]);
+  const refused = govern(e, ["check", "lib", "test", "--accept", "--quote", "true is fine for now"]);
+  assert.equal(refused.code, 1);
+  assert.match(refused.err, /not found in the person's typed messages/);
+  assert.deepEqual(ledger(e, "lib").filter((x) => x.kind === "check-accept"), [], "a refused accept writes nothing");
+
+  asSession(e, SID, [typed("True is fine for now, accept it", { uuid: "m-9", timestamp: "2026-10-14T11:00:00.000Z" })]);
+  const r = govern(e, ["check", "lib", "test", "--accept", "--quote", "true is fine for now"]);
+  assert.equal(r.code, 0, r.err);
+  const l = present(ledger(e, "lib").find((x) => x.kind === "check-accept"), "check-accept entry");
+  assert.deepEqual(l.source, { kind: "session", sessionId: SID, message: "m-9", messageAt: "2026-10-14T11:00:00.000Z" });
+  assert.equal(l.by, "owner");
+});
+
+test("accepting a check change from a Codex shell is refused", () => {
+  const e = makeEnv();
+  govern(e, ["new", "lib", "--process", "dev", "--title", "L"]);
+  govern(e, ["cmd", "lib", "test", "--", "false"]);
+  govern(e, ["cmd", "lib", "test", "--", "true"]);
+  const r = govern(e, ["check", "lib", "test", "--accept", "--quote", "fine"], { CODEX_THREAD_ID: "t" });
+  assert.equal(r.code, 1);
+  assert.match(r.err, /Codex session cannot be verified/);
 });

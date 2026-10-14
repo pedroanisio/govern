@@ -144,9 +144,10 @@ function cmdCheck(a: Args): void {
     const quote = opt(a, "quote");
     if (!quote || quote.trim().length < 2) fail(`--quote is required: the owner's own words accepting the change to the check of stage ${stage} (only the owner accepts)`);
     if (!pendingCheckChanges(p, readJsonl(ledgerFile(p.slug))).some((x) => x.stage === stage)) return out(`${p.slug}: stage ${stage} has no change to accept — nothing changed`);
+    const source = verifyQuote(quote!);
     p.notes.push({ at: nowIso(), stage: p.stage, text: `owner accepted the changes to the check of stage ${stage}: "${quote}"` });
     save(p);
-    appendLedger(p.slug, { kind: "check-accept", stage, quote });
+    appendLedger(p.slug, { kind: "check-accept", stage, quote, by: "owner", source });
     return out(`${p.slug}: the owner accepted the changes to the check of stage ${stage}`);
   }
   const set = opt(a, "set");
