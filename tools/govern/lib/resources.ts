@@ -97,7 +97,7 @@ export function resourceNamed(n: string): Resource {
   return all[n] ?? fail(`no resource "${n}" (have: ${Object.keys(all).join(", ") || "none"})`);
 }
 
-/** Where the locks live: GOVERN_STATE, else govern-state beside the lanes' folder. */
+/** Where the locks live: the workspace state folder (GOVERN_STATE, the config's `state`, .govern/state in a .govern/ workspace, else govern-state beside the lanes' folder). */
 export const stateDir = (): string => stateFolder();
 /** The folder holding the lock slots of `resource`: locks/<resource> under the state folder. */
 export const lockDir = (resource: string) => join(stateDir(), "locks", resource);

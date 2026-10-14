@@ -71,7 +71,7 @@ export interface Profile {
   check?: CheckDef;
   file: string;
 }
-/** The four profiles the fixed access levels (--to claude|codex, with or without --write) became. */
+/** The six profiles the fixed access levels (--to claude|codex|grok, with or without --write) became. */
 export const LEGACY_PROFILES = ["claude-read", "claude-write", "codex-read", "codex-write", "grok-read", "grok-write"] as const;
 const RESERVED = ["claude", "codex", "grok", "owner", "auto"];
 const IDENT = /^[a-z0-9][a-z0-9.-]*$/;
