@@ -2,6 +2,7 @@ import { enterRuntime } from './lifecycle-runtime.ts';
 import { userInfo } from "node:os";
 import { processOf, type GateDef, type Process } from "./process.ts";
 import type { Project } from "./project.ts";
+import type { Source } from "./approval.ts";
 import { fail, nowIso } from "./util.ts";
 import { check, emptyRecord, reject } from "./shape.ts";
 import { fieldValue, type Scalar, type Condition, type Vote } from "./business-schema.ts";
@@ -271,6 +272,19 @@ export function gateApproved(p: Project, g: GateDef | undefined, at = Date.now()
     !votes.some((v) => v.decision === "reject") &&
     new Set(votes.filter((v) => v.decision === "approve").map((v) => v.by)).size >= q.quorum
   );
+}
+/** Records the owner's approval of gate `g` (one without a policy) on `p`: `by` must be the gate's decision owner (omitted
+ *  only when that owner is "owner"), `quote` the owner's own words, and every gate it needs already approved. `source` says
+ *  where the words came from; it runs after those checks, so a refusal names the missing approval before the quote is checked. */
+export function ownerApproval(p: Project, g: GateDef, by: string | undefined, quote: string | undefined, source: () => Source): void {
+  const owner = g.owner ?? "owner", gates = processOf(p).gates;
+  if (by === undefined && owner !== "owner") fail(`gate ${g.name} is decided by ${owner}: pass --by ${owner}`);
+  if (by !== undefined && by !== owner) fail(`gate ${g.name} is decided by ${owner}, not ${by}`);
+  if (!quote || quote.trim().length < 2) fail(`--quote is required: ${owner}'s own words approving the ${g.name} (only ${owner} approves)`);
+  for (const need of g.needs ?? []) if (!gateApproved(p, gates.find((x) => x.name === need)!)) fail(g.message ?? `needs the ${need} approval first`);
+  const src = source();
+  p.approvals[g.name] = { at: nowIso(), quote, by: owner, source: src };
+  p.notes.push({ at: nowIso(), stage: p.stage, text: `${owner} approved ${g.name}: "${quote}"` });
 }
 export function policyVote(p: Project, g: GateDef, actor: string, decision: "approve" | "reject", quote: string): Vote {
   const pr = processOf(p),

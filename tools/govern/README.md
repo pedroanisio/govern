@@ -64,3 +64,5 @@ Documentation:
 - [SKILL.md](SKILL.md) is the operating manual for the AI (`govern manual`).
 - [PURPOSE.md](PURPOSE.md) explains why govern exists.
 - [BUSINESS.md](BUSINESS.md) covers the business-workflow features: routes, parallel stages, case data, human tasks and approval policies.
+- [REMOTE.md](REMOTE.md) specifies `govern remote`, the protocol that lets a paired phone follow the lanes and their
+  telemetry and approve gates with a signed confirmation. The Android app is in [android/](android/README.md).

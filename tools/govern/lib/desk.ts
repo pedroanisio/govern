@@ -21,13 +21,34 @@ const ago = (iso: string) => {
 };
 const today = () => new Date().toISOString().slice(0, 10);
 
-export function dispatcherState(): string {
+/** The queue dispatcher's record (dispatcher.json) and whether its process is alive; undefined when it never ran. */
+export function dispatcherInfo(): { running: boolean; pid: number; started: string; interval: number } | undefined {
   const f = join(queue.QUEUE(), "dispatcher.json");
-  if (!existsSync(f)) return "dispatcher: not running (start: govern task dispatch --loop, or the govern-dispatch user service)";
+  if (!existsSync(f)) return undefined;
   const d = JSON.parse(readFileSync(f, "utf8"));
-  let alive = false;
-  try { process.kill(d.pid, 0); alive = true; } catch { /* gone */ }
-  return alive ? `dispatcher: running (pid ${d.pid}, since ${ago(d.started)} ago, every ${d.interval}s)` : `dispatcher: NOT running (last pid ${d.pid} gone)`;
+  let running = false;
+  try { process.kill(d.pid, 0); running = true; } catch { /* gone */ }
+  return { running, pid: d.pid, started: d.started, interval: d.interval };
+}
+
+export function dispatcherState(): string {
+  const d = dispatcherInfo();
+  if (!d) return "dispatcher: not running (start: govern task dispatch --loop, or the govern-dispatch user service)";
+  return d.running ? `dispatcher: running (pid ${d.pid}, since ${ago(d.started)} ago, every ${d.interval}s)` : `dispatcher: NOT running (last pid ${d.pid} gone)`;
+}
+
+/** Model use on `day` (YYYY-MM-DD) per lane: queue runs (the queue's ledger) and codex asks (each lane's ledger).
+ *  Chat sessions are not here: they are read from transcripts by `govern usage`. */
+export function tokensOn(slugs: string[], day: string): Map<string, { calls: number; input: number; output: number; usd: number }> {
+  const byLane = new Map<string, { calls: number; input: number; output: number; usd: number }>();
+  const add = (lane: string, u: any, calls = 1) => {
+    const x = byLane.get(lane) ?? { calls: 0, input: 0, output: 0, usd: 0 };
+    x.calls += calls; x.input += u?.input ?? 0; x.output += u?.output ?? 0; x.usd += u?.costUsd ?? 0;
+    byLane.set(lane, x);
+  };
+  for (const e of readJsonl(join(queue.QUEUE(), "ledger.jsonl"))) if (String(e.t).startsWith(day)) add(e.project, e.usage);
+  for (const s of slugs) for (const e of readJsonl(ledgerFile(s))) if (e.kind === "ask" && String(e.t).startsWith(day)) add(s, e.usage, e.calls ?? 1);
+  return byLane;
 }
 
 /** The desk's text, with how many of its `lanes` could not be read (each shown as a ✖ row; the caller exits 1). */
@@ -72,14 +93,7 @@ export function desk(): { text: string; failed: number; lanes: number } {
   }).filter((x) => x.n || x.st !== "none");
   if (byProfile.length) L.push("", `PROFILES  ${byProfile.map(({ p, n, st }) => `${p.name}: ${n} queued${st === "none" ? "" : `, check ${st}`}`).join(" · ")}`);
   // ---- tokens today (queue runs and codex asks; chat sessions: govern usage)
-  const byLane = new Map<string, { calls: number; input: number; output: number; usd: number }>();
-  const add = (lane: string, u: any, calls = 1) => {
-    const x = byLane.get(lane) ?? { calls: 0, input: 0, output: 0, usd: 0 };
-    x.calls += calls; x.input += u?.input ?? 0; x.output += u?.output ?? 0; x.usd += u?.costUsd ?? 0;
-    byLane.set(lane, x);
-  };
-  for (const e of readJsonl(join(queue.QUEUE(), "ledger.jsonl"))) if (String(e.t).startsWith(day)) add(e.project, e.usage);
-  for (const s of slugs) for (const e of readJsonl(ledgerFile(s))) if (e.kind === "ask" && String(e.t).startsWith(day)) add(s, e.usage, e.calls ?? 1);
+  const byLane = tokensOn(slugs, day);
   L.push("", `TOKENS TODAY (queue runs and codex asks; chat sessions: govern usage)`);
   if (!byLane.size) L.push("  (none)");
   for (const [lane, x] of [...byLane].sort((a, b) => b[1].input - a[1].input))

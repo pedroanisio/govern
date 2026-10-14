@@ -1,0 +1,42 @@
+package dev.supertools.govern.remote.protocol
+
+import java.net.URI
+import java.net.URLDecoder
+
+/** What `govern remote pair --url` prints: govern-remote://pair?url=…&code=…[&pin=…]. */
+data class PairingLink(val url: String, val code: String, val pin: String?)
+
+object PairingLinks {
+    private val PIN = Regex("^[0-9a-f]{64}$")
+
+    /** The server address a person typed or a link carried: http(s), a host, no query or fragment; trailing slashes dropped. */
+    fun serverUrl(raw: String): String {
+        val text = raw.trim().trimEnd('/')
+        val uri = try { URI(text) } catch (e: Exception) { throw IllegalArgumentException("not an address: $raw") }
+        require(uri.scheme == "https" || uri.scheme == "http") { "the address must start with https:// (or http:// for this device or an emulator host)" }
+        require(!uri.host.isNullOrEmpty()) { "the address has no host: $raw" }
+        require(uri.rawQuery == null && uri.rawFragment == null) { "the address must not carry a query or fragment" }
+        return text
+    }
+
+    /** A certificate pin: the SHA-256 of the server's certificate, 64 hex digits (colons and case folded). */
+    fun pin(raw: String): String {
+        val p = raw.replace(":", "").trim().lowercase()
+        require(PIN.matches(p)) { "a certificate pin is 64 hex digits (the SHA-256 that govern remote serve prints)" }
+        return p
+    }
+
+    fun parse(link: String): PairingLink {
+        val uri = try { URI(link.trim()) } catch (e: Exception) { throw IllegalArgumentException("not a pairing link") }
+        require(uri.scheme == "govern-remote" && uri.host == "pair") { "a pairing link starts with govern-remote://pair?" }
+        val q = (uri.rawQuery ?: "").split('&').filter { it.isNotEmpty() }.associate {
+            val i = it.indexOf('=')
+            val k = if (i < 0) it else it.substring(0, i)
+            val v = if (i < 0) "" else URLDecoder.decode(it.substring(i + 1), Charsets.UTF_8)
+            k to v
+        }
+        val url = q["url"] ?: throw IllegalArgumentException("the pairing link has no url")
+        val code = q["code"] ?: throw IllegalArgumentException("the pairing link has no code")
+        return PairingLink(serverUrl(url), code, q["pin"]?.let(::pin))
+    }
+}

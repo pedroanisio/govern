@@ -1,0 +1,36 @@
+{
+  "protocol": "govern-remote/1",
+  "at": "2026-10-14T12:00:00.000Z",
+  "lanes": [
+    {
+      "slug": "r1",
+      "title": "Release one",
+      "process": "release",
+      "kind": "release",
+      "stage": "draft",
+      "stageIndex": 0,
+      "stageCount": 2,
+      "active": ["draft"],
+      "state": "open",
+      "blockedBy": [],
+      "gates": [
+        { "name": "final", "stage": "draft", "owner": "owner", "policy": false, "approved": true, "approvedAt": "2026-10-14T11:59:00.000Z", "needs": [] },
+        { "name": "publish", "stage": "ship", "owner": "owner", "policy": false, "approved": false, "approvedAt": null, "needs": ["final"] }
+      ],
+      "openAlerts": 1,
+      "working": { "engine": "codex", "since": "2026-10-14T11:00:00.000Z" },
+      "lastNote": { "at": "2026-10-14T11:59:00.000Z", "text": "owner approved final: \"looks right\"" },
+      "lastJob": { "name": "test", "status": "ok", "at": "2026-10-14T11:30:00.000Z" }
+    }
+  ],
+  "unreadable": [{ "slug": "broken", "error": "broken/govern.json: not JSON" }],
+  "telemetry": {
+    "day": "2026-10-14",
+    "tokens": [{ "lane": "r1", "calls": 2, "input": 41000, "output": 900, "usd": 0.12 }],
+    "machines": [{ "lane": "r1", "time": "1h 02m on gpu", "money": "USD 1.20" }],
+    "queue": { "runners": [{ "runner": "codex", "waiting": 1, "running": 0 }], "failed": 0, "unverified": 0 },
+    "dispatcher": { "running": true, "pid": 4242, "started": "2026-10-14T08:00:00.000Z", "interval": 30 },
+    "inbox": [{ "id": "m-1", "kind": "REVIEW", "from": "codex", "project": "r1", "summary": "review ready", "created": "2026-10-14T11:00:00.000Z" }],
+    "allowances": ["model-usd  queue:claude  USD/day  used 1.20  reserved 0  left 8.80"]
+  }
+}

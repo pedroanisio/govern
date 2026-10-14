@@ -22,6 +22,8 @@
 #     govern log SLUG [JOB] [--tail N] [--grep RE]
 #     govern prompts [PROCESS]  |  ask SLUG STEP [--file F]... [--var K=V]... [--image PNG]... [--effort E] [--model M]
 #     govern usage [SLUG...] [--since DATE]  |  ctx  |  desk  |  tune  |  publish SLUG
+#     govern remote pair [--as PERSON] [--minutes N] [--url URL] [--tls-cert F]  |  remote devices  |  remote revoke DEVICE
+#     govern remote serve [--host H] [--port 5002] [--tls-cert F --tls-key F]
 #     govern caps [PROFILE]  |  caps --check PROFILE
 #     govern decide ask --questions F (--state S | --state-file F) [--purpose P] [--json]  |  decide report
 #     govern help [COMMAND]  |  COMMAND --help  |  manual [PROCESS]  |  install-skill [SKILLS-DIR] [--check]
@@ -73,7 +75,14 @@
 #     --id ID                 event: stable delivery id used for deduplication
 #     --correlation JSON      event: typed value matching the waiting stage
 #     --generation N          event: activation generation, required when the event contract declares it
-#     --port N                event-listen: loopback webhook port (default 5001)
+#     --port N                event-listen, remote serve: event-listen: loopback webhook port (default 5001); remote serve:
+#                             the API port (default 5002)
+#     --host H                remote serve: the address to listen on (default 127.0.0.1); another needs TLS
+#     --tls-cert F            remote pair, remote serve: the server's PEM certificate; pair: its pin goes into the pairing
+#                             link; serve: serve HTTPS (with --tls-key)
+#     --tls-key F             remote serve: the PEM private key of --tls-cert
+#     --minutes N             remote pair: how long the pairing code is valid (1..60, default 10)
+#     --url URL               remote pair: the server's address as the phone reaches it, printed as a pairing link
 #     --advance               tick: progress ready event, subprocess and retry stages through normal gates
 #     --ack ID                alerts: acknowledge an alert without approving a business decision
 #     --action NAME           recover: retry an investigated failure or confirm compensation with compensated
@@ -145,9 +154,9 @@
 #     --questions F           decide ask: the JSON file of typed questions (choice, score, noul)
 #     --purpose P             decide ask: the name the decision is recorded under (default ask)
 #     --json                  decide ask: print the whole decision as JSON
-#     --as NAME               human-inbox, human, task inbox, task close, task forward, task reply: who you are; human,
-#                             human-inbox: a process person, refused unless this OS account is mapped to it; task: default
-#                             GOVERN_AS, else this session
+#     --as NAME               human-inbox, human, task inbox, task close, task forward, task reply, remote pair: who you are;
+#                             human, human-inbox: a process person, refused unless this OS account is mapped to it; task:
+#                             default GOVERN_AS, else this session; remote pair: the person the device approves as (owner)
 #     --all                   task inbox: messages in every state, not only open ones
 #     --hook                  task inbox: the UserPromptSubmit hook form, silent when empty
 #     --max N                 task dispatch: run at most N messages
@@ -206,7 +215,7 @@
 #     video workflow codex claude grok tokens usage orchestration pals-notes youtube
 # SEE ALSO
 #     st-man - tools/govern/SKILL.md (govern manual) - tools/govern/processes/video/MANUAL.md (govern manual video)
-#     - tools/govern/BUSINESS.md - tools/govern/PURPOSE.md
+#     - tools/govern/BUSINESS.md - tools/govern/PURPOSE.md - tools/govern/REMOTE.md
 # MANPAGE <<<
 set -eu
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)

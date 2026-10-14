@@ -1,0 +1,28 @@
+{
+  "slug": "r1",
+  "title": "Release one",
+  "process": "release",
+  "kind": "release",
+  "stage": "draft",
+  "stageIndex": 0,
+  "stageCount": 2,
+  "active": ["draft"],
+  "state": "open",
+  "blockedBy": [],
+  "gates": [
+    { "name": "final", "stage": "draft", "owner": "owner", "policy": false, "approved": false, "approvedAt": null, "needs": [] }
+  ],
+  "openAlerts": 1,
+  "working": null,
+  "lastNote": null,
+  "lastJob": { "name": "test", "status": "ok", "at": "2026-10-14T11:30:00.000Z" },
+  "stages": ["draft", "ship"],
+  "exit": "the release notes are written",
+  "check": "test",
+  "finished": null,
+  "data": { "orderId": "O-1", "amount": 12.5, "urgent": true },
+  "humanTasks": [{ "stage": "draft", "assignee": "alice", "completedBy": null }],
+  "alerts": [{ "id": "a-1", "stage": "draft", "kind": "due", "at": "2026-10-14T11:00:00.000Z", "message": "draft is due", "acknowledgedAt": null }],
+  "notes": [{ "at": "2026-10-14T10:00:00.000Z", "stage": "draft", "text": "started" }],
+  "ledger": [{ "t": "2026-10-14T10:00:00.000Z", "kind": "cmd-set", "text": "{\"name\":\"test\",\"from\":null,\"to\":[\"true\"],\"stages\":[]}" }]
+}

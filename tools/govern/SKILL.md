@@ -17,6 +17,8 @@ A process may own a manual with the rules of its kind of work (for example how a
 
 The owner's one screen is `govern desk`: every lane, their inbox, the queue and today's tokens. One session works one lane; the other lanes wait in their files, not in open chat tabs.
 
+The owner can also follow the lanes from a phone: `govern remote serve` serves the desk, each lane and today's telemetry to paired devices (the Android app in `android/`), and a paired device approves gates and acknowledges alerts with a signature the owner confirms on the phone (REMOTE.md). `govern remote pair` makes the one-time pairing code and is refused inside an agent session: never pair a device, and never ask the owner for a code. `govern remote devices` lists paired devices and `govern remote revoke <id>` cuts one off; both are the owner's. An approval whose source is `device` is the owner's own words, as valid as one from their terminal.
+
 1. `govern status` lists the lanes. If the lane is not there, run `govern new <slug> --process <name> --title "…"` (`govern process list` shows the processes; a process with kinds also takes `--kind` and `--lang`; `--parent <lane>` links a lane to another). The slug is its folder under the workspace's projects folder.
 2. `govern work <slug> <stage>`. The stages are the process's own (`govern process show <name>`). This opens a measured work segment and prints the **brief**:
    - stage and exit condition;

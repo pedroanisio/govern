@@ -11,7 +11,9 @@ import { callingSession, pidChain } from "./sessions.ts";
 /** Where an approval's words came from, as govern.json and the ledger record it. */
 export type Source =
   | { kind: "terminal"; user: string }
-  | { kind: "session"; sessionId: string; message: string; messageAt: string };
+  | { kind: "session"; sessionId: string; message: string; messageAt: string }
+  /** Words the person typed on a paired device (govern remote): the request body the device's key signed, and that signature. */
+  | { kind: "device"; device: string; signedBody: string; signature: string };
 
 /** Variables a Codex shell sets. Read from the codex binary's strings (CODEX_THREAD_ID, CODEX_SESSION_ID,
  *  CODEX_SANDBOX_NETWORK_DISABLED), not observed in a live Codex shell: unverified, so a Claude check does not rely on them alone. */

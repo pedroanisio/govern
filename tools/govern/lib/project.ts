@@ -94,7 +94,8 @@ const COMMAND: Shape<string[] | Command> = (v, at) =>
 const SOURCE: Shape<Source> = (v, at) => {
   const k = typeof v === "object" && v !== null ? (v as { kind?: unknown }).kind : undefined;
   return k === "terminal" ? obj({ kind: literal("terminal"), user: str })(v, at) : k === "session" ? obj({ kind: literal("session"), sessionId: str, message: str, messageAt: str })(v, at)
-    : reject(at, `must be {kind: "terminal", user} or {kind: "session", sessionId, message, messageAt}`);
+    : k === "device" ? obj({ kind: literal("device"), device: str, signedBody: str, signature: str })(v, at)
+    : reject(at, `must be {kind: "terminal", user}, {kind: "session", sessionId, message, messageAt} or {kind: "device", device, signedBody, signature}`);
 };
 const PROJECT = obj(
   { version: literal(1), slug: name, title: str, kind: name, lang: name, stage: name, created: iso,

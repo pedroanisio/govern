@@ -5,7 +5,7 @@ import { eventServer } from './lib/event-server.ts';
 import { withLaneLock } from './lib/lane-lock.ts';
 // govern — run lanes of work (videos, software, ops, any process) through their stages with agents, cheaply and under the owner's gates.
 // The manual for the AI operating it is SKILL.md (govern manual). Usage: govern help.
-import { activeStages, enterTasks, isGraph, requireActive, validateRequired, nextStages, completeStage, setData, authenticatedPerson, humanAction, requireHumanComplete, gateApproved, policyVote, rejectRoute } from './lib/business.ts';
+import { activeStages, enterTasks, isGraph, requireActive, validateRequired, nextStages, completeStage, setData, authenticatedPerson, humanAction, requireHumanComplete, gateApproved, policyVote, rejectRoute, ownerApproval } from './lib/business.ts';
 import { scalar } from './lib/business-schema.ts';
 import { check, record } from './lib/shape.ts';
 import { spawnSync } from "node:child_process";
@@ -32,7 +32,8 @@ import * as allowances from "./lib/allowances.ts";
 import { registry, getProfile, listText, showText, failing } from "./lib/caps.ts";
 import { checkProfile } from "./lib/capcheck.ts";
 import { tune, chooseRunner } from "./lib/tune.ts";
-import { verifyQuote, GROK_MARKERS } from "./lib/approval.ts";
+import { verifyQuote, origin, GROK_MARKERS } from "./lib/approval.ts";
+import * as remote from "./lib/remote.ts";
 import { checkRecipient, requireAs, resolveAs } from "./lib/sessions.ts";
 import { installSkill, skillDrift, sha256File } from "./lib/skill.ts";
 import { writeFileSync, existsSync, unlinkSync } from "node:fs";
@@ -155,17 +156,11 @@ function cmdApprove(a: Args): void {
   const g = gates.find((x) => x.name === a._[2]) ?? fail(`gate must be one of ${gates.map((x) => x.name).join(", ") || "(none: this process has no gates)"}`);
   const gate = g.name;
   if (g.policy) return cmdPolicyDecision(a, p, g, 'approve');
-  const owner = g.owner ?? "owner", by = opt(a, "by");
-  if (by === undefined && owner !== "owner") fail(`gate ${gate} is decided by ${owner}: pass --by ${owner}`);
-  if (by !== undefined && by !== owner) fail(`gate ${gate} is decided by ${owner}, not ${by}`);
   const quote = opt(a, "quote");
-  if (!quote || quote.trim().length < 2) fail(`--quote is required: ${owner}'s own words approving the ${gate} (only ${owner} approves)`);
-  for (const need of g.needs ?? []) if (!gateApproved(p, gates.find(x=>x.name===need)!)) fail(g.message ?? `needs the ${need} approval first`);
-  const source = verifyQuote(quote!);
-  p.approvals[gate] = { at: nowIso(), quote: quote!, by: owner, source };
-  p.notes.push({ at: nowIso(), stage: p.stage, text: `${owner} approved ${gate}: "${quote}"` });
+  ownerApproval(p, g, opt(a, "by"), quote, () => verifyQuote(quote!));
+  const { by, source } = p.approvals[gate]!;
   save(p);
-  appendLedger(p.slug, { kind: "approve", gate, quote, by: owner, source });
+  appendLedger(p.slug, { kind: "approve", gate, quote, by, source });
   out(`${p.slug}: ${gate} approved`);
 }
 
@@ -716,6 +711,45 @@ const unitWord = (v: string, cmd = false) => {
   return `"${cmd ? q.replaceAll("$", "$$$$") : q}"`;
 };
 /** The text of the user service: every Environment= and the ExecStart binary quoted, and the state folders of this shell passed on. */
+function cmdRemote(a: Args): void {
+  const sub = a._[1];
+  if (sub === "pair") {
+    if (origin().kind !== "terminal") fail("pair a device from the owner's own terminal, not from an agent session: a paired device approves gates", 1);
+    const minutes = Number(opt(a, "minutes") ?? 10);
+    const { code, expires } = remote.createPairing(opt(a, "as") ?? "owner", minutes);
+    const url = opt(a, "url"), cert = opt(a, "tls-cert");
+    if (cert && !url) fail("--tls-cert needs --url (the pin goes into the pairing link)");
+    out(`pairing code ${code} (one device, until ${expires}; ${remote.PAIR_ATTEMPTS} wrong tries void it)`);
+    if (url) {
+      if (!/^https?:\/\/[^\s]+$/.test(url)) fail("--url must be the server's http(s) address, as the phone reaches it");
+      const q = new URLSearchParams({ url, code });
+      if (cert) q.set("pin", remote.certPin(readFileSync(cert, "utf8")));
+      out(`pairing link (paste it in the app): govern-remote://pair?${q}`);
+    }
+    return;
+  }
+  if (sub === "devices") {
+    const all = remote.devices();
+    out(all.map((d) => `${d.id}  ${d.name.padEnd(24)} ${d.person.padEnd(10)} paired ${d.pairedAt.slice(0, 16)}${d.revokedAt ? `  REVOKED ${d.revokedAt.slice(0, 16)}` : ""}`).join("\n") || "(no paired devices: govern remote pair)");
+    return;
+  }
+  if (sub === "revoke") {
+    const d = remote.revoke(a._[2] ?? fail("govern remote revoke <device-id>"));
+    out(`${d.id} (${d.name}) revoked`);
+    return;
+  }
+  const host = opt(a, "host") ?? "127.0.0.1", port = Number(opt(a, "port") ?? 5002);
+  if (!Number.isInteger(port) || port < 1 || port > 65535) fail("--port must be 1..65535");
+  const certFile = opt(a, "tls-cert"), keyFile = opt(a, "tls-key");
+  if (!certFile !== !keyFile) fail("--tls-cert and --tls-key go together");
+  if (!certFile && !remote.loopback(host))
+    fail(`${host} is reachable from other machines: serve TLS (--tls-cert, --tls-key), or keep loopback and publish it with tailscale serve`);
+  const tls = certFile ? { cert: readFileSync(certFile, "utf8"), key: readFileSync(keyFile!, "utf8") } : undefined;
+  const server = remote.remoteServer({ tls });
+  server.on("error", (e) => { process.stderr.write(`remote: ${e.message}\n`); process.exitCode = 1; });
+  server.listen(port, host, () => out(`govern remote (${remote.devices().filter((d) => !d.revokedAt).length} paired devices) on ${tls ? "https" : "http"}://${host}:${port}${tls ? ` · certificate pin ${remote.certPin(tls.cert)}` : ""}`));
+}
+
 function serviceUnit(bin: string, interval: string, reapEvery: number | undefined): string {
   const env: [string, string][] = [["PATH", process.env.PATH ?? ""], ["GOVERN_REPO", repo()], ["GOVERN_QUEUE", queue.QUEUE()]];
   for (const k of ["GOVERN_STATE", "GOVERN_PROJECTS"]) if (process.env[k]) env.push([k, process.env[k]!]);
@@ -986,6 +1020,15 @@ export const COMMANDS: readonly Cmd[] = [
     out(d.text);
     if (d.failed) unreadable(d.failed, d.lanes);
   } },
+  { name: "remote", section: 7, noSub: "govern remote pair|devices|revoke|serve (the protocol: tools/govern/REMOTE.md)",
+    subs: {
+      pair: { flags: { value: ["as", "minutes", "url", "tls-cert"] },
+        lines: [["[--as PERSON] [--minutes 10] [--url URL] [--tls-cert F]", "a one-time code that pairs one phone (govern-remote app) as PERSON (default owner); only from the\nowner's own terminal. --url and --tls-cert add the server and its certificate pin to the printed pairing link"]], run: cmdRemote },
+      devices: { lines: [["", "the paired devices: id, name, person, when paired, revoked"]], run: cmdRemote },
+      revoke: { lines: [["<device-id>", "the device's token and key stop working at once (its open stream ends too)"]], run: cmdRemote },
+      serve: { flags: { value: ["host", "port", "tls-cert", "tls-key"] },
+        lines: [["[--host 127.0.0.1] [--port 5002] [--tls-cert F --tls-key F]", "serve the remote API to paired devices; a host other than loopback needs TLS\n(or keep loopback and publish it with tailscale serve)"]], run: cmdRemote },
+    } },
   { name: "tune", section: 7, lines: [["", "measure the last 24 h and record the tuning decision (the dispatcher runs it hourly)"]], run: () => out(tune()) },
 
   { name: "publish", section: 8, lines: [["<slug>", "the publish commands, once the final and publish gates are approved and the package is filed"]], run: cmdPublish },
