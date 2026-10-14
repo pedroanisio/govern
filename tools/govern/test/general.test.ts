@@ -128,7 +128,11 @@ test("govern manual prints the general manual; govern manual <process> prints th
 test("the general manual keeps no video text; the video manual keeps every video rule", () => {
   const general = readFileSync(join(TOOL, "SKILL.md"), "utf8");
   const video = readFileSync(join(TOOL, "processes", "video", "MANUAL.md"), "utf8");
-  for (const word of ["film_build", "APPROVAL.md", "hooks", "pt-BR", "smm", "WORKFLOW\\.md"]) {
+  // Video-only phrases: the video "hooks" prompt is matched as its command, so
+  // the general manual can still say "hooks" for Claude Code or grok hooks.
+  const words = ["film_build", "APPROVAL.md", "ask <slug> hooks", "pt-BR", "smm", "WORKFLOW\\.md"];
+  for (const word of words) {
+    assert.doesNotMatch("a private HOME, so no user skills, hooks, plugins or MCP servers load", new RegExp(word), `${word} is not video-only`);
     assert.doesNotMatch(general, new RegExp(word), `SKILL.md still names ${word}`);
     assert.match(video, new RegExp(word), `the video manual lost ${word}`);
   }
