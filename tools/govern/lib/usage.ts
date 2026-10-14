@@ -3,7 +3,8 @@
 // A segment starts when a session runs `govern work <slug> <stage>` and lasts until that session
 // starts another segment or runs `govern done`. Claude Code sessions are found by session id
 // (CLAUDE_CODE_SESSION_ID, recorded at `govern work`); Codex sessions by the rollout file that
-// contains the `govern work <slug>` call. One-shot `govern ask` calls come from the video ledger.
+// contains the `govern work <slug>` call; Grok sessions by session id (GROK_SESSION_ID, recorded at `govern work`) in
+// Grok's own session store. One-shot `govern ask` calls come from the video ledger.
 import { existsSync, readdirSync, readFileSync, statSync, globSync, openSync, readSync, closeSync } from "node:fs";
 import { join, dirname, resolve } from "node:path";
 import { homedir } from "node:os";
@@ -17,6 +18,7 @@ import { machineLines, machineEntries } from "./resources.ts";
 const HERE = dirname(fileURLToPath(import.meta.url));
 const CLAUDE_DIR = () => process.env.GOVERN_CLAUDE_PROJECTS ?? join(homedir(), ".claude", "projects");
 const CODEX_DIR = () => process.env.GOVERN_CODEX_SESSIONS ?? join(homedir(), ".codex", "sessions");
+const GROK_DIR = () => process.env.GOVERN_GROK_SESSIONS ?? join(homedir(), ".grok", "sessions");
 export const CTX_WARN = Number(process.env.GOVERN_CTX_WARN ?? 150000);
 
 interface Price { in: number; cw: number; cr: number; out: number }
@@ -25,7 +27,7 @@ const PRICES: Record<string, Price> = (() => {
   return existsSync(f) ? JSON.parse(readFileSync(f, "utf8")).models ?? {} : {};
 })();
 
-export interface Call { t: number; model: string; input: number; cacheRead: number; cacheWrite: number; output: number; ctx: number; sub: boolean }
+export interface Call { t: number; model: string; input: number; cacheRead: number; cacheWrite: number; output: number; ctx: number; sub: boolean; /** the engine's own dollar figure, when it reports one */ usd?: number }
 /** One tool_use block: `sig` is its name plus canonical input, `bigRead` a Read with no offset/limit whose result is over BIG_READ_CHARS. */
 export interface Tool { t: number; id: string; name: string; sig: string; poll: boolean; agent: boolean; bigRead: boolean }
 export interface Segment { slug: string; stage: string; engine: string; session?: string; start: number; end: number; calls: Call[]; ownerTurns: number; tools: Tool[] }
@@ -211,6 +213,40 @@ function codexCalls(file: string): Data {
   return { calls, owner, tools: [] };
 }
 
+// ---------------------------------------------------------------- Grok session store
+
+/** Grok keeps `<root>/<url-encoded cwd>/<session id>/usage.json`; the folder is found by session id, whatever the cwd was. */
+function grokUsageFile(session: string): string | undefined {
+  const root = GROK_DIR();
+  if (!existsSync(root) || /[\\/]/.test(session)) return undefined;
+  for (const proj of readdirSync(root)) {
+    const f = join(root, proj, session, "usage.json");
+    if (existsSync(f)) return f;
+  }
+  return undefined;
+}
+
+/** USD per tick of `costUsdTicks`: 1e-10, as xAI's API reports cost_in_usd_ticks. Not verified against Grok Build's own
+ *  documentation and not compared to a CLI dollar figure; only the order of magnitude matched the probe costs seen. */
+const USD_PER_TICK = 1e-10;
+
+/** One call per finished turn (a turn may hold several model calls: its context is the per-call mean). The store's
+ *  inputTokens INCLUDE cache reads (the CLI's json figure excludes them), so the plain input is the difference. */
+export function grokCalls(file: string): Data {
+  let o: any;
+  try { o = JSON.parse(readFileSync(file, "utf8")); } catch { return { calls: [], owner: [], tools: [] }; }
+  const num = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? v : 0);
+  const calls: Call[] = [];
+  for (const t of Array.isArray(o?.turns) ? o.turns : []) {
+    const at = Date.parse(t?.endedAt);
+    if (!Number.isFinite(at)) continue;
+    const inSide = num(t.inputTokens), cr = Math.min(num(t.cachedReadTokens), inSide), cw = num(t.cacheCreationTokens);
+    const n = Math.max(1, num(t.modelCalls));
+    calls.push({ t: at, model: typeof t.primaryModelId === "string" ? t.primaryModelId : "grok", input: Math.max(0, inSide - cr - cw), cacheRead: cr, cacheWrite: cw, output: num(t.outputTokens), ctx: Math.round(inSide / n), sub: false, ...(typeof t.costUsdTicks === "number" ? { usd: t.costUsdTicks * USD_PER_TICK } : {}) });
+  }
+  return { calls, owner: [], tools: [] };
+}
+
 // ---------------------------------------------------------------- attribution and report
 
 export function attribute(segs: Segment[]): Segment[] {
@@ -224,6 +260,9 @@ export function attribute(segs: Segment[]): Segment[] {
         for (const f of claudeFiles(s.session!)) { const d = claudeCalls(f, !f.endsWith(`${s.session}.jsonl`)); acc.calls.push(...d.calls); acc.owner.push(...d.owner); acc.tools.push(...d.tools); }
         return acc;
       });
+    } else if (s.engine === "grok" && s.session) {
+      const f = grokUsageFile(s.session);
+      if (f) data = load(`g:${f}`, () => grokCalls(f));
     } else if (s.engine === "codex") {
       const f = codexRollout(s.slug, s.start);
       if (f) data = load(`x:${f}`, () => codexCalls(f));
@@ -245,7 +284,7 @@ export interface Totals { calls: number; inputSide: number; output: number; avgC
 export function totals(calls: Call[], owner = 0): Totals {
   const inputSide = calls.reduce((a, c) => a + c.input + c.cacheRead + c.cacheWrite, 0);
   const cached = calls.reduce((a, c) => a + c.cacheRead, 0);
-  const costs = calls.map(cost);
+  const costs = calls.map((c) => c.usd ?? cost(c));
   return {
     calls: calls.length, inputSide, output: calls.reduce((a, c) => a + c.output, 0),
     avgCtx: calls.length ? Math.round(calls.reduce((a, c) => a + c.ctx, 0) / calls.length) : 0,

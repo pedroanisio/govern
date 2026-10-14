@@ -98,3 +98,31 @@ test("usage shows tool behaviour per segment and in the total; repeats are count
   assert.match(L.find((l) => / script claude/.test(l))!, /\$\S+  tools 2$/);
   assert.match(L.find((l) => /^TOTAL conversation/.test(l))!, /  tools 6 · repeats 1 · polls 1 · agents 1 · big reads 1$/);
 });
+
+test("usage measures a grok segment from the session store: one call per turn in the segment, store input includes cache reads, cost from ticks", () => {
+  const e = makeEnv();
+  const slug = "film/shorts";
+  assert.equal(govern(e, ["new", slug, "--kind", "short", "--title", "A Test", "--lang", "en"]).code, 0);
+  const env = { GROK_AGENT: "grok", GROK_SESSION_ID: "gs-7" };
+  govern(e, ["work", slug, "plan"], env);
+  const t1 = Date.parse(present(jsonl(join(e.projects, slug, "govern", "ledger.jsonl")).find((x) => x.kind === "work"), "the work entry").t);
+  const turn = (n: number, at: number, input: number, cached: number, output: number, calls: number, ticks: number) =>
+    ({ turnNumber: n, endedAt: new Date(at).toISOString(), inputTokens: input, outputTokens: output, cachedReadTokens: cached, cacheCreationTokens: 0, modelCalls: calls, costUsdTicks: ticks, primaryModelId: "grok-4.7-build" });
+  write(join(e.root, "grok-sessions", encodeURIComponent("/some/cwd"), "gs-7", "usage.json"), JSON.stringify({
+    sessionId: "gs-7", turns: [
+      turn(1, t1 - 5000, 900000, 0, 10, 1, 5e9), // before the segment: not counted
+      turn(2, t1 + 1000, 30000, 20000, 100, 2, 2e8),
+      turn(3, t1 + 2000, 40000, 10000, 50, 1, 3e8),
+    ],
+  }));
+  const r = govern(e, ["usage", slug]);
+  assert.equal(r.code, 0, r.err);
+  const row = present(r.out.split("\n").find((l) => / plan grok/.test(l)), "the grok row");
+  assert.match(row, /\s2\s+70k\s+150\s/); // 2 turns, input side 30000+40000 (store figures already include the cache), output 150
+  assert.match(row, /43%/); // 30000 of 70000 read from cache
+  assert.match(row, /\$0\.05/); // (2e8 + 3e8) ticks at 1e-10 USD
+  assert.doesNotMatch(row, /no transcript found/);
+  // a grok segment with no session store entry says so instead of showing zeros silently
+  govern(e, ["work", slug, "script"], { GROK_AGENT: "grok", GROK_SESSION_ID: "gs-missing" });
+  assert.match(govern(e, ["usage", slug]).out, / script grok.*no transcript found/);
+});
