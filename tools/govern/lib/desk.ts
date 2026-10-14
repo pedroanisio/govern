@@ -31,6 +31,8 @@ export function dispatcherInfo(): { running: boolean; pid: number; started: stri
   return { running, pid: d.pid, started: d.started, interval: d.interval };
 }
 
+/** One status line for the queue dispatcher: not running (with how to start it), running (pid, age, interval), or its
+ *  last pid gone. */
 export function dispatcherState(): string {
   const d = dispatcherInfo();
   if (!d) return "dispatcher: not running (start: govern task dispatch --loop, or the govern-dispatch user service)";

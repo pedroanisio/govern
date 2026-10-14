@@ -61,6 +61,7 @@ function writeState(n: string, v: unknown): void {
 /** One change to the remote state at a time: the server and the CLI both change it. */
 const locked = <T>(f: () => T): T => { ensureDir(); return withLaneLock(join(dir(), "lock"), f); };
 
+/** Every paired device, revoked ones included; [] before the first pairing, and fails when devices.json is not JSON. */
 export const devices = (): Device[] => readState<{ devices: Device[] }>("devices.json", { devices: [] }).devices;
 
 /** A one-time pairing code for `person`, valid for `minutes`; it replaces any earlier code. The code is shown once and only its hash is stored. */
@@ -108,6 +109,8 @@ export function pair(code: string, deviceName: string, publicKey: string): { dev
   });
 }
 
+/** Mark device `id` revoked (its token stops working) under the remote state lock, audit it, and return it; fails when
+ *  there is no such device or it is already revoked. */
 export function revoke(id: string): Device {
   return locked(() => {
     const all = devices(), d = all.find((x) => x.id === id) ?? fail(`no device ${id} (govern remote devices lists them)`);
@@ -191,6 +194,9 @@ export const certPin = (pem: string): string => new X509Certificate(pem).fingerp
 
 const PAIR_REQ = obj({ code: str, name: (v, at) => (typeof v === "string" && v.trim().length >= 1 && v.length <= 80 ? v.trim() : reject(at, "must be 1..80 characters")), publicKey: str });
 
+/** The remote API server (HTTPS with `tls`, else HTTP; not yet listening): health and pairing without a token, then for
+ *  a paired device's bearer token the desk, a lane's detail, signed actions, and a server-sent desk stream (pushed on
+ *  change, with pings, bounded in count and length). Errors map to 400/401/403/404/409/413/429/500 JSON replies. */
 export function remoteServer(o: ServeOptions = {}): Server {
   const interval = o.streamIntervalMs ?? 3000, maxMs = o.streamMaxMs ?? 3_600_000, pingMs = o.pingMs ?? 15_000;
   let streams = 0;

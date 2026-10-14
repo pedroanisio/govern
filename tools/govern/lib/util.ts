@@ -77,18 +77,25 @@ export function secondsOpt(a: Args, k: string): number | undefined {
   return Number(v);
 }
 
+/** The JSON file at `p`, parsed and cast to T without checking; throws when it is missing or not JSON. */
 export const readJson = <T>(p: string): T => JSON.parse(readFileSync(p, "utf8")) as T;
+/** Write `v` to `p` as indented JSON with a trailing newline, atomically: creates the parent folders, writes
+ *  `<p>.tmp-<pid>`, then renames it over `p`. */
 export function writeJson(p: string, v: unknown): void {
   mkdirSync(dirname(p), { recursive: true });
   const tmp = `${p}.tmp-${process.pid}`;
   writeFileSync(tmp, JSON.stringify(v, null, 2) + "\n");
   renameSync(tmp, p);
 }
+/** The records of a JSON-lines file, skipping blank and unparsable lines; [] when the file does not exist. */
 export const readJsonl = (p: string): any[] =>
   existsSync(p) ? readFileSync(p, "utf8").split("\n").filter(Boolean).flatMap((l) => { try { return [JSON.parse(l)]; } catch { return []; } }) : [];
 
+/** The current time as an ISO 8601 UTC string. */
 export const nowIso = () => new Date().toISOString();
+/** `d` (default now) as a compact UTC stamp for names: YYYYMMDDTHHMMSSZ, no separators, no milliseconds. */
 export const stamp = (d = new Date()) => d.toISOString().replace(/[-:]/g, "").replace(/\.\d+Z$/, "Z");
+/** Block the thread for `ms` milliseconds (Atomics.wait on a private buffer). */
 export const sleepSync = (ms: number) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 
 /** A process as the process table shows it: state, parent, process group, and a start time that tells a recycled pid
@@ -164,5 +171,7 @@ export function changedSince(dir: string, pattern: string, t: number): string[] 
 
 /** Markdown links to their text, collapse whitespace. */
 export const plain = (md: string) => md.replace(/\[([^\]]*)\]\([^)]*\)/g, "$1").replace(/`/g, "").replace(/\s+/g, " ").trim();
+/** A token count for display: "1.23M" from a million, "12k" from a thousand, else the plain number. */
 export const kTok = (n: number) => (n >= 1e6 ? `${(n / 1e6).toFixed(2)}M` : n >= 1e3 ? `${Math.round(n / 1e3)}k` : String(n));
+/** `s` cut to at most `n` characters, ending in "…" when it was cut. */
 export const clip = (s: string, n: number) => (s.length > n ? s.slice(0, n - 1) + "…" : s);

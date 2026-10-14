@@ -72,6 +72,9 @@ function custom(o: any): Normalized[] {
   if (type === "error" && typeof o.text === "string") return [{ type, text: o.text }];
   fail("unknown adapter event type", 1);
 }
+/** The adapter for one conversation turn. A command adapter gets the govern-conversation-v1 request as one JSON line on
+ *  stdin; a profile adapter gets its sealed codex, claude or grok command line with the request in the prompt, a parser
+ *  that normalises the engine's events, and a temp folder that finish() removes. Agent-session env vars are stripped. */
 export function build(
   s: Conversation,
   r: Run,

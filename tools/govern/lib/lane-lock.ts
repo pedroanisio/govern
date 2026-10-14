@@ -4,6 +4,8 @@ import { mkdirSync, linkSync, writeFileSync, rmSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { identity, live, readMutex, breakStale, releaseMutex } from "./locks.ts";
 import { fail, sleepSync } from "./util.ts";
+/** Run `f` holding the transaction lock in `dir` (created if needed), released afterwards; a lock whose holder has died
+ *  is broken, and after 30s of waiting on a live holder it fails. */
 export function withLaneLock<T>(dir: string, f: () => T): T {
   mkdirSync(dir, { recursive: true });
   const lock = join(dir, "transaction"),

@@ -14,6 +14,7 @@ export type Shape<T> = (v: unknown, path: string) => T;
 const show = (v: unknown) => (v === null ? "null" : Array.isArray(v) ? "an array" : typeof v === "object" ? "an object" : JSON.stringify(v));
 const want = (path: string, what: string, v: unknown): never => { throw new ShapeError(path, `must be ${what} (got ${show(v)})`); };
 
+/** Any string, empty included. */
 export const str: Shape<string> = (v, p) => (typeof v === "string" ? v : want(p, "a string", v));
 /** The one string that is no name or map key: assigned as a key of a plain object, `__proto__` sets its prototype. */
 export const PROTO = "__proto__";
@@ -23,8 +24,11 @@ export const name: Shape<string> = (v, p) => {
   if (v === PROTO) throw new ShapeError(p, `"${PROTO}" is not a name`);
   return v;
 };
+/** Exactly true or false. */
 export const bool: Shape<boolean> = (v, p) => (typeof v === "boolean" ? v : want(p, "true or false", v));
+/** An integer, 1 or more. */
 export const posInt: Shape<number> = (v, p) => (Number.isInteger(v) && (v as number) > 0 ? (v as number) : want(p, "a whole number, 1 or more", v));
+/** One of the listed `values`, compared with ===; the error lists them as JSON. */
 export const literal = <T extends string | number>(...values: T[]): Shape<T> => (v, p) =>
   (values.includes(v as T) ? (v as T) : want(p, values.map((x) => JSON.stringify(x)).join(" or "), v));
 
@@ -40,6 +44,7 @@ export function arr<T>(item: Shape<T>, o: { nonEmpty?: boolean } = {}): Shape<T[
 }
 
 const isObj = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
+/** The JSON path of key `k` under `p`: `p.k` for an identifier-like key, else `p["k"]` with the key JSON-quoted. */
 export const keyPath = (p: string, k: string) => (/^[A-Za-z_$][\w$]*$/.test(k) ? `${p}.${k}` : `${p}[${JSON.stringify(k)}]`);
 
 /** An empty map with no prototype: a key is in it only once it is set, so `constructor` or `toString` read from it is

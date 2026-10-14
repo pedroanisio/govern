@@ -14,6 +14,8 @@ import { build, type Normalized, type Adapter } from "./conversation-adapters.ts
 
 const HOST = fileURLToPath(new URL("./conversation-host.ts", import.meta.url));
 const WORKER = fileURLToPath(new URL("./conversation-worker.ts", import.meta.url));
+/** Start a detached worker process that runs conversation `id` (only one turn with `once`) and return its pid; fails when
+ *  the conversation does not exist or the worker cannot start. */
 export function background(id: string, once = false): { pid: number } {
   sessions.inspect(id);
   const p = spawn(
@@ -24,6 +26,8 @@ export function background(id: string, once = false): { pid: number } {
   p.unref();
   return { pid: p.pid ?? fail("could not start conversation worker", 1) };
 }
+/** Claim and execute the queued runs of conversation `id` in turn, passing new events to `emit`, until none is claimable,
+ *  after one run with `once`, or after a SIGTERM; resolves false when any run failed. */
 export async function run(id: string, emit?: (e: sessions.Event) => void, once = false): Promise<boolean> {
   let ok = true;
   for (;;) {

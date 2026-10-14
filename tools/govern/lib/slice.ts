@@ -15,6 +15,7 @@ import * as jobs from "./jobs.ts";
 import * as reaping from "./reap.ts";
 
 const RUNNER = fileURLToPath(new URL("./sliceRunner.ts", import.meta.url));
+/** The job name a slice of recipe `recipe` runs under: slice-<recipe>. */
 export const jobName = (recipe: string) => `slice-${recipe}`;
 
 /** The piece names a split may print: the same characters as any govern name, so a name is one path part and never `..`. */

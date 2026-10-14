@@ -27,14 +27,17 @@ export interface Resource {
   commands?: { start?: string[]; stop?: string[]; list?: string[] };
 }
 
+/** Shape: a finite number, 0 or more; anything else is rejected at `p`. */
 export const nonNegative: Shape<number> = (v, p) => (typeof v === "number" && Number.isFinite(v) && v >= 0 ? v : reject(p, `must be a number, 0 or more (got ${JSON.stringify(v)})`));
 const NO_LOCK: Shape<false> = (v, p) => (v === false ? false : reject(p, `must be false (leave it out for the default of one slot)`));
 const ARGV = arr(str, { nonEmpty: true });
+/** Shape: a resource name of letters, digits, "." "_" "-", starting with a letter or digit; anything else is rejected. */
 export const NAME_CHARS: Shape<string> = (v, p) => {
   const s = name(v, p);
   return /^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(s) ? s : reject(p, `may use only letters, digits, "." "_" "-", starting with a letter or digit (got ${JSON.stringify(s)})`);
 };
 const PRICE_RAW = obj({ basis: literal("free", "per-second", "per-hour", "per-month") }, { currency: str, amount: nonNegative });
+/** Shape: a resource price. "free" takes no currency or amount; per-second, per-hour and per-month need both. */
 export const PRICE: Shape<Price> = (v, at) => {
   const x = PRICE_RAW(v, at);
   if (x.basis === "free") {
@@ -51,6 +54,8 @@ const RESOURCE_RAW = obj(
   { to: name, lock: NO_LOCK, price: PRICE, allowance: obj({ text: str }, { maxJobs: posInt, maxMachines: posInt }),
     commands: obj({}, { start: ARGV, stop: ARGV, list: ARGV }) },
 );
+/** Shape: the resource list, keyed by name. Rejects duplicate names, a dedicated resource without `to`, a shared one with
+ *  `to`, and `"lock": false` together with allowance.maxJobs. A missing price is free. */
 export const RESOURCES: Shape<Record<string, Resource>> = (v, at) => {
   const out = emptyRecord<Resource>();
   arr(RESOURCE_RAW)(v, at).forEach((r, i) => {
@@ -94,6 +99,7 @@ export function resourceNamed(n: string): Resource {
 
 /** Where the locks live: GOVERN_STATE, else govern-state beside the lanes' folder. */
 export const stateDir = (): string => stateFolder();
+/** The folder holding the lock slots of `resource`: locks/<resource> under the state folder. */
 export const lockDir = (resource: string) => join(stateDir(), "locks", resource);
 
 /** The slots of a resource: allowance.maxJobs, else 1, shared or dedicated; none (not locked) only where it says `"lock": false`. */

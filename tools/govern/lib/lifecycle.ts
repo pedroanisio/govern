@@ -13,12 +13,19 @@ import { withLaneLock } from "./lane-lock.ts";
 import { stateDir } from "./workspace.ts";
 import type { StageRuntime, EventReceipt } from "./lifecycle-schema.ts";
 
+/** Run `f` while holding the lane lock for `slug` (a lock file under `<state dir>/lane-locks`, keyed by the lane's state
+ *  file path), and return its result. Fails on an invalid slug. */
 export const transaction = <T>(slug: string, f: () => T): T =>
   withLaneLock(join(stateDir(), "lane-locks", sha256(stateFile(checkSlug(slug)))), f);
+/** The runtime record of `stage` (default: the current stage), created on first use; fails when the stage has no
+ *  lifecycle definition. */
 export function runtimeOf(p: Project, stage = p.stage): StageRuntime {
   enterRuntime(p, [stage]);
   return p.runtime?.[stage] ?? fail(`${stage} has no lifecycle definition`);
 }
+/** Reroute the lane to stage `to` as an exception: reset workflow state, human tasks, approvals and votes, enter the new
+ *  stage and append an exception-route ledger entry. Fails on an unknown stage, an uncertain check or compensation, or
+ *  unfinished subprocesses. */
 export function resetExecution(p: Project, to: string, reason: string): void {
   const from = p.stage,
     pr = processOf(p);
@@ -47,6 +54,8 @@ export function resetExecution(p: Project, to: string, reason: string): void {
   enterTasks(p);
   appendLedger(p.slug, { kind: "exception-route", from, to, reason });
 }
+/** Fire each due, not-yet-fired timer deadline on the active stages at time `at`: raise an alert, apply an escalation
+ *  (reroute and/or reassign the human task), save the lane and append a timer ledger entry. Returns how many fired. */
 export function tickTimers(p: Project, at = Date.now()): number {
   let emitted = 0;
   for (const stage of [...activeStages(p)]) {
@@ -98,6 +107,9 @@ export function tickTimers(p: Project, at = Date.now()): number {
   }
   return emitted;
 }
+/** Deliver external event `name`/`id` to the one active stage waiting for it with matching correlation (and generation,
+ *  when given): copy its mapped outputs into case data and record a receipt. Returns false for a repeat of the same event;
+ *  fails when the ID was used with other content, no or several stages match, or the stage already has its event. */
 export function deliverEvent(
   p: Project,
   name: string,
@@ -151,6 +163,8 @@ export function deliverEvent(
   appendLedger(p.slug, { kind: "event", id, name, stage, generation: r.generation });
   return true;
 }
+/** Fail (GovernError, exit 2) unless the current stage's lifecycle lets it advance at `at`: its event received, its
+ *  subprocess or foreach items synced, no uncertain check or compensation, no pending retry and retries not exhausted. */
 export function requireLifecycleReady(p: Project, at = Date.now()): void {
   const s = processOf(p).stages.find((s) => s.name === p.stage)!;
   if (!s.event && !s.onError && !s.call && !s.foreach) return;
@@ -166,6 +180,8 @@ export function requireLifecycleReady(p: Project, at = Date.now()): void {
   if (r.retryAt && Date.parse(r.retryAt) > at) fail(`${p.stage}: retry is scheduled for ${r.retryAt}`);
   if (r.failure && !r.retryAt) fail(`${p.stage}: retries exhausted; use govern recover`);
 }
+/** For a stage with an onError policy, count a new check attempt, mark the check in flight and save the lane; a no-op
+ *  otherwise. */
 export function beginAttempt(p: Project): void {
   const s = processOf(p).stages.find((s) => s.name === p.stage)!;
   if (!s.onError) return;
@@ -175,6 +191,7 @@ export function beginAttempt(p: Project): void {
   delete r.retryAt;
   save(p);
 }
+/** Clear the current stage's failure, scheduled retry and in-flight check flag. Does not save. */
 export function checkSucceeded(p: Project): void {
   const r = p.runtime?.[p.stage];
   if (r) {
@@ -183,6 +200,9 @@ export function checkSucceeded(p: Project): void {
     delete r.checkInFlight;
   }
 }
+/** Run the current stage's onError compensation command as a job, once, recording running/done/failed in the runtime and
+ *  the ledger. A no-op when none is declared or it already succeeded; fails when a prior run is uncertain, and fails
+ *  (exit 1) when the command exits non-zero. */
 export function compensate(p: Project): void {
   const s = processOf(p).stages.find((s) => s.name === p.stage)!,
     r = runtimeOf(p),
@@ -206,6 +226,8 @@ export function compensate(p: Project): void {
   appendLedger(p.slug, { kind: "compensate", stage: p.stage, command, job: result.id, ok: result.exit === 0 });
   if (result.exit !== 0) fail(`compensation ${command} failed (${jobs.ending(result)})`, 1);
 }
+/** Record a failed exit check under the stage's onError policy: schedule a retry with exponential backoff while attempts
+ *  remain, else run the compensation and reroute to the policy's `to` stage. Saves the lane; a no-op without a policy. */
 export function checkFailed(p: Project, message: string, at = Date.now()): void {
   const s = processOf(p).stages.find((s) => s.name === p.stage)!,
     policy = s.onError;
@@ -228,6 +250,8 @@ export function checkFailed(p: Project, message: string, at = Date.now()): void 
   if (policy.to) resetExecution(p, policy.to, "exit check failed");
   save(p);
 }
+/** Human recovery of the current stage's failed or interrupted check: `retry` resets the attempt state; `compensated`
+ *  records the declared compensation as done and reroutes to the onError destination. Appends a recover ledger entry. */
 export function recover(p: Project, action: "retry" | "compensated", quote: string): void {
   requireActive(p);
   const r = runtimeOf(p);
@@ -247,6 +271,8 @@ export function recover(p: Project, action: "retry" | "compensated", quote: stri
   }
   appendLedger(p.slug, { kind: "recover", stage: p.stage, action, quote });
 }
+/** Start (or return the existing) subprocess lane for call stage `stage`: check nesting depth and cycles, map inputs and
+ *  output types, create the child lane under the parent's `__calls/` and save the parent. Returns the child's slug. */
 export function startChild(p: Project, stage: string): string {
   requireActive(p, stage);
   const s = processOf(p).stages.find((s) => s.name === stage)!,
@@ -296,6 +322,8 @@ export function startChild(p: Project, stage: string): string {
   appendLedger(p.slug, { kind: "subprocess-start", stage, child, generation: r.generation });
   return child;
 }
+/** Copy a finished subprocess's mapped outputs into the parent's case data, once; foreach stages delegate to syncItems.
+ *  Starts the child if needed. Returns whether the stage's subprocess work is synced. */
 export function syncChild(p: Project, stage: string): boolean {
   if (processOf(p).stages.find((s) => s.name === stage)?.foreach) return syncItems(p, stage);
   requireActive(p, stage);
@@ -320,12 +348,16 @@ export function syncChild(p: Project, stage: string): boolean {
     return true;
   });
 }
+/** Freeze the lane's current process definition into its snapshot, save and log it; a no-op when already pinned. */
 export function pin(p: Project): void {
   if (p.processSnapshot) return;
   p.processSnapshot = freezeProcess(processOf(p));
   save(p);
   appendLedger(p.slug, { kind: "process-pin", revision: p.processSnapshot.revision, hash: p.processSnapshot.hash });
 }
+/** Move a pinned, unfinished lane to a higher revision of its process: rename stages through `map`, apply `patch` to case
+ *  data (null deletes), reset approvals, votes, tasks and runtime, save and log the migration. Fails on any unsafe state
+ *  (graph/linear change, active subprocesses, uncertain compensation, a dependent lane naming a renamed stage). */
 export function migrate(
   p: Project,
   map: Record<string, string>,

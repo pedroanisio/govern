@@ -18,6 +18,8 @@ const codexBin = () => process.env.GOVERN_CODEX_BIN ?? "codex";
 export interface Usage { input: number; cached: number; cacheWrite: number; output: number; reasoning: number }
 export interface Events { thread?: string; usage: Usage; turns: number; message?: string; errors: string[] }
 
+/** Sum a `codex exec --json` event stream: thread id, token usage and turn count over completed turns, the last agent
+ *  message, and the error messages of failed turns; lines that are not JSON are skipped. */
 export function parseEvents(jsonl: string): Events {
   const ev: Events = { usage: { input: 0, cached: 0, cacheWrite: 0, output: 0, reasoning: 0 }, turns: 0, errors: [] };
   for (const line of jsonl.split("\n")) {
@@ -38,6 +40,8 @@ export function parseEvents(jsonl: string): Events {
 }
 
 export interface ExecOpts { cwd: string; schema?: string; lastMessage: string; model?: string; effort?: string; images?: string[]; sandbox?: string; config?: string[]; addDirs?: string[] }
+/** The `codex exec` argv for one step (the prompt goes on stdin): images first, then JSON events, ephemeral, sandbox
+ *  (default read-only), cwd, last-message file, and the optional model, effort, -c config, extra dirs and output schema. */
 export function execArgs(o: ExecOpts): string[] {
   const a = ["exec"];
   // -i takes several files, so it goes before the other flags and never next to the prompt.
@@ -70,6 +74,8 @@ export function promptFiles(processName?: string): { name: string; file: string 
   }
   return [...seen].map(([name, file]) => ({ name, file })).sort((a, b) => a.name.localeCompare(b.name));
 }
+/** Read prompt `name` from the first of `dirs` that has `<name>.md`, splitting its `---` front matter into meta; fails
+ *  on a bad name, a missing prompt, or a `repairs` value that is not a whole number. */
 export function readPrompt(name: string, dirs: string[]): PromptFile {
   if (!/^[a-z0-9-]+$/.test(name)) fail(`bad prompt name: ${name}`);
   const dir = dirs.find((d) => existsSync(join(d, `${name}.md`)));
@@ -167,6 +173,10 @@ export function validate(schema: any, v: any, path = "$"): string[] {
  * call gets only the errors; a reply that still fails is returned with ok=false and never as a result.
  */
 export interface AskResult { ok: boolean; value?: any; errors: string[]; usage: Usage; turns: number; calls: number; out: string; seconds: number }
+/** Run prompt `name` for `p` through `codex exec`: the reply is JSON-parsed and checked against the prompt's schema and
+ *  house rules, with at most `repairs` (default 1) repair calls given the errors; a reply that still fails comes back
+ *  with ok=false. Writes each call's events, last message and the result under govern/ask and appends an "ask" ledger
+ *  entry; fails before any call on a missing prompt, schema or rules file, or an unfilled placeholder. */
 export function ask(p: Project, name: string, o: { files?: string[]; vars?: Record<string, string>; images?: string[]; effort?: string; model?: string; timeoutSec?: number }): AskResult {
   const pf = readPrompt(name, promptDirs(processName(p)));
   const prompt = render(pf, p, o.files ?? [], o.vars ?? {});

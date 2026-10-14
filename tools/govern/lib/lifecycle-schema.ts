@@ -159,6 +159,8 @@ interface ProcessLike {
     join?: unknown;
   }[];
 }
+/** Reject (ShapeError) the first lifecycle problem in a process: invalid calendars, and stage timers, escalations, event
+ *  waits, subprocess calls, foreach batches and error policies that name unknown or ineligible stages, fields or people. */
 export function validateLifecycleProcess(p: ProcessLike): void {
   const fields = p.fields ?? {},
     stages = new Map(p.stages.map((s) => [s.name, s]));

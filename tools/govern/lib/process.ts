@@ -55,6 +55,7 @@ export interface Process {
   dir: string;
 }
 
+/** The workspace's processes folder, read after the built-ins by processes(); undefined when there is none. */
 export const extraDir = (): string | undefined => processesDir();
 
 const STAGE = obj({ name }, { exit: str, check: name, requires: literal("check"), next: arr(ROUTE), join: JOIN, human: HUMAN, requiredFields: arr(name), timer:TIMER, event:EVENT_WAIT, onError:ERROR_POLICY, call:CALL, foreach:FOREACH });
@@ -153,6 +154,7 @@ export function processes(): Map<string, Process> {
   return m;
 }
 
+/** The process named `name` (workspace or built-in); fails, listing the names there are, when there is none. */
 export function getProcess(name: string): Process {
   const all = processes();
   return all.get(name) ?? fail(`no process "${name}" (have: ${[...all.keys()].join(", ")})`);
@@ -160,23 +162,33 @@ export function getProcess(name: string): Process {
 
 /** The process's manual file, absolute, or undefined when it names none. */
 export const manualOf = (p: Process): string | undefined => (p.manual ? resolve(p.dir, p.manual) : undefined);
+/** The process a project runs by name: its `process` field, else "ops" for an ops project and "video" for any other. */
 export const processName = (p: Pick<Project, "process" | "kind">) => p.process ?? (p.kind === "ops" ? "ops" : "video");
+/** A snapshot of `pr` to store on a project: its definition (without `dir`) as JSON text, that text's sha256, its
+ *  revision (1 when unset) and its folder. */
 export function freezeProcess(pr:Process):Snapshot {
   const {dir,...definition}=pr, text=JSON.stringify(definition);
   return {revision:pr.revision??1, hash:sha256(text), definition:text, dir};
 }
+/** The process frozen in `snapshot`, re-parsed and re-validated; fails when the text does not match its hash or the
+ *  parsed revision differs from the recorded one. */
 export function snapshotProcess(snapshot:Snapshot):Process {
   if(sha256(snapshot.definition)!==snapshot.hash)fail('process snapshot checksum mismatch');
   const pr=parseProcess(join(snapshot.dir,'snapshot.json'),snapshot.definition);
   if((pr.revision??1)!==snapshot.revision)fail('process snapshot revision mismatch');
   return pr;
 }
+/** The process a project runs: its frozen snapshot when it has one, else the current definition named by processName. */
 export const processOf = (p: Pick<Project, "process" | "kind"> & {processSnapshot?:Snapshot}) => p.processSnapshot ? snapshotProcess(p.processSnapshot) : getProcess(processName(p));
 
+/** One `govern process` list line: name, description, and the stages (an arrow chain, or "graph:" and a comma list
+ *  when any stage routes with `next`). */
 export function listLine(p: Process): string {
   return `${p.name.padEnd(8)} ${p.description} · ${p.stages.some(s => s.next !== undefined) ? "graph: " + p.stages.map(s => s.name).join(", ") : p.stages.map((s) => s.name).join(" → ")}`;
 }
 
+/** The `govern process show` text: name, revision and description, one line per stage with its settings, then the
+ *  gates, their approval policies and the process fields. */
 export function show(p: Process): string {
   const L = [`${p.name}${p.revision!==undefined?` (revision ${p.revision})`:""}: ${p.description}`];
   p.stages.forEach((s, i) => {

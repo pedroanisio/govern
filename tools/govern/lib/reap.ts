@@ -249,6 +249,8 @@ function listable(names: string[]): Resource[] {
   return Object.values(resources()).filter((r) => r.commands?.list);
 }
 
+/** The last orphan-scan results per resource from the state folder's reap-scan.json; [] when there is none, and fails
+ *  when the file does not match its shape. */
 export function readScan(): Scan[] {
   const f = scanFile();
   return existsSync(f) ? parseFile(f, readFileSync(f, "utf8"), SCANS).results : [];

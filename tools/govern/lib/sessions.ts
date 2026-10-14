@@ -8,6 +8,7 @@ import { fail, procStat, hasProc, exited } from "./util.ts";
 /** procStart: the session process's start time as Claude Code recorded it (field 22 of /proc/<pid>/stat). */
 export interface Session { pid: number; name: string; cwd?: string; kind?: string; status?: string; procStart?: string }
 
+/** Claude Code's session registry folder: GOVERN_SESSIONS_DIR, else ~/.claude/sessions. */
 export const SESSIONS_DIR = () => process.env.GOVERN_SESSIONS_DIR ?? join(homedir(), ".claude", "sessions");
 
 /** The pid runs and, when a start time is recorded and /proc can tell, it is the same process (not a recycled pid). */
@@ -30,6 +31,7 @@ export function sessions(dir = SESSIONS_DIR()): Session[] {
   }
   return out;
 }
+/** The sessions in the registry at `dir` whose process still runs (the same process, where its start time is recorded). */
 export const liveSessions = (dir = SESSIONS_DIR()): Session[] => sessions(dir).filter((s) => isAlive(s.pid, s.procStart));
 
 /** Parent pid from the text of /proc/<pid>/stat: "pid (comm) S ppid …", comm may hold parentheses. */
@@ -56,6 +58,7 @@ export function resolveAs(o: { as?: string; env?: NodeJS.ProcessEnv; dir?: strin
   const live = liveSessions(o.dir);
   return (o.chain ?? (() => pidChain()))().map((p) => live.find((s) => s.pid === p)).find(Boolean)?.name;
 }
+/** Who is calling, as resolveAs finds it from `as`, GOVERN_AS or the parent process chain; a GovernError when none of them names a session. */
 export const requireAs = (as?: string): string =>
   resolveAs({ as }) ?? fail("cannot tell which session this is (no parent process is a registered Claude Code session): pass --as NAME or set GOVERN_AS");
 

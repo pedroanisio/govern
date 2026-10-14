@@ -5,6 +5,7 @@ import { dirname, join, basename } from "node:path";
 import { randomUUID } from "node:crypto";
 import { fail, sha256, type FlagSpec } from "./util.ts";
 
+/** The SHA-256 hex digest of file `f`'s bytes; a missing or unreadable file throws the fs error. */
 export const sha256File = (f: string) => sha256(readFileSync(f));
 
 /** Refuse, as a failed check (exit 1), a source that is not a file and a destination that is a directory: both would

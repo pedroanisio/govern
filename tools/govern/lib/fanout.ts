@@ -8,6 +8,9 @@ import { emptyRecord, check } from "./shape.ts";
 import { fieldValue, type Scalar, type Value } from "./business-schema.ts";
 import { fail, sha256 } from "./util.ts";
 
+/** Advance foreach stage `stage` of `p`: on first call validate and freeze the item collection and child process, then
+ *  start child cases up to the concurrency limit, and once every child has finished, collect their outputs into the
+ *  parent's fields. Saves and ledgers each step; true when the batch is synced, false while children remain. */
 export function syncItems(p: Project, stage: string): boolean {
   requireActive(p, stage);
   const pr = processOf(p),

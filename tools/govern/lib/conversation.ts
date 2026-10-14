@@ -157,12 +157,16 @@ const SHAPE = obj(
   },
   { lane: str, context: obj({ summary: str, through: name }), closedAt: timestamp }
 );
+/** Validate a conversation ID (1–80 chars of lowercase letters, digits, dots and dashes, starting alphanumeric) and
+ *  return it; anything else fails with GovernError (exit 2). */
 export function sessionId(id: string | undefined): string {
   if (!id || !/^[a-z0-9][a-z0-9.-]{0,79}$/.test(id))
     fail("conversation ID must be 1–80 lowercase letters, digits, dots or dashes, starting with a letter or digit");
   return id!;
 }
+/** The folder holding every conversation: `<state dir>/conversations`. */
 export const root = () => join(stateDir(), "conversations");
+/** A conversation's folder under root(), after validating `id`; fails when the root or that folder is a symlink. */
 export function directory(id: string): string {
   const base = root();
   if (existsSync(base) && lstatSync(base).isSymbolicLink()) fail("conversation folder cannot be a symlink");
@@ -171,6 +175,8 @@ export function directory(id: string): string {
   return dir;
 }
 const file = (id: string) => join(directory(id), "session.json");
+/** Load and verify conversation `id`'s session.json without locking: shape, ownership by the current OS user, unique
+ *  run/message/request IDs, at most one running run, run/reply/event consistency and the context boundary. Fails on any. */
 export function read(id: string): Conversation {
   const f = file(id);
   if (!existsSync(f)) fail(`conversation ${id} does not exist`);
@@ -223,9 +229,12 @@ function save(s: Conversation): void {
     closeSync(d);
   }
 }
+/** Append an event of `type` to `s`, numbered with the next sequence number and stamped now. Mutates `s`; does not save. */
 export function event(s: Conversation, type: string, extra: Omit<Event, "seq" | "at" | "type"> = {}): void {
   s.events.push({ seq: s.events.length + 1, at: nowIso(), type, ...extra });
 }
+/** Run `f` on conversation `id` under its lock: read it, mark runs whose owner died as interrupted, then save when `f`
+ *  changed it. If `f` throws, only the interruption bookkeeping is saved before the error propagates. */
 export function transact<T>(id: string, f: (s: Conversation) => T): T {
   if (!existsSync(file(id))) fail(`conversation ${id} does not exist`);
   return withLaneLock(join(directory(id), "lock"), () => {
@@ -253,9 +262,11 @@ function reconcile(s: Conversation): void {
       allowances.settleAtLeast(r.id, {}, r.error);
     }
 }
+/** A snapshot of conversation `id`, read under its lock (interrupted runs are reconciled and saved first). */
 export function inspect(id: string): Conversation {
   return transact(id, (s) => structuredClone(s));
 }
+/** Snapshots of every conversation under root() whose folder name is a valid ID; empty when the root does not exist. */
 export function list(): Conversation[] {
   return existsSync(root())
     ? readdirSync(root(), { withFileTypes: true })
@@ -263,6 +274,9 @@ export function list(): Conversation[] {
         .map((d) => inspect(d.name))
     : [];
 }
+/** Create conversation `id` bound to a profile (default codex-read) or a configured command adapter, working in a lane's
+ *  folder or the repo. Validates the timeout and context budget, writes session.json (mode 600) under the lock and fsyncs
+ *  it; fails when the conversation already exists. */
 export function create(
   id: string,
   o: {
@@ -328,6 +342,8 @@ export function create(
     return s;
   });
 }
+/** Queue a user message as a new run. A reused `requestId` returns the earlier run with `duplicate: true` (or fails when
+ *  its content differs); `mode: "interrupt"` asks running runs to cancel. Fails on a closed conversation or bad input. */
 export function send(
   id: string,
   text: string,
@@ -371,6 +387,8 @@ export function send(
     return { run: structuredClone(run), duplicate: false };
   });
 }
+/** Cancel run `runId`: a queued run is cancelled at once, a running one gets a cancel request; other states are left as
+ *  they are. Fails on an unknown run. */
 export function cancel(id: string, runId: string, reason: string): void {
   transact(id, (s) => {
     const r = s.runs.find((r) => r.id === runId) ?? fail("unknown conversation run");
@@ -386,6 +404,7 @@ export function cancel(id: string, runId: string, reason: string): void {
     }
   });
 }
+/** Mark conversation `id` closed (idempotent); fails while any run is queued or running. */
 export function close(id: string): void {
   transact(id, (s) => {
     if (s.runs.some((r) => ["queued", "running"].includes(r.state)))
@@ -396,6 +415,8 @@ export function close(id: string): void {
     }
   });
 }
+/** Replace earlier history with `summary` up to assistant message `through`. Fails while a run is active, when the boundary
+ *  is not an assistant message or moves backwards, or when the summary exceeds the context budget. */
 export function checkpoint(id: string, summary: string, through: string): void {
   if (!summary.trim()) fail("context summary must be nonempty");
   transact(id, (s) => {
@@ -409,6 +430,8 @@ export function checkpoint(id: string, summary: string, through: string): void {
     event(s, "context.checkpoint", { text: through });
   });
 }
+/** Acknowledge the latest unacknowledged interrupted run with `note`, then continue as is, queue a retry of the same
+ *  message, or cancel it. Fails while that run's runtime host is still alive or when no run needs recovery. */
 export function recover(id: string, action: string, note: string): void {
   if (!["continue", "retry", "cancel"].includes(action) || !note.trim())
     fail("recover requires action continue|retry|cancel and a nonempty note");
@@ -439,6 +462,9 @@ export function recover(id: string, action: string, note: string): void {
     }
   });
 }
+/** Take the next queued run for this process: mark it running, owned by this pid, and return copies of the session and
+ *  run. Undefined when closed, busy or idle; fails (exit 1) on an unrecovered interruption, a changed profile, or a guard
+ *  or check problem. */
 export function claim(id: string): { session: Conversation; run: Run } | undefined {
   return transact(id, (s) => {
     if (s.closedAt) return undefined;
@@ -461,6 +487,7 @@ export function claim(id: string): { session: Conversation; run: Run } | undefin
     return { session: structuredClone(s), run: structuredClone(r) };
   });
 }
+/** Apply `f` to running run `runId` under the conversation lock; fails (exit 1) unless this process still owns the run. */
 export function update(id: string, runId: string, f: (s: Conversation, r: Run) => void): void {
   transact(id, (s) => {
     const r = s.runs.find((r) => r.id === runId) ?? fail("unknown conversation run");
@@ -469,6 +496,8 @@ export function update(id: string, runId: string, f: (s: Conversation, r: Run) =
     f(s, r);
   });
 }
+/** The message list to send for run `r`: the checkpoint summary, prior finished turns after the checkpoint (a host note in
+ *  place of a missing reply), then the current message. Fails (exit 1) when it exceeds the context budget. */
 export function context(s: Conversation, r: Run): { role: "user" | "assistant"; content: string }[] {
   const current = s.messages.find((m) => m.id === r.messageId)!;
   const through = s.context ? s.messages.findIndex((m) => m.id === s.context!.through) : -1;

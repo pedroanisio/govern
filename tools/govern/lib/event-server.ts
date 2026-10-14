@@ -6,6 +6,9 @@ import { load, save } from "./project.ts";
 import { deliverEvent, transaction } from "./lifecycle.ts";
 import { GovernError, fail } from "./util.ts";
 const DELIVERY = obj({ lane: name, name, id: name, correlation: scalar }, { data: record(scalar), generation: posInt });
+/** An HTTP server (not yet listening) that takes POST /events with `Authorization: Bearer <token>`, a JSON delivery of
+ *  at most 64 KiB, and delivers it to the lane's waiting stage under the lane lock: 200 {accepted, duplicate}; 400, 401,
+ *  404, 409 (a refused delivery) or 413 otherwise. Fails when the token is shorter than 16 characters. */
 export function eventServer(token: string): Server {
   if (token.length < 16) fail("GOVERN_WEBHOOK_TOKEN must contain at least 16 characters");
   const digest = (s: string) => createHash("sha256").update(s).digest();

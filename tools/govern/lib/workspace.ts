@@ -114,9 +114,13 @@ function required(key: keyof WorkspaceConfig & string, env?: string): string {
 const optional = (key: "processes" | "workflow" | "prompts" | "capabilities" | "state", env: string): string | undefined =>
   process.env[env] || (findRepo() ? abs(config()[key]) ?? (Object.hasOwn(DOT_DEFAULTS, key) ? dotDefault(key as keyof typeof DOT_DEFAULTS) : undefined) : undefined);
 
+/** The lanes' folder: GOVERN_PROJECTS, else the config's "projects", else .govern/projects; none of them is a GovernError. */
 export const projectsDir = (): string => required("projects", "GOVERN_PROJECTS");
+/** The queue folder: GOVERN_QUEUE, else the config's "queue", else .govern/queue; none of them is a GovernError. */
 export const queueDir = (): string => required("queue", "GOVERN_QUEUE");
+/** The tuning log: GOVERN_TUNING_LOG, else the config's "tuningLog", else .govern/tuning.jsonl; none of them is a GovernError. */
 export const tuningLogFile = (): string => required("tuningLog", "GOVERN_TUNING_LOG");
+/** The packages folder from the config's "packages" (no env override, no .govern default); unset is a GovernError. */
 export const packagesDir = (): string => required("packages");
 /** The workspace's own processes folder, or undefined (built-in processes only) when there is none or no workspace. */
 export const processesDir = (): string | undefined => optional("processes", "GOVERN_PROCESSES");
@@ -124,6 +128,7 @@ export const processesDir = (): string | undefined => optional("processes", "GOV
 export const workflowFile = (): string | undefined => optional("workflow", "GOVERN_WORKFLOW");
 /** The workspace-wide prompts folder (GOVERN_PROMPTS replaces every prompts folder), or undefined. */
 export const promptsDir = (): string | undefined => optional("prompts", "GOVERN_PROMPTS");
+/** The config's chat baseline for `govern usage`, or undefined when it gives none. */
 export const baseline = (): Baseline | undefined => config().baseline;
 /** The config's decide settings, envFile absolute. */
 export const decideConfig = (): { shadow: boolean; envFile?: string } => {

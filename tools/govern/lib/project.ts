@@ -17,6 +17,7 @@ export const KINDS = ["long", "short", "ops"] as const;
 /** A command with settings: its argv, how long it may run in the foreground (seconds), and the resource it runs on (so
  *  `govern run` needs no --on). A plain argv array is the same command with the default timeout and no resource. */
 export interface Command { argv: string[]; timeout?: number; resource?: string }
+/** A command's argv: the array itself, or the `argv` of a command with settings. */
 export const argvOf = (c: string[] | Command): string[] => (Array.isArray(c) ? c : c.argv);
 /** A command as one line: its argv, and its own timeout and resource when it has them. */
 export const commandLine = (c: string[] | Command): string => {
@@ -63,9 +64,13 @@ export interface Project {
   notes: Note[];
 }
 
+/** Lane `slug`'s folder under the lanes folder. */
 export const projectDir = (slug: string) => join(projectsDir(), slug);
+/** Lane `slug`'s govern.json path. */
 export const stateFile = (slug: string) => join(projectDir(slug), "govern.json");
+/** Lane `slug`'s `govern/` subfolder, where its ledger and job records live. */
 export const governDir = (slug: string) => join(projectDir(slug), "govern");
+/** Lane `slug`'s append-only ledger: `govern/ledger.jsonl` in its folder. */
 export const ledgerFile = (slug: string) => join(governDir(slug), "ledger.jsonl");
 
 /** A slug as its lane's folder names it: `.` segments dropped (`./l1`, `l1/.` and `a/./b` are the folders l1, l1 and a/b).
@@ -132,6 +137,8 @@ export function parseProject(file: string, text: string, slug: string): Project 
   });
 }
 
+/** Read and parse lane `given`'s govern.json (see parseProject). A bad slug, a missing file or a failed parse is a
+ *  GovernError (exit 2); a missing file's message says how to start the lane. */
 export function load(given: string | undefined): Project {
   const slug = checkSlug(given);
   const f = stateFile(slug);
@@ -153,6 +160,9 @@ export function save(p: Project): void {
   writeJson(f, q);
 }
 
+/** Create and save a new lane's govern.json from a process (or a frozen snapshot of one) or a legacy kind: commands and
+ *  files from the process setup, the first stage, initial business state and optional case data. Fails when the lane
+ *  exists or the kind does not fit the process; warns on stderr about {paths.NAME} keys the config lacks. */
 export function create(given: string, o: { kind?: string; process?: string; title?: string; lang?: string; parent?: string; pin?:boolean; data?:Record<string,Value>; snapshot?:Snapshot; invocation?:Invocation }): Project {
   const slug = checkSlug(given);
   if (existsSync(stateFile(slug))) fail(`${slug}: govern.json already exists`);
@@ -199,8 +209,10 @@ function warnMissingPaths(commands: Record<string, string[]>): void {
   for (const n of missing) process.stderr.write(`warning: a command of this process uses {paths.${n}}, but ${configFile()} has no paths.${n} (it fails when run)\n`);
 }
 
+/** The stage names of the lane's process, in order. */
 export const stagesOf = (p: Pick<Project, "process" | "kind">): string[] => processOf(p).stages.map((s) => s.name);
 
+/** `s` when it is a stage of the lane's process; otherwise a GovernError (exit 2) listing the valid stages. */
 export function stageOf(s: string | undefined, p: Pick<Project, "process" | "kind">): string {
   const list = stagesOf(p);
   if (!s || !list.includes(s)) fail(`stage must be one of: ${list.join(", ")}`);
@@ -256,6 +268,7 @@ export function laneState(p: Project): string {
   return b.length ? `blocked by ${b.join(", ")}` : "ready";
 }
 
+/** Append `entry` to the lane's ledger as one JSON line, stamped with the time and slug; creates `govern/` when missing. */
 export function appendLedger(slug: string, entry: Record<string, unknown>): void {
   mkdirSync(governDir(slug), { recursive: true });
   appendFileSync(ledgerFile(slug), JSON.stringify({ t: nowIso(), slug, ...entry }) + "\n");
@@ -277,6 +290,8 @@ export function exitCondition(p: Project, stage = p.stage): string | undefined {
   return pr.stages.find((s) => s.name === stage)?.exit ?? (pr.exitFrom === "workflow" ? workflowExit(pr.stages.map((s) => s.name), stage) : undefined);
 }
 
+/** The path of the lane's file `name`: a glob resolves to its newest match in the lane's folder, a plain path only when it
+ *  exists. Undefined when the name is not declared or nothing matches. */
 export function resolveFile(p: Project, name: string): string | undefined {
   const pat = p.files[name];
   if (!pat) return undefined;

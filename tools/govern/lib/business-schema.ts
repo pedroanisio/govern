@@ -1,6 +1,7 @@
 // Declarative business workflow shapes. Conditions are data, never evaluated JavaScript.
 import { obj, arr, record, str, name, literal, posInt, reject, type Shape } from "./shape.ts";
 export type Scalar = string | number | boolean;
+/** A string, a boolean or a finite number; anything else is rejected. */
 export const scalar: Shape<Scalar> = (v, p) => {
   if (typeof v === "string" || typeof v === "boolean" || (typeof v === "number" && Number.isFinite(v))) return v;
   return reject(p, "must be a string, finite number or boolean");
@@ -9,6 +10,7 @@ const bool: Shape<boolean> = (v, p) => (typeof v === "boolean" ? v : reject(p, "
 const number: Shape<number> = (v, p) =>
   typeof v === "number" && Number.isFinite(v) ? v : reject(p, "must be a finite number");
 export type Value = Scalar | Scalar[];
+/** A field value: a scalar or an array of scalars. */
 export const value: Shape<Value> = (v, p) => (Array.isArray(v) ? arr(scalar)(v, p) : scalar(v, p));
 export interface Field {
   type: "string" | "number" | "integer" | "boolean" | "array";
@@ -42,6 +44,8 @@ export type Condition =
   | { all: Condition[] }
   | { any: Condition[] }
   | { not: Condition };
+/** A routing condition as data: {all: [...]}, {any: [...]}, {not: c}, or a {field, op, value} comparison where
+ *  "exists" takes no value, every other op needs one, and only "in" takes an array. */
 export const CONDITION: Shape<Condition> = (v, p) => {
   if (v && typeof v === "object" && Object.hasOwn(v, "all"))
     return obj({ all: arr(CONDITION, { nonEmpty: true }) })(v, p);
@@ -73,6 +77,7 @@ export const ROUTE = obj(
     join: name
   }
 );
+/** Every stage a route can lead to: its `to` stages, its dynamic branch targets, and its join. */
 export const routeTargets = (r: Route) => [
   ...r.to,
   ...(r.branches ?? []).map((b) => b.to),
@@ -134,6 +139,7 @@ export interface HumanTask {
   completedAt?: string;
   quote?: string;
 }
+/** An ISO 8601 date-time string with seconds and a Z or ±hh:mm offset that Date.parse accepts. */
 export const timestamp: Shape<string> = (v, p) =>
   typeof v === "string" &&
   /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})$/.test(v) &&
@@ -148,6 +154,8 @@ export interface Vote {
   quote: string;
 }
 export const VOTES = record(arr(obj({ by: name, decision: literal("approve", "reject"), at: timestamp, quote: str })));
+/** Check `v` against field declaration `f` (type, enum, and min/max as length for strings, value for numbers, item
+ *  count for arrays; array items recursively); rejects at `path` (a ShapeError) on the first violation. */
 export function fieldValue(f: Field, v: Value, path: string): void {
   if (f.type === "array") {
     if (!Array.isArray(v)) reject(path, "must be an array");
@@ -178,6 +186,9 @@ interface BusinessProcess {
   }[];
   gates: { name: string; policy?: Policy }[];
 }
+/** Check the cross-references of a process's business layer and reject (ShapeError) the first problem: field
+ *  declarations, people and roles, route conditions, graph next/join/branch/loop rules, an acyclic graph with every
+ *  stage reachable from the first, and gate approval policies. */
 export function validateBusinessProcess(p: BusinessProcess): void {
   const fields = p.fields ?? {},
     people = p.people ?? {},

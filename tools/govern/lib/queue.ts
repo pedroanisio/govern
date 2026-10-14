@@ -40,6 +40,7 @@ export interface QueueConfig {
   /** Content checks on replies by message kind, the task's or the reply's (lib/replycheck.ts); a profile's own `check` wins over these for content kinds. */
   checks?: Record<string, CheckDef>;
 }
+/** The queue's config.json, unchecked; {} when there is none, and fails when it is not JSON. */
 export function config(): QueueConfig {
   const f = join(QUEUE(), "config.json");
   if (!existsSync(f)) return {};
@@ -48,6 +49,7 @@ export function config(): QueueConfig {
 /** Agents the dispatcher can run. Anyone else (owner, a named session) only reads the queue. */
 /** codex, claude, grok and the config.json runners: the queue line of the desk (profiles have their own line). */
 export const plainRunners = (): string[] => [...BUILTIN_RUNNERS, ...Object.keys(config().runners ?? {})];
+/** Everything the dispatcher can run: the plain runners, then every profile that is not a legacy name or a plain runner. */
 export const runners = (): string[] => {
   const named = [...registry().profiles.keys()].filter((n) => !(LEGACY_PROFILES as readonly string[]).includes(n) && !plainRunners().includes(n));
   return [...plainRunners(), ...named];
@@ -109,6 +111,8 @@ function defaultProfile(m: Pick<Message, "to" | "access">, reg: Registry): strin
 /** The lane that authorises a message's profile: --lane, else the project when it is a lane. */
 const laneOf = (m: Pick<Message, "lane" | "project">): string | undefined => m.lane ?? (existsSync(join(projectsDir(), m.project, "govern.json")) ? m.project : undefined);
 
+/** Validate a new message (names, project slug, kind, summary, profile guard for its lane, reply-to and files) and write
+ *  it as an open message with a fresh id and creation time; fails on the first invalid part. */
 export function send(m: Omit<Message, "id" | "created">): Message {
   for (const [k, v] of [["task", m.task], ["to", m.to], ["from", m.from]] as const)
     if (!NAME.test(v)) fail(`--${k} must be lowercase letters, digits, dots and dashes: ${v}`);
@@ -129,6 +133,7 @@ export function send(m: Omit<Message, "id" | "created">): Message {
   return msg;
 }
 
+/** Every message in every state folder, oldest first (by creation time, then id). */
 export function all(): { state: State; m: Message }[] {
   const out: { state: State; m: Message }[] = [];
   for (const s of STATES) {
@@ -139,6 +144,8 @@ export function all(): { state: State; m: Message }[] {
   return out.sort((a, b) => a.m.created.localeCompare(b.m.created) || a.m.id.localeCompare(b.m.id)); // ids carry whole seconds only
 }
 
+/** The message a reference names (full id, id prefix, or the short code after its last dash); undefined when none, and
+ *  fails when it is ambiguous. */
 export function find(ref: string): { state: State; m: Message } | undefined {
   // the full id, a prefix of it, or the short code after the last dash (what people quote: "4x9l")
   const code = (id: string) => id.slice(id.lastIndexOf("-") + 1);
@@ -198,6 +205,8 @@ const save = (m: Message, s: State) => writeFileSync(join(dir(s), `${m.id}.json`
 // ---------------------------------------------------------------- the prompt one session gets
 
 export const MAX_FILES_CHARS = Number(process.env.GOVERN_QUEUE_MAX_INLINE ?? 40000);
+/** The prompt a dispatched agent gets for message `m`: its role and limits, the thread oldest first, the named files
+ *  inlined up to MAX_FILES_CHARS in all (marked truncated beyond), and the required JSON reply format. */
 export function prompt(m: Message): string {
   const t = thread(m);
   let budget = MAX_FILES_CHARS;
@@ -247,6 +256,8 @@ function keepRaw(m: Message, text: string | undefined): string {
   return f;
 }
 
+/** An agent's reply parsed and checked against queue-reply.json (a ```json fence is stripped): {kind, summary, body},
+ *  or {error} when it is empty, not JSON, or fails the schema. */
 export function parseReply(text: string | undefined): { kind: string; summary: string; body: string } | { error: string } {
   if (!text) return { error: "empty reply" };
   let v: any;

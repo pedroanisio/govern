@@ -8,8 +8,12 @@ import { fail, nowIso } from "./util.ts";
 import { check, emptyRecord, reject } from "./shape.ts";
 import { fieldValue, type Scalar, type Value, type Condition, type Vote } from "./business-schema.ts";
 
+/** Whether `pr` is a graph process: true when any stage declares `next` routes, false for a linear stage list. */
 export const isGraph = (pr: Process) => pr.stages.some((s) => s.next !== undefined);
+/** The lane's active stages: none once finished, the workflow's active set for a graph lane, else just `p.stage`. */
 export const activeStages = (p: Project): string[] => (p.finished ? [] : (p.workflow?.active ?? [p.stage]));
+/** Evaluate a data condition against case data: all/any/not combine recursively; `exists` tests presence, and every
+ *  other operator is false when the field is missing. */
 export function matches(c: Condition, data: Record<string, Value>): boolean {
   if ("all" in c) return c.all.every((x) => matches(x, data));
   if ("any" in c) return c.any.some((x) => matches(x, data));
@@ -37,6 +41,9 @@ export function matches(c: Condition, data: Record<string, Value>): boolean {
       return (v as number) <= (c.value as number);
   }
 }
+/** Check a lane's business state against its process: case data fields and values, identity fields naming process people,
+ *  graph workflow bookkeeping (stages, loops, dynamic joins), human tasks and policy votes. Throws ShapeError at the first
+ *  invalid entry under `path`. */
 export function validateCase(p: Project, pr: Process, path: string): void {
   for (const [k, v] of Object.entries(p.data ?? {})) {
     const f = pr.fields?.[k];
@@ -96,6 +103,8 @@ export function validateCase(p: Project, pr: Process, path: string): void {
     }
   }
 }
+/** Set up a new lane's business state in place: case data from field defaults, graph workflow state when the process is a
+ *  graph, runtime entries and human tasks for the first stage. */
 export function initializeBusiness(p: Project): void {
   const pr = processOf(p);
   if (pr.fields)
@@ -107,9 +116,11 @@ export function initializeBusiness(p: Project): void {
   if (isGraph(pr)) p.workflow = { active: [p.stage], completed: [], waiting: [], cancelled: [] };
   enterTasks(p);
 }
+/** Fail (GovernError, exit 2) unless `stage` (default: the current stage) is one of the lane's active stages. */
 export function requireActive(p: Project, stage = p.stage): void {
   if (!activeStages(p).includes(stage)) fail(`${p.slug}: stage ${stage} is not active`);
 }
+/** Fail (GovernError, exit 2) naming every missing field required by the process or by `stage` (default: the current stage). */
 export function validateRequired(p: Project, stage = p.stage): void {
   const pr = processOf(p),
     required = [
@@ -119,6 +130,8 @@ export function validateRequired(p: Project, stage = p.stage): void {
   const missing = required.filter((k) => !Object.hasOwn(p.data ?? {}, k));
   if (missing.length) fail(`${p.slug}: missing required fields: ${[...new Set(missing)].join(", ")}`);
 }
+/** Merge `patch` into the lane's case data after validating the result. Refuses on a finished lane, a changed identity
+ *  field, or a change to frozen subprocess/foreach inputs; a real change clears policy votes and active human completions. */
 export function setData(p: Project, patch: Record<string, Value>): void {
   if (p.finished) fail(`${p.slug} is finished; case data is read-only`);
   const identityFields = new Set(processOf(p).gates.flatMap((g) => g.policy?.excludeFields ?? []));
@@ -174,6 +187,8 @@ export function setData(p: Project, patch: Record<string, Value>): void {
     }
   }
 }
+/** The `next` route the current stage takes: the one whose `when` matches the case data, else the unconditional one.
+ *  Undefined when the stage has no routes; fails when several match or none applies. */
 export function selectedRoute(p: Project) {
   const def = processOf(p).stages.find((s) => s.name === p.stage)!;
   const routes = def.next ?? [],
@@ -183,6 +198,8 @@ export function selectedRoute(p: Project) {
   if (routes.length && !r) fail(`${p.slug}: no route matches from ${p.stage}`);
   return r;
 }
+/** Stage names the current stage advances to: the following stage in a linear process, else the selected route's targets
+ *  (plus matching dynamic branches). Fails when a loop is at its iteration limit or its body still has unfinished work. */
 export function nextStages(p: Project): string[] {
   const pr = processOf(p),
     def = pr.stages.find((s) => s.name === p.stage)!;
@@ -213,6 +230,8 @@ export function nextStages(p: Project): string[] {
   }
   return selected?.to ?? [];
 }
+/** Create runtime entries for the active stages and a human-task record (pre-assigned when the stage names an assignee)
+ *  for each active human stage that lacks one. Mutates `p`. */
 export function enterTasks(p: Project): void {
   enterRuntime(p, activeStages(p));
   const pr = processOf(p);
@@ -223,6 +242,8 @@ export function enterTasks(p: Project): void {
     p.humanTasks[stage] ??= def.assignee ? { assignee: def.assignee } : {};
   }
 }
+/** Complete the current stage and move to `destinations`, mutating `p`: a linear lane advances or finishes; a graph lane
+ *  applies loop resets, dynamic joins, waiting joins and any-join cancellation, finishing when no active stage remains. */
 export function completeStage(p: Project, destinations: string[]): void {
   const pr = processOf(p),
     from = p.stage;
@@ -316,6 +337,7 @@ export function completeStage(p: Project, destinations: string[]): void {
   );
   enterTasks(p);
 }
+/** The process person whose `user` is the current OS account; fails when none matches or it differs from `requested`. */
 export function authenticatedPerson(pr: Process, requested?: string): string {
   const user = userInfo().username,
     ids = Object.keys(pr.people ?? {}).filter((id) => pr.people![id]!.user === user);
@@ -324,11 +346,14 @@ export function authenticatedPerson(pr: Process, requested?: string): string {
     fail(`OS account ${user} is not authenticated as ${requested ?? "a process person"}`);
   return id!;
 }
+/** Whether person `id` may work human stage `stage`: the stage's named assignee, or a holder of its role. */
 export function eligibleHuman(pr: Process, stage: string, id: string): boolean {
   const h = pr.stages.find((s) => s.name === stage)?.human,
     person = pr.people?.[id];
   return !!h && !!person && (h.assignee ? h.assignee === id : !!person.roles?.includes(h.role!));
 }
+/** Claim, delegate or complete human task `stage` as `actor`, mutating `p`. Fails unless the stage is active and the actor
+ *  eligible; delegate and complete are assignee-only, and complete checks required fields and records the quote. */
 export function humanAction(
   p: Project,
   stage: string,
@@ -360,10 +385,12 @@ export function humanAction(
     }
   }
 }
+/** Fail (GovernError, exit 2) when `stage` (default: the current stage) is a human task its assignee has not completed. */
 export function requireHumanComplete(p: Project, stage = p.stage): void {
   if (processOf(p).stages.find((s) => s.name === stage)?.human && !p.humanTasks?.[stage]?.completedAt)
     fail(`${p.slug}: human task ${stage} must be completed by its assignee`);
 }
+/** Whether person `id` may vote on policy gate `g`: a process person listed in the policy's people, or holding its role. */
 export function eligibleApprover(pr: Process, g: GateDef, id: string): boolean {
   const q = g.policy;
   return (
@@ -372,6 +399,8 @@ export function eligibleApprover(pr: Process, g: GateDef, id: string): boolean {
     (q.people ? q.people.includes(id) : !!pr.people?.[id]?.roles?.includes(q.role!))
   );
 }
+/** Whether gate `g` is approved at time `at`: a recorded approval for a gate without a policy; for a policy gate, enough
+ *  distinct eligible, unexpired, non-self approvals to meet the quorum and no such reject. False for an undefined gate. */
 export function gateApproved(p: Project, g: GateDef | undefined, at = Date.now()): boolean {
   if (!g) return false;
   if (!g.policy) return !!p.approvals[g.name];
@@ -402,6 +431,8 @@ export function ownerApproval(p: Project, g: GateDef, by: string | undefined, qu
   p.approvals[g.name] = { at: nowIso(), quote, by: owner, source: src };
   p.notes.push({ at: nowIso(), stage: p.stage, text: `${owner} approved ${g.name}: "${quote}"` });
 }
+/** Record `actor`'s approve/reject vote on policy gate `g`, replacing their earlier vote, and sync the cached approval.
+ *  Fails on a finished lane, an inactive gate stage, an ineligible or self-approving actor, or an unmet needed gate. */
 export function policyVote(p: Project, g: GateDef, actor: string, decision: "approve" | "reject", quote: string): Vote {
   const pr = processOf(p),
     q = g.policy ?? fail("gate has no approval policy");
@@ -422,6 +453,8 @@ export function policyVote(p: Project, g: GateDef, actor: string, decision: "app
   else delete p.approvals[g.name];
   return vote;
 }
+/** After a rejection on policy gate `g`, reroute the lane to the policy's `rejectTo` stage: reset workflow state and human
+ *  tasks and clear other policy approvals. A no-op without `rejectTo`; fails while subprocesses are unfinished. */
 export function rejectRoute(p: Project, g: GateDef): void {
   const to = g.policy?.rejectTo;
   if (!to) return; // a veto blocks until superseded by the same approver

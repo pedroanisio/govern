@@ -5,6 +5,8 @@ import { fail } from "./util.ts";
 import type { Calendar, StageRuntime } from "./lifecycle-schema.ts";
 
 // Walk UTC minute boundaries; local calendar membership handles weekends, holidays and DST.
+/** The ISO time `seconds` after `start` (ms): plain elapsed time with no calendar, else counting only the calendar's
+ *  working minutes (weekdays and hours in its timezone, holidays skipped); fails beyond a ten-year horizon. */
 export function businessDeadline(start: number, seconds: number, calendar?: Calendar): string {
   if (!calendar) return new Date(start + seconds * 1000).toISOString();
   const fmt = new Intl.DateTimeFormat("en-CA", {
@@ -35,6 +37,8 @@ export function businessDeadline(start: number, seconds: number, calendar?: Cale
   }
   return new Date(t).toISOString();
 }
+/** Record entry into each of `stages` that has a timer, event, error policy, call or foreach: a new generation and the
+ *  timer's due, reminder and escalation deadlines. A stage that already has runtime state is kept unless `force`. */
 export function enterRuntime(p: Project, stages: string[], force = false, at = Date.now()): void {
   const pr = processOf(p);
   for (const stage of stages) {
@@ -59,6 +63,8 @@ export function enterRuntime(p: Project, stages: string[], force = false, at = D
     p.runtime[stage] = r;
   }
 }
+/** Reject (ShapeError at `path`) a project whose runtime state does not fit its process: unknown stages, duplicate
+ *  markers, event, call, foreach and retry state on a stage that does not declare it, and orphaned event receipts or alerts. */
 export function validateRuntime(p: Project, path: string): void {
   const pr = processOf(p),
     ids = new Set(pr.stages.map((s) => s.name));

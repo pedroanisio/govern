@@ -150,10 +150,13 @@ export function registry(): Registry {
   return { caps, profiles };
 }
 
+/** The profile named `name` in `reg` (default: the registry, read now); fails, listing the profiles there are, when absent. */
 export function getProfile(name: string, reg = registry()): Profile {
   return reg.profiles.get(name) ?? fail(`no profile "${name}" (have: ${[...reg.profiles.keys()].join(", ")})`);
 }
+/** The capabilities a profile grants, in its order (registry() has already refused an unknown one). */
 export const capsOf = (reg: Registry, p: Profile): Capability[] => p.capabilities.map((c) => reg.caps.get(c)!);
+/** The distinct effect classes of a profile's capabilities, sorted. */
 export const classesOf = (reg: Registry, p: Profile): Effect[] => [...new Set(capsOf(reg, p).map((c) => c.effect))].sort();
 /** Whether the profile may change files. */
 export const writes = (reg: Registry, p: Profile): boolean => capsOf(reg, p).some((c) => c.effect === "write");
@@ -161,6 +164,8 @@ export const writes = (reg: Registry, p: Profile): boolean => capsOf(reg, p).som
 // ---------------------------------------------------------------- the sealed command lines
 
 export interface ClaudeSpec { allow: string[]; acceptEdits: boolean }
+/** The Claude permissions of a profile: the union of its capabilities' allow rules, and acceptEdits when any of
+ *  them asks for it. */
 export function claudeSpec(reg: Registry, p: Profile): ClaudeSpec {
   const cs = capsOf(reg, p);
   return { allow: [...new Set(cs.flatMap((c) => c.claude.allow))], acceptEdits: cs.some((c) => c.claude.permissionMode === "acceptEdits") };
@@ -245,6 +250,7 @@ export interface ProbeResult { capability: string; status: "ok" | "refused" | "e
 export interface CheckRecord { version: 1; profile: string; hash: string; at: string; model: string; ok: boolean; results: ProbeResult[] }
 const RECORD = obj({ version: literal(1), profile: str, hash: str, at: str, model: str, ok: (v, p) => (typeof v === "boolean" ? v : reject(p, "must be true or false")),
   results: arr(obj({ capability: str, status: literal("ok", "refused", "error", "invalid", "untested", "leaked"), evidence: str })) });
+/** Where a profile's self-test record lives: <queueDir>/checks/<profile>.json. */
 export const checkFile = (queueDir: string, profile: string) => join(queueDir, "checks", `${profile}.json`);
 /** The last record of a profile; undefined when none, "unreadable" when it is not a valid record (never trusted). */
 export function readCheck(queueDir: string, profile: string): CheckRecord | "unreadable" | undefined {
@@ -255,6 +261,8 @@ export function readCheck(queueDir: string, profile: string): CheckRecord | "unr
 /** The capabilities whose probe did not pass; an untested one counts unless the profile's self-test is optional. */
 export const failing = (results: ProbeResult[], p: Profile): string[] => results.filter((r) => r.status !== "ok" && !(r.status === "untested" && p.selfTest === "optional")).map((r) => r.capability);
 export type CheckState = "passed" | "failed" | "stale" | "none";
+/** A self-test record against the profile's current hash: "none" when absent or unreadable, "stale" when the hash
+ *  differs, else "passed" or "failed" by its ok. */
 export function checkState(rec: CheckRecord | "unreadable" | undefined, hash: string): CheckState {
   if (!rec || rec === "unreadable") return "none";
   return rec.hash !== hash ? "stale" : rec.ok ? "passed" : "failed";
@@ -289,6 +297,8 @@ const grokLine = (reg: Registry, p: Profile): string => {
   return `--tools ${s.tools.join(",")} · --permission-mode ${s.acceptEdits ? "acceptEdits" : "dontAsk"}${s.allow.length ? ` · ${s.allow.map((a) => `--allow ${a}`).join(" ")}` : ""} · ${s.deny.map((d) => `--deny ${d}`).join(" ")}`;
 };
 
+/** The `govern caps` listing: each capability (effect, engines, description), each profile (engine, capabilities,
+ *  self-test state, seal caveats, untested capabilities), then a warning per queue runner in `shadowing`. */
 export function listText(reg: Registry, queueDir: string, shadowing: string[]): string {
   const L = ["CAPABILITIES"];
   for (const c of reg.caps.values()) L.push(`  ${c.name.padEnd(10)} ${c.effect.padEnd(8)} ${["claude", ...(c.codex ? ["codex"] : []), ...(c.grok ? ["grok"] : [])].join(", ").replace(/^claude$/, "claude only")}  ${c.description}`);
@@ -302,6 +312,8 @@ export function listText(reg: Registry, queueDir: string, shadowing: string[]): 
   return L.join("\n");
 }
 
+/** The `govern caps <profile>` text: its capabilities with their grants, the claude, codex and grok command-line
+ *  mapping, effect classes, secret names, reply check, and the state of its last self-test. */
 export function showText(reg: Registry, queueDir: string, p: Profile): string {
   const caps = capsOf(reg, p);
   const rec = readCheck(queueDir, p.name), st = checkState(rec, profileHash(reg, p));

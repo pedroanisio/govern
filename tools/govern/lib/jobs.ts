@@ -39,6 +39,7 @@ export const DEFAULT_TIMEOUT = 30 * 60;
 export const KILL_GRACE_MS = 3000;
 /** The seconds one stop command of a recipe job's `down` may take; a stopped recipe job gets this for each of its machines, and a minute more, to bring them down. */
 export const SLICE_STOP_SECONDS = 120;
+/** How long a stopped recipe job with `machines` machines gets to bring them down: SLICE_STOP_SECONDS each plus a minute, in ms. */
 export const sliceGraceMs = (machines: number) => (SLICE_STOP_SECONDS * machines + 60) * 1000;
 const POLL_MS = 100;
 
@@ -46,6 +47,7 @@ const POLL_MS = 100;
 const jobsDir = (slug: string) => resolve(governDir(slug), "jobs");
 const jobDir = (slug: string, id: string) => join(jobsDir(slug), id);
 
+/** A job's argv with {repo}, {dir} (the lane's folder), {paths.NAME} and {python} (GOVERN_PYTHON, default python3) filled in. */
 export function expand(p: Project, argv: string[]): string[] {
   const python = process.env.GOVERN_PYTHON ?? "python3";
   return argv.map((a) => expandPlaceholders(a, projectDir(p.slug)).replaceAll("{python}", python));
@@ -269,11 +271,14 @@ function machineOf(st: JobState, seconds: number | undefined): Record<string, un
   return { resource: st.resource, machineSeconds, basis: price.basis, ...(cost ? { cost: cost.amount, currency: cost.currency } : {}) };
 }
 
+/** The lane's job ids (folders with a job.json), oldest first; [] when it has no jobs folder. */
 export function list(slug: string): string[] {
   const d = jobsDir(slug);
   return existsSync(d) ? readdirSync(d).filter((x) => existsSync(join(d, x, "job.json"))).sort() : [];
 }
 
+/** Resolve `ref` to one of the lane's job ids: the latest for none or "last", else an exact id, a unique id prefix, or
+ *  the latest job of that name; fails when the lane has no jobs or the ref is ambiguous or unknown. */
 export function find(slug: string, ref: string | undefined): string {
   const ids = list(slug);
   const last = ids.at(-1);
@@ -500,6 +505,8 @@ export function wait(slug: string, id: string, timeoutSec: number, pollMs = 2000
   }
 }
 
+/** A job's report: its id, status (or how it was stopped), exit code and seconds; for a finished job the lane files it
+ *  changed; then the last `n` log lines. */
 export function summary(p: Project, st: JobState, n = 12): string {
   // A stopped job's line says how once ("timed out after 60s", "killed by govern kill"), not its status and then again.
   const stopped = st.status === "timeout" || st.status === "killed";

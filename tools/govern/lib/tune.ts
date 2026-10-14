@@ -30,6 +30,9 @@ export const RULES = {
 
 export interface Metrics { calls: number; medianCtx: number; p90Ctx: number; ownerTurns: number; autoCompacts: number; manualCompacts: number; sessions: number; subagentCalls: number }
 
+/** Main-session Claude Code metrics over the last `hours` (default 24), from transcripts under the Claude projects folder
+ *  modified since then: call count and median/p90 context per call, owner turns, auto and manual compactions, sessions,
+ *  subagent calls. No projects folder gives all zeros. */
 export function measure(hours = 24): Metrics {
   const since = Date.now() - hours * 3600e3;
   const ctx: number[] = [];
@@ -90,6 +93,9 @@ export function currentWindow(): number | undefined {
 
 export interface Decision { knob: string; from?: number; to?: number; change: boolean; reason: string; metrics: Metrics }
 
+/** The compaction-window decision for metrics `m` and current window `cur`: hold with too few calls or within the hold
+ *  period after `lastChangeAt`; lower it when median context is over target; raise it when auto-compactions per 100 owner
+ *  turns are high and context is low; else keep. Pure: it changes nothing. */
 export function decideWindow(m: Metrics, cur: number | undefined, lastChangeAt?: number, now = Date.now()): Decision {
   const R = RULES;
   const base = { knob: "compact-window", from: cur, metrics: m };
@@ -166,6 +172,7 @@ export function tune(o: { dryRun?: boolean } = {}): string {
   return `compact window ${w(d.from)}${d.change ? ` → ${applied ? "SET" : "would set"} ${w(d.to)}` : ""} · ${d.reason} · 24 h: ${m.calls} calls in ${m.sessions} sessions, median ${kTok(m.medianCtx)}, p90 ${kTok(m.p90Ctx)}, ${m.ownerTurns} owner turns, ${m.autoCompacts} auto + ${m.manualCompacts} manual compactions, ${m.subagentCalls} subagent calls`;
 }
 
+/** One status line: the current compact window and the last `govern tune` decision from the tuning log, or "never measured". */
 export function tuningState(): string {
   const last = readJsonl(tuningLogFile()).pop();
   const cur = currentWindow();

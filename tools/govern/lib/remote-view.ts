@@ -49,6 +49,8 @@ const gateViews = (p: Project): GateView[] => processOf(p).gates.map((g) => {
     approvedAt: approved ? p.approvals[g.name]?.at ?? null : null, needs: g.needs ?? [] };
 });
 
+/** A lane's desk row as data: title, process, current and active stages, state (finished, blocked, ready or open), what
+ *  blocks it, its gates, open alerts, and the last work, note and job from its ledger. */
 export function laneSummary(p: Project): LaneSummary {
   const list = stagesOf(p), led = readJsonl(ledgerFile(p.slug));
   const lastWork = [...led].reverse().find((e) => e.kind === "work" || e.kind === "done");
@@ -72,6 +74,8 @@ function ledgerView(e: Record<string, unknown>): LedgerView {
   return { t: String(t), kind: String(kind), text: clip(JSON.stringify(rest), 240) };
 }
 
+/** A lane in full: its summary plus every stage, exit condition, check, data, human tasks and alerts, and the last
+ *  `notes` (default 20) notes and `ledger` (default 30) ledger entries. */
 export function laneDetail(p: Project, o: { notes?: number; ledger?: number } = {}): LaneDetail {
   return {
     ...laneSummary(p),
@@ -84,6 +88,8 @@ export function laneDetail(p: Project, o: { notes?: number; ledger?: number } = 
   };
 }
 
+/** Usage on `day` (default today, UTC): tokens and machine time per lane, queue counts per runner, failed and unverified
+ *  messages, the dispatcher's record, the owner's last 20 open messages, and the allowances shown on the desk. */
 export function telemetry(slugs: string[], day = new Date().toISOString().slice(0, 10)): Telemetry {
   const msgs = queue.all();
   const count = (state: string, to?: string) => msgs.filter((x) => x.state === state && (!to || x.m.to === to)).length;

@@ -37,6 +37,8 @@ export interface Tool { t: number; id: string; name: string; sig: string; poll: 
 export interface Segment { /** some grok turns in `calls` have no start time and were placed by their end only */ coarse?: boolean; slug: string; stage: string; engine: string; session?: string; start: number; end: number; calls: Call[]; ownerTurns: number; tools: Tool[] }
 type Data = { calls: Call[]; owner: number[]; tools: Tool[] };
 
+/** The work segments of lanes `slugs` (default every lane): each ledger "work" entry, from its time until the next "work"
+ *  or "done" of the same engine and session in any lane (open-ended when there is none). Calls are not filled in yet. */
 export function segments(slugs?: string[]): Segment[] {
   const all = slugs ?? globSync("**/govern.json", { cwd: projectsDir() }).map((f) => dirname(f));
   const marks: { slug: string; kind: string; stage?: string; engine?: string; session?: string; t: number }[] = [];
@@ -57,6 +59,8 @@ export function segments(slugs?: string[]): Segment[] {
 
 // ---------------------------------------------------------------- Claude Code transcripts
 
+/** The Claude Code transcripts of `session`: <session>.jsonl in each project folder plus every .jsonl in its subagent folder.
+ *  None, or no Claude projects folder, gives []. */
 export function claudeFiles(session: string): string[] {
   const root = CLAUDE_DIR();
   if (!existsSync(root)) return [];
@@ -263,6 +267,8 @@ export function grokCalls(file: string): Data {
 
 // ---------------------------------------------------------------- attribution and report
 
+/** Fills each segment's calls, owner turns and tool uses (in place, and returns `segs`) from its engine's transcripts: a
+ *  call goes to the segment holding most of its run time; a grok call with no start time goes by its end and marks the segment coarse. */
 export function attribute(segs: Segment[]): Segment[] {
   const cache = new Map<string, Data>();
   const load = (key: string, f: () => Data) => { if (!cache.has(key)) cache.set(key, f()); return cache.get(key)!; };
@@ -296,6 +302,7 @@ export function attribute(segs: Segment[]): Segment[] {
   return segs;
 }
 
+/** The USD cost of a call from prices.json by model prefix, or undefined for a model with no price. */
 export const cost = (c: { model: string; input: number; cacheRead: number; cacheWrite: number; output: number }): number | undefined => {
   const p = Object.entries(PRICES).find(([k]) => c.model.startsWith(k))?.[1];
   if (!p) return undefined;
@@ -303,6 +310,8 @@ export const cost = (c: { model: string; input: number; cacheRead: number; cache
 };
 
 export interface Totals { calls: number; inputSide: number; output: number; avgCtx: number; maxCtx: number; cacheShare: number; usd?: number; subCalls: number; owner: number }
+/** Sums over `calls`: count, input-side and output tokens, mean and max context, cache share, subagent calls, `owner`
+ *  turns, and USD (undefined unless every call has a cost). */
 export function totals(calls: Call[], owner = 0): Totals {
   const inputSide = calls.reduce((a, c) => a + c.input + c.cacheRead + c.cacheWrite, 0);
   const cached = calls.reduce((a, c) => a + c.cacheRead, 0);
@@ -330,6 +339,8 @@ const addB = (a: Behaviour, b: Behaviour): Behaviour => ({ tools: a.tools + b.to
 export const behaviourText = (b: Behaviour): string =>
   ([["tools", b.tools], ["repeats", b.repeats], ["polls", b.polls], ["agents", b.agents], ["big reads", b.bigReads]] as const).filter(([, n]) => n).map(([k, n]) => `${k} ${n}`).join(" · ");
 
+/** The `govern usage` text for lanes `slugs` (every lane when undefined) since `since` (ms, optional): per-lane segment
+ *  rows with totals, codex asks and machine time, conversation turns, allowances, the baseline and the targets. */
 export function report(slugs: string[] | undefined, since?: number): string {
   const segs = attribute(segments(slugs)).filter((s) => !since || s.start >= since);
   // machine time and money (jobs run on resources) come from the lane's ledger, beside the tokens
