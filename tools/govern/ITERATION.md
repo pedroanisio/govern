@@ -56,6 +56,23 @@ A stage can expand the collection:
 
 Input maps are child field → parent field; output maps are parent collection → child scalar field. The child process must define compatible typed fields. `maxItems` is required, at most 10,000; concurrency defaults to four and is at most 256. Concurrency bounds unfinished child cases, not worker processes.
 
+Process validation refuses a foreach when:
+
+- `collection` is not a declared `array` field;
+- `process` names the declaring process itself;
+- `itemField` is also a key of `inputs`;
+- an input source is not a declared parent field;
+- an output destination is not a declared parent `array` field, or is the collection or an input source;
+- the stage also declares `event` or `call`.
+
+When expansion starts, govern checks the child process and the case data, and refuses to expand when:
+
+- subprocess nesting would exceed 16 levels, or the child process already appears among the case's ancestors;
+- the collection is missing or has more than `maxItems` items;
+- `itemField` does not name a scalar child field, or an item is not a valid value for it;
+- an input names no child field, or its parent source is missing or not a valid value for that child field;
+- an output source is not a scalar child field of the collection's `items` type, or the item count is outside the output field's `min` and `max`.
+
 `govern subprocess <case>` starts available items and synchronizes finished children. Finish each child through its normal gates, then synchronize again; `advance` and `tick --advance` also synchronize. Outputs retain input order, including duplicate input values. An empty collection completes immediately with empty output arrays.
 
 The collection and mapped inputs freeze when expansion starts. All children use one pinned process snapshot, including children launched later. Indexed invocation paths allow recovery after an interrupted launch without duplicating a case. Expansion state persists across command invocations. Migration and exception reroutes refuse unfinished item batches. Child failure handling remains part of the child's process: a batch waits for every child to finish rather than automatically abandoning failed work.
