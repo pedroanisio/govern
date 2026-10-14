@@ -481,6 +481,12 @@ export const ending = (st: JobState): string =>
     : st.status === "timeout" ? `timed out after ${st.timeout ?? DEFAULT_TIMEOUT}s` : st.status === "killed" ? "killed by govern kill"
     : st.exit != null ? `exit ${st.exit}` : "no exit code";
 
+/** The exit code `govern run`, `slice` and `wait` give for a finished job. A job govern stopped (timeout, kill) gives 1: its
+ *  shell may or may not live long enough to record the signal's code (143, 137), depending on which of its processes the
+ *  stop reaches first, and the caller's exit code must not depend on that. Any other end gives the job's own code. */
+export const exitCode = (st: JobState): number =>
+  st.status === "timeout" || st.status === "killed" ? 1 : st.exit ?? 1;
+
 /** Last n meaningful log lines: progress-bar carriage returns collapsed, long lines clipped. */
 export function tail(slug: string, id: string, n = 12, grep?: string): string[] {
   const f = join(jobsDir(slug), id, "log");

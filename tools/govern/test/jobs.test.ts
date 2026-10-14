@@ -569,6 +569,24 @@ test("a complete exit file is authoritative unless govern stopped the job and th
   for (const [, , , re] of cases) assert.match(out, re);
 });
 
+test("a job govern stopped exits 1 whether or not its shell lived to record the signal; any other end exits with the job's code", () => {
+  const { e, slug } = lane();
+  // id, job.json extras, exit file (undefined: none), the exit code govern wait gives
+  const cases: [string, Record<string, unknown>, string | undefined, number][] = [
+    ["20260101T000000Z-a", { stopped: "timeout" }, "143", 1],
+    ["20260101T000001Z-b", { stopped: "timeout" }, undefined, 1],
+    ["20260101T000002Z-c", { stopped: "killed" }, "137", 1],
+    ["20260101T000003Z-d", { stopped: "timeout" }, "0", 0],
+    ["20260101T000004Z-e", { stopped: "killed" }, "3", 3],
+    ["20260101T000005Z-f", {}, "143", 143],
+  ];
+  for (const [id, extra, code] of cases) {
+    write(join(jobsDir(e, slug), id, "job.json"), JSON.stringify({ id, slug, name: "x", argv: ["true"], cwd: e.root, start: new Date().toISOString(), bg: false, ...extra }));
+    if (code !== undefined) write(join(jobsDir(e, slug), id, "exit"), `${code}\n`);
+  }
+  for (const [id, , , want] of cases) assert.equal(govern(e, ["wait", slug, id]).code, want, id);
+});
+
 test("a job that runs govern kill on its own lane stops what it started, never the govern doing it or that govern's callers", { skip: NO_PROC }, () => {
   const { e, slug } = lane();
   const pids: number[] = [];

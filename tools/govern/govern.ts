@@ -486,7 +486,7 @@ function cmdRun(a: Args): void {
   if (st.queued) return out(`job ${st.id} queued on ${st.queued.resource} (${st.queued.ahead} ahead) · wait with: govern wait ${p.slug} ${st.id}`);
   if (st.status === "running") return out(`job ${st.id} started in the background · wait with: govern wait ${p.slug} ${st.id}`);
   out(jobs.summary(p, st));
-  process.exitCode = st.exit ?? 1;
+  process.exitCode = jobs.exitCode(st);
 }
 
 /** `govern slice <lane> <recipe>`: a recipe job (split, pieces on machines, join, verify, machines always down). */
@@ -499,7 +499,7 @@ function cmdSlice(a: Args): void {
   if (st.queued) return out(`job ${st.id} queued on ${st.queued.resource} (${st.queued.ahead} ahead) · wait with: govern wait ${p.slug} ${st.id}`);
   if (st.status === "running") return out(`job ${st.id} started in the background · wait with: govern wait ${p.slug} ${st.id}`);
   out(jobs.summary(p, st));
-  process.exitCode = st.exit ?? 1;
+  process.exitCode = jobs.exitCode(st);
 }
 
 function cmdWait(a: Args): void {
@@ -510,7 +510,7 @@ function cmdWait(a: Args): void {
   if (st.timedOut) { out(`job ${id} still running after ${timeout}s · wait again with: govern wait ${p.slug} ${id}`); process.exitCode = 124; return; }
   jobs.recordEnd(p.slug, id);
   out(jobs.summary(p, st));
-  process.exitCode = st.exit ?? 1;
+  process.exitCode = jobs.exitCode(st);
 }
 
 function cmdAsk(a: Args): void {
