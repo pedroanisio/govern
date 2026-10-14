@@ -72,7 +72,7 @@ If assembled context exceeds `--max-context-chars`, the turn fails before dispat
 
 ## Native adapters and a custom protocol
 
-`--profile` uses existing Claude, Codex or Grok profiles and their tool permissions, sandbox configuration and sealing limitations. Claude stream-json and Codex JSON events expose progress as emitted by the harness. Grok's current JSON interface yields a buffered final result. Provider completion is validated independently from process exit; each turn runs against Govern-owned context rather than resuming hidden provider history.
+`--profile` uses existing Claude, Codex or Grok profiles and their tool permissions, sandbox configuration and sealing limitations. Claude stream-json, Codex JSON events and Grok streaming-messages-json expose progress as emitted by the harness; a Grok reply is committed only from the stream's final result line. Provider completion is validated independently from process exit; each turn runs against Govern-owned context rather than resuming hidden provider history.
 
 Profiles run the `codex`, `claude` and `grok` executables found on `PATH`. Set `GOVERN_CODEX_BIN`, `GOVERN_CLAUDE_BIN` or `GOVERN_GROK_BIN` to run a different executable for that engine. A background worker (`--bg`) inherits the environment of the command that starts it, so set the variable there. Custom adapters run their configured `argv` and ignore these variables.
 
