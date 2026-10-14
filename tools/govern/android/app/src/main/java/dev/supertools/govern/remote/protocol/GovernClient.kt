@@ -37,6 +37,20 @@ class GovernClient(private val endpoint: Endpoint, private val connectTimeoutMs:
         return parseWire("pairing reply", call("POST", "/v1/pair", body = body, auth = false))
     }
 
+    fun requestPairing(name: String, publicKey: String, lanes: List<String>? = null): PairRequestCreated {
+        val body = WireJson.encodeToString(PairRequestBody.serializer(), PairRequestBody(name, publicKey, lanes)).toByteArray(Charsets.UTF_8)
+        return parseWire("pairing request", call("POST", "/v1/pair/request", body = body, auth = false))
+    }
+
+    fun pollPairing(id: String, secret: String): PairRequestStatus = parseWire("pairing status",
+        call("GET", "/v1/pair/request?id=" + URLEncoder.encode(id, Charsets.UTF_8), auth = false,
+            headers = mapOf("Govern-Pair-Secret" to secret)))
+
+    fun cancelPairing(id: String, secret: String): PairCancelled {
+        val body = WireJson.encodeToString(PairCancel.serializer(), PairCancel(id, secret)).toByteArray(Charsets.UTF_8)
+        return parseWire("pairing cancellation", call("POST", "/v1/pair/cancel", body = body, auth = false))
+    }
+
     fun desk(): Desk = parseWire("desk", call("GET", "/v1/desk"))
 
     fun lane(slug: String): LaneDetail = parseWire("lane", call("GET", "/v1/lane?slug=" + URLEncoder.encode(slug, Charsets.UTF_8)))

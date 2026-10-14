@@ -18,10 +18,21 @@ class PairingLinkTest {
     }
 
     @Test
+    fun aLinkWithoutCodeRequestsPairingWithOptionalLane() {
+        val link = PairingLinks.parse("govern-remote://pair?url=https%3A%2F%2Fh&lane=ops%2Fbuild")
+        assertTrue(link.requestPairing)
+        assertEquals("ops/build", link.lane)
+        assertEquals("ops/build", PairingLinks.parse("govern-remote://pair?url=https%3A%2F%2Fh&lane=ops%2F.%2Fbuild").lane)
+        assertEquals("", link.code)
+        assertNull(PairingLinks.parse("govern-remote://pair?url=https%3A%2F%2Fh").lane)
+        assertThrows(IllegalArgumentException::class.java) { PairingLinks.parse("govern-remote://pair?url=https%3A%2F%2Fh&lane=../x") }
+    }
+
+    @Test
     fun badLinksAreRefused() {
         assertThrows(IllegalArgumentException::class.java) { PairingLinks.parse("https://pair?url=x&code=y") }
         assertThrows(IllegalArgumentException::class.java) { PairingLinks.parse("govern-remote://pair?code=y") }
-        assertThrows(IllegalArgumentException::class.java) { PairingLinks.parse("govern-remote://pair?url=https%3A%2F%2Fh") }
+        assertThrows(IllegalArgumentException::class.java) { PairingLinks.parse("govern-remote://pair?url=https%3A%2F%2Fh&code=") }
         assertThrows(IllegalArgumentException::class.java) { PairingLinks.parse("govern-remote://pair?url=ftp%3A%2F%2Fh&code=y") }
         assertThrows(IllegalArgumentException::class.java) { PairingLinks.parse("govern-remote://pair?url=https%3A%2F%2Fh&code=y&pin=abc") }
     }

@@ -31,7 +31,7 @@ data class Health(val protocol: String, val at: String)
 data class PairRequest(val code: String, val name: String, val publicKey: String)
 
 @Serializable
-data class PairResponse(val protocol: String, val deviceId: String, val person: String, val token: String)
+data class PairResponse(val protocol: String, val deviceId: String, val person: String, val token: String, val host: String)
 
 @Serializable
 data class ErrorBody(val error: String)

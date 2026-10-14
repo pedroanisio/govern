@@ -1,0 +1,12 @@
+{
+  "protocol": "govern-remote/1",
+  "state": "confirmed",
+  "expires": "2026-10-14T20:05:00Z",
+  "person": "owner",
+  "deviceId": "d-0123456789ab",
+  "token": "test-token",
+  "lanes": [
+    "r1"
+  ],
+  "host": "host-test"
+}

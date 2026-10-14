@@ -111,6 +111,32 @@ class EndToEndTest {
         assertTrue(File(root, "projects/r1/govern.json").readText().contains("\"kind\": \"device\""))
     }
 
+    @Test
+    fun phoneRequestsHostConfirmsAndPollDeliversTokenOnce() {
+        serve()
+        val url = "http://127.0.0.1:$port"
+        val client = GovernClient(Endpoint(url, null, null))
+        val publicKey = Base64.getEncoder().encodeToString(keyPair().public.encoded)
+        val request = client.requestPairing("JVM phone", publicKey, listOf("r1"))
+        val code = ComparisonCode.of(request.id, publicKey, null)
+        val printed = govern("remote", "requests")
+        assertTrue(printed, printed.contains(code))
+        assertEquals(PairState.WAITING, client.pollPairing(request.id, request.secret).state)
+        govern("remote", "confirm", request.id, "--code", code)
+        val confirmed = client.pollPairing(request.id, request.secret)
+        assertEquals(PairState.CONFIRMED, confirmed.state)
+        assertEquals(request.host, confirmed.host)
+        assertEquals("owner", confirmed.person)
+        assertEquals(listOf("r1"), confirmed.lanes)
+        assertEquals(null, client.pollPairing(request.id, request.secret).token)
+        val paired = GovernClient(Endpoint(url, confirmed.token!!, null))
+        assertEquals(listOf("r1"), paired.desk().lanes.map { it.slug })
+        assertEquals(403, assertThrows(ServerException::class.java) { paired.lane("other") }.status)
+        val cancelled = client.requestPairing("cancelled", publicKey, null)
+        assertEquals("cancelled", client.cancelPairing(cancelled.id, cancelled.secret).state)
+        assertEquals(PairState.CANCELLED, client.pollPairing(cancelled.id, cancelled.secret).state)
+    }
+
     /** A self-signed certificate made with openssl for this run: (certificate file, key file). */
     private fun selfSigned(): Pair<File, File> {
         val cert = File(root, "cert.pem")
