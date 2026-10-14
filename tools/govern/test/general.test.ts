@@ -152,7 +152,7 @@ test("install-service sets GOVERN_REPO, so the dispatcher needs no particular cw
   const r = gov(ws, ["task", "install-service"], { HOME: home });
   assert.equal(r.code, 0, r.err);
   const unit = readFileSync(join(home, ".config", "systemd", "user", "govern-dispatch.service"), "utf8");
-  assert.match(unit, new RegExp(`Environment=GOVERN_REPO=${ws}\\n`));
+  assert.match(unit, new RegExp(`Environment="GOVERN_REPO=${ws}"\\n`));
 });
 
 test("lib/ and govern.ts name no project, channel or workspace (the CLAUDE.md banner is the one allowed line)", () => {

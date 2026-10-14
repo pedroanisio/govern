@@ -17,10 +17,10 @@ test("a govern child sees none of the parent's GOVERN_* variables and a HOME ins
     const r = govern(e, ["task", "install-service"]);
     assert.equal(r.code, 0, r.err);
     assert.equal(r.out.split("\n")[0], `wrote ${unit}`);
-    assert.ok(readFileSync(unit, "utf8").split("\n").includes(`Environment=GOVERN_QUEUE=${join(e.root, "PALS-Notes", "queue")}`));
+    assert.ok(readFileSync(unit, "utf8").split("\n").includes(`Environment="GOVERN_QUEUE=${join(e.root, "PALS-Notes", "queue")}"`));
     // a test still sets one explicitly
     assert.equal(govern(e, ["task", "install-service"], { GOVERN_QUEUE: join(e.root, "q") }).code, 0);
-    assert.ok(readFileSync(unit, "utf8").split("\n").includes(`Environment=GOVERN_QUEUE=${join(e.root, "q")}`));
+    assert.ok(readFileSync(unit, "utf8").split("\n").includes(`Environment="GOVERN_QUEUE=${join(e.root, "q")}"`));
   } finally {
     if (was === undefined) delete process.env.GOVERN_QUEUE; else process.env.GOVERN_QUEUE = was;
   }

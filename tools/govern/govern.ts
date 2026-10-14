@@ -533,7 +533,7 @@ function cmdTask(a: Args): void {
   if (sub === "dispatch") {
     const max = opt(a, "max") ? Number(opt(a, "max")) : undefined;
     const once = () => queue.dispatch({ max, only: opt(a, "only") }).forEach((l) => out(l));
-    if (!flag(a, "loop")) { once(); return; }
+    if (!flag(a, "loop")) { if (opt(a, "reap-every")) fail("--reap-every needs --loop (it lists on the loop's timer; a single dispatch never lists instances)"); once(); return; }
     const secs = Number(opt(a, "interval") ?? 30);
     const pidf = join(queue.QUEUE(), "dispatcher.json");
     mkdirSync(queue.QUEUE(), { recursive: true });
@@ -561,15 +561,29 @@ function cmdTask(a: Args): void {
     const unit = join(homedir(), ".config", "systemd", "user", "govern-dispatch.service");
     mkdirSync(dirname(unit), { recursive: true });
     const bin = resolve(HERE, "..", "..", "bin", "govern");
-    writeFileSync(unit, [
-      "[Unit]", "Description=govern task dispatcher (one fresh codex/claude session per queued message)", "",
-      "[Service]", `WorkingDirectory=${repo()}`, `ExecStart=${bin} task dispatch --loop --interval ${opt(a, "interval") ?? 30}${secondsOpt(a, "reap-every") ? ` --reap-every ${secondsOpt(a, "reap-every")}` : ""}`,
-      `Environment=PATH=${process.env.PATH}`, `Environment=GOVERN_REPO=${repo()}`, `Environment=GOVERN_QUEUE=${queue.QUEUE()}`, "Restart=on-failure", "RestartSec=30", "",
-      "[Install]", "WantedBy=default.target", "",
-    ].join("\n"));
+    writeFileSync(unit, serviceUnit(bin, opt(a, "interval") ?? "30", secondsOpt(a, "reap-every")));
     return out(`wrote ${unit}\nenable with: systemctl --user daemon-reload && systemctl --user enable --now govern-dispatch`);
   }
   fail(TASK_SUBS);
+}
+
+/** A value as one systemd word: double-quoted, with `\\`, `"` escaped and `%` (a specifier) doubled; `$` doubled too in a command line. */
+const unitWord = (v: string, cmd = false) => {
+  if (/[\n\r]/.test(v)) fail(`cannot write a line break into the service unit: ${JSON.stringify(v.slice(0, 40))}`);
+  const q = v.replace(/\\/g, "\\\\").replace(/"/g, '\\"').replace(/%/g, "%%");
+  return `"${cmd ? q.replaceAll("$", "$$$$") : q}"`;
+};
+/** The text of the user service: every Environment= and the ExecStart binary quoted, and the state folders of this shell passed on. */
+function serviceUnit(bin: string, interval: string, reapEvery: number | undefined): string {
+  const env: [string, string][] = [["PATH", process.env.PATH ?? ""], ["GOVERN_REPO", repo()], ["GOVERN_QUEUE", queue.QUEUE()]];
+  for (const k of ["GOVERN_STATE", "GOVERN_PROJECTS"]) if (process.env[k]) env.push([k, process.env[k]!]);
+  return [
+    "[Unit]", "Description=govern task dispatcher (one fresh codex/claude session per queued message)", "",
+    "[Service]", `WorkingDirectory=${repo().replace(/%/g, "%%")}`,
+    `ExecStart=${unitWord(bin, true)} task dispatch --loop --interval ${interval}${reapEvery ? ` --reap-every ${reapEvery}` : ""}`,
+    ...env.map(([k, v]) => `Environment=${unitWord(`${k}=${v}`)}`), "Restart=on-failure", "RestartSec=30", "",
+    "[Install]", "WantedBy=default.target", "",
+  ].join("\n");
 }
 
 // ── The command table ────────────────────────────────────────────────────────────────────────────────────────────────

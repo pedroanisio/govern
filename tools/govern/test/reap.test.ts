@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { existsSync, readFileSync, readdirSync, writeFileSync, chmodSync, rmSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, writeFileSync, chmodSync, rmSync, appendFileSync } from "node:fs";
 import { join } from "node:path";
 import { makeEnv, govern, childEnv, jsonl, write, present, GOVERN, setConfig, type Env } from "./helpers.ts";
 import { sleepSync } from "../lib/util.ts";
@@ -10,6 +10,9 @@ import { sleepSync } from "../lib/util.ts";
 const PROV = `#!/bin/sh
 echo "$1 $2 tag=$GOVERN_TAG lane=$GOVERN_LANE res=$GOVERN_RESOURCE count=$GOVERN_COUNT id=$GOVERN_ID" >> "$CALLS"
 case "$PROV_MODE:$1" in
+  slowstop:stop) sleep 1 ;;
+  grab:stop) if [ ! -f "$CLOUD.grabbed" ]; then : > "$CLOUD.grabbed"; node --disable-warning=ExperimentalWarning "$GBIN" run lane onfarm --bg >/dev/null 2>&1; fi ;;
+  junk:start) echo "Creating"; echo "i-9 $2" >> "$CLOUD"; echo "i-9"; exit 0 ;;
   hang:*) exec sleep 30 ;;
   fail:start) echo "i-partial"; echo "i-partial $2" >> "$CLOUD"; echo "quota exceeded" >&2; exit 3 ;;
   failstop:stop) echo "boom" >&2; exit 3 ;;
@@ -299,4 +302,134 @@ test("help and the manual describe up, down and reap", () => {
   const h = g(r, ["help"]).out;
   for (const w of ["up <resource>", "down <tag|id>", "reap [<resource>]", "--reap-every"]) assert.ok(h.includes(w), w);
   assert.match(g(r, ["manual"]).out, /govern reap/);
+});
+
+// ---- review fixes (second review of 3.9)
+
+const exited = (p: ReturnType<typeof spawn>) => new Promise<number | null>((res) => p.on("exit", (c) => res(c)));
+const spawnGovern = (r: Rig, args: string[], env: Record<string, string> = {}) =>
+  spawn(process.execPath, ["--disable-warning=ExperimentalWarning", GOVERN, ...args], { env: childEnv(r.e, { ...r.env, ...env }) });
+const onfarm = (r: Rig, gate: string) => g(r, ["cmd", "lane", "onfarm", "--resource", "farm", "--", ...HOLD(gate)]);
+
+test("reap never lists an instance as an orphan while any job holds the resource's lock, whatever lane or job it was started for", () => {
+  const r = rig();
+  const gate = join(r.e.root, "gate");
+  onfarm(r, gate);
+  g(r, ["up", "farm"]); // no lane, no job
+  const on = present(/job (\S+)/.exec(g(r, ["run", "lane", "onfarm", "--bg"]).out)?.[1], "job");
+  const a = g(r, ["reap", "--yes"]);
+  writeFileSync(gate, "");
+  g(r, ["wait", "lane", on]);
+  assert.match(a.out, /farm: nothing to reap \(1 in use\)/);
+  assert.equal(cloudLines(r).length, 1, "the machine was not stopped");
+});
+
+test("reap --yes checks again right before each stop: a job that takes the resource meanwhile saves the rest", () => {
+  const r = rig();
+  const gate = join(r.e.root, "gate");
+  onfarm(r, gate);
+  g(r, ["up", "farm", "--lane", "lane", "--count", "2"]);
+  const a = g(r, ["reap", "--yes"], { PROV_MODE: "grab", GBIN: GOVERN });
+  writeFileSync(gate, "");
+  assert.equal(a.code, 0, a.err);
+  assert.deepEqual(calls(r).filter((c) => c.startsWith("stop")).length, 1, `only the first stop ran: ${calls(r).join("|")}`);
+  assert.equal(cloudLines(r).length, 1);
+  assert.match(a.out, /skipped i-2.*in use/);
+});
+
+test("down and reap on one tag take a lock and re-read the record inside it: two at once stop and book once", async () => {
+  const r = rig();
+  const tag = tagOf(g(r, ["up", "farm", "--lane", "lane"]).out);
+  backdate(r, 3600);
+  const a = spawnGovern(r, ["down", tag], { PROV_MODE: "slowstop" }), b = spawnGovern(r, ["reap", "--yes"], { PROV_MODE: "slowstop" });
+  await Promise.all([exited(a), exited(b)]);
+  const books = ledger(r).filter((x) => x.kind === "down" || x.kind === "reap");
+  assert.equal(books.length, 1, JSON.stringify(books));
+  assert.ok(books[0]!.machineSeconds >= 3600 && books[0]!.machineSeconds < 3660);
+  assert.equal(calls(r).filter((c) => c.startsWith("stop")).length, 1, "stopped once");
+});
+
+test("machine lifetime from down is not added on top of the job time on the same resource, and the ledger line says so", () => {
+  const r = rig();
+  const tag = tagOf(g(r, ["up", "farm", "--lane", "lane"]).out);
+  backdate(r, 3600);
+  const lf = join(r.e.projects, "lane", "govern", "ledger.jsonl");
+  appendFileSync(lf, JSON.stringify({ t: new Date().toISOString(), slug: "lane", kind: "job", id: "j1", resource: "farm", machineSeconds: 600, basis: "per-hour", cost: 0.333333, currency: "USD" }) + "\n");
+  g(r, ["down", tag]);
+  const d = present(ledger(r).find((x) => x.kind === "down"), "down");
+  assert.equal(d.additive, false, "the line names itself non-additive");
+  const u = g(r, ["usage", "lane"]).out;
+  assert.match(u, /machine time: farm 36\d\ds/, u);
+  assert.match(u, /machine money: 2\.0\d USD/, u);
+  // when the jobs account for more than the lifetime, the larger figure stands rather than the sum
+  appendFileSync(lf, JSON.stringify({ t: new Date().toISOString(), slug: "lane", kind: "job", id: "j2", resource: "farm", machineSeconds: 5000, basis: "per-hour", cost: 2.777778, currency: "USD" }) + "\n");
+  assert.match(g(r, ["usage", "lane"]).out, /machine time: farm 5600s/);
+});
+
+test("a start that fails after printing ids leaves them unconfirmed: reap does not call it 'nothing to reap' when the list is silent", () => {
+  const r = rig();
+  g(r, ["up", "farm", "--lane", "lane", "--timeout", "5"], { PROV_MODE: "fail" });
+  assert.equal(r.inst()[0]?.status, "start-failed");
+  const a = g(r, ["reap"], { PROV_MODE: "silent" });
+  assert.equal(a.code, 1, a.out);
+  assert.match(a.out + a.err, /printed nothing, but govern started 1 instance/);
+  assert.doesNotMatch(a.out, /nothing to reap/);
+});
+
+test("the generated systemd unit quotes Environment and ExecStart and passes GOVERN_STATE and GOVERN_PROJECTS through", () => {
+  const r = rig();
+  const state = join(r.e.root, "my state");
+  const a = g(r, ["task", "install-service", "--reap-every", "60"], { PATH: '/opt/Program Files/bin:/x"y:/p%q', GOVERN_STATE: state, GOVERN_QUEUE: join(r.e.root, "q ueue") });
+  assert.equal(a.code, 0, a.err);
+  const unit = readFileSync(join(r.e.env.HOME, ".config", "systemd", "user", "govern-dispatch.service"), "utf8");
+  assert.ok(unit.includes('Environment="PATH=/opt/Program Files/bin:/x\\"y:/p%%q"'), unit);
+  assert.ok(unit.includes(`Environment="GOVERN_STATE=${state}"`), unit);
+  assert.ok(unit.includes(`Environment="GOVERN_PROJECTS=${r.e.projects}"`), unit);
+  assert.ok(unit.includes(`Environment="GOVERN_QUEUE=${join(r.e.root, "q ueue")}"`), unit);
+  assert.match(unit, /^ExecStart="[^"\n]+\/bin\/govern" task dispatch --loop --interval 30 --reap-every 60$/m);
+});
+
+test("an id that does not look like a machine id is flagged, not recorded or acted on", () => {
+  const r = rig();
+  const a = g(r, ["up", "farm", "--lane", "lane"], { PROV_MODE: "junk" });
+  assert.equal(a.code, 1);
+  assert.match(a.err, /"Creating" is not an instance id/);
+  assert.deepEqual(r.inst()[0]?.ids, ["i-9"], "only the real id is recorded");
+  const tag = present(r.inst()[0], "rec").tag;
+  writeFileSync(r.cloud, `Creating ${tag}\n`);
+  const y = g(r, ["reap", "--yes"]);
+  assert.equal(y.code, 1);
+  assert.match(y.out + y.err, /Creating.*does not look like an instance id/);
+  assert.ok(!calls(r).some((c) => c.startsWith("stop")), "nothing stopped");
+});
+
+test("a machine whose start was given a long --timeout is not an orphan while that start may still run", () => {
+  const r = rig();
+  const tag = tagOf(g(r, ["up", "farm", "--lane", "lane"]).out);
+  const f = join(r.e.root, "PALS-Notes", "govern-state", "instances", `${tag}.json`);
+  const rec = JSON.parse(readFileSync(f, "utf8"));
+  const set = (x: Record<string, unknown>) => writeFileSync(f, JSON.stringify({ ...rec, ...x }));
+  const old = new Date(Date.now() - 20 * 60e3).toISOString();
+  set({ status: "starting", startedAt: old });
+  assert.match(g(r, ["reap"]).out, /1 instance running with no job/, "past the 15 minute grace");
+  set({ status: "starting", startedAt: old, timeout: 3600 });
+  assert.match(g(r, ["reap"]).out, /nothing to reap \(1 in use\)/, "the start's own timeout is longer");
+});
+
+test("down takes what it stopped out of the last scan, so the desk stops showing it", () => {
+  const r = rig();
+  const tag = tagOf(g(r, ["up", "farm", "--lane", "lane"]).out);
+  g(r, ["reap"]);
+  const q = { GOVERN_QUEUE: join(r.e.root, "queue") };
+  assert.match(g(r, ["desk"], q).out, /1 instance running with no job/);
+  g(r, ["down", tag]);
+  assert.doesNotMatch(g(r, ["desk"], q).out, /running with no job/);
+});
+
+test("--reap-every without --loop is refused", () => {
+  const r = rig();
+  const a = g(r, ["task", "dispatch", "--reap-every", "60"]);
+  assert.equal(a.code, 2);
+  assert.match(a.err, /--reap-every needs --loop/);
+  assert.equal(existsSync(join(r.e.root, "PALS-Notes", "govern-state", "reap-scan.json")), false);
 });

@@ -119,7 +119,7 @@ export function costOf(r: Pick<Resource, "price">, seconds: number): { amount: n
   return undefined;
 }
 
-/** The ledger entries that book machine time: a job on a resource, and the end of an `up` (down, reap). */
+/** The ledger entries that book machine time: a job on a resource, and the end of an `up` (down, reap: its lifetime, not additive with jobs). */
 const MACHINE_KINDS = ["job", "down", "reap"];
 const money = (n: number) => (n === 0 || n >= 0.01 ? n.toFixed(2) : n.toFixed(4));
 /** "0.5 USD/hour", "free" */
@@ -131,19 +131,26 @@ const plural = (n: number, w: string) => `${n} ${w}${n === 1 ? "" : "s"}`;
  *  where there is none. Money is summed per currency from the entries that carry a cost; a resource priced per month
  *  is named as not time-priced, and a free one adds no money. */
 export function machineSummary(entries: Record<string, unknown>[]): { time: string; money?: string } | undefined {
-  const secs = emptyRecord<number>(), cost = emptyRecord<Record<string, number>>(), monthly = new Set<string>();
+  // Job time and machine lifetime (down, reap) can describe the same machine hours, so they are never summed: per
+  // resource the larger of the two stands (with its own money).
+  type Acc = { secs: number; cost: Record<string, number> };
+  const books = { job: emptyRecord<Acc>(), life: emptyRecord<Acc>() }, monthly = new Set<string>();
   for (const e of entries) {
     if (!MACHINE_KINDS.includes(String(e["kind"])) || typeof e["machineSeconds"] !== "number") continue;
     const r = typeof e["resource"] === "string" ? e["resource"] : "local";
-    secs[r] = (secs[r] ?? 0) + e["machineSeconds"];
-    if (typeof e["cost"] === "number" && typeof e["currency"] === "string") {
-      const c = (cost[e["currency"]] ??= emptyRecord<number>());
-      c[r] = (c[r] ?? 0) + e["cost"];
-    }
+    const b = books[e["kind"] === "job" ? "job" : "life"], a = (b[r] ??= { secs: 0, cost: emptyRecord<number>() });
+    a.secs += e["machineSeconds"];
+    if (typeof e["cost"] === "number" && typeof e["currency"] === "string") a.cost[e["currency"]] = (a.cost[e["currency"]] ?? 0) + e["cost"];
     if (e["basis"] === "per-month") monthly.add(r);
   }
-  const names = Object.keys(secs).sort();
+  const names = [...new Set([...Object.keys(books.job), ...Object.keys(books.life)])].sort();
   if (!names.length) return undefined;
+  const secs = emptyRecord<number>(), cost = emptyRecord<Record<string, number>>();
+  for (const r of names) {
+    const j = books.job[r], l = books.life[r], a = l && (!j || l.secs >= j.secs) ? l : j!;
+    secs[r] = a.secs;
+    for (const [cur, v] of Object.entries(a.cost)) (cost[cur] ??= emptyRecord<number>())[r] = v;
+  }
   const parts = Object.keys(cost).sort().map((cur) => {
     const by = cost[cur]!;
     return `${money(Object.values(by).reduce((a, b) => a + b, 0))} ${cur} (${Object.keys(by).sort().join(", ")})`;

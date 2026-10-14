@@ -6,26 +6,31 @@ import { spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { existsSync, readFileSync, readdirSync, appendFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
-import { fail, readJson, writeJson, nowIso, clip, GovernError } from "./util.ts";
+import { fail, readJson, writeJson, nowIso, clip, sleepSync, GovernError } from "./util.ts";
 import { appendLedger, load } from "./project.ts";
 import { repo } from "./workspace.ts";
 import { obj, arr, str, literal, posInt, parseFile, reject, type Shape } from "./shape.ts";
-import { resources, resourceNamed, stateDir, costOf, mayUse, PRICE, type Resource, type Price } from "./resources.ts";
+import { resources, resourceNamed, stateDir, lockDir, costOf, mayUse, PRICE, type Resource, type Price } from "./resources.ts";
 import * as jobs from "./jobs.ts";
+import * as locks from "./locks.ts";
 
 /** A start that is still running is not an orphan for this long (then it is a crashed `up`). */
 const STARTING_GRACE_MS = 15 * 60e3;
 /** How many of a lane's latest jobs are checked for a lease on a resource. */
 const LEASE_JOBS = 30;
+/** How long a down or reap waits for another one on the same tag. */
+const TAG_WAIT_MS = 10 * 60e3;
 
 export interface Instances {
   tag: string; resource: string; startedAt: string; status: "starting" | "running" | "start-failed" | "ended";
   /** Ids the start printed, plus any a listing found under the tag. */
   ids: string[]; stopped?: string[]; endedAt?: string; lane?: string; job?: string; count?: number; price?: Price;
+  /** The --timeout `up` ran its start with (s): the start may run that long. */
+  timeout?: number;
 }
 const INSTANCES: Shape<Instances> = obj(
   { tag: str, resource: str, startedAt: str, status: literal("starting", "running", "start-failed", "ended"), ids: arr(str) },
-  { stopped: arr(str), endedAt: str, lane: str, job: str, count: posInt, price: PRICE },
+  { stopped: arr(str), endedAt: str, lane: str, job: str, count: posInt, price: PRICE, timeout: posInt },
 ) as Shape<Instances>;
 
 export interface Orphan { id: string; tag: string; lane?: string; since: string; again?: boolean }
@@ -68,11 +73,13 @@ function run(argv: string[], vars: Record<string, string>, timeout: number): Ran
 }
 
 const ID = /^[A-Za-z0-9][A-Za-z0-9._:/@=+-]{0,255}$/;
+/** An id a provider would issue has a digit or a separator in it; a bare word ("Creating", "Done") is output, not an id. */
+const looksLikeId = (s: string) => ID.test(s) && s.length >= 2 && /[0-9._:/@=+-]/.test(s);
 const linesOf = (out: string) => out.split("\n").map((l, i) => ({ n: i + 1, s: l.trim() })).filter((l) => l.s);
 /** The ids a start printed, one per line; `bad` names the first line that is not an id. */
 function parseIds(out: string): { ids: string[]; bad?: string } {
   const ids: string[] = []; let bad: string | undefined;
-  for (const { n, s } of linesOf(out)) { if (ID.test(s)) { if (!ids.includes(s)) ids.push(s); } else bad ??= `line ${n} ${JSON.stringify(clip(s, 60))} is not an instance id`; }
+  for (const { n, s } of linesOf(out)) { if (looksLikeId(s)) { if (!ids.includes(s)) ids.push(s); } else bad ??= `line ${n} ${JSON.stringify(clip(s, 60))} is not an instance id`; }
   return { ids, ...(bad ? { bad } : {}) };
 }
 
@@ -104,7 +111,7 @@ export function up(resource: string, o: { lane?: string; count: number; timeout:
   const { lane, job } = whose(o.lane);
   if (lane && !mayUse(res, lane)) fail(`${res.name} is dedicated to ${res.to}; ${lane} is not it`);
   const tag = newTag(lane, job);
-  let rec: Instances = { tag, resource: res.name, startedAt: nowIso(), status: "starting", ids: [], count: o.count, price: res.price, ...(lane ? { lane } : {}), ...(job ? { job } : {}) };
+  let rec: Instances = { tag, resource: res.name, startedAt: nowIso(), status: "starting", ids: [], count: o.count, price: res.price, timeout: Math.ceil(o.timeout), ...(lane ? { lane } : {}), ...(job ? { job } : {}) };
   save(rec);
   const ran = run(start, { tag, count: String(o.count), resource: res.name, ...(lane ? { lane } : {}) }, o.timeout);
   const { ids, bad } = parseIds(ran.out);
@@ -121,6 +128,7 @@ export function up(resource: string, o: { lane?: string; count: number; timeout:
 
 // ---- down and the machine-time books
 
+const LIFETIME_NOTE = "machine lifetime, not added to job time on the same resource: totals take the larger of the two";
 /** Book the instances `ids` as stopped now: machine time from their start (for those not booked before) priced with the
  *  price recorded at `up`, in the lane's ledger (or the state ledger), and the record updated. */
 function settle(rec: Instances, ids: string[], kind: "down" | "reap", by?: string): Instances {
@@ -132,39 +140,60 @@ function settle(rec: Instances, ids: string[], kind: "down" | "reap", by?: strin
   const ended = rec.status !== "starting" && allIds.every((i) => stopped.includes(i));
   const next: Instances = { ...rec, ids: allIds, stopped, status: ended ? "ended" : rec.status, ...(ended ? { endedAt: nowIso() } : {}) };
   save(next);
-  ledger(rec.lane, { kind, tag: rec.tag, resource: rec.resource, ids, machineSeconds, basis: price.basis, ...(cost ? { cost: cost.amount, currency: cost.currency } : {}), ...(by ? { by } : {}) });
+  ledger(rec.lane, { kind, tag: rec.tag, resource: rec.resource, ids, machineSeconds, basis: price.basis, additive: false, note: LIFETIME_NOTE, ...(cost ? { cost: cost.amount, currency: cost.currency } : {}), ...(by ? { by } : {}) });
   return next;
 }
 
 const stopCommand = (res: Resource) => res.commands?.stop ?? fail(`${res.name} has no stop command (govern.config.json: resources[].commands.stop)`);
 const stopVars = (rec: Instances, id: string) => ({ tag: rec.tag, id, resource: rec.resource, ...(rec.lane ? { lane: rec.lane } : {}) });
 
+/** Run `f` holding the tag's lock, a slot file that outlives the long stop commands (the short mkdir guard would be broken
+ *  as stale) and is reclaimed when its holder dies. */
+function withTag<T>(tag: string, f: () => T): T {
+  const dir = join(stateDir(), "locks", "instances", tag), me = locks.identity(process.pid), id = `pid-${process.pid}`;
+  locks.enqueue(dir, { id, label: `govern ${process.pid}`, pid: process.pid, ...(me ? { start: me.start } : {}) });
+  try {
+    for (const end = Date.now() + TAG_WAIT_MS; !locks.tryAcquire(dir, id, 1); sleepSync(50)) if (Date.now() > end) fail(`${tag}: another govern down or reap has held it for ${TAG_WAIT_MS / 60e3} minutes`);
+    return f();
+  } finally { locks.release(dir, id); }
+}
+
 /** Stop a recorded tag's instances, or one instance by id (--forget: book the time without running stop, for a machine that is already gone). */
 export function down(ref: string, o: { timeout: number; forget: boolean }): { lines: string[]; problems: string[] } {
   const all = instances();
   const byTag = all.find((r) => r.tag === ref);
-  const rec = byTag ?? all.find((r) => r.ids.includes(ref)) ?? fail(`no recorded instance "${ref}" (a tag or an id that govern up started; govern reap lists what is running)`);
-  const pick = byTag ? unstopped(rec) : unstopped(rec).filter((i) => i === ref);
-  if (!pick.length) return { lines: [`nothing running under ${ref}: ${rec.tag} is ${rec.status}${rec.ids.length ? "" : " and has no recorded ids (govern reap finds them by tag)"}`], problems: [] };
-  const lines: string[] = [], problems: string[] = [], done: string[] = [];
-  const res = o.forget ? undefined : resourceNamed(rec.resource);
-  const argv = res ? stopCommand(res) : [];
-  for (const id of pick) {
-    if (o.forget) { done.push(id); continue; }
-    const r = run(argv, stopVars(rec, id), o.timeout);
-    if (r.ok) { done.push(id); lines.push(`stopped ${id}`); } else problems.push(`could not stop ${id}: ${r.why}`);
-  }
-  if (done.length) {
-    settle(rec, done, "down", o.forget ? "forget" : "stop");
-    if (o.forget) lines.push(`forgot ${done.join(", ")} (no stop run; machine time booked up to now)`);
-  }
-  return { lines, problems };
+  const found = byTag ?? all.find((r) => r.ids.includes(ref)) ?? fail(`no recorded instance "${ref}" (a tag or an id that govern up started; govern reap lists what is running)`);
+  return withTag(found.tag, () => {
+    const rec = instances().find((r) => r.tag === found.tag) ?? found; // re-read: another down or reap may have just stopped some
+    const pick = byTag ? unstopped(rec) : unstopped(rec).filter((i) => i === ref);
+    if (!pick.length) return { lines: [`nothing running under ${ref}: ${rec.tag} is ${rec.status}${rec.ids.length ? "" : " and has no recorded ids (govern reap finds them by tag)"}`], problems: [] };
+    const lines: string[] = [], problems: string[] = [], done: string[] = [];
+    const res = o.forget ? undefined : resourceNamed(rec.resource);
+    const argv = res ? stopCommand(res) : [];
+    for (const id of pick) {
+      if (o.forget) { done.push(id); continue; }
+      const r = run(argv, stopVars(rec, id), o.timeout);
+      if (r.ok) { done.push(id); lines.push(`stopped ${id}`); } else problems.push(`could not stop ${id}: ${r.why}`);
+    }
+    if (done.length) {
+      settle(rec, done, "down", o.forget ? "forget" : "stop");
+      forgetOrphans(rec.tag, done);
+      if (o.forget) lines.push(`forgot ${done.join(", ")} (no stop run; machine time booked up to now)`);
+    }
+    return { lines, problems };
+  });
 }
 
 // ---- reap
 
+/** Why the instance may not be stopped now, or undefined: its start may still run (the longer of the grace and the
+ *  start's own timeout), anyone holds or waits for the resource's lock (any lane, any job), or its job runs. */
 function inUse(rec: Instances, resource: string): string | undefined {
-  if (rec.status === "starting" && Date.now() - Date.parse(rec.startedAt) < STARTING_GRACE_MS) return "its start is still running";
+  const grace = Math.max(STARTING_GRACE_MS, (rec.timeout ?? 0) * 1000);
+  if (rec.status === "starting" && Date.now() - Date.parse(rec.startedAt) < grace) return "its start is still running";
+  const { holders, queue } = locks.inspect(lockDir(resource));
+  if (holders[0]) return `${holders[0].label} holds ${resource}`;
+  if (queue[0]) return `${queue[0].label} is waiting for ${resource}`;
   if (!rec.lane) return undefined;
   const ids = jobs.list(rec.lane);
   if (rec.job && ids.includes(rec.job) && jobs.state(rec.lane, rec.job).status === "running") return `job ${rec.job} is running`;
@@ -194,7 +223,7 @@ function scanOne(res: Resource, recs: Instances[], timeout: number): Scan {
   if (bad) return { ...base, status: "failed", why: `listing not understood: ${bad}` };
   const mine = recs.filter((r) => r.resource === res.name);
   if (!items.length) {
-    const n = mine.reduce((s, r) => s + (r.status === "ended" || r.status === "start-failed" ? 0 : unstopped(r).length), 0);
+    const n = mine.reduce((s, r) => s + (r.status === "ended" ? 0 : unstopped(r).length), 0);
     if (n) return { ...base, status: "unconfirmed", why: `the list command printed nothing, but govern started ${plural(n, "instance")} that it has no record of stopping (govern down <tag> --forget when they are gone)` };
     return { ...base, status: "ok" };
   }
@@ -203,6 +232,7 @@ function scanOne(res: Resource, recs: Instances[], timeout: number): Scan {
   for (const it of items) {
     const rec = it.tag === undefined ? undefined : byTag.get(it.tag);
     if (!rec) { out.untagged++; continue; }
+    if (!looksLikeId(it.id)) return { ...base, status: "failed", why: `listing shows ${JSON.stringify(clip(it.id, 60))} under govern's tag ${rec.tag}, which does not look like an instance id: nothing stopped` };
     if (inUse(rec, res.name)) { out.inUse++; continue; }
     out.orphans.push({ id: it.id, tag: rec.tag, since: rec.startedAt, ...(rec.lane ? { lane: rec.lane } : {}), ...(rec.stopped?.includes(it.id) ? { again: true as const } : {}) });
   }
@@ -221,10 +251,22 @@ export function readScan(): Scan[] {
 }
 /** Keep the other resources' last results, replace these. */
 export function writeScan(fresh: Scan[]): void {
+  withScanLock(() => writeScanLocked(fresh));
+}
+const withScanLock = <T>(f: () => T): T => locks.withMutex(join(stateDir(), "locks", "reap-scan"), f);
+function writeScanLocked(fresh: Scan[]): void {
   let old: Scan[] = [];
   try { old = readScan(); } catch (e) { if (!(e instanceof GovernError)) throw e; }
   const names = new Set(fresh.map((s) => s.resource)), live = new Set(Object.keys(resources()));
   writeJson(scanFile(), { results: [...old.filter((s) => !names.has(s.resource) && live.has(s.resource)), ...fresh] });
+}
+/** Keep the last scan honest after a stop: the instances `ids` of `tag` are no longer shown as running. */
+function forgetOrphans(tag: string, ids: string[]): void {
+  withScanLock(() => {
+    let old: Scan[];
+    try { old = readScan(); } catch (e) { if (e instanceof GovernError) return; throw e; }
+    if (old.length) writeJson(scanFile(), { results: old.map((s) => ({ ...s, orphans: s.orphans.filter((x) => !(x.tag === tag && ids.includes(x.id))) })) });
+  });
 }
 
 /** List only: what each resource's list command shows, written to state. This is all the dispatcher ever does. */
@@ -257,14 +299,22 @@ export function reap(names: string[], o: { yes: boolean; timeout: number }): { l
   for (const s of results.filter((x) => x.status === "ok" && x.orphans.length)) {
     const res = resourceNamed(s.resource);
     const argv = res.commands?.stop;
-    const stopped = new Map<string, string[]>(), failedIds = new Set<string>();
-    for (const x of s.orphans) {
-      if (!argv) { problems.push(`${s.resource}: has no stop command; ${x.id} left running`); failedIds.add(x.id); continue; }
-      const rec = instances().find((r) => r.tag === x.tag)!;
-      const r = run(argv, stopVars(rec, x.id), o.timeout);
-      if (r.ok) { lines.push(`  stopped ${x.id}`); stopped.set(x.tag, [...(stopped.get(x.tag) ?? []), x.id]); } else { problems.push(`could not stop ${x.id}: ${r.why}`); failedIds.add(x.id); }
-    }
-    for (const [tag, ids] of stopped) settle(instances().find((r) => r.tag === tag)!, ids, "reap");
+    const failedIds = new Set<string>();
+    const tags = [...new Set(s.orphans.map((x) => x.tag))];
+    for (const tag of tags) withTag(tag, () => {
+      const rec = instances().find((r) => r.tag === tag); // re-read under the lock: a concurrent down may have stopped some
+      const done: string[] = [];
+      for (const x of s.orphans.filter((y) => y.tag === tag)) {
+        if (!rec) { problems.push(`${x.id}: record of ${tag} is gone; left running`); failedIds.add(x.id); continue; }
+        if (!argv) { problems.push(`${s.resource}: has no stop command; ${x.id} left running`); failedIds.add(x.id); continue; }
+        if (rec.stopped?.includes(x.id) && !x.again) { lines.push(`  ${x.id} was stopped meanwhile by another govern`); continue; }
+        const use = inUse(rec, s.resource); // and again right before the stop: the scan may be minutes old
+        if (use) { lines.push(`  skipped ${x.id}: in use now (${use})`); continue; }
+        const r = run(argv, stopVars(rec, x.id), o.timeout);
+        if (r.ok) { lines.push(`  stopped ${x.id}`); done.push(x.id); } else { problems.push(`could not stop ${x.id}: ${r.why}`); failedIds.add(x.id); }
+      }
+      if (rec && done.length) settle(rec, done, "reap");
+    });
     left.push({ ...s, orphans: s.orphans.filter((x) => failedIds.has(x.id)) });
   }
   writeScan(left);
