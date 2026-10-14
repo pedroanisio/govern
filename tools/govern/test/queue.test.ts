@@ -72,11 +72,12 @@ test("dispatch runs claude -p with read-only tools, outside this session's env, 
   const call = jsonl(join(e.root, "claude.log"))[0];
   assert.equal(call.nested, false);
   assert.deepEqual(call.argv.slice(0, 5), ["-p", "--output-format", "json", "--model", "sonnet"]);
-  assert.deepEqual(call.argv.slice(5), ["--allowedTools", "Read", "Grep", "Glob", "--setting-sources", "", "--strict-mcp-config"], "sealed to the claude-read profile");
+  assert.deepEqual(call.argv.slice(5), ["--allowedTools", "Read", "Grep", "Glob", "--tools", "Read", "Grep", "Glob", "--disallowedTools", "Agent", "Bash", "Edit", "NotebookEdit", "Task", "TodoWrite", "WebFetch", "WebSearch", "Write", "--setting-sources", "", "--strict-mcp-config"], "sealed to the claude-read profile");
 });
 
 test("--write gives the runner write access; replies thread back to the original", () => {
   const e = env();
+  mkdirSync(join(e.projects, "film"), { recursive: true });
   govern(e, ["task", "send", "--to", "codex", "--project", "film", "--task", "fix", "--summary", "fix scene 3", "--write"]);
   govern(e, ["task", "dispatch"], { FAKE_CODEX_SCRIPTS: reply(e, "ok", { kind: "HANDOFF", summary: "fixed", body: "changed scene_03.py" }) });
   const argv = jsonl(join(e.root, "argv.log"))[0];

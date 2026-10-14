@@ -2,7 +2,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { chmodSync, existsSync, readFileSync, readdirSync, rmSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { makeEnv, govern, write, reply, present, HERE, type Env } from "./helpers.ts";
 
@@ -13,6 +13,7 @@ function env() {
   const fakeClaude = write(join(e.root, "fake-claude.sh"), `#!/bin/sh\nexec ${process.execPath} --disable-warning=ExperimentalWarning ${join(HERE, "fake-claude.ts")} "$@"\n`);
   chmodSync(fakeClaude, 0o755);
   Object.assign(e.env, { GOVERN_QUEUE: join(e.root, "queue"), GOVERN_CLAUDE_BIN: fakeClaude, GOVERN_CAPABILITIES: join(e.root, "caps") });
+  mkdirSync(join(e.root, "caps"), { recursive: true });
   write(join(e.root, "src", "a.ts"), "one\ntwo\nthree\n");
   return e;
 }

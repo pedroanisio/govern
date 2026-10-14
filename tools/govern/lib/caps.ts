@@ -20,9 +20,27 @@ export const EFFECTS = ["read", "write", "spend", "publish", "push"] as const;
 export type Effect = (typeof EFFECTS)[number];
 /** Classes that act outside the task's folder: a profile holding one runs only for a lane whose gate of that name is approved. */
 export const GUARDED: readonly Effect[] = ["spend", "publish", "push"];
+/** Commands that push, publish or spend: an allow pattern that can run one must come with a capability of that guarded effect. */
+export const GUARDED_COMMANDS: readonly { cmd: string; effect: Effect }[] = [
+  { cmd: "git push", effect: "push" }, { cmd: "gh pr merge", effect: "push" },
+  { cmd: "gh release create", effect: "publish" }, { cmd: "npm publish", effect: "publish" }, { cmd: "docker push", effect: "publish" },
+  { cmd: "twine upload", effect: "publish" }, { cmd: "cargo publish", effect: "publish" },
+  { cmd: "claude", effect: "spend" }, { cmd: "codex", effect: "spend" }, { cmd: "elevenlabs", effect: "spend" },
+];
+/** Why `allow` needs a guarded effect that `effect` does not declare (undefined: fine). Bare `Bash` or `Bash(*)` can run anything. */
+export function guardedPatternProblem(allow: string, effect: Effect): string | undefined {
+  const m = /^Bash(?:\((.*)\))?$/.exec(allow.trim());
+  if (!m) return undefined;
+  const x = (m[1] ?? "").replace(/:?\*$/, "").trim();
+  const hit = GUARDED_COMMANDS.filter(({ cmd }) => x === cmd || cmd.startsWith(`${x} `) || x.startsWith(`${cmd} `) || x === "");
+  if (!hit.length || hit.some((h) => h.effect === effect)) return undefined;
+  return `its allow pattern "${allow}" can run ${hit.map((h) => h.cmd).join(", ")}; declare effect ${[...new Set(hit.map((h) => h.effect))].join(" or ")} (it says ${effect}) so the lane's gate applies`;
+}
 export interface CodexMap { sandbox?: "read-only" | "workspace-write"; config?: string[]; addDirs?: string[] }
 /** What the self-test asks and what govern checks in the reply; `{nonce}` is replaced by the run's random text. */
-export interface Probe { instruction: string; expect?: string; file?: { path: string; contains: string } }
+export interface Probe { instruction: string; expect?: string; file?: { path: string; contains: string };
+  /** An argv govern itself runs (with a timeout); its output must appear in the model's reply. */
+  expectCmd?: string[] }
 export interface Capability {
   name: string; description: string; call: string;
   claude: { allow: string[]; permissionMode?: "acceptEdits" };
@@ -61,7 +79,7 @@ const secretName = (v: unknown, p: string): string => {
   return v;
 };
 const CODEX = obj({}, { sandbox: literal("read-only", "workspace-write"), config: arr(str), addDirs: arr(str) });
-const PROBE = obj({ instruction: str }, { expect: str, file: obj({ path: str, contains: str }) });
+const PROBE = obj({ instruction: str }, { expect: str, file: obj({ path: str, contains: str }), expectCmd: arr(str, { nonEmpty: true }) });
 const CAP = obj(
   { name: ident, description: str, call: str, claude: obj({ allow: arr(str) }, { permissionMode: literal("acceptEdits") }), effect: literal(...EFFECTS) },
   { codex: CODEX, resource: str, cost: str, secrets: arr(secretName), gate: ident, probe: PROBE });
@@ -87,7 +105,8 @@ function readDir(dir: string): { caps: Capability[]; profiles: Profile[] } {
       });
     }
     for (const c of v.capabilities ?? []) {
-      if (c.probe && !c.probe.expect && !c.probe.file) fail(`${file}: capability ${c.name}: its probe needs an expect or a file to verify`);
+      if (c.probe && !c.probe.expect && !c.probe.file && !c.probe.expectCmd) fail(`${file}: capability ${c.name}: its probe needs an expect, an expectCmd or a file to verify`);
+      for (const a of c.claude.allow) { const why = guardedPatternProblem(a, c.effect); if (why) fail(`${file}: capability ${c.name}: ${why}`); }
       caps.push({ ...c, secrets: c.secrets ?? [], file });
     }
     for (const p of v.profiles ?? []) {
@@ -101,10 +120,15 @@ function readDir(dir: string): { caps: Capability[]; profiles: Profile[] } {
 /** Every capability and profile by name (a workspace entry overrides a built-in of the same name), references resolved. */
 export function registry(): Registry {
   const caps = new Map<string, Capability>(), profiles = new Map<string, Profile>();
-  for (const d of [BUILTIN, extraDir()]) {
+  const given = process.env.GOVERN_CAPABILITIES, extra = extraDir();
+  if (given && (!extra || !existsSync(extra))) fail(`GOVERN_CAPABILITIES=${given} does not exist (unset it to use the default capabilities folder)`);
+  for (const d of [BUILTIN, extra]) {
     if (!d) continue;
     const r = readDir(d);
-    for (const c of r.caps) caps.set(c.name, c);
+    for (const c of r.caps) {
+      if (d !== BUILTIN && caps.has(c.name)) fail(`${c.file}: capability "${c.name}" is a built-in and cannot be redefined; pick another name`);
+      caps.set(c.name, c);
+    }
     for (const p of r.profiles) profiles.set(p.name, p);
   }
   for (const p of profiles.values()) {
@@ -137,8 +161,17 @@ export function claudeSpec(reg: Registry, p: Profile): ClaudeSpec {
  *  `--setting-sources ""` is the SDK's way to say "no sources"; the CLI help does not state that an empty value is valid. */
 export function claudeArgs(reg: Registry, p: Profile, model: string): string[] {
   const s = claudeSpec(reg, p);
+  const tools = claudeTools(s);
   return ["-p", "--output-format", "json", "--model", model, ...(s.acceptEdits ? ["--permission-mode", "acceptEdits"] : []),
-    "--allowedTools", ...s.allow, "--setting-sources", "", "--strict-mcp-config", ...(p.mcpConfig ? ["--mcp-config", p.mcpConfig] : [])];
+    "--allowedTools", ...s.allow, "--tools", ...tools, "--disallowedTools", ...CLAUDE_BUILTIN.filter((t) => !tools.includes(t)),
+    "--setting-sources", "", "--strict-mcp-config", ...(p.mcpConfig ? ["--mcp-config", p.mcpConfig] : [])];
+}
+/** Claude Code's built-in tools that can act on files, the shell, the web or other agents (from its tools reference, not
+ *  from `claude --help`, so a new built-in is not listed until added here). The ones a profile does not grant are disallowed. */
+export const CLAUDE_BUILTIN: readonly string[] = ["Agent", "Bash", "Edit", "Glob", "Grep", "NotebookEdit", "Read", "Task", "TodoWrite", "WebFetch", "WebSearch", "Write"];
+/** The built-in tools named by the allow patterns, in grant order (`Bash(gh repo view:*)` names Bash; mcp__ tools are not built-in). */
+export function claudeTools(s: ClaudeSpec): string[] {
+  return [...new Set(s.allow.map((a) => a.replace(/\(.*$/, "")).filter((t) => CLAUDE_BUILTIN.includes(t)))];
 }
 export interface CodexSpec { sandbox: "read-only" | "workspace-write"; config: string[]; addDirs: string[] }
 /** The Codex equivalent: the strongest sandbox any capability asks for, and every -c setting and add-dir. */
@@ -163,7 +196,11 @@ export function profileHash(reg: Registry, p: Profile): string {
 
 /** Why `p` may not run for `lane` (or undefined: it may). A profile with a spend, publish or push capability runs only
  *  for a lane whose process declares the matching gate and whose owner approved it. */
-export function guardProblem(reg: Registry, p: Profile, lane: string | undefined, laneGiven: boolean): string | undefined {
+export function guardProblem(reg: Registry, p: Profile, lane: string | undefined, laneGiven: boolean, project: string): string | undefined {
+  if (laneGiven && lane !== project && capsOf(reg, p).some((c) => GUARDED.includes(c.effect))) {
+    const parent = existsSync(join(projectsDir(), project, "govern.json")) ? load(project).parent : undefined;
+    if (lane !== parent) return `--lane ${lane} must be the message's project (${project}) or its parent lane${parent ? ` (${parent})` : " (it has none)"}`;
+  }
   for (const c of capsOf(reg, p)) {
     if (!GUARDED.includes(c.effect)) continue;
     const gate = c.gate ?? c.effect;
@@ -179,10 +216,10 @@ export function guardProblem(reg: Registry, p: Profile, lane: string | undefined
 
 // ---------------------------------------------------------------- self-test records
 
-export interface ProbeResult { capability: string; status: "ok" | "refused" | "error" | "invalid" | "untested"; evidence: string }
+export interface ProbeResult { capability: string; status: "ok" | "refused" | "error" | "invalid" | "untested" | "leaked"; evidence: string }
 export interface CheckRecord { version: 1; profile: string; hash: string; at: string; model: string; ok: boolean; results: ProbeResult[] }
 const RECORD = obj({ version: literal(1), profile: str, hash: str, at: str, model: str, ok: (v, p) => (typeof v === "boolean" ? v : reject(p, "must be true or false")),
-  results: arr(obj({ capability: str, status: literal("ok", "refused", "error", "invalid", "untested"), evidence: str })) });
+  results: arr(obj({ capability: str, status: literal("ok", "refused", "error", "invalid", "untested", "leaked"), evidence: str })) });
 export const checkFile = (queueDir: string, profile: string) => join(queueDir, "checks", `${profile}.json`);
 /** The last record of a profile; undefined when none, "unreadable" when it is not a valid record (never trusted). */
 export function readCheck(queueDir: string, profile: string): CheckRecord | "unreadable" | undefined {
@@ -190,6 +227,8 @@ export function readCheck(queueDir: string, profile: string): CheckRecord | "unr
   if (!existsSync(f)) return undefined;
   try { return parseFile(f, readFileSync(f, "utf8"), RECORD) as CheckRecord; } catch { return "unreadable"; }
 }
+/** The capabilities whose probe did not pass; an untested one counts unless the profile's self-test is optional. */
+export const failing = (results: ProbeResult[], p: Profile): string[] => results.filter((r) => r.status !== "ok" && !(r.status === "untested" && p.selfTest === "optional")).map((r) => r.capability);
 export type CheckState = "passed" | "failed" | "stale" | "none";
 export function checkState(rec: CheckRecord | "unreadable" | undefined, hash: string): CheckState {
   if (!rec || rec === "unreadable") return "none";
@@ -199,7 +238,7 @@ export function checkState(rec: CheckRecord | "unreadable" | undefined, hash: st
 export function checkProblem(queueDir: string, reg: Registry, p: Profile): string | undefined {
   const rec = readCheck(queueDir, p.name), hash = profileHash(reg, p), st = checkState(rec, hash);
   const run = `run govern caps --check ${p.name}`;
-  if (st === "failed") return `the last self-test of profile ${p.name} failed (${(rec as CheckRecord).results.filter((r) => r.status !== "ok" && r.status !== "untested").map((r) => r.capability).join(", ")}); fix the grant and ${run}`;
+  if (st === "failed") return `the last self-test of profile ${p.name} failed (${failing((rec as CheckRecord).results, p).join(", ")}); fix the grant and ${run}`;
   if (st === "stale") return `profile ${p.name} changed since its last self-test; ${run}`;
   if (st === "none" && (p.selfTest === "required" || rec === "unreadable")) return `profile ${p.name} has not passed a self-test${rec === "unreadable" ? " (its record is unreadable)" : ""}; ${run}`;
   return undefined;
@@ -207,6 +246,8 @@ export function checkProblem(queueDir: string, reg: Registry, p: Profile): strin
 
 // ---------------------------------------------------------------- text
 
+/** A codex session is limited by its sandbox and -c settings only: it still reads the user's ~/.codex config. */
+const NOT_SEALED = "not sealed (inherits ~/.codex)";
 const codexLine = (reg: Registry, p: Profile): string => {
   const missing = capsOf(reg, p).filter((c) => !c.codex).map((c) => c.name);
   if (missing.length) return `not available on codex (${missing.join(", ")})`;
@@ -220,7 +261,8 @@ export function listText(reg: Registry, queueDir: string, shadowing: string[]): 
   L.push("", "PROFILES");
   for (const p of reg.profiles.values()) {
     const st = checkState(readCheck(queueDir, p.name), profileHash(reg, p));
-    L.push(`  ${p.name.padEnd(14)} ${p.engine.padEnd(7)} ${p.capabilities.join("+").padEnd(22)} check: ${st === "none" ? (p.selfTest === "required" ? "not run (required)" : "not run") : st}`);
+    const untested = capsOf(reg, p).filter((c) => !c.probe).map((c) => c.name);
+    L.push(`  ${p.name.padEnd(14)} ${p.engine.padEnd(7)} ${p.capabilities.join("+").padEnd(22)} check: ${st === "none" ? (p.selfTest === "required" ? "not run (required)" : "not run") : st}${p.engine === "codex" ? `  ${NOT_SEALED}` : ""}${untested.length ? `  UNTESTED: ${untested.join(", ")}` : ""}`);
   }
   for (const n of shadowing) L.push(`warning: the queue's config.json runner "${n}" shadows the built-in profile ${n} (it runs unsealed)`);
   return L.join("\n");
@@ -231,12 +273,12 @@ export function showText(reg: Registry, queueDir: string, p: Profile): string {
   const rec = readCheck(queueDir, p.name), st = checkState(rec, profileHash(reg, p));
   const L = [`${p.name}: ${p.description || "(no description)"}`, `engine: ${p.engine}${p.model ? ` · model ${p.model}` : ""} · self-test ${p.selfTest}`, `defined in: ${p.file}`, "capabilities:"];
   for (const c of caps) {
-    L.push(`  ${c.name.padEnd(10)} ${c.effect.padEnd(8)} ${c.claude.allow.join(", ")}${c.claude.permissionMode ? ` (${c.claude.permissionMode})` : ""}`);
+    L.push(`  ${c.name.padEnd(10)} ${c.effect.padEnd(8)} ${c.claude.allow.join(", ")}${c.claude.permissionMode ? ` (${c.claude.permissionMode})` : ""}${c.probe ? "" : "  NOT TESTED: no probe"}`);
     const extra = [c.resource && `resource: ${c.resource}`, c.cost && `cost: ${c.cost}`, GUARDED.includes(c.effect) && `needs the lane's "${c.gate ?? c.effect}" gate approved`].filter(Boolean);
     if (extra.length) L.push(`             ${extra.join(" · ")}`);
   }
   L.push(`claude: --allowedTools ${claudeSpec(reg, p).allow.join(" ")}${claudeSpec(reg, p).acceptEdits ? " · --permission-mode acceptEdits" : ""} · --setting-sources "" · --strict-mcp-config${p.mcpConfig ? ` · --mcp-config ${p.mcpConfig}` : " (no MCP servers)"}`);
-  L.push(`codex: ${codexLine(reg, p)}`);
+  L.push(`codex: ${codexLine(reg, p)}${p.engine === "codex" ? ` · ${NOT_SEALED}` : ""}`);
   L.push(`classes: ${classesOf(reg, p).join(", ")}`);
   const secrets = [...new Set(caps.flatMap((c) => c.secrets))];
   L.push(`secrets: ${secrets.length ? `${secrets.join(", ")} (names only)` : "(none)"}`);

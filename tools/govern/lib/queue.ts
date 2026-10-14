@@ -97,6 +97,12 @@ export function resolveTarget(to: string, o: { profile?: string; write: boolean 
   if (name === undefined) return { access: o.write ? "write" : "read-only" };
   return { profile: name, access: writes(reg, getProfile(name, reg)) ? "write" : "read-only" };
 }
+/** The profile of a message that names none: claude or codex with the access it carries, or a profile named like the recipient. */
+function defaultProfile(m: Pick<Message, "to" | "access">, reg: Registry): string | undefined {
+  if (configuredRunner(m.to)) return undefined;
+  if (m.to === "claude" || m.to === "codex") return `${m.to}-${m.access === "write" ? "write" : "read"}`;
+  return reg.profiles.has(m.to) ? m.to : undefined;
+}
 /** The lane that authorises a message's profile: --lane, else the project when it is a lane. */
 const laneOf = (m: Pick<Message, "lane" | "project">): string | undefined => m.lane ?? (existsSync(join(projectsDir(), m.project, "govern.json")) ? m.project : undefined);
 
@@ -109,7 +115,7 @@ export function send(m: Omit<Message, "id" | "created">): Message {
   if (!m.summary.trim()) fail("--summary is required");
   if (m.profile) {
     const reg = registry();
-    const why = guardProblem(reg, getProfile(m.profile, reg), laneOf(m), m.lane !== undefined);
+    const why = guardProblem(reg, getProfile(m.profile, reg), laneOf(m), m.lane !== undefined, m.project);
     if (why) fail(`profile ${m.profile} is refused for this task: ${why}`);
   }
   if (m.replyTo && !find(m.replyTo)) fail(`--reply-to ${m.replyTo}: no such message`);
@@ -345,19 +351,24 @@ export function dispatch(o: { max?: number; only?: string; timeoutSec?: number }
       continue;
     }
     const reg = registry();
-    const prof = m.profile ?? (!configuredRunner(m.to) && reg.profiles.has(m.to) ? m.to : undefined);
+    const refuse = (name: string | undefined, why: string): string => {
+      const stop = send({ project: m.project, task: m.task, kind: "BLOCKED", from: "dispatcher", to: LEGACY_OWNER(m), summary: `${name ?? m.to} refused: ${why}`, body: `${m.id} (${m.kind} from ${m.from} to ${m.to}) was not run: ${why}`, files: [], replyTo: m.id, access: "read-only" });
+      m.result = { agent: "dispatcher", ok: false, seconds: 0, ...(name ? { profile: name } : {}), error: `${name ? `profile ${name} ` : ""}refused: ${why}`, reply: stop.id, closedBy: "dispatcher" };
+      save(m, "claimed");
+      move(m, "claimed", "failed");
+      return `${m.id} → ${m.to}: refused: ${why} · to ${stop.to} ${stop.id}`;
+    };
+    const prof = m.profile ?? defaultProfile(m, reg);
+    if (prof !== undefined && !configuredRunner(m.to) && !reg.profiles.has(prof)) { lines.push(refuse(prof, `profile ${prof} does not exist (have: ${[...reg.profiles.keys()].join(", ")})`)); continue; }
     const sealed = prof !== undefined && !configuredRunner(m.to) ? getProfile(prof, reg) : undefined;
+    if (!sealed && !cfg.runners?.[m.to]) { lines.push(refuse(undefined, `${m.to} has no profile and no runner in ${join(QUEUE(), "config.json")}`)); continue; }
     if (sealed) {
-      const why = guardProblem(reg, sealed, laneOf(m), m.lane !== undefined) ?? checkProblem(QUEUE(), reg, sealed);
-      if (why) {
-        const stop = send({ project: m.project, task: m.task, kind: "BLOCKED", from: "dispatcher", to: LEGACY_OWNER(m), summary: `${sealed.name} refused: ${why}`, body: `${m.id} (${m.kind} from ${m.from} to ${m.to}) was not run: ${why}`, files: [], replyTo: m.id, access: "read-only" });
-        m.result = { agent: "dispatcher", ok: false, seconds: 0, profile: sealed.name, error: `profile ${sealed.name} refused: ${why}`, reply: stop.id, closedBy: "dispatcher" };
-        save(m, "claimed");
-        move(m, "claimed", "failed");
-        lines.push(`${m.id} → ${m.to}: refused: ${why} · to ${stop.to} ${stop.id}`);
-        continue;
-      }
+      const why = guardProblem(reg, sealed, laneOf(m), m.lane !== undefined, m.project) ?? checkProblem(QUEUE(), reg, sealed);
+      if (why) { lines.push(refuse(sealed.name, why)); continue; }
     }
+    // Checked before the reservation, so a refused message holds nothing.
+    const folder = join(projectsDir(), m.project);
+    if (sealed && writes(reg, sealed) && !existsSync(folder)) { lines.push(refuse(sealed.name, `profile ${sealed.name} may change files, and the project folder ${folder} does not exist`)); continue; }
     const taskId = `task:${m.id}`;
     const held = allowances.reserve(limits, { ...(laneOf(m) ? { lane: laneOf(m)! } : {}), ...(prof ? { profile: prof } : {}) },
       { id: taskId, label: `task ${m.id}`, ...(m.estimateUsd !== undefined ? { usd: m.estimateUsd } : {}) }, jobs.settleDead);
@@ -369,12 +380,12 @@ export function dispatch(o: { max?: number; only?: string; timeoutSec?: number }
     }
     const t0 = Date.now();
     const def = cfg.runners?.[m.to];
-    const cwd = existsSync(join(projectsDir(), m.project)) ? join(projectsDir(), m.project) : repo();
+    const cwd = existsSync(folder) ? folder : repo();
     let r: RunOut;
     try {
       r = sealed
         ? runSealed(reg, sealed, cwd, prompt(m), o.timeoutSec ?? 900, { lastMessage: join(QUEUE(), "claimed", `${m.id}.reply.txt`), schema: REPLY_SCHEMA })
-        : runConfigured(def!, m, prompt(m), o.timeoutSec ?? 900);
+        : runConfigured(def as RunnerDef, m, prompt(m), o.timeoutSec ?? 900);
     } catch (e) { allowances.release(taskId); throw e; }
     allowances.settle(taskId, usdOf(r, sealed?.model));
     const reply = r.error ? { error: r.error } : parseReply(r.text);

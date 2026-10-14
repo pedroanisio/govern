@@ -20,7 +20,7 @@ import { desk } from "./lib/desk.ts";
 import { listLines, showLines, place } from "./lib/resources.ts";
 import * as reaping from "./lib/reap.ts";
 import * as allowances from "./lib/allowances.ts";
-import { registry, getProfile, listText, showText } from "./lib/caps.ts";
+import { registry, getProfile, listText, showText, failing } from "./lib/caps.ts";
 import { checkProfile } from "./lib/capcheck.ts";
 import { tune, chooseRunner } from "./lib/tune.ts";
 import { verifyQuote } from "./lib/approval.ts";
@@ -771,14 +771,14 @@ export const COMMANDS: readonly Cmd[] = [
   { name: "caps", section: 6, flags: { bool: ["check"] },
     lines: [["", "the capabilities and profiles a queued agent can run under, with each profile's last self-test"],
       ["<profile>", "its permission patterns, Codex mapping, side-effect classes and secret names"],
-      ["--check <profile>", "self-test the grants: one probe per capability in a sealed session (haiku), recorded with the profile's hash;\nthe dispatcher refuses a profile whose last check failed or predates its definition"]],
+      ["--check <profile>", "self-test the grants: one probe per capability in a sealed session (haiku), recorded with the profile's hash;\nthe dispatcher refuses a profile whose last check failed or predates its definition.\nAlso one negative probe (a capability the profile lacks must be refused); a capability with no probe is untested and fails a required check"]],
     run: (a) => {
       const reg = registry(), name = a._[1];
       if (flag(a, "check")) {
         const rec = checkProfile(queue.QUEUE(), reg, name ?? fail("govern caps --check <profile>"));
         for (const r of rec.results) out(`  ${r.capability.padEnd(10)} ${r.status === "invalid" ? "" : `${r.status.padEnd(8)} `}${r.evidence}`.trimEnd());
-        const bad = rec.results.filter((r) => r.status !== "ok" && r.status !== "untested").map((r) => r.capability);
-        out(bad.length ? `${rec.profile}: check FAILED (${bad.join(", ")})` : `${rec.profile}: check passed (${rec.results.length} capabilit${rec.results.length === 1 ? "y" : "ies"})`);
+        const bad = failing(rec.results, getProfile(name!, reg));
+        out(bad.length ? `${rec.profile}: check FAILED (${bad.join(", ")})` : `${rec.profile}: check passed (${rec.results.length} probe${rec.results.length === 1 ? "" : "s"})`);
         if (bad.length) process.exitCode = 1;
         return;
       }

@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 // Fake `claude -p --output-format json` for govern's tests.
-//   FAKE_CLAUDE_ARGV_OUT  append {argv, cwd, nested} (JSON) to this file; nested = CLAUDECODE was inherited
+//   FAKE_CLAUDE_ARGV_OUT  append {argv, cwd, nested, stdin, input} (JSON) to this file; nested = CLAUDECODE was inherited;
+//                         stdin = the prompt's length, input = the prompt text
 //   FAKE_CLAUDE_RESULT    the text of the `result` field
 //   FAKE_CLAUDE_SCRIPT    a JSON file: [{result, write?: {path, text}}, …], one entry per successive call (the last repeats;
 //                         counter file prefix FAKE_CLAUDE_COUNTER). The token NONCE in result or text becomes the contents of
@@ -12,7 +13,7 @@ const chunks: Buffer[] = [];
 process.stdin.on("data", (c) => chunks.push(c as Buffer));
 process.stdin.on("end", () => {
   if (process.env.FAKE_CLAUDE_ARGV_OUT)
-    appendFileSync(process.env.FAKE_CLAUDE_ARGV_OUT, JSON.stringify({ argv: process.argv.slice(2), cwd: process.cwd(), nested: "CLAUDECODE" in process.env, stdin: Buffer.concat(chunks).toString("utf8").length }) + "\n");
+    appendFileSync(process.env.FAKE_CLAUDE_ARGV_OUT, JSON.stringify({ argv: process.argv.slice(2), cwd: process.cwd(), nested: "CLAUDECODE" in process.env, stdin: Buffer.concat(chunks).toString("utf8").length, input: Buffer.concat(chunks).toString("utf8") }) + "\n");
   let result = process.env.FAKE_CLAUDE_RESULT ?? "";
   const script = process.env.FAKE_CLAUDE_SCRIPT;
   if (script) {
