@@ -313,7 +313,7 @@ function runGrok(reg: Registry, prof: Profile, cwd: string, p: string, timeoutSe
     writeFileSync(promptFile, p);
     const ghome = prepareGrokHome();
     const model = o.model || prof.model || process.env.GOVERN_QUEUE_GROK_MODEL;
-    const args = ["--prompt-file", promptFile, "--output-format", "json", ...(model ? ["--model", model] : []), ...grokArgs(reg, prof), "--max-turns", grokMaxTurns(), "--cwd", cwd];
+    const args = ["--prompt-file", promptFile, "--output-format", "json", ...(o.schema ? ["--json-schema", JSON.stringify(JSON.parse(readFileSync(o.schema, "utf8")))] : []), ...(model ? ["--model", model] : []), ...grokArgs(reg, prof), "--max-turns", grokMaxTurns(), "--cwd", cwd];
     const r = spawnSync(process.env.GOVERN_GROK_BIN ?? "grok", args, { cwd, encoding: "utf8", timeout: timeoutSec * 1000, maxBuffer: 64 << 20, env: grokEnv(home, ghome) });
     try { syncBackAuth(); } catch { /* the login stays where grok left it */ }
     const res = grokResult(r.stdout, r.status, r.stderr, r.error, timeoutSec);
@@ -353,7 +353,9 @@ export function grokResult(stdout: string | undefined, status: number | null, st
   const known = u !== null && typeof u === "object" && o.usage_is_incomplete !== true && o.cost_is_partial !== true;
   // The CLI's input_tokens EXCLUDES cache reads (the session store's include them); the total is the sum, as for claude.
   const usage = known ? { input: (u.input_tokens ?? 0) + (u.cache_read_input_tokens ?? 0) + (u.cache_creation_input_tokens ?? 0), cached: u.cache_read_input_tokens ?? 0, cacheWrite: u.cache_creation_input_tokens ?? 0, output: u.output_tokens ?? 0, reasoning: u.reasoning_tokens ?? 0, ...(typeof o.total_cost_usd === "number" ? { costUsd: o.total_cost_usd } : {}) } : undefined;
-  const out: RunOut = { text: typeof o.text === "string" ? o.text : undefined, turns: o.num_turns, ...(usage ? { usage } : { spendUnknown: true }) };
+  // grok's text joins every turn with no separator (grok 1.0.52, probed 2026-10-14); structuredOutput is the last turn's parsed reply.
+  const text = o.structuredOutput !== null && typeof o.structuredOutput === "object" ? JSON.stringify(o.structuredOutput) : typeof o.text === "string" ? o.text : undefined;
+  const out: RunOut = { text, turns: o.num_turns, ...(usage ? { usage } : { spendUnknown: true }) };
   if (error) out.error = error.message;
   else if (status !== 0) out.error = `exit ${status}: ${clip(stderr ?? "", 300)}`;
   else if (o.stopReason !== "end_turn") out.error = `stopped with ${o.stopReason ?? "no stopReason"}${typeof o.text === "string" && o.text ? `: ${clip(o.text, 200)}` : ""}`;

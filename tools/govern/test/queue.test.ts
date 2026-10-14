@@ -1,4 +1,5 @@
 import { test } from "node:test";
+import { grokResult } from "../lib/queue.ts";
 import { createRequire } from "node:module";
 const require = createRequire(import.meta.url);
 import assert from "node:assert/strict";
@@ -88,7 +89,7 @@ test("dispatch runs grok --prompt-file sealed to grok-read: private HOME and a p
   assert.match(r.out, /→ grok: ACK in \d+s, 10k in \(90% cached\), 200 out, \$0\.012/);
   const call = jsonl(join(e.root, "grok.log"))[0];
   assert.equal(call.argv[0], "--prompt-file");
-  assert.deepEqual(call.argv.slice(2), ["--output-format", "json", "--tools", "Read,Grep,Glob", "--permission-mode", "dontAsk", "--deny", "MCPTool(*)", "--deny", "Read(**/auth.json)", "--max-turns", "25", "--cwd", call.cwd], "sealed to the grok-read profile");
+  assert.deepEqual(call.argv.slice(2), ["--output-format", "json", "--json-schema", JSON.stringify(JSON.parse(readFileSync(join(HERE, "..", "schemas", "queue-reply.json"), "utf8"))), "--tools", "Read,Grep,Glob", "--permission-mode", "dontAsk", "--deny", "MCPTool(*)", "--deny", "Read(**/auth.json)", "--max-turns", "25", "--cwd", call.cwd], "sealed to the grok-read profile");
   assert.match(call.prompt, /BODY-GROK/);
   for (const k of GROK_TOGGLES) assert.equal(call.env[k], "0", k);
   assert.equal(call.env.GROK_MEMORY, "0");
@@ -199,7 +200,7 @@ test("grok --write maps to grok-write, which may edit; a grok run that fails is 
   const r = govern(e, ["task", "dispatch"], { FAKE_GROK_RESULT: JSON.stringify({ kind: "ACK", summary: "done", body: "ok" }) });
   assert.match(r.out, /→ grok: ACK/);
   const call = jsonl(join(e.root, "grok.log"))[0];
-  assert.deepEqual(call.argv.slice(2, 12), ["--output-format", "json", "--tools", "Read,Grep,Glob,Edit,Write", "--permission-mode", "acceptEdits", "--allow", "Edit(./**)", "--allow", "Write(./**)"], "edits are scoped to the task's folder, never a bare Edit/Write");
+  assert.deepEqual(call.argv.slice(2, 14), ["--output-format", "json", "--json-schema", JSON.stringify(JSON.parse(readFileSync(join(HERE, "..", "schemas", "queue-reply.json"), "utf8"))), "--tools", "Read,Grep,Glob,Edit,Write", "--permission-mode", "acceptEdits", "--allow", "Edit(./**)", "--allow", "Write(./**)"], "edits are scoped to the task's folder, never a bare Edit/Write");
   assert.ok(!call.argv.includes("Edit") && !call.argv.includes("Write"));
   const denies = call.argv.flatMap((x: string, i: number) => (call.argv[i - 1] === "--deny" ? [x] : []));
   for (const d of ["Edit(**/.grok/**)", "Write(**/.grok/**)", "Edit(**/.mcp.json)", "Write(**/.mcp.json)", "Edit(**/.claude/**)", "Write(**/.claude/**)", "Edit(**/.cursor/**)", "Write(**/.cursor/**)", "MCPTool(*)", "Read(**/auth.json)"])
@@ -416,4 +417,31 @@ test("inbox --hook prints nothing when empty or unresolved, never fails, and oth
   // a broken queue still exits 0
   const broken = govern(e, ["task", "inbox", "--hook"], { ...S, GOVERN_AS: "alice", GOVERN_QUEUE: "/proc/nope/x" });
   assert.equal(broken.code, 0);
+});
+
+
+test("grokResult prefers the structured final reply over joined turns", () => {
+  const result = { text: 'I will read the file.{"kind":"PROGRESS"}' + JSON.stringify(answer), structuredOutput: answer, stopReason: "end_turn", num_turns: 3, usage: { input_tokens: 10, output_tokens: 5 }, total_cost_usd: 0.01 };
+  const out = grokResult(JSON.stringify(result), 0, "", undefined, 30);
+  assert.equal(out.text, JSON.stringify(answer));
+  assert.equal(out.error, undefined);
+  assert.equal(out.turns, 3);
+  assert.equal(out.usage?.costUsd, 0.01);
+  assert.equal(out.usage?.input, 10);
+});
+
+test("grokResult keeps text when structuredOutput is absent, null or primitive", () => {
+  for (const extra of [{}, { structuredOutput: null }, { structuredOutput: "wrong" }]) {
+    const out = grokResult(JSON.stringify({ text: "original", stopReason: "end_turn", ...extra }), 0, "", undefined, 30);
+    assert.equal(out.text, "original");
+    assert.equal(out.error, undefined);
+  }
+});
+
+test("grokResult rejects max_turn_requests with null structuredOutput", () => {
+  for (const status of [0, 1]) {
+    const out = grokResult(JSON.stringify({ text: "partial", structuredOutput: null, stopReason: "max_turn_requests" }), status, "Error: max turns reached", undefined, 30);
+    assert.match(out.error!, status ? /exit 1: Error: max turns reached/ : /stopped with max_turn_requests/);
+    assert.equal(out.spendUnknown, true);
+  }
 });

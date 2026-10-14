@@ -1,0 +1,25 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "capability",
+    "status",
+    "evidence"
+  ],
+  "properties": {
+    "capability": {
+      "type": "string"
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "ok",
+        "refused",
+        "error"
+      ]
+    },
+    "evidence": {
+      "type": "string"
+    }
+  }
+}

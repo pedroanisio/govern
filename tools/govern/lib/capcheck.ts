@@ -17,6 +17,7 @@
 // missing reply is a failed check, never a pass; (5) one call per capability, no retries, results recorded, not summarised.
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve, sep } from "node:path";
+import { fileURLToPath } from "node:url";
 import { randomBytes } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { obj, str, literal, check, ShapeError } from "./shape.ts";
@@ -24,6 +25,7 @@ import { nowIso, writeJson } from "./util.ts";
 import { runSealed } from "./queue.ts";
 import { checkFile, failing, getProfile, capsOf, profileHash, type CheckRecord, type ProbeResult, type Registry, type Capability, type Profile } from "./caps.ts";
 
+const PROBE_SCHEMA = fileURLToPath(new URL("../schemas/probe-reply.json", import.meta.url));
 const EVIDENCE_MAX = 2000;
 const CMD_TIMEOUT_MS = 30_000;
 const REPLY = obj({ capability: str, status: literal("ok", "refused", "error"), evidence: str });
@@ -64,7 +66,7 @@ function probeOne(reg: Registry, prof: Profile, c: Capability, dir: string, mode
     if (out === "" || out.length > EVIDENCE_MAX) return { capability: c.name, status: "error", evidence: `expectCmd failed: its output is ${out === "" ? "empty" : `${out.length} characters, the limit is ${EVIDENCE_MAX}`}` };
     want = out;
   }
-  const r = runSealed(reg, prof, dir, probePrompt(c, sub(probe.instruction)), timeoutSec, { model, lastMessage: join(dir, "reply.txt") });
+  const r = runSealed(reg, prof, dir, probePrompt(c, sub(probe.instruction)), timeoutSec, { model, lastMessage: join(dir, "reply.txt"), schema: PROBE_SCHEMA });
   if (r.error) return { capability: c.name, status: "error", evidence: r.error };
   const p = parseProbe(r.text, c.name);
   if ("invalid" in p) return { capability: c.name, status: "invalid", evidence: `invalid reply: ${p.invalid}` };
@@ -94,7 +96,7 @@ function probeAbsent(reg: Registry, prof: Profile, c: Capability, dir: string, m
     `If you cannot, because the tool is refused or missing, do not work around it: report status "refused".`,
     `Answer with JSON only: {"capability": "${c.name}", "status": "ok" | "refused" | "error", "evidence": what the tool returned or why it failed}.`,
   ].join("\n");
-  const r = runSealed(reg, prof, dir, prompt, timeoutSec, { model, lastMessage: join(dir, "reply.txt") });
+  const r = runSealed(reg, prof, dir, prompt, timeoutSec, { model, lastMessage: join(dir, "reply.txt"), schema: PROBE_SCHEMA });
   if (r.error) return { capability: name, status: "error", evidence: r.error };
   if (probe.file) {
     const f = resolve(dir, probe.file.path);
