@@ -1,7 +1,13 @@
 {
   "version": 1,
   "name": "video",
-  "description": "a PALS Notes video, idea to published (exit conditions from WORKFLOW.md)",
+  "description": "a video, idea to published (exit conditions from the workspace's workflow document)",
+  "manual": "video/MANUAL.md",
+  "prompts": "video/prompts",
+  "setup": [
+    { "files": { "approval": "APPROVAL.md", "sheet": "**/*sheet*.png" } },
+    { "ifFile": "film.json", "commands": { "fb": ["{python}", "{paths.filmBuild}", "film.json"] }, "files": { "timings": "timings.json" } }
+  ],
   "kinds": ["long", "short"],
   "exitFrom": "workflow",
   "stages": [

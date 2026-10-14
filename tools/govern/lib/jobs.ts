@@ -4,7 +4,8 @@ import { existsSync, readFileSync, readdirSync, openSync, closeSync, statSync, r
 import { join, resolve } from "node:path";
 import { fail, readJson, writeJson, stamp, nowIso, sleepSync, shq, changedSince, clip, procOf, procTable, procSource, exited, type ProcStat } from "./util.ts";
 import { fileURLToPath } from "node:url";
-import { type Project, projectDir, governDir, appendLedger, argvOf, REPO } from "./project.ts";
+import { type Project, projectDir, governDir, appendLedger, argvOf } from "./project.ts";
+import { repo, pathNamed } from "./workspace.ts";
 import { place, lockDir, slots, costOf, type Price } from "./resources.ts";
 import * as locks from "./locks.ts";
 
@@ -37,7 +38,8 @@ const jobDir = (slug: string, id: string) => join(jobsDir(slug), id);
 
 export function expand(p: Project, argv: string[]): string[] {
   const python = process.env.GOVERN_PYTHON ?? "python3";
-  return argv.map((a) => a.replaceAll("{repo}", REPO).replaceAll("{dir}", projectDir(p.slug)).replaceAll("{python}", python));
+  return argv.map((a) => a.replaceAll("{repo}", repo()).replaceAll("{dir}", projectDir(p.slug)).replaceAll("{python}", python)
+    .replace(/\{paths\.([^{}]+)\}/g, (_, n: string) => pathNamed(n)));
 }
 
 /** A new job id, its directory created here: mkdir is atomic, so neither a run of the same command in the same second nor a
@@ -383,7 +385,7 @@ export function summary(p: Project, st: JobState, n = 12): string {
     // File mtimes come from the kernel's coarse clock (one tick, a few ms), which can read slightly before the
     // Date.now() taken at start: a file the job wrote can look older than the job. One second of slack covers it.
     const t0 = Date.parse(st.start) - 1000;
-    const outs = Object.entries(p.files).flatMap(([k, pat]) => changedSince(projectDir(p.slug), pat, t0).map((f) => `${k}: ${f.replace(REPO + "/", "")}`));
+    const outs = Object.entries(p.files).flatMap(([k, pat]) => changedSince(projectDir(p.slug), pat, t0).map((f) => `${k}: ${f.replace(repo() + "/", "")}`));
     if (outs.length) L.push(`new files: ${outs.slice(0, 8).join(" · ")}${outs.length > 8 ? ` (+${outs.length - 8})` : ""}`);
   }
   const t = tail(p.slug, st.id, n);

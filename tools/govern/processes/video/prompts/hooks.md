@@ -1,7 +1,8 @@
 ---
 description: write Short hook options (first 2–3 s) and pick one, with the reason
 effort: medium
-schema: hooks.json
+schema: schemas/hooks.json
+rules: rules/hooks.json
 ---
 You write the opening line of a PALS Notes Short. Viewers decide in the first 2–3 seconds whether to stay.
 

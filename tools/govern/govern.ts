@@ -7,11 +7,12 @@ import { join, dirname, resolve, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
 import { GovernError, fail, parseArgs, opt, flag, many, flagNames, secondsOpt, nowIso, readJsonl, kTok, clip, type Args, type FlagSpec } from "./lib/util.ts";
-import { REPO, PROJECTS, stagesOf, load, save, create, stageOf, brief, appendLedger, resolveFile, ledgerFile, projectDir, checkSlug, checkOf, pendingCheckChanges, blockedBy, laneState, laneSlugs, laneRows, stateFile, argvOf, commandLine, type Project, type Command } from "./lib/project.ts";
-import { processes, getProcess, processOf, listLine, show } from "./lib/process.ts";
+import { stagesOf, load, save, create, stageOf, brief, appendLedger, resolveFile, ledgerFile, projectDir, checkSlug, checkOf, pendingCheckChanges, blockedBy, laneState, laneSlugs, laneRows, stateFile, argvOf, commandLine, type Project, type Command } from "./lib/project.ts";
+import { processes, getProcess, processOf, listLine, show, manualOf } from "./lib/process.ts";
+import { repo, projectsDir, packagesDir } from "./lib/workspace.ts";
 import { emptyRecord, PROTO } from "./lib/shape.ts";
 import * as jobs from "./lib/jobs.ts";
-import { ask, readPrompt, PROMPTS } from "./lib/codex.ts";
+import { ask, readPrompt, promptDirs } from "./lib/codex.ts";
 import { report, currentCtx, CTX_WARN } from "./lib/usage.ts";
 import * as queue from "./lib/queue.ts";
 import { desk } from "./lib/desk.ts";
@@ -81,8 +82,8 @@ function cmdWork(a: Args): void {
     const session = engine === "claude" ? randomUUID() : undefined;
     appendLedger(p.slug, { kind: "work", stage, engine, session, skillSha: sha256File(SKILL) });
     const first = `Video work session (registered by govern work ${p.slug} ${stage}). Use the govern skill: run \`govern brief ${p.slug}\` first and work from it; do not explore the repository. Then ask me what we change.`;
-    const args = engine === "claude" ? ["--session-id", session!, first] : ["-C", REPO, first];
-    const r = spawnSync(engine, args, { cwd: REPO, stdio: "inherit" });
+    const args = engine === "claude" ? ["--session-id", session!, first] : ["-C", repo(), first];
+    const r = spawnSync(engine, args, { cwd: repo(), stdio: "inherit" });
     appendLedger(p.slug, { kind: "done", engine, session });
     process.exitCode = r.status ?? 0;
     return;
@@ -251,7 +252,7 @@ function cmdHook(a: Args): void {
     if (!sid) return;
     // This session's lane: the one whose latest work/done entry for the session is a work entry.
     let hit: { slug: string; at: number; t: string; entries: Record<string, unknown>[] } | undefined;
-    for (const f of globSync("**/govern.json", { cwd: PROJECTS })) {
+    for (const f of globSync("**/govern.json", { cwd: projectsDir() })) {
       const slug = dirname(f);
       const entries = readJsonl(ledgerFile(slug));
       let at = -1;
@@ -314,11 +315,11 @@ function cmdCmd(a: Args): void {
 function cmdFile(a: Args): void {
   const p = load(a._[1]);
   const [name, pat] = [a._[2], a._[3]];
-  if (!name || !pat) { for (const k of Object.keys(p.files)) { const f = resolveFile(p, k); out(`${k}: ${p.files[k]} → ${f ? relative(REPO, f) : "(none)"}`); } return; }
+  if (!name || !pat) { for (const k of Object.keys(p.files)) { const f = resolveFile(p, k); out(`${k}: ${p.files[k]} → ${f ? relative(repo(), f) : "(none)"}`); } return; }
   p.files[name] = pat;
   save(p);
   const f = resolveFile(p, name);
-  out(`${p.slug}: ${name} = ${pat} → ${f ? relative(REPO, f) : "(nothing matches yet)"}`);
+  out(`${p.slug}: ${name} = ${pat} → ${f ? relative(repo(), f) : "(nothing matches yet)"}`);
 }
 
 function cmdRun(a: Args): void {
@@ -357,16 +358,39 @@ function cmdAsk(a: Args): void {
   const r = ask(p, step, { files: many(a, "file"), vars, images: many(a, "image"), effort: opt(a, "effort"), model: opt(a, "model") });
   const u = r.usage;
   const meter = `codex ${step}: ${r.calls} call${r.calls > 1 ? "s" : ""}, ${r.turns} turns, ${kTok(u.input)} in (${u.input ? Math.round((u.cached / u.input) * 100) : 0}% cached), ${kTok(u.output)} out, ${r.seconds}s`;
-  if (!r.ok) { out(`${meter}\nFAILED verification (nothing to use):\n- ${r.errors.join("\n- ")}\nraw: ${relative(REPO, r.out)}`); process.exitCode = 3; return; }
-  out(`${meter} · verified · ${relative(REPO, r.out)}`);
+  if (!r.ok) { out(`${meter}\nFAILED verification (nothing to use):\n- ${r.errors.join("\n- ")}\nraw: ${relative(repo(), r.out)}`); process.exitCode = 3; return; }
+  out(`${meter} · verified · ${relative(repo(), r.out)}`);
   out(JSON.stringify(r.value, null, 1));
 }
 
-function cmdPrompts(): void {
-  for (const f of globSync("*.md", { cwd: PROMPTS }).sort()) {
-    const pf = readPrompt(f.replace(/\.md$/, ""));
+/** The prompts of one process (and the workspace's), or of every process when none is named; a name seen first wins. */
+function cmdPrompts(a: Args): void {
+  const named = a._[1];
+  if (named) getProcess(named);
+  const dirs = [...new Set((named ? [named] : [...processes().keys(), undefined]).flatMap((n) => promptDirs(n)))];
+  const seen = new Set<string>();
+  for (const d of dirs) for (const f of globSync("*.md", { cwd: d }).sort()) {
+    const name = f.replace(/\.md$/, "");
+    if (seen.has(name)) continue;
+    seen.add(name);
+    const pf = readPrompt(name, [d]);
     out(`${pf.name.padEnd(14)} ${pf.meta.effort ? `[${pf.meta.effort}] ` : ""}${pf.meta.description ?? ""}`);
   }
+}
+
+/** The general manual, or a process's own manual (the rules of its kind of work). */
+function cmdManual(a: Args): void {
+  const name = a._[1];
+  if (!name) {
+    out(readFileSync(SKILL, "utf8"));
+    const have = [...processes().values()].filter((p) => manualOf(p)).map((p) => p.name);
+    if (have.length) out(`\nProcess manuals (govern manual <process>): ${have.join(", ")}`);
+    return;
+  }
+  const f = manualOf(getProcess(name));
+  if (!f) fail(`${name} has no manual (its process file names none in "manual")`);
+  if (!existsSync(f!)) fail(`${name}: manual file not found: ${f}`);
+  out(readFileSync(f!, "utf8"));
 }
 
 function cmdPublish(a: Args): void {
@@ -376,14 +400,14 @@ function cmdPublish(a: Args): void {
   const vpkg = resolveFile(p, "vpkg"), release = resolveFile(p, "release");
   if (!vpkg) fail(`${p.slug}: name the filed package first: govern file ${p.slug} vpkg ../../packages/<file>.vpkg.zip`);
   if (!release) fail(`${p.slug}: name the release manifest: govern file ${p.slug} release <path>/release.json`);
-  const pkgs = join(REPO, "PALS-Notes", "packages");
-  if (dirname(vpkg!) !== pkgs) fail(`${relative(REPO, vpkg!)} is not filed in PALS-Notes/packages`);
+  const pkgs = packagesDir();
+  if (dirname(vpkg!) !== pkgs) fail(`${relative(repo(), vpkg!)} is not filed in the packages folder (${relative(repo(), pkgs)})`);
   const sha = spawnSync("sha256sum", [vpkg!], { encoding: "utf8" }).stdout.replace(/ .*/s, "");
   const sums = globSync("channel-vpkg-SHA256SUMS-*.txt", { cwd: pkgs }).some((f) => readFileSync(join(pkgs, f), "utf8").includes(sha));
-  if (!sha || !sums) fail(`${relative(REPO, vpkg!)}: sha256 not in any channel-vpkg-SHA256SUMS-*.txt (file the package first)`);
+  if (!sha || !sums) fail(`${relative(repo(), vpkg!)}: sha256 not in any channel-vpkg-SHA256SUMS-*.txt (file the package first)`);
   const base = vpkg!.split("/").pop();
   out(`${p.slug}: approvals ✓ (final, publish) · package filed ✓ ${base}`);
-  out(`On the publishing host (smm), with the release manifest ${relative(REPO, release!)} copied there:`);
+  out(`On the publishing host (smm), with the release manifest ${relative(repo(), release!)} copied there:`);
   out(`  1. plan:  smm youtube publish release.json --upload`);
   out(`  2. apply: PACKAGE_FILED=${base} smm youtube publish release.json --upload --apply`);
   out(`Then read the result back, and run: govern note ${p.slug} "published <videoId> at <time>"`);
@@ -502,8 +526,8 @@ function cmdTask(a: Args): void {
     const bin = resolve(HERE, "..", "..", "bin", "govern");
     writeFileSync(unit, [
       "[Unit]", "Description=govern task dispatcher (one fresh codex/claude session per queued message)", "",
-      "[Service]", `WorkingDirectory=${REPO}`, `ExecStart=${bin} task dispatch --loop --interval ${opt(a, "interval") ?? 30}`,
-      `Environment=PATH=${process.env.PATH}`, `Environment=GOVERN_QUEUE=${queue.QUEUE()}`, "Restart=on-failure", "RestartSec=30", "",
+      "[Service]", `WorkingDirectory=${repo()}`, `ExecStart=${bin} task dispatch --loop --interval ${opt(a, "interval") ?? 30}`,
+      `Environment=PATH=${process.env.PATH}`, `Environment=GOVERN_REPO=${repo()}`, `Environment=GOVERN_QUEUE=${queue.QUEUE()}`, "Restart=on-failure", "RestartSec=30", "",
       "[Install]", "WantedBy=default.target", "",
     ].join("\n"));
     return out(`wrote ${unit}\nenable with: systemctl --user daemon-reload && systemctl --user enable --now govern-dispatch`);
@@ -554,7 +578,7 @@ export const COMMANDS: readonly Cmd[] = [
     lines: [["<slug> (--process NAME | --kind long|short|ops) [--title T] [--lang en|pt-BR] [--parent <slug>]", "create a lane and print its brief"]],
     run: (a) => {
       const p = create(checkSlug(a._[1]), { kind: opt(a, "kind"), process: opt(a, "process"), title: opt(a, "title"), lang: opt(a, "lang"), parent: opt(a, "parent") });
-      out(`created ${relative(REPO, join(projectDir(p.slug), "govern.json"))}`);
+      out(`created ${relative(repo(), join(projectDir(p.slug), "govern.json"))}`);
       out(brief(p));
     } },
   { name: "work", section: 0, flags: { value: ["engine"], bool: ["open"] },
@@ -616,7 +640,7 @@ export const COMMANDS: readonly Cmd[] = [
       "and (Linux) every process marked with its GOVERN_JOB_DIR; its own pid only while still that job"]],
     run: (a) => { const p = load(a._[1]); const k = jobs.kill(p.slug, a._[2]); out(`job ${k.id} ${k.outcome}`); } },
 
-  { name: "prompts", section: 3, footer: false, lines: [["", "list the steps"]], run: cmdPrompts },
+  { name: "prompts", section: 3, footer: false, lines: [["[<process>]", "list the steps (those of one process, or of every process)"]], run: cmdPrompts },
   { name: "ask", section: 3, flags: { multi: ["file", "var", "image"], value: ["effort", "model"] },
     lines: [["<slug> <step> [--file F]… [--var K=V]… [--image PNG]… [--effort low|medium|high] [--model M]", "one codex step, its reply verified"]], run: cmdAsk },
 
@@ -628,12 +652,12 @@ export const COMMANDS: readonly Cmd[] = [
 
   { name: "help", section: 5, footer: false, lines: [["[<command>]", "this text, or one command's lines (also: govern <command> --help)"]],
     run: (a) => out(a._[1] ? commandHelp(a._[1]) : HELP) },
-  { name: "manual", section: 5, footer: false, lines: [["", "the AI's operating manual (SKILL.md)"]], run: () => out(readFileSync(SKILL, "utf8")) },
+  { name: "manual", section: 5, footer: false, lines: [["[<process>]", "the AI's operating manual (SKILL.md), or the manual of one process's kind of work"]], run: cmdManual },
   { name: "install-skill", section: 5, footer: false, flags: { bool: ["check"] },
     lines: [["[<skills dir>] [--check]", "install SKILL.md as the govern skill (default: the repo's .claude/skills), atomically and\n" +
       "read back by sha256; --check installs nothing and exits 1 when the installed copy is missing or differs"]],
     run: (a) => {
-      const dest = join(a._[1] ?? join(REPO, ".claude", "skills"), "govern", "SKILL.md");
+      const dest = join(a._[1] ?? join(repo(), ".claude", "skills"), "govern", "SKILL.md");
       if (flag(a, "check")) {
         const drift = skillDrift(SKILL, dest);
         if (drift) fail(drift, 1);

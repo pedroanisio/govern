@@ -1,0 +1,8 @@
+[
+  {
+    "at": "lines[].caption",
+    "forbid": "v[íi]rgula|por cento",
+    "flags": "i",
+    "message": "{at}: written form only (digits and %), no \"vírgula\"/\"por cento\""
+  }
+]

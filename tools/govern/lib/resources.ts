@@ -5,7 +5,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join, dirname, resolve } from "node:path";
 import { fail, readJsonl, GovernError } from "./util.ts";
-import { REPO, PROJECTS } from "./project.ts";
+import { resourcesSetting, stateDir as stateFolder } from "./workspace.ts";
 import { obj, arr, record, emptyRecord, str, name, posInt, literal, parseFile, check, reject, type Shape } from "./shape.ts";
 import * as locks from "./locks.ts";
 
@@ -66,18 +66,15 @@ export const parseResources = (file: string, raw: unknown): Record<string, Resou
 /** The workspace's resources, by name: GOVERN_RESOURCES (a file), else govern.config.json "resources" (a path, relative
  *  to the config, or the list itself). None declared is an empty registry. */
 export function resources(): Record<string, Resource> {
-  const cfg = join(REPO, "govern.config.json");
   const fromFile = (f: string) => {
     if (!existsSync(f)) fail(`resources file ${f} not found`);
     return parseFile(f, readFileSync(f, "utf8"), RESOURCES);
   };
   if (process.env.GOVERN_RESOURCES) return fromFile(resolve(process.env.GOVERN_RESOURCES));
-  if (!existsSync(cfg)) return emptyRecord();
-  let c: unknown;
-  try { c = JSON.parse(readFileSync(cfg, "utf8")); } catch (e) { throw new GovernError(`${cfg}: not JSON (${(e as Error).message})`); }
-  const r = typeof c === "object" && c !== null ? (c as Record<string, unknown>)["resources"] : undefined;
-  if (r === undefined) return emptyRecord();
-  return typeof r === "string" ? fromFile(resolve(dirname(cfg), r)) : check(`${cfg}`, { resources: r }, obj({ resources: RESOURCES }, {})).resources;
+  const set = resourcesSetting();
+  if (!set) return emptyRecord();
+  const r = set.value;
+  return typeof r === "string" ? fromFile(resolve(dirname(set.file), r)) : check(set.file, { resources: r }, obj({ resources: RESOURCES }, {})).resources;
 }
 
 /** One resource by name, or a GovernError listing the ones there are. */
@@ -87,7 +84,7 @@ export function resourceNamed(n: string): Resource {
 }
 
 /** Where the locks live: GOVERN_STATE, else govern-state beside the lanes' folder. */
-export const stateDir = () => process.env.GOVERN_STATE ?? join(dirname(PROJECTS), "govern-state");
+export const stateDir = stateFolder;
 export const lockDir = (resource: string) => join(stateDir(), "locks", resource);
 
 /** The slots of a resource: a shared one has maxJobs (default 1); a dedicated one is not locked unless it sets maxJobs. */

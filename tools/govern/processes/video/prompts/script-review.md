@@ -1,7 +1,7 @@
 ---
 description: review a script against the channel's style guide and the read-aloud checks
 effort: medium
-schema: script-review.json
+schema: schemas/script-review.json
 ---
 You review a PALS Notes script before it is recorded. Judge it as a listener hearing it once.
 

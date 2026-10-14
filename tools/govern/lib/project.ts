@@ -1,48 +1,14 @@
 // A lane: its folder, its govern.json (state, commands, process) and its brief. A lane follows a process (lib/process.ts).
 import { existsSync, readFileSync, appendFileSync, mkdirSync, globSync } from "node:fs";
 import { join, dirname, resolve, relative } from "node:path";
-import { fileURLToPath } from "node:url";
 import { GovernError, fail, readJson, writeJson, nowIso, latest, plain, clip, readJsonl } from "./util.ts";
 import type { Source } from "./approval.ts";
-import { getProcess, processOf, processes, processName } from "./process.ts";
+import { repo, projectsDir, workflowFile } from "./workspace.ts";
+import { getProcess, processOf, processes, processName, manualOf } from "./process.ts";
 import { obj, arr, record, emptyRecord, str, name, posInt, literal, parseFile, reject, keyPath, type Shape } from "./shape.ts";
 
-const HERE = dirname(fileURLToPath(import.meta.url));
-/** Settings a workspace keeps in govern.config.json: where its lanes, queue and processes live (relative to the file). */
-export interface WorkspaceConfig { projects?: string; queue?: string; processes?: string; capabilities?: string }
-/** The nearest folder at or above `dir` that holds govern.config.json or PALS-Notes/projects, or undefined. */
-function workspaceAbove(dir: string): string | undefined {
-  for (let d = resolve(dir); ; d = dirname(d)) {
-    if (existsSync(join(d, "govern.config.json")) || existsSync(join(d, "PALS-Notes", "projects"))) return d;
-    if (dirname(d) === d) return undefined;
-  }
-}
-/** The workspace. GOVERN_REPO, else the nearest workspace above the cwd, else the sibling render-frontend-js (the
- *  dispatcher service; super-tools sits beside it since 2026-10-13), else the old parent. */
-export const REPO = process.env.GOVERN_REPO
-  ?? workspaceAbove(process.cwd())
-  ?? [resolve(HERE, "..", "..", "..", "..", "render-frontend-js"), resolve(HERE, "..", "..", "..", "..")].find((d) => existsSync(join(d, "PALS-Notes", "projects")))
-  ?? resolve(HERE, "..", "..", "..", "..", "render-frontend-js");
-function readConfig(): WorkspaceConfig {
-  const f = join(REPO, "govern.config.json");
-  if (!existsSync(f)) return {};
-  const c = readJson<WorkspaceConfig>(f);
-  const abs = (v?: string) => (v ? resolve(REPO, v) : undefined);
-  return { projects: abs(c.projects), queue: abs(c.queue), processes: abs(c.processes), capabilities: abs(c.capabilities) };
-}
-/** The workspace's govern.config.json, paths made absolute; {} when there is none. Environment variables win over it. */
-export const CONFIG = readConfig();
-export const PROJECTS = process.env.GOVERN_PROJECTS ?? CONFIG.projects ?? join(REPO, "PALS-Notes", "projects");
-export const WORKFLOW = process.env.GOVERN_WORKFLOW ?? join(REPO, "var", "media-business", "channels", "palsnotes", "workflow", "WORKFLOW.md");
-export const FILM_BUILD = join(REPO, "PALS-Notes", "videos", "lib", "tools", "film_build.py");
-
-/** The eight stages of WORKFLOW.md, in order (the built-in "video" process). */
-export const STAGES = ["plan", "script", "script-check", "sound", "preview", "produce", "final", "deliver"] as const;
-export type Stage = (typeof STAGES)[number];
 /** Lane kinds that need no --process: a video (long, short) or ops work (engine, lab, docs, channel set-up). */
 export const KINDS = ["long", "short", "ops"] as const;
-/** The video process's owner gates, in order (other processes name their own). */
-export const GATES = ["script", "final", "publish"] as const;
 
 /** A command with settings: its argv, how long it may run in the foreground (seconds), and the resource it runs on (so
  *  `govern run` needs no --on). A plain argv array is the same command with the default timeout and no resource. */
@@ -84,13 +50,13 @@ export interface Project {
   notes: Note[];
 }
 
-export const projectDir = (slug: string) => join(PROJECTS, slug);
+export const projectDir = (slug: string) => join(projectsDir(), slug);
 export const stateFile = (slug: string) => join(projectDir(slug), "govern.json");
 export const governDir = (slug: string) => join(projectDir(slug), "govern");
 export const ledgerFile = (slug: string) => join(governDir(slug), "ledger.jsonl");
 
 /** A slug as its lane's folder names it: `.` segments dropped (`./l1`, `l1/.` and `a/./b` are the folders l1, l1 and a/b).
- *  Null for a slug that is no folder under PROJECTS: a leading "/", a ".." or empty segment, or nothing left (`.`). */
+ *  Null for a slug that is no folder under the lanes folder: a leading "/", a ".." or empty segment, or nothing left (`.`). */
 const laneSlug = (slug: string): string | null => {
   if (slug.startsWith("/")) return null;
   const parts = slug.split("/").filter((p) => p !== ".");
@@ -98,7 +64,7 @@ const laneSlug = (slug: string): string | null => {
 };
 /** The lane's slug as its folder names it (see laneSlug); a missing or bad slug is a GovernError (exit 2). */
 export function checkSlug(slug: string | undefined): string {
-  if (!slug) fail(`missing <slug> (a folder under ${relative(REPO, PROJECTS) || PROJECTS}, e.g. a-millionth-apart or ops/engine)`);
+  if (!slug) fail(`missing <slug> (a folder under ${relative(repo(), projectsDir()) || projectsDir()}, e.g. a-millionth-apart or ops/engine)`);
   return laneSlug(slug!) ?? fail(`bad slug: ${slug}`);
 }
 
@@ -188,13 +154,10 @@ export function create(given: string, o: { kind?: string; process?: string; titl
   const dir = projectDir(slug);
   const commands = emptyRecord<string[]>();
   const files = emptyRecord<string>();
-  if (proc === "video") {
-    if (existsSync(join(dir, "film.json"))) {
-      commands.fb = ["{python}", "{repo}/PALS-Notes/videos/lib/tools/film_build.py", "film.json"];
-      files.timings = "timings.json";
-    }
-    files.approval = "APPROVAL.md";
-    files.sheet = "**/*sheet*.png";
+  for (const g of getProcess(proc).setup ?? []) {
+    if (g.ifFile !== undefined && !existsSync(join(dir, g.ifFile))) continue;
+    for (const [k, argv] of Object.entries(g.commands ?? {})) commands[k] = [...argv];
+    for (const [k, pat] of Object.entries(g.files ?? {})) files[k] = pat;
   }
   const p: Project = {
     version: 1, slug, title: o.title ?? slug, kind, process: proc, lang: o.lang ?? "en", ...(o.parent ? { parent: o.parent } : {}),
@@ -217,8 +180,8 @@ export function checkOf(p: Project, stage = p.stage): string | undefined {
   return p.checks?.[stage] ?? processOf(p).stages.find((s) => s.name === stage)?.check;
 }
 
-/** Every lane's slug under PROJECTS, sorted. */
-export const laneSlugs = (): string[] => globSync("**/govern.json", { cwd: PROJECTS }).map((f) => dirname(f)).sort();
+/** Every lane's slug under the lanes folder, sorted. */
+export const laneSlugs = (): string[] => globSync("**/govern.json", { cwd: projectsDir() }).map((f) => dirname(f)).sort();
 
 /** The rows of a command that lists every lane (status, desk): `row` formats a lane that loads; a lane whose
  *  govern.json (or a lane its row reads, through `after`) fails its parse becomes one row, `<slug> ✖ <file>: <path>:
@@ -265,20 +228,20 @@ export function appendLedger(slug: string, entry: Record<string, unknown>): void
   appendFileSync(ledgerFile(slug), JSON.stringify({ t: nowIso(), slug, ...entry }) + "\n");
 }
 
-/** The "Exit when" cell of a stage's row in WORKFLOW.md (the digest the AI works against). */
-function workflowExit(stage: string): string | undefined {
-  if (!existsSync(WORKFLOW) || !(STAGES as readonly string[]).includes(stage)) return undefined;
-  const n = STAGES.indexOf(stage as Stage) + 1;
-  const row = readFileSync(WORKFLOW, "utf8").split("\n").find((l) => l.startsWith(`| ${n} |`));
+/** The "Exit when" cell of the stage's row (numbered by its place in the process) in the workspace's workflow document. */
+function workflowExit(stages: string[], stage: string): string | undefined {
+  const wf = workflowFile(), i = stages.indexOf(stage);
+  if (!wf || !existsSync(wf) || i < 0) return undefined;
+  const row = readFileSync(wf, "utf8").split("\n").find((l) => l.startsWith(`| ${i + 1} |`));
   if (!row) return undefined;
   const cells = row.split(/(?<!\\)\|/).map((c) => c.trim()).filter((_, i, a) => i > 0 && i < a.length - 1);
   const exit = cells[3];
   return exit === undefined ? undefined : plain(exit);
 }
-/** What "done" means for the lane's current stage: the process's text, or WORKFLOW.md's for the video process. */
+/** What "done" means for the lane's current stage: the process's text, or the workflow document's when the process says so. */
 export function exitCondition(p: Project, stage = p.stage): string | undefined {
   const pr = processOf(p);
-  return pr.stages.find((s) => s.name === stage)?.exit ?? (pr.exitFrom === "workflow" ? workflowExit(stage) : undefined);
+  return pr.stages.find((s) => s.name === stage)?.exit ?? (pr.exitFrom === "workflow" ? workflowExit(pr.stages.map((s) => s.name), stage) : undefined);
 }
 
 export function resolveFile(p: Project, name: string): string | undefined {
@@ -330,15 +293,16 @@ const shownCommand = (c: unknown) => (c == null ? "none" : commandLine(c as stri
 /** The compact context an AI session starts from instead of exploring the repo. */
 export function brief(p: Project, o: { notes?: number } = {}): string {
   const dir = projectDir(p.slug);
-  const rel = (f: string) => relative(REPO, f);
+  const rel = (f: string) => relative(repo(), f);
   const L: string[] = [];
   const pr = processOf(p);
   const list = stagesOf(p);
   const n = list.indexOf(p.stage) + 1;
-  const video = pr.name === "video";
+  const kinded = pr.kinds !== undefined;
   L.push(`# ${p.slug} — ${p.title}`);
-  const label = video || pr.name === "ops" ? `kind ${p.kind}` : `process ${pr.name}`;
-  L.push(`${label}${video ? ` · lang ${p.lang}` : ""}${p.parent ? ` · from ${p.parent}` : ""} · stage ${n}/${list.length} ${p.stage}${p.finished ? " (finished)" : ""} · folder ${rel(dir)}`);
+  const label = kinded || pr.name === "ops" ? `kind ${p.kind}` : `process ${pr.name}`;
+  L.push(`${label}${kinded ? ` · lang ${p.lang}` : ""}${p.parent ? ` · from ${p.parent}` : ""} · stage ${n}/${list.length} ${p.stage}${p.finished ? " (finished)" : ""} · folder ${rel(dir)}`);
+  if (manualOf(pr)) L.push(`manual: govern manual ${pr.name}`);
   const ex = exitCondition(p);
   if (ex) L.push(`exit when: ${ex}`);
   const chk = checkOf(p);

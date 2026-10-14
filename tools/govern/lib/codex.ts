@@ -6,14 +6,13 @@
 import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync, mkdirSync, writeFileSync } from "node:fs";
 import { join, dirname, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
 import { fail, stamp, sha256 } from "./util.ts";
 import { emptyRecord } from "./shape.ts";
-import { type Project, projectDir, governDir, appendLedger, brief, REPO } from "./project.ts";
+import { type Project, projectDir, governDir, appendLedger, brief } from "./project.ts";
+import { repo, promptsDir } from "./workspace.ts";
+import { getProcess, processName } from "./process.ts";
+import { loadRules, applyRules } from "./rules.ts";
 
-const HERE = dirname(fileURLToPath(import.meta.url));
-export const PROMPTS = process.env.GOVERN_PROMPTS ?? resolve(HERE, "..", "prompts");
-export const SCHEMAS = resolve(HERE, "..", "schemas");
 const codexBin = () => process.env.GOVERN_CODEX_BIN ?? "codex";
 
 export interface Usage { input: number; cached: number; cacheWrite: number; output: number; reasoning: number }
@@ -54,11 +53,18 @@ export function execArgs(o: ExecOpts): string[] {
 
 // ---------------------------------------------------------------- prompts
 
-export interface PromptFile { name: string; meta: Record<string, string>; body: string }
-export function readPrompt(name: string): PromptFile {
+export interface PromptFile { name: string; meta: Record<string, string>; body: string; /** The folder the prompt file is in: its `schema:` and `rules:` are relative to it. */ dir: string }
+/** The folders prompts are read from, first match wins: GOVERN_PROMPTS alone when set, else the process's own, then the workspace's. */
+export function promptDirs(processName?: string): string[] {
+  if (process.env.GOVERN_PROMPTS) return [process.env.GOVERN_PROMPTS];
+  const pr = processName ? getProcess(processName) : undefined;
+  return [pr?.prompts && resolve(pr.dir, pr.prompts), promptsDir()].filter((d): d is string => d !== undefined && existsSync(d));
+}
+export function readPrompt(name: string, dirs: string[]): PromptFile {
   if (!/^[a-z0-9-]+$/.test(name)) fail(`bad prompt name: ${name}`);
-  const f = join(PROMPTS, `${name}.md`);
-  if (!existsSync(f)) fail(`no prompt "${name}" (see govern prompts)`);
+  const dir = dirs.find((d) => existsSync(join(d, `${name}.md`)));
+  if (!dir) fail(`no prompt "${name}" (see govern prompts)`);
+  const f = join(dir!, `${name}.md`);
   const text = readFileSync(f, "utf8");
   const m = /^---\n([\s\S]*?)\n---\n/.exec(text);
   const meta = emptyRecord<string>();
@@ -66,7 +72,7 @@ export function readPrompt(name: string): PromptFile {
   // ask() loops 1 + repairs times and an ask with no call has no errors: a repairs value that is not a whole number 0 or
   // more would make zero calls and pass as verified, so it is refused here.
   if (meta.repairs !== undefined && !/^\d+$/.test(meta.repairs)) fail(`${f}: repairs must be a whole number, 0 or more (got ${JSON.stringify(meta.repairs)})`);
-  return { name, meta, body: m ? text.slice(m[0].length) : text };
+  return { name, meta, body: m ? text.slice(m[0].length) : text, dir: dir! };
 }
 
 export const MAX_INLINE = Number(process.env.GOVERN_MAX_INLINE ?? 60000);
@@ -89,8 +95,8 @@ export function render(pf: PromptFile, p: Project, files: string[], vars: Record
     if (key === "kind") return p.kind;
     if (key === "title") return p.title;
     if (key.startsWith("include:")) {
-      const f = resolve(REPO, key.slice(8));
-      if (!f.startsWith(REPO + "/") || !existsSync(f)) fail(`prompt ${pf.name}: include not found: ${key.slice(8)}`);
+      const f = resolve(repo(), key.slice(8));
+      if (!f.startsWith(repo() + "/") || !existsSync(f)) fail(`prompt ${pf.name}: include not found: ${key.slice(8)}`);
       return readFileSync(f, "utf8").replace(/^---\n[\s\S]*?\n---\n/, "");
     }
     // only a var given with --var fills a placeholder: `constructor` or `toString` is not given just because vars,
@@ -133,37 +139,6 @@ export function validate(schema: any, v: any, path = "$"): string[] {
   return errs;
 }
 
-const words = (s: string) => s.trim().split(/\s+/).filter(Boolean).length;
-const FORBID = [".xml", ".scene", "TODO", ".py", ".json", "{{"];
-
-/** House rules that a schema cannot express (PUBLISHING.md, WORKFLOW.md "The first seconds"). */
-export const CHECKS: Record<string, (v: any, p: Project) => string[]> = {
-  hooks: (v) => (v.hooks ?? []).flatMap((h: any, i: number) => {
-    const e: string[] = [];
-    if (words(h.text ?? "") > 8) e.push(`hooks[${i}]: ${words(h.text)} words; a hook fits 2–3 s (≤ 8 words)`);
-    if (/^(in this video|did you know|neste vídeo|você sabia)/i.test(h.text ?? "")) e.push(`hooks[${i}]: banned opening`);
-    if (/pals notes/i.test(h.text ?? "")) e.push(`hooks[${i}]: no channel name in a hook`);
-    return e;
-  }).concat(v.hooks?.some((h: any, i: number) => i === v.chosen) ? [] : [`chosen: must index one of the hooks`]),
-  ptbr: (v) => (v.lines ?? []).flatMap((l: any) =>
-    /v[íi]rgula|por cento/i.test(l.caption ?? "") ? [`caption ${l.id}: written form only (digits and %), no "vírgula"/"por cento"`] : []),
-  metadata: (v, p) => {
-    const e: string[] = [];
-    const all = `${v.title ?? ""}\n${v.description ?? ""}\n${v.pinned_comment ?? ""}`;
-    if (/#shorts/i.test(v.title ?? "")) e.push("title: no #shorts in titles");
-    if (/pals notes/i.test(v.title ?? "")) e.push("title: no channel name in titles");
-    for (const f of FORBID) if (all.includes(f)) e.push(`production text "${f}" in title/description/comment`);
-    if (!/^Source:/m.test(v.description ?? "")) e.push("description: needs a line starting with 'Source:'");
-    if ((v.hashtags ?? []).length > 3) e.push("hashtags: at most 3");
-    if (p.kind === "long") {
-      const ch = v.chapters ?? [];
-      if (ch.length < 3) e.push("chapters: a long film needs at least 3");
-      else if (ch[0].time !== "0:00") e.push("chapters: the first must be at 0:00");
-    }
-    return e;
-  },
-};
-
 // ---------------------------------------------------------------- ask
 
 /**
@@ -178,14 +153,18 @@ export const CHECKS: Record<string, (v: any, p: Project) => string[]> = {
  *
  * Verification is mandatory. Treat all LLM output as untrusted input.
  *
- * Here: the reply is parsed, checked against the step's schema and its house-rule CHECKS; one repair
+ * Here: the reply is parsed, checked against the step's schema and its prompt's house rules (rules file); one repair
  * call gets only the errors; a reply that still fails is returned with ok=false and never as a result.
  */
 export interface AskResult { ok: boolean; value?: any; errors: string[]; usage: Usage; turns: number; calls: number; out: string; seconds: number }
 export function ask(p: Project, name: string, o: { files?: string[]; vars?: Record<string, string>; images?: string[]; effort?: string; model?: string; timeoutSec?: number }): AskResult {
-  const pf = readPrompt(name);
+  const pf = readPrompt(name, promptDirs(processName(p)));
   const prompt = render(pf, p, o.files ?? [], o.vars ?? {});
-  const schemaPath = pf.meta.schema ? join(SCHEMAS, pf.meta.schema) : undefined;
+  const schemaPath = pf.meta.schema ? resolve(pf.dir, pf.meta.schema) : undefined;
+  if (schemaPath && !existsSync(schemaPath)) fail(`prompt ${name}: schema not found: ${pf.meta.schema} (relative to ${pf.dir})`);
+  const rulesFile = pf.meta.rules ? resolve(pf.dir, pf.meta.rules) : undefined;
+  if (rulesFile && !existsSync(rulesFile)) fail(`prompt ${name}: rules not found: ${pf.meta.rules} (relative to ${pf.dir})`);
+  const houseRules = rulesFile ? loadRules(rulesFile) : undefined;
   const schemaBytes = schemaPath ? readFileSync(schemaPath) : undefined;
   const schema = schemaBytes ? JSON.parse(schemaBytes.toString("utf8")) : undefined;
   const outDir = join(governDir(p.slug), "ask");
@@ -217,8 +196,7 @@ export function ask(p: Project, name: string, o: { files?: string[]; vars?: Reco
       catch { errors.push("reply is not JSON"); }
     }
     if (!errors.length && schema) errors.push(...validate(schema, value));
-    const houseRules = Object.hasOwn(CHECKS, name) ? CHECKS[name] : undefined;
-    if (!errors.length && houseRules) errors.push(...houseRules(value, p));
+    if (!errors.length && houseRules) errors.push(...applyRules(houseRules, value, p.kind));
     if (!errors.length || r.error || r.status !== 0) break;
     input = `${prompt}\n\nYour previous reply:\n${text}\n\nIt failed these checks; reply again with the whole corrected JSON and change only what the checks require:\n- ${errors.join("\n- ")}\n`;
   }

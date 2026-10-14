@@ -9,15 +9,14 @@ import { join, dirname, resolve } from "node:path";
 import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { readJsonl, kTok } from "./util.ts";
-import { PROJECTS, ledgerFile } from "./project.ts";
+import { ledgerFile } from "./project.ts";
+import { projectsDir, baseline } from "./workspace.ts";
 import { machineLines, machineEntries } from "./resources.ts";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const CLAUDE_DIR = () => process.env.GOVERN_CLAUDE_PROJECTS ?? join(homedir(), ".claude", "projects");
 const CODEX_DIR = () => process.env.GOVERN_CODEX_SESSIONS ?? join(homedir(), ".codex", "sessions");
 export const CTX_WARN = Number(process.env.GOVERN_CTX_WARN ?? 150000);
-/** The chat baseline measured in PALS-Notes/costs/token-analysis/REPORT-2026-10-11.md. */
-export const BASELINE = { mainMedianCtx: 468000, subagentMedianCtx: 202000, source: "REPORT-2026-10-11.md (Claude Code transcripts, 2026-10-10/11)" };
 
 interface Price { in: number; cw: number; cr: number; out: number }
 const PRICES: Record<string, Price> = (() => {
@@ -32,10 +31,10 @@ export interface Segment { slug: string; stage: string; engine: string; session?
 type Data = { calls: Call[]; owner: number[]; tools: Tool[] };
 
 export function segments(slugs?: string[]): Segment[] {
-  const all = slugs ?? globSync("**/govern.json", { cwd: PROJECTS }).map((f) => dirname(f));
+  const all = slugs ?? globSync("**/govern.json", { cwd: projectsDir() }).map((f) => dirname(f));
   const marks: { slug: string; kind: string; stage?: string; engine?: string; session?: string; t: number }[] = [];
   // Read every ledger so a session's next segment (in any video) ends the current one.
-  const every = globSync("**/govern/ledger.jsonl", { cwd: PROJECTS }).map((f) => dirname(dirname(f)));
+  const every = globSync("**/govern/ledger.jsonl", { cwd: projectsDir() }).map((f) => dirname(dirname(f)));
   for (const s of new Set([...every, ...all])) {
     for (const e of readJsonl(ledgerFile(s))) if (e.kind === "work" || e.kind === "done") marks.push({ ...e, slug: s, t: Date.parse(e.t) });
   }
@@ -273,7 +272,7 @@ export function report(slugs: string[] | undefined, since?: number): string {
   const segs = attribute(segments(slugs)).filter((s) => !since || s.start >= since);
   // machine time and money (jobs run on resources) come from the lane's ledger, beside the tokens
   const machine = (v: string) => machineLines(machineEntries(ledgerFile(v)).filter((e) => !since || Date.parse(String(e["t"])) >= since));
-  const ranOn = slugs ? [] : globSync("**/govern/ledger.jsonl", { cwd: PROJECTS }).map((f) => dirname(dirname(f))).filter((v) => machine(v).length);
+  const ranOn = slugs ? [] : globSync("**/govern/ledger.jsonl", { cwd: projectsDir() }).map((f) => dirname(dirname(f))).filter((v) => machine(v).length);
   const videos = [...new Set([...segs.map((s) => s.slug), ...(slugs ?? []), ...ranOn])].sort();
   const L: string[] = [];
   const row = (label: string, t: Totals) =>
@@ -304,7 +303,8 @@ export function report(slugs: string[] | undefined, since?: number): string {
     L.push(...mach, "");
   }
   if (!L.length) L.push("no govern work segments or asks recorded yet");
-  L.push(`baseline (chat way): median context per call ${kTok(BASELINE.mainMedianCtx)} main session, ${kTok(BASELINE.subagentMedianCtx)} subagent — ${BASELINE.source}`);
+  const base = baseline(); // the chat baseline the workspace measured, if its config gives one
+  if (base) L.push(`baseline (chat way): median context per call ${kTok(base.mainMedianCtx)} main session, ${kTok(base.subagentMedianCtx)} subagent — ${base.source}`);
   L.push(`target: avg ctx ≤ ${kTok(CTX_WARN)}, no subagent calls in production; in-side = input + cache read + cache write; ~usd only for models in prices.json`);
   return L.join("\n");
 }

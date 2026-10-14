@@ -9,12 +9,13 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, writeFile
 import { join, resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { fail, stamp, nowIso, clip } from "./util.ts";
-import { REPO, PROJECTS, CONFIG } from "./project.ts";
+import { repo, projectsDir, queueDir } from "./workspace.ts";
 import { parseEvents, execArgs, validate, type Usage } from "./codex.ts";
 import { registry, getProfile, writes, guardProblem, checkProblem, profileHash, claudeArgs, codexSpec, LEGACY_PROFILES, type Profile, type Registry } from "./caps.ts";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
-export const QUEUE = () => process.env.GOVERN_QUEUE ?? CONFIG.queue ?? join(REPO, "PALS-Notes", "queue");
+/** The queue folder: GOVERN_QUEUE or the config's "queue". */
+export const QUEUE = queueDir;
 export const KINDS = ["TASK", "ACK", "PROGRESS", "BLOCKED", "HANDOFF", "REVIEW", "DECISION", "NOTICE"] as const;
 export const REPLY_KINDS = ["ACK", "PROGRESS", "BLOCKED", "HANDOFF", "REVIEW", "DECISION", "NOTICE"] as const;
 /** Agents the dispatcher always knows. A workspace adds its own in the queue's config.json (`runners`). */
@@ -24,7 +25,7 @@ export const BUILTIN_RUNNERS = ["codex", "claude"] as const;
  *  "json-result": stdout is a `claude -p --output-format json` result. */
 export interface RunnerDef { argv: string[]; format?: "text" | "json-result" }
 export interface QueueConfig {
-  /** How the prompt names the queue ("the PALS Notes production queue"). */
+  /** How the prompt names the queue ("the production queue"). */
   name?: string;
   /** Dispatched runs one thread may use before it goes to the owner instead (default 4): a stop for agent ping-pong. */
   maxRuns?: number;
@@ -87,7 +88,7 @@ export function resolveTarget(to: string, o: { profile?: string; write: boolean 
   return { profile: name, access: writes(reg, getProfile(name, reg)) ? "write" : "read-only" };
 }
 /** The lane that authorises a message's profile: --lane, else the project when it is a lane. */
-const laneOf = (m: Pick<Message, "lane" | "project">): string | undefined => m.lane ?? (existsSync(join(PROJECTS, m.project, "govern.json")) ? m.project : undefined);
+const laneOf = (m: Pick<Message, "lane" | "project">): string | undefined => m.lane ?? (existsSync(join(projectsDir(), m.project, "govern.json")) ? m.project : undefined);
 
 export function send(m: Omit<Message, "id" | "created">): Message {
   for (const [k, v] of [["task", m.task], ["to", m.to], ["from", m.from]] as const)
@@ -102,7 +103,7 @@ export function send(m: Omit<Message, "id" | "created">): Message {
     if (why) fail(`profile ${m.profile} is refused for this task: ${why}`);
   }
   if (m.replyTo && !find(m.replyTo)) fail(`--reply-to ${m.replyTo}: no such message`);
-  for (const f of m.files) if (!existsSync(resolve(REPO, f))) fail(`--file not found (paths are relative to ${REPO}): ${f}`);
+  for (const f of m.files) if (!existsSync(resolve(repo(), f))) fail(`--file not found (paths are relative to ${repo()}): ${f}`);
   const msg: Message = { ...m, id: `${stamp()}-${m.to}-${Math.random().toString(36).slice(2, 6)}`, created: nowIso() };
   mkdirSync(dir("open"), { recursive: true });
   writeFileSync(join(dir("open"), `${msg.id}.json`), JSON.stringify(msg, null, 2) + "\n");
@@ -182,15 +183,15 @@ export function prompt(m: Message): string {
   const t = thread(m);
   let budget = MAX_FILES_CHARS;
   const files = m.files.map((f) => {
-    const text = readFileSync(resolve(REPO, f), "utf8");
+    const text = readFileSync(resolve(repo(), f), "utf8");
     const part = text.slice(0, Math.max(0, budget));
     budget -= part.length;
     return `<file path="${f}"${part.length < text.length ? ` truncated="${text.length - part.length} chars"` : ""}>\n${part}\n</file>`;
   });
-  const brief = existsSync(join(PROJECTS, m.project, "govern.json")) ? `The project has a govern brief: run \`govern brief ${m.project}\` if you need its stage and decisions.\n` : "";
+  const brief = existsSync(join(projectsDir(), m.project, "govern.json")) ? `The project has a govern brief: run \`govern brief ${m.project}\` if you need its stage and decisions.\n` : "";
   return [
     `You are the "${m.to}" agent of ${config().name ?? "the govern task queue"}. You get one message, do what it asks, and answer once.`,
-    `Work only on what the message asks. ${m.access === "write" ? `You may change files under ${join(PROJECTS, m.project)} only.` : "Do not change any file: this task is read-only."}`,
+    `Work only on what the message asks. ${m.access === "write" ? `You may change files under ${join(projectsDir(), m.project)} only.` : "Do not change any file: this task is read-only."}`,
     "Do not start other agents, do not message other sessions, do not publish anything. Facts must come from files you open; say what you could not verify.",
     brief,
     `Thread (oldest first):`,
@@ -276,8 +277,8 @@ function claudeResult(stdout: string | undefined, status: number | null, stderr:
 
 /** A runner from config.json. Its reply goes through parseReply like every other runner's (PALS's LAW). */
 function runConfigured(def: RunnerDef, m: Message, p: string, timeoutSec: number): RunOut {
-  const cwd = existsSync(join(PROJECTS, m.project)) ? join(PROJECTS, m.project) : REPO;
-  const argv = def.argv.map((x) => x.replaceAll("{repo}", REPO).replaceAll("{dir}", cwd));
+  const cwd = existsSync(join(projectsDir(), m.project)) ? join(projectsDir(), m.project) : repo();
+  const argv = def.argv.map((x) => x.replaceAll("{repo}", repo()).replaceAll("{dir}", cwd));
   const [bin, ...args] = argv;
   if (bin === undefined) return { error: `runner ${m.to} has an empty argv in ${join(QUEUE(), "config.json")}` };
   const r = spawnSync(bin, args, { cwd, input: p, encoding: "utf8", timeout: timeoutSec * 1000, maxBuffer: 64 << 20, env: childEnv() });
@@ -330,7 +331,7 @@ export function dispatch(o: { max?: number; only?: string; timeoutSec?: number }
     }
     const t0 = Date.now();
     const def = cfg.runners?.[m.to];
-    const cwd = existsSync(join(PROJECTS, m.project)) ? join(PROJECTS, m.project) : REPO;
+    const cwd = existsSync(join(projectsDir(), m.project)) ? join(projectsDir(), m.project) : repo();
     const r = sealed
       ? runSealed(reg, sealed, cwd, prompt(m), o.timeoutSec ?? 900, { lastMessage: join(QUEUE(), "claimed", `${m.id}.reply.txt`), schema: REPLY_SCHEMA })
       : runConfigured(def!, m, prompt(m), o.timeoutSec ?? 900);

@@ -147,7 +147,7 @@ test("parseEvents reads a real codex recording", () => {
 });
 
 test("validate covers the schema subset", () => {
-  const s = JSON.parse(readFileSync(new URL("../schemas/hooks.json", import.meta.url), "utf8"));
+  const s = JSON.parse(readFileSync(new URL("../processes/video/prompts/schemas/hooks.json", import.meta.url), "utf8"));
   assert.deepEqual(validate(s, { hooks: [{ text: "abc", approach: "", on_screen: "", risk: "" }, { text: "abd", approach: "", on_screen: "", risk: "" }, { text: "abe", approach: "", on_screen: "", risk: "" }], chosen: 0, reason: "r" }), []);
   assert.ok(validate(s, { hooks: [], chosen: "0" }).some((x) => /fewer than 3/.test(x)));
   assert.ok(validate(s, { hooks: [], chosen: "0" }).some((x) => /reason: missing/.test(x)));
@@ -184,7 +184,7 @@ test("ask: a reply that breaks a house rule gets one repair with the errors, the
   assert.match(r.out, /2 calls/);
   const second = JSON.parse(present(readFileSync(join(e.root, "stdin.log"), "utf8").split("\n")[1], "the second prompt sent"));
   assert.match(second, /failed these checks/);
-  assert.match(second, /hooks\[0\]: 12 words/);
+  assert.match(second, /hooks\[0\].text: 12 words/);
   assert.match(second, /banned opening/);
 });
 
@@ -221,7 +221,7 @@ test("ask: the ledger names the exact prompt sent (promptSha) and the schema cod
   assert.equal(l.promptSha, sha256(sent));
   assert.deepEqual(l.callShas, [sha256(sent)]);
   assert.equal(l.schemaSha, sha256(readFileSync(schemaFile)));
-  assert.equal(l.schemaSha, sha256(readFileSync(join(HERE, "..", "schemas", "hooks.json"))));
+  assert.equal(l.schemaSha, sha256(readFileSync(join(HERE, "..", "processes", "video", "prompts", "schemas", "hooks.json"))));
 });
 
 test("ask: a repair call's input is hashed too; promptSha stays the first call's", () => {
@@ -447,10 +447,10 @@ test("the shipped prompts all render with a brief and their schemas compile", ()
   for (const f of ["pals-notes-channel/writing/SCRIPT-STYLE-GUIDE.md", "var/media-business/channels/palsnotes/workflow/script/post-validation/en-US-writing.md", "var/media-business/channels/palsnotes/workflow/script/post-validation/pt-BR-writing.md"]) write(join(e.root, f), "rules");
   const steps = govern(e, ["prompts"]).out.split("\n").filter(Boolean).map((l) => l.replace(/\s.*/s, ""));
   // The inventory is prompts/*.md; each has its schemas/<name>.json, and schemas/ holds nothing else but the queue's.
-  const shipped = readdirSync(join(HERE, "..", "prompts")).filter((f) => f.endsWith(".md")).map((f) => f.slice(0, -3)).sort();
+  const shipped = readdirSync(join(HERE, "..", "processes", "video", "prompts")).filter((f) => f.endsWith(".md")).map((f) => f.slice(0, -3)).sort();
   assert.ok(shipped.length > 0);
   assert.deepEqual(steps.sort(), shipped);
-  assert.deepEqual(readdirSync(join(HERE, "..", "schemas")).sort(), [...shipped.map((s) => `${s}.json`), "queue-reply.json"].sort());
+  assert.deepEqual(readdirSync(join(HERE, "..", "processes", "video", "prompts", "schemas")).sort(), shipped.map((s) => `${s}.json`).sort());
   for (const s of steps) {
     const r = govern(e, ["ask", slug, s], { FAKE_CODEX_SCRIPTS: reply(e, `r-${s}`, "{}") });
     assert.equal(r.code, 3, `${s}: ${r.err}`); // {} fails the schema, but the prompt rendered and codex was called

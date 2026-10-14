@@ -11,10 +11,10 @@
 #     govern advance SLUG [--note EVIDENCE]  |  dep SLUG [--after LANE[:STAGE]] [--rm LANE]  |  hook stop
 #     govern run SLUG CMD [--bg] [--on RESOURCE] [-- ARGS]  |  resources [NAME]  |  wait SLUG [JOB] [--timeout S]  |  jobs SLUG  |  kill SLUG [JOB]
 #     govern log SLUG [JOB] [--tail N] [--grep RE]
-#     govern prompts  |  ask SLUG STEP [--file F]... [--var K=V]... [--image PNG]... [--effort E] [--model M]
+#     govern prompts [PROCESS]  |  ask SLUG STEP [--file F]... [--var K=V]... [--image PNG]... [--effort E] [--model M]
 #     govern usage [SLUG...] [--since DATE]  |  ctx  |  desk  |  tune  |  publish SLUG
 #     govern caps [PROFILE]  |  caps --check PROFILE
-#     govern help [COMMAND]  |  COMMAND --help  |  manual  |  install-skill [SKILLS-DIR] [--check]
+#     govern help [COMMAND]  |  COMMAND --help  |  manual [PROCESS]  |  install-skill [SKILLS-DIR] [--check]
 #     govern task send --to codex|claude|auto|owner|PROFILE|SESSION --project P --task T --kind K --summary S
 #                      (--body B | --body-file F) [--file PATH]... [--reply-to ID] [--write | --profile P]
 #                      [--lane SLUG] [--from NAME]
@@ -24,13 +24,13 @@
 #     govern task dispatch [--max N] [--only codex|claude] [--loop --interval S]  |  install-service [--interval S]
 # DESCRIPTION
 #     The control surface an AI uses while it works on a video with the owner. State (stage, decisions,
-#     approvals, commands, files) lives in PALS-Notes/projects/SLUG/govern.json, so a session starts from
+#     approvals, commands, files) lives in the lane's govern.json under the workspace's projects folder, so a session starts from
 #     `govern brief` (a few hundred tokens) instead of re-reading history. Builds and renders run as jobs:
 #     `run --bg` returns at once and `wait` blocks with no model in the loop. `ask` runs one Codex step
 #     (codex exec --json --output-schema) and verifies the reply against its schema and house rules, with
 #     one repair. `usage` attributes the tokens of Claude Code and Codex sessions to (video, stage)
 #     segments opened by `govern work`, against the chat baseline of REPORT-2026-10-11. The operating
-#     manual for the AI is tools/govern/SKILL.md (`govern manual`).
+#     manual for the AI is tools/govern/SKILL.md (`govern manual`); a process may own one too (`govern manual PROCESS`).
 #     A lane follows a process: a JSON file (tools/govern/processes/*.json built in: video, ops, dev; a workspace
 #     adds or overrides its own in its processes folder) naming the stages, each stage's exit condition and the
 #     command that checks it, and the owner's gates. `advance` moves a lane on only when the stage's check passes
@@ -65,9 +65,9 @@
 #     0 ok · 1 a failed check (install-skill --check, a lane status or desk could not read, a failed exit check)
 #     · 2 usage or state error · 3 a Codex reply failed verification · a job's exit code for run/wait · 124 wait timed out
 # ENVIRONMENT
-#     GOVERN_PROJECTS (default REPO/PALS-Notes/projects) · GOVERN_CODEX_BIN · GOVERN_PYTHON · GOVERN_CTX_WARN (150000)
+#     GOVERN_REPO (the workspace; else the nearest govern.config.json above the cwd) · GOVERN_PROJECTS · GOVERN_CODEX_BIN · GOVERN_PYTHON · GOVERN_CTX_WARN (150000)
 #     GOVERN_CLAUDE_PROJECTS (~/.claude/projects) · GOVERN_CODEX_SESSIONS (~/.codex/sessions)
-#     GOVERN_PROCESSES (workspace processes folder) · GOVERN_QUEUE (default REPO/PALS-Notes/queue) · GOVERN_SESSIONS_DIR (~/.claude/sessions) · GOVERN_AS (session name)
+#     GOVERN_PROCESSES (workspace processes folder) · GOVERN_QUEUE · GOVERN_WORKFLOW · GOVERN_PROMPTS · GOVERN_TUNING_LOG (each overrides govern.config.json) · GOVERN_SESSIONS_DIR (~/.claude/sessions) · GOVERN_AS (session name)
 # EXAMPLES
 #     govern work a-millionth-apart/shorts script
 #     govern run golden-pixel fb gates sheets --bg && govern wait golden-pixel

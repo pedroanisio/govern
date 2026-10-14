@@ -1,0 +1,24 @@
+[
+  {
+    "at": "hooks[].text",
+    "maxWords": 8,
+    "message": "{at}: {n} words; a hook fits 2–3 s (≤ 8 words)"
+  },
+  {
+    "at": "hooks[].text",
+    "forbid": "^(in this video|did you know|neste vídeo|você sabia)",
+    "flags": "i",
+    "message": "{at}: banned opening"
+  },
+  {
+    "at": "hooks[].text",
+    "forbid": "pals notes",
+    "flags": "i",
+    "message": "{at}: no channel name in a hook"
+  },
+  {
+    "at": "chosen",
+    "indexOf": "hooks",
+    "message": "chosen: must index one of the hooks"
+  }
+]

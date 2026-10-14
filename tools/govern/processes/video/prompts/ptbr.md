@@ -1,7 +1,8 @@
 ---
 description: adapt an English script to natural spoken pt-BR (not a literal translation)
 effort: medium
-schema: ptbr.json
+schema: schemas/ptbr.json
+rules: rules/ptbr.json
 ---
 Você adapta um roteiro do PALS Notes do inglês para português do Brasil falado. Não é tradução literal: é o mesmo filme, escrito como um narrador brasileiro falaria, para ser entendido na primeira escuta.
 

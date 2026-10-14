@@ -2,13 +2,14 @@
 // A capability is one grant (Claude permission patterns, the Codex equivalent, a side-effect class, secret NAMES only). A
 // profile is a list of capabilities plus an engine and model. Built-ins live in tools/govern/capabilities/*.json; a
 // workspace adds or overrides its own in its capabilities folder (GOVERN_CAPABILITIES, else govern.config.json
-// "capabilities", else PALS-Notes/capabilities beside projects), like processes.
+// "capabilities", else a capabilities folder beside the lanes), like processes.
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { fail, sha256 } from "./util.ts";
 import { obj, arr, str, literal, check, reject, parseFile } from "./shape.ts";
-import { PROJECTS, CONFIG, load } from "./project.ts";
+import { load } from "./project.ts";
+import { projectsDir, capabilitiesDir } from "./workspace.ts";
 import { processOf } from "./process.ts";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -65,7 +66,7 @@ const PROFILE = obj({ name: ident, engine: literal("claude", "codex"), capabilit
   { description: str, model: str, mcpConfig: str, selfTest: literal("required", "optional") });
 const FILE = obj({ version: literal(1) }, { capabilities: arr(CAP), profiles: arr(PROFILE) });
 
-export const extraDir = () => process.env.GOVERN_CAPABILITIES ?? CONFIG.capabilities ?? join(PROJECTS, "..", "capabilities");
+export const extraDir = capabilitiesDir;
 
 export interface Registry { caps: Map<string, Capability>; profiles: Map<string, Profile> }
 
@@ -164,7 +165,7 @@ export function guardProblem(reg: Registry, p: Profile, lane: string | undefined
     const gate = c.gate ?? c.effect;
     const what = `profile ${p.name} holds ${c.name}, a ${c.effect} capability`;
     if (!lane) return `it needs a lane: pass --lane <slug> for a lane whose "${gate}" gate is approved (${what})`;
-    if (!existsSync(join(PROJECTS, lane, "govern.json"))) return laneGiven ? `--lane ${lane}: no such lane (${what})` : `it needs a lane: pass --lane <slug> for a lane whose "${gate}" gate is approved (${what})`;
+    if (!existsSync(join(projectsDir(), lane, "govern.json"))) return laneGiven ? `--lane ${lane}: no such lane (${what})` : `it needs a lane: pass --lane <slug> for a lane whose "${gate}" gate is approved (${what})`;
     const l = load(lane);
     if (!processOf(l).gates.some((g) => g.name === gate)) return `lane ${lane}'s process "${processOf(l).name}" has no "${gate}" gate, so it cannot authorise profile ${p.name} (${what})`;
     if (!l.approvals[gate]) return `lane ${lane} has not approved its "${gate}" gate (${what}; govern approve ${lane} ${gate} --quote "…")`;

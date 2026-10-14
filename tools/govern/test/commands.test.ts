@@ -138,6 +138,12 @@ test("drift: every command and subcommand is in SKILL.md and HELP; SKILL.md name
   }
 });
 
+test("drift: a process manual (video) names no command, subcommand or flag that does not exist", () => {
+  const md = readFileSync(join(HERE, "..", "processes", "video", "MANUAL.md"), "utf8");
+  assert.ok(skillMentions(md).length > 20, "the video manual's govern mentions are found");
+  assert.deepEqual(skillProblems(md, COMMANDS).filter((x) => !x.startsWith("never mentions")), [], "the video manual against the command table");
+});
+
 test("the SKILL.md check catches each kind of drift in a synthetic manual", () => {
   const table = [
     { name: "advance", flags: { value: ["note"] } },

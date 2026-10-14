@@ -1,7 +1,8 @@
 ---
 description: title, description, chapters, hashtags and pinned comment for YouTube
 effort: low
-schema: metadata.json
+schema: schemas/metadata.json
+rules: rules/metadata.json
 ---
 You write the YouTube metadata for a PALS Notes {{kind}} film, in {{lang}}.
 

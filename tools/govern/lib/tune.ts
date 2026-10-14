@@ -13,12 +13,11 @@ import { existsSync, readFileSync, readdirSync, statSync, appendFileSync, mkdirS
 import { join, dirname } from "node:path";
 import { homedir } from "node:os";
 import { readJsonl, kTok, nowIso } from "./util.ts";
-import { REPO } from "./project.ts";
+import { tuningLogFile } from "./workspace.ts";
 import * as queue from "./queue.ts";
 
 const CLAUDE_DIR = () => process.env.GOVERN_CLAUDE_PROJECTS ?? join(homedir(), ".claude", "projects");
 const SETTINGS = () => process.env.GOVERN_CLAUDE_SETTINGS ?? join(homedir(), ".claude", "settings.json");
-export const TUNING_LOG = () => process.env.GOVERN_TUNING_LOG ?? join(REPO, "PALS-Notes", "costs", "tuning.jsonl");
 export const VAR = "CLAUDE_CODE_AUTO_COMPACT_WINDOW";
 
 export const RULES = {
@@ -138,18 +137,18 @@ function applyWindow(w: number): void {
 /** One loop turn: measure, decide, apply, record. Returns the line for the log and the desk. */
 export function tune(o: { dryRun?: boolean } = {}): string {
   const m = measure(24);
-  const last = readJsonl(TUNING_LOG()).filter((e) => e.knob === "compact-window" && e.applied).pop();
+  const last = readJsonl(tuningLogFile()).filter((e) => e.knob === "compact-window" && e.applied).pop();
   const d = decideWindow(m, currentWindow(), last ? Date.parse(last.t) : undefined);
   const applied = d.change && !o.dryRun;
   if (applied) applyWindow(d.to!);
-  mkdirSync(dirname(TUNING_LOG()), { recursive: true });
-  if (!o.dryRun) appendFileSync(TUNING_LOG(), JSON.stringify({ t: nowIso(), ...d, applied }) + "\n");
+  mkdirSync(dirname(tuningLogFile()), { recursive: true });
+  if (!o.dryRun) appendFileSync(tuningLogFile(), JSON.stringify({ t: nowIso(), ...d, applied }) + "\n");
   const w = (x?: number) => (x === undefined ? "default" : kTok(x));
   return `compact window ${w(d.from)}${d.change ? ` → ${applied ? "SET" : "would set"} ${w(d.to)}` : ""} · ${d.reason} · 24 h: ${m.calls} calls in ${m.sessions} sessions, median ${kTok(m.medianCtx)}, p90 ${kTok(m.p90Ctx)}, ${m.ownerTurns} owner turns, ${m.autoCompacts} auto + ${m.manualCompacts} manual compactions, ${m.subagentCalls} subagent calls`;
 }
 
 export function tuningState(): string {
-  const last = readJsonl(TUNING_LOG()).pop();
+  const last = readJsonl(tuningLogFile()).pop();
   const cur = currentWindow();
   if (!last) return `tuning: compact window ${cur === undefined ? "default" : kTok(cur)} · never measured (govern tune)`;
   return `tuning: compact window ${cur === undefined ? "default" : kTok(cur)} (auto) · ${last.t.slice(0, 16).replace("T", " ")}: ${last.applied ? `set ${kTok(last.to)} — ` : ""}${last.reason}`;

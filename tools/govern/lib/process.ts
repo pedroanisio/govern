@@ -1,12 +1,13 @@
 // A process: the stages a lane goes through, what "done" means for each, which command checks it, and which owner
 // gates hold it. Built-ins live in tools/govern/processes/*.json; a workspace adds or overrides its own in its
-// processes folder (GOVERN_PROCESSES, else govern.config.json "processes", else PALS-Notes/processes beside projects).
+// processes folder (GOVERN_PROCESSES, else govern.config.json "processes").
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { fail } from "./util.ts";
-import { obj, arr, str, name, literal, check, reject } from "./shape.ts";
-import { PROJECTS, CONFIG, type Project } from "./project.ts";
+import { obj, arr, str, name, literal, record, check, reject } from "./shape.ts";
+import { processesDir } from "./workspace.ts";
+import type { Project } from "./project.ts";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const BUILTIN = resolve(HERE, "..", "processes");
@@ -15,6 +16,9 @@ const BUILTIN = resolve(HERE, "..", "processes");
 export interface StageDef { name: string; exit?: string; check?: string; requires?: "check" }
 /** `owner`: who decides the gate (default "owner"); `govern approve --by` must name them. */
 export interface GateDef { name: string; stage?: string; needs?: string[]; message?: string; owner?: string }
+/** What a new lane of the process starts with: commands and named files, each group optionally only when a file already
+ *  exists in the lane's folder (`ifFile`). A command's argv may use {repo}, {dir}, {python} and {paths.NAME}. */
+export interface SetupGroup { ifFile?: string; commands?: Record<string, string[]>; files?: Record<string, string> }
 export interface Process {
   version: 1;
   name: string;
@@ -26,14 +30,22 @@ export interface Process {
   /** At least one: the process file's check refuses an empty list. */
   stages: [StageDef, ...StageDef[]];
   gates: GateDef[];
+  /** The process's own manual, a file relative to the process file (`govern manual <name>`; the brief points at it). */
+  manual?: string;
+  /** The process's prompts (`govern ask`): a folder relative to the process file; each prompt's schema and rules are beside it. */
+  prompts?: string;
+  setup?: SetupGroup[];
+  /** The folder of the process file (not a key of it): what manual and prompts are relative to. */
+  dir: string;
 }
 
-export const extraDir = () => process.env.GOVERN_PROCESSES ?? CONFIG.processes ?? join(PROJECTS, "..", "processes");
+export const extraDir = (): string | undefined => processesDir();
 
 const STAGE = obj({ name }, { exit: str, check: name, requires: literal("check") });
 const GATE = obj({ name }, { stage: name, needs: arr(name), message: str, owner: name });
 const PROCESS = obj({ version: literal(1), name, stages: arr(STAGE, { nonEmpty: true }) },
-  { description: str, kinds: arr(name, { nonEmpty: true }), exitFrom: literal("workflow"), gates: arr(GATE) });
+  { description: str, kinds: arr(name, { nonEmpty: true }), exitFrom: literal("workflow"), gates: arr(GATE), manual: str, prompts: str,
+    setup: arr(obj({}, { ifFile: str, commands: record(arr(str)), files: record(str) })) });
 
 /** Names unique within a list: the second one is refused at its path. */
 function unique(items: { name: string }[], what: string, at: string): void {
@@ -78,11 +90,11 @@ export function parseProcess(file: string, text: string): Process {
     if (s && typeof s === "object" && "requires" in s && s.requires !== "check") fail(`${file}: stage ${String(s.name)}: requires must be "check" (got ${JSON.stringify(s.requires)})`);
   }
   const p = check(file, raw, (v, at) => { const x = PROCESS(v, at); resolveRefs(x); return x; });
-  return { ...p, description: p.description ?? "", gates: p.gates ?? [] };
+  return { ...p, description: p.description ?? "", gates: p.gates ?? [], dir: dirname(file) };
 }
 
-function readDir(dir: string): Process[] {
-  if (!existsSync(dir)) return [];
+function readDir(dir: string | undefined): Process[] {
+  if (!dir || !existsSync(dir)) return [];
   return readdirSync(dir).filter((f) => f.endsWith(".json")).sort().map((f) => parseProcess(join(dir, f), readFileSync(join(dir, f), "utf8")));
 }
 
@@ -98,6 +110,8 @@ export function getProcess(name: string): Process {
   return all.get(name) ?? fail(`no process "${name}" (have: ${[...all.keys()].join(", ")})`);
 }
 
+/** The process's manual file, absolute, or undefined when it names none. */
+export const manualOf = (p: Process): string | undefined => (p.manual ? resolve(p.dir, p.manual) : undefined);
 export const processName = (p: Pick<Project, "process" | "kind">) => p.process ?? (p.kind === "ops" ? "ops" : "video");
 export const processOf = (p: Pick<Project, "process" | "kind">) => getProcess(processName(p));
 
@@ -108,7 +122,7 @@ export function listLine(p: Process): string {
 export function show(p: Process): string {
   const L = [`${p.name}: ${p.description}`];
   p.stages.forEach((s, i) => {
-    const bits = [s.exit ? `exit: ${s.exit}` : p.exitFrom === "workflow" ? "exit: from WORKFLOW.md" : "", s.check ? `check: command "${s.check}"` : "",
+    const bits = [s.exit ? `exit: ${s.exit}` : p.exitFrom === "workflow" ? "exit: from the workflow document" : "", s.check ? `check: command "${s.check}"` : "",
       s.requires ? "requires a check" : ""].filter(Boolean);
     L.push(`  ${i + 1} ${s.name.padEnd(14)} ${bits.join("  ")}`.trimEnd());
   });

@@ -1,0 +1,95 @@
+[
+  {
+    "at": "title",
+    "forbid": "#shorts",
+    "flags": "i",
+    "message": "title: no #shorts in titles"
+  },
+  {
+    "at": "title",
+    "forbid": "pals notes",
+    "flags": "i",
+    "message": "title: no channel name in titles"
+  },
+  {
+    "at": [
+      "title",
+      "description",
+      "pinned_comment"
+    ],
+    "forbid": "\\.xml",
+    "message": "production text \"{match}\" in {at}"
+  },
+  {
+    "at": [
+      "title",
+      "description",
+      "pinned_comment"
+    ],
+    "forbid": "\\.scene",
+    "message": "production text \"{match}\" in {at}"
+  },
+  {
+    "at": [
+      "title",
+      "description",
+      "pinned_comment"
+    ],
+    "forbid": "TODO",
+    "message": "production text \"{match}\" in {at}"
+  },
+  {
+    "at": [
+      "title",
+      "description",
+      "pinned_comment"
+    ],
+    "forbid": "\\.py",
+    "message": "production text \"{match}\" in {at}"
+  },
+  {
+    "at": [
+      "title",
+      "description",
+      "pinned_comment"
+    ],
+    "forbid": "\\.json",
+    "message": "production text \"{match}\" in {at}"
+  },
+  {
+    "at": [
+      "title",
+      "description",
+      "pinned_comment"
+    ],
+    "forbid": "\\{\\{",
+    "message": "production text \"{match}\" in {at}"
+  },
+  {
+    "at": "description",
+    "require": "^Source:",
+    "flags": "m",
+    "message": "description: needs a line starting with 'Source:'"
+  },
+  {
+    "at": "hashtags",
+    "maxItems": 3,
+    "message": "hashtags: at most 3"
+  },
+  {
+    "at": "chapters",
+    "minItems": 3,
+    "when": {
+      "kind": "long"
+    },
+    "message": "chapters: a long film needs at least 3"
+  },
+  {
+    "at": "chapters[0].time",
+    "equals": "0:00",
+    "when": {
+      "kind": "long"
+    },
+    "message": "chapters: the first must be at 0:00"
+  }
+]

@@ -43,6 +43,12 @@ export function makeEnv(): Env {
   for (const d of ["claude"]) mkdirSync(join(root, d), { recursive: true });
   const home = join(root, "home");
   mkdirSync(home, { recursive: true });
+  // the workspace's govern.config.json: where the lanes, the queue, the packages and the video process's tools live
+  writeFileSync(join(root, "govern.config.json"), JSON.stringify({
+    projects: "PALS-Notes/projects", queue: "PALS-Notes/queue", processes: "PALS-Notes/processes", packages: "PALS-Notes/packages", workflow: "WORKFLOW.md",
+    tuningLog: "PALS-Notes/costs/tuning.jsonl", paths: { filmBuild: "film_build.py" },
+    baseline: { mainMedianCtx: 468000, subagentMedianCtx: 202000, source: "test baseline" },
+  }));
   const fakeBin = join(root, "fake-codex.sh");
   writeFileSync(fakeBin, `#!/bin/sh\nexec ${process.execPath} --disable-warning=ExperimentalWarning ${FAKE} "$@"\n`, { mode: 0o755 });
   return {

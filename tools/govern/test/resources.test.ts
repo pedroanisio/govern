@@ -12,9 +12,14 @@ const R = (extra: Record<string, unknown> = {}) => ({ name: "lab-vm", kind: "vm"
 const parse = (raw: unknown) => parseResources("resources.json", raw);
 const rejects = (raw: unknown, re: RegExp) => assert.throws(() => parse(raw), (e: Error) => re.test(e.message) && e.message.startsWith("resources.json: "));
 
+/** Sets keys of the workspace's govern.config.json, keeping the rest (where the lanes and the queue live). */
+function setConfig(e: Env, keys: Record<string, unknown>): void {
+  const f = join(e.root, "govern.config.json");
+  write(f, JSON.stringify({ ...JSON.parse(readFileSync(f, "utf8")), ...keys }));
+}
 function withResources(list: unknown[]): { e: Env; slug: string } {
   const e = makeEnv();
-  write(join(e.root, "govern.config.json"), JSON.stringify({ resources: list }));
+  setConfig(e, { resources: list });
   assert.equal(govern(e, ["new", "lane", "--process", "dev", "--title", "L"]).code, 0);
   return { e, slug: "lane" };
 }
@@ -264,14 +269,14 @@ test("usage and desk show machine seconds and money beside tokens, per lane, wit
 test("the registry can come from a file named in govern.config.json or GOVERN_RESOURCES", () => {
   const e = makeEnv();
   write(join(e.root, "res", "all.json"), JSON.stringify([R()]));
-  write(join(e.root, "govern.config.json"), JSON.stringify({ resources: "res/all.json" }));
+  setConfig(e, { resources: "res/all.json" });
   assert.match(govern(e, ["resources"]).out, /lab-vm/);
   write(join(e.root, "other.json"), JSON.stringify([R({ name: "elsewhere" })]));
   const r = govern(e, ["resources"], { GOVERN_RESOURCES: join(e.root, "other.json") });
   assert.match(r.out, /elsewhere/);
   assert.ok(!r.out.includes("lab-vm"));
-  write(join(e.root, "govern.config.json"), JSON.stringify({ resources: "res/missing.json" }));
+  setConfig(e, { resources: "res/missing.json" });
   assert.match(govern(e, ["resources"]).err, /missing\.json/);
-  write(join(e.root, "govern.config.json"), JSON.stringify({ resources: [R({ sharing: "x" })] }));
+  setConfig(e, { resources: [R({ sharing: "x" })] });
   assert.match(govern(e, ["resources"]).err, /govern\.config\.json: \$\.resources\[0\]\.sharing|govern\.config\.json: .*sharing/);
 });
