@@ -92,5 +92,22 @@
       "kind": "long"
     },
     "message": "chapters: the first must be at 0:00"
+  },
+  {
+    "at": "chapters[].time",
+    "optional": true,
+    "minSecondsApart": 10,
+    "when": {
+      "kind": "long"
+    },
+    "message": "chapters: {at} starts {n} s after the previous chapter (at least 10 s each, in order)"
+  },
+  {
+    "at": "chapters",
+    "maxItems": 0,
+    "when": {
+      "kind": "short"
+    },
+    "message": "chapters: a Short has no chapters ({n} given)"
   }
 ]

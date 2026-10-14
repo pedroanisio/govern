@@ -14,13 +14,18 @@ export interface Rule {
   /** Without it, a path that matches nothing fails the rule. */
   optional?: boolean;
   forbid?: string; require?: string; flags?: string; maxWords?: number; maxItems?: number; minItems?: number; equals?: string; indexOf?: string;
+  /** Each hit after the first is a time (m:ss or h:mm:ss) at least this many seconds after the hit before it. */
+  minSecondsApart?: number;
 }
-const TESTS = ["forbid", "require", "maxWords", "maxItems", "minItems", "equals", "indexOf"] as const;
+const TESTS = ["forbid", "require", "maxWords", "maxItems", "minItems", "equals", "indexOf", "minSecondsApart"] as const;
 
+const count: Shape<number> = (v, p) =>
+  (Number.isInteger(v) && (v as number) >= 0 ? (v as number) : reject(p, `must be a whole number, 0 or more (got ${JSON.stringify(v)})`));
 const bool: Shape<boolean> = (v, p) => (typeof v === "boolean" ? v : reject(p, "must be true or false"));
 const atShape: Shape<string | string[]> = (v, p) => (Array.isArray(v) ? arr(str, { nonEmpty: true })(v, p) : str(v, p));
 const RULE = obj({ at: atShape, message: str }, {
-  when: obj({ kind: name }), optional: bool, forbid: str, require: str, flags: str, maxWords: posInt, maxItems: posInt, minItems: posInt, equals: str, indexOf: str,
+  when: obj({ kind: name }), optional: bool, forbid: str, require: str, flags: str, maxWords: posInt, maxItems: count, minItems: posInt, equals: str, indexOf: str,
+  minSecondsApart: posInt,
 });
 
 /** Load a rules file: strictly typed, exactly one test per rule, every pattern a valid regular expression. */
@@ -63,6 +68,15 @@ export function reach(v: unknown, at: string): Hit[] {
   return hits;
 }
 
+/** Seconds in a video timestamp, m:ss or h:mm:ss (minutes and seconds below 60 where a larger unit follows); undefined when it is not one. */
+function seconds(v: unknown): number | undefined {
+  if (typeof v !== "string") return undefined;
+  const m = /^(\d+):([0-5]\d)$/.exec(v) ?? /^(\d+):([0-5]\d):([0-5]\d)$/.exec(v);
+  if (!m) return undefined;
+  const [, a, b, c] = m.map(Number);
+  return c === undefined ? a! * 60 + b! : a! * 3600 + b! * 60 + c;
+}
+
 const words = (s: string) => s.trim().split(/\s+/).filter(Boolean).length;
 const say = (m: string, at: string, n: number | string, match = "") => m.replaceAll("{at}", at).replaceAll("{n}", String(n)).replaceAll("{match}", match);
 
@@ -87,6 +101,14 @@ export function applyRules(rules: Rule[], value: unknown, kind: string): string[
       else if (r.indexOf !== undefined) {
         const list = reach(value, r.indexOf)[0]?.value;
         for (const h of hits) if (!(Array.isArray(list) && Number.isInteger(h.value) && (h.value as number) >= 0 && (h.value as number) < list.length)) errs.push(say(r.message, h.path, 0));
+      } else if (r.minSecondsApart !== undefined) {
+        let prev: number | undefined;
+        for (const h of hits) {
+          const t = seconds(h.value);
+          if (t === undefined) { errs.push(`${h.path}: not a time (m:ss or h:mm:ss): ${JSON.stringify(h.value)}`); prev = undefined; continue; }
+          if (prev !== undefined && t - prev < r.minSecondsApart) errs.push(say(r.message, h.path, t - prev));
+          prev = t;
+        }
       }
     }
   }

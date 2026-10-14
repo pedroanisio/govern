@@ -213,6 +213,23 @@ test("ask: metadata rules for a long film (Source line, chapters from 0:00, no p
   assert.match(r.out, /production text "\.xml"/);
 });
 
+test("ask: metadata chapters follow the prompt's rules: a long film's are 10 s apart from 0:00, a Short has none", () => {
+  const meta = (...times: string[]) => ({
+    title: "Why a millionth changes the future", title_alternatives: [], description: "First line.\nSource: (owner to add)",
+    chapters: times.map((time, i) => ({ time, label: `part ${i}` })), hashtags: [], pinned_comment: "",
+  });
+  const long = video("long", "longfilm");
+  assert.equal(govern(long.e, ["ask", long.slug, "metadata"], { FAKE_CODEX_SCRIPTS: reply(long.e, "ok", meta("0:00", "0:45", "1:00:00")) }).code, 0);
+  const close = govern(long.e, ["ask", long.slug, "metadata"], { FAKE_CODEX_SCRIPTS: reply(long.e, "close", meta("0:00", "0:04", "2:00")) });
+  assert.equal(close.code, 3);
+  assert.match(close.out, /chapters\[1\]\.time starts 4 s after the previous chapter/);
+  const short = video("short", "shortfilm");
+  assert.equal(govern(short.e, ["ask", short.slug, "metadata"], { FAKE_CODEX_SCRIPTS: reply(short.e, "none", meta()) }).code, 0);
+  const chaptered = govern(short.e, ["ask", short.slug, "metadata"], { FAKE_CODEX_SCRIPTS: reply(short.e, "some", meta("0:00", "0:20", "0:40")) });
+  assert.equal(chaptered.code, 3);
+  assert.match(chaptered.out, /a Short has no chapters \(3 given\)/);
+});
+
 const sha256 = (b: string | Buffer) => createHash("sha256").update(b).digest("hex");
 const stdinLog = (e: ReturnType<typeof makeEnv>): string[] => jsonl(join(e.root, "stdin.log"));
 
