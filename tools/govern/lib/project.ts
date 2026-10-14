@@ -1,6 +1,8 @@
 // A lane: its folder, its govern.json (state, commands, process) and its brief. A lane follows a process (lib/process.ts).
 import { existsSync, readFileSync, appendFileSync, mkdirSync, globSync } from "node:fs";
 import { join, dirname, resolve, relative } from "node:path";
+import { WORKFLOW, HUMAN_TASKS, VOTES, scalar, type Scalar, type Workflow, type HumanTask, type Vote } from './business-schema.ts';
+import { initializeBusiness, validateCase, gateApproved } from './business.ts';
 import { GovernError, fail, readJson, writeJson, nowIso, latest, plain, clip, readJsonl } from "./util.ts";
 import type { Source } from "./approval.ts";
 import { repo, projectsDir, workflowFile, config, configFile } from "./workspace.ts";
@@ -46,6 +48,10 @@ export interface Project {
   /** stage → command name: the lane's own exit check, over the process's. */
   checks?: Record<string, string>;
   after?: After[];
+  data?: Record<string, Scalar>;
+  workflow?: Workflow;
+  humanTasks?: Record<string, HumanTask>;
+  votes?: Record<string, Vote[]>;
   approvals: Record<string, Approval>;
   notes: Note[];
 }
@@ -87,7 +93,7 @@ const PROJECT = obj(
   { version: literal(1), slug: name, title: str, kind: name, lang: name, stage: name, created: iso,
     commands: record(COMMAND), files: record(str), approvals: record(obj({ at: iso, quote: str }, { by: name, source: SOURCE })),
     notes: arr(obj({ at: iso, stage: name, text: str })) },
-  { process: name, parent: str, finished: iso, checks: record(name), after: arr(obj({ lane: name }, { stage: name })) },
+  { data: record(scalar), workflow: WORKFLOW, humanTasks: HUMAN_TASKS, votes: VOTES, process: name, parent: str, finished: iso, checks: record(name), after: arr(obj({ lane: name }, { stage: name })) },
 );
 
 /** Parse the text of lane `slug`'s govern.json (`file`): typed, unknown keys refused, then checked against what the types
@@ -110,6 +116,7 @@ export function parseProject(file: string, text: string, slug: string): Project 
     if (!stages.includes(p.stage)) reject(`${at}.stage`, `no stage "${p.stage}" in process ${pr.name}`);
     for (const s of Object.keys(p.checks ?? {})) if (!stages.includes(s)) reject(keyPath(`${at}.checks`, s), `no stage "${s}" in process ${pr.name}`);
     (p.after ?? []).forEach((x, i) => { x.lane = laneSlug(x.lane) ?? reject(`${at}.after[${i}].lane`, `bad slug: ${x.lane}`); });
+    validateCase(p, pr, at);
     return p;
   });
 }
@@ -164,6 +171,7 @@ export function create(given: string, o: { kind?: string; process?: string; titl
     version: 1, slug, title: o.title ?? slug, kind, process: proc, lang: o.lang ?? "en", ...(o.parent ? { parent: o.parent } : {}),
     stage: getProcess(proc).stages[0].name, created: nowIso(), commands, files, approvals: emptyRecord<Approval>(), notes: [],
   };
+  initializeBusiness(p);
   save(p);
   return p;
 }
@@ -216,6 +224,7 @@ export function afterMet(a: After): { label: string; met: boolean } {
   const label = a.stage ? `${a.lane}:${a.stage}` : a.lane;
   if (!existsSync(stateFile(a.lane))) return { label, met: false };
   const o = load(a.lane);
+  if (o.workflow && a.stage) return { label, met: o.workflow.completed.includes(a.stage) };
   if (o.finished) return { label, met: true };
   if (!a.stage) return { label, met: false };
   const list = stagesOf(o);
@@ -311,6 +320,9 @@ export function brief(p: Project, o: { notes?: number } = {}): string {
   const label = kinded || pr.name === "ops" ? `kind ${p.kind}` : `process ${pr.name}`;
   L.push(`${label}${kinded ? ` · lang ${p.lang}` : ""}${p.parent ? ` · from ${p.parent}` : ""} · stage ${n}/${list.length} ${p.stage}${p.finished ? " (finished)" : ""} · folder ${rel(dir)}`);
   if (manualOf(pr)) L.push(`manual: govern manual ${pr.name}`);
+  if (p.workflow) L.push(`active: ${p.workflow.active.join(', ') || '(none)'}${p.workflow.waiting.length ? ` · joins waiting: ${p.workflow.waiting.join(', ')}` : ''}`);
+  if (p.data) L.push(`case data: ${JSON.stringify(p.data)}`);
+  for (const [stage,t] of Object.entries(p.humanTasks ?? {})) L.push(`human task ${stage}: ${t.completedAt ? `completed by ${t.completedBy}` : t.assignee ? `assigned to ${t.assignee}` : 'unclaimed'}`);
   const ex = exitCondition(p);
   if (ex) L.push(`exit when: ${ex}`);
   const chk = checkOf(p);
@@ -326,7 +338,7 @@ export function brief(p: Project, o: { notes?: number } = {}): string {
     }
   }
   if (pending.length) L.push(`only the owner accepts a change: govern check ${p.slug} <stage> --accept --quote "<the owner's words>"`);
-  if (pr.gates.length) L.push(`approvals: ${pr.gates.map((g) => { const a = p.approvals[g.name]; return a ? `${g.name} ✓ ${a.at.slice(0, 10)}` : `${g.name} –`; }).join(" · ")}`);
+  if (pr.gates.length) L.push(`approvals: ${pr.gates.map((g) => { const a = p.approvals[g.name]; return gateApproved(p, g) && a ? `${g.name} ✓ ${a.at.slice(0, 10)}` : `${g.name} –`; }).join(" · ")}`);
   if (p.after?.length) L.push(`after: ${p.after.map(afterMet).map((x) => `${x.label} (${x.met ? "done" : "waiting"})`).join(" · ")}`);
   const files = Object.keys(p.files).map((k) => { const f = resolveFile(p, k); return `${k}=${f ? rel(f) : "(none)"}`; });
   if (files.length) L.push(`files: ${files.join(" · ")}`);

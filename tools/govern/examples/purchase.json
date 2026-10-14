@@ -1,0 +1,65 @@
+{
+  "version": 1,
+  "name": "purchase",
+  "description": "Purchase review with conditional routing, parallel human tasks and a two-person budget approval",
+  "manual": "../BUSINESS.md",
+  "fields": {
+    "amount": { "type": "number", "min": 0, "required": true },
+    "requester": { "type": "string", "required": true },
+    "currency": { "type": "string", "enum": ["USD", "BRL"], "default": "USD" },
+    "supplier": { "type": "string", "min": 1 }
+  },
+  "people": {
+    "alice": { "user": "alice", "roles": ["reviewer", "buyer"] },
+    "bob": { "user": "bob", "roles": ["reviewer"] },
+    "carol": { "user": "carol", "roles": ["reviewer"] }
+  },
+  "stages": [
+    {
+      "name": "submit",
+      "exit": "The amount and requester are recorded",
+      "next": [
+        { "to": ["legal", "finance"], "when": { "field": "amount", "op": "gte", "value": 1000 } },
+        { "to": ["order"] }
+      ]
+    },
+    {
+      "name": "legal",
+      "human": { "role": "reviewer" },
+      "exit": "A reviewer has checked the supplier terms",
+      "next": [{ "to": ["approval"] }]
+    },
+    {
+      "name": "finance",
+      "human": { "role": "reviewer" },
+      "exit": "A reviewer has checked the available budget",
+      "next": [{ "to": ["approval"] }]
+    },
+    {
+      "name": "approval",
+      "join": { "mode": "all", "stages": ["legal", "finance"] },
+      "exit": "Two eligible people approve the current case",
+      "next": [{ "to": ["order"] }]
+    },
+    {
+      "name": "order",
+      "human": { "role": "buyer" },
+      "requiredFields": ["supplier"],
+      "exit": "The buyer records that the order was placed",
+      "next": []
+    }
+  ],
+  "gates": [
+    {
+      "name": "budget",
+      "stage": "approval",
+      "policy": {
+        "role": "reviewer",
+        "quorum": 2,
+        "excludeFields": ["requester"],
+        "expiresSeconds": 86400,
+        "rejectTo": "submit"
+      }
+    }
+  ]
+}

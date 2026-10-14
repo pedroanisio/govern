@@ -1,15 +1,19 @@
 #!/usr/bin/env node
+import { withLaneLock } from './lib/lane-lock.ts';
 // govern — run lanes of work (videos, software, ops, any process) through their stages with agents, cheaply and under the owner's gates.
 // The manual for the AI operating it is SKILL.md (govern manual). Usage: govern help.
+import { activeStages, enterTasks, isGraph, requireActive, validateRequired, nextStages, completeStage, setData, authenticatedPerson, humanAction, requireHumanComplete, gateApproved, policyVote, rejectRoute } from './lib/business.ts';
+import { scalar } from './lib/business-schema.ts';
+import { check, record } from './lib/shape.ts';
 import { spawnSync } from "node:child_process";
 import { readFileSync, globSync, mkdirSync } from "node:fs";
 import { join, dirname, resolve, relative } from "node:path";
 import { fileURLToPath } from "node:url";
-import { randomUUID } from "node:crypto";
+import { randomUUID, createHash } from "node:crypto";
 import { GovernError, fail, parseArgs, opt, flag, many, flagNames, secondsOpt, nowIso, readJsonl, kTok, clip, type Args, type FlagSpec } from "./lib/util.ts";
 import { stagesOf, load, save, create, stageOf, brief, appendLedger, resolveFile, ledgerFile, projectDir, checkSlug, checkOf, pendingCheckChanges, blockedBy, laneState, laneSlugs, laneRows, stateFile, argvOf, commandLine, type Project, type Command } from "./lib/project.ts";
 import { processes, getProcess, processOf, listLine, show, manualOf } from "./lib/process.ts";
-import { repo, findRepo, projectsDir, packagesDir, initWorkspace } from "./lib/workspace.ts";
+import { repo, findRepo, projectsDir, packagesDir, initWorkspace, stateDir } from "./lib/workspace.ts";
 import { emptyRecord, PROTO } from "./lib/shape.ts";
 import * as jobs from "./lib/jobs.ts";
 import { ask, readPrompt, promptFiles } from "./lib/codex.ts";
@@ -28,10 +32,11 @@ import { verifyQuote } from "./lib/approval.ts";
 import { checkRecipient, requireAs, resolveAs } from "./lib/sessions.ts";
 import { installSkill, skillDrift, sha256File } from "./lib/skill.ts";
 import { writeFileSync, existsSync, unlinkSync } from "node:fs";
-import { homedir, tmpdir } from "node:os";
+import { homedir, tmpdir, userInfo } from "node:os";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const SKILL = resolve(HERE, "SKILL.md");
+const laneLockDir = (slug: string | undefined) => join(stateDir(), "lane-locks", createHash("sha256").update(stateFile(checkSlug(slug))).digest("hex"));
 
 // A reader that stops early (govern brief x | head) is not an error.
 process.stdout.on("error", (e: NodeJS.ErrnoException) => { if (e.code === "EPIPE") process.exit(0); throw e; });
@@ -61,26 +66,29 @@ const setCheckHint = (p: Project, stage: string) => `set one: govern check ${p.s
 function passSkipped(p: Project, to: string): void {
   const list = stagesOf(p);
   const from = list.indexOf(p.stage), target = list.indexOf(to);
+  if (isGraph(processOf(p))) { requireActive(p, to); return; }
   if (target <= from) return;
   const b = blockedBy(p);
   if (b.length) fail(`${p.slug} is blocked by ${b.join(", ")}`);
   for (const s of list.slice(Math.max(from, 0), target)) {
+    validateRequired(p, s);
+    requireHumanComplete(p, s);
     const chk = checkOf(p, s);
     if (chk) {
       const r = runCheck(p, chk, s);
       if (!r.ok) fail(`${p.slug}: cannot skip stage ${s}: check ${chk} failed (${r.why})\n${r.text}\nnext: fix it, then govern advance ${p.slug}`);
     } else if (requiresCheck(p, s)) fail(`${p.slug}: cannot skip stage ${s}: it requires a check and has none (${setCheckHint(p, s)})`);
-    const gate = processOf(p).gates.find((g) => g.stage === s && !p.approvals[g.name]);
+    const gate = processOf(p).gates.find((g) => g.stage === s && !gateApproved(p, g));
     if (gate) fail(`${p.slug}: cannot skip stage ${s}: needs the owner's ${gate.name} approval (govern approve ${p.slug} ${gate.name} --quote "…")`);
   }
 }
 
 function cmdWork(a: Args): void {
-  const p = load(a._[1]);
-  const stage = stageOf(a._[2], p);
-  passSkipped(p, stage);
-  p.stage = stage;
-  save(p);
+  const p = withLaneLock(laneLockDir(a._[1]), () => {
+    const p = load(a._[1]), stage = stageOf(a._[2], p);
+    passSkipped(p, stage); p.stage=stage; enterTasks(p); save(p); return p;
+  });
+  const stage = p.stage;
   const engine = engineOf(a);
   if (flag(a, "open")) {
     const session = engine === "claude" ? randomUUID() : undefined;
@@ -103,10 +111,10 @@ function cmdStatus(a: Args): void {
   const { rows, failed } = laneRows(slugs, (s, p) => {
     const lastJob = readJsonl(ledgerFile(s)).filter((e) => e.kind === "job").pop();
     const gates = processOf(p).gates;
-    const ap = gates.map((g) => (p.approvals[g.name] ? g.name.charAt(0).toUpperCase() : "·")).join("");
+    const ap = gates.map((g) => (gateApproved(p, g) ? g.name.charAt(0).toUpperCase() : "·")).join("");
     const list = stagesOf(p);
     const parts = [`${s.padEnd(36)} ${p.kind.padEnd(5)} ${list.indexOf(p.stage) + 1}/${list.length} ${p.stage.padEnd(12)}`, gates.length ? `approvals ${ap}` : "",
-      laneState(p), lastJob ? `last job ${lastJob.name} ${lastJob.status}` : ""];
+      laneState(p), p.workflow ? `active ${p.workflow.active.join(', ')}` : '', lastJob ? `last job ${lastJob.name} ${lastJob.status}` : ""];
     return parts.filter(Boolean).join("  ").trimEnd();
   });
   for (const r of rows) out(r);
@@ -121,18 +129,69 @@ function cmdApprove(a: Args): void {
   const gates = processOf(p).gates;
   const g = gates.find((x) => x.name === a._[2]) ?? fail(`gate must be one of ${gates.map((x) => x.name).join(", ") || "(none: this process has no gates)"}`);
   const gate = g.name;
+  if (g.policy) return cmdPolicyDecision(a, p, g, 'approve');
   const owner = g.owner ?? "owner", by = opt(a, "by");
   if (by === undefined && owner !== "owner") fail(`gate ${gate} is decided by ${owner}: pass --by ${owner}`);
   if (by !== undefined && by !== owner) fail(`gate ${gate} is decided by ${owner}, not ${by}`);
   const quote = opt(a, "quote");
   if (!quote || quote.trim().length < 2) fail(`--quote is required: ${owner}'s own words approving the ${gate} (only ${owner} approves)`);
-  for (const need of g.needs ?? []) if (!p.approvals[need]) fail(g.message ?? `needs the ${need} approval first`);
+  for (const need of g.needs ?? []) if (!gateApproved(p, gates.find(x=>x.name===need)!)) fail(g.message ?? `needs the ${need} approval first`);
   const source = verifyQuote(quote!);
   p.approvals[gate] = { at: nowIso(), quote: quote!, by: owner, source };
   p.notes.push({ at: nowIso(), stage: p.stage, text: `${owner} approved ${gate}: "${quote}"` });
   save(p);
   appendLedger(p.slug, { kind: "approve", gate, quote, by: owner, source });
   out(`${p.slug}: ${gate} approved`);
+}
+
+function cmdPolicyDecision(a: Args, p: Project, g: import('./lib/process.ts').GateDef, decision: 'approve'|'reject'): void {
+  const actor=authenticatedPerson(processOf(p), opt(a,'by'));
+  const quote=opt(a,'quote');
+  if(!quote || quote.trim().length<2) fail('--quote is required: the human decision');
+  const source=verifyQuote(quote!);
+  const vote=policyVote(p,g,actor,decision,quote!);
+  if(decision==='reject') rejectRoute(p,g);
+  p.notes.push({at:vote.at,stage:p.stage,text:`${actor} ${decision} ${g.name}: "${quote}"`});
+  save(p);
+  appendLedger(p.slug,{kind:decision,gate:g.name,...vote,source});
+  out(`${p.slug}: ${g.name} ${decision} by ${actor} · ${gateApproved(p,g) ? 'approved' : 'not approved'}`);
+}
+function cmdData(a:Args):void {
+  const p=load(a._[1]), text=opt(a,'set');
+  if(text!==undefined) {
+    let raw:unknown; try {raw=JSON.parse(text);} catch {fail('--set must be a JSON object');}
+    const patch=check('case data',raw,record(scalar));
+    setData(p,patch); save(p); appendLedger(p.slug,{kind:'data',fields:Object.keys(patch)});
+  }
+  out(JSON.stringify(p.data??{},null,2));
+}
+function cmdHumanInbox(a:Args):void {
+  const requested=opt(a,'as'), user=userInfo().username, rows:string[]=[];
+  let authenticated=false;
+  for(const slug of laneSlugs()) {
+    const p=load(slug), pr=processOf(p);
+    const actor=Object.keys(pr.people??{}).find(id=>pr.people![id]!.user===user && (!requested || id===requested));
+    if(!actor) continue;
+    authenticated=true;
+    for(const stage of activeStages(p)) {
+      const def=pr.stages.find(s=>s.name===stage)?.human, task=p.humanTasks?.[stage];
+      if(!def || task?.completedAt) continue;
+      if(task?.assignee===actor || (!task?.assignee && def.role && pr.people![actor]!.roles?.includes(def.role))) rows.push(`${slug} ${stage}: ${task?.assignee ? `assigned to ${actor}` : `unclaimed (${def.role})`}`);
+    }
+  }
+  if(requested && !authenticated) fail(`OS account ${user} is not authenticated as ${requested}`);
+  out(rows.join('\n')||'(no human tasks for this account)');
+}
+function cmdHuman(a:Args):void {
+  const p=load(a._[1]), action=a._[2]??'list';
+  if(action==='list') { out(Object.entries(p.humanTasks??{}).map(([s,t])=>`${s}: ${t.completedAt ? `completed by ${t.completedBy}` : t.assignee??'unclaimed'}${activeStages(p).includes(s)?' (active)':''}`).join('\n')||'(no human tasks)'); return; }
+  if(!['claim','delegate','complete'].includes(action)) fail('human action must be list, claim, delegate or complete');
+  const stage=a._[3]??fail('human action requires a stage'), quote=opt(a,'quote');
+  if(!quote || quote.trim().length<2) fail('--quote is required: the human instruction');
+  const actor=authenticatedPerson(processOf(p),opt(a,'as')), source=verifyQuote(quote!);
+  humanAction(p,stage,action as 'claim'|'delegate'|'complete',actor,quote!,opt(a,'to'));
+  save(p); appendLedger(p.slug,{kind:'human-'+action,stage,by:actor,to:opt(a,'to'),quote,source});
+  out(`${p.slug}: ${stage} ${action} by ${actor}`);
 }
 
 /** A flag's value as a number above 0 (an estimate), or undefined when the flag is absent. */
@@ -192,6 +251,7 @@ function cmdCheck(a: Args): void {
     appendLedger(p.slug, { kind: "check-set", stage, from, to: set });
     return out(`${p.slug}: stage ${stage} checked by "${set}"${p.commands[set] ? "" : ` (name it: govern cmd ${p.slug} ${set} -- …)`}`);
   }
+  if (opt(a, "stage")) { const stage = stageOf(opt(a, "stage"), p); if (p.workflow) requireActive(p, stage); p.stage = stage; }
   const name = checkOf(p);
   if (!name) return out(`${p.slug}: stage ${p.stage} has no check (set one: govern check ${p.slug} --set <command> --stage ${p.stage})`);
   const r = runCheck(p, name);
@@ -203,9 +263,15 @@ function cmdCheck(a: Args): void {
  *  required), never past an open gate. The ledger entry records which of the two passed it, and the note. */
 function cmdAdvance(a: Args): void {
   const p = load(a._[1]);
+  const selected = opt(a, "stage");
+  if (selected) { requireActive(p, selected); p.stage = stageOf(selected, p); }
   const b = blockedBy(p);
   if (b.length) fail(`${p.slug} is blocked by ${b.join(", ")}`);
   if (p.finished) fail(`${p.slug} is already finished`);
+  requireActive(p);
+  validateRequired(p);
+  requireHumanComplete(p);
+  const destinations = nextStages(p);
   const note = opt(a, "note");
   const chk = checkOf(p);
   if (chk) {
@@ -213,23 +279,15 @@ function cmdAdvance(a: Args): void {
     if (!r.ok) fail(`${p.slug}: check ${chk} failed (${r.why})\n${r.text}`);
   } else if (requiresCheck(p, p.stage)) fail(`${p.slug}: stage ${p.stage} requires a check and has none: a note cannot pass it (${setCheckHint(p, p.stage)})`);
   else if (!note) fail(`${p.slug}: stage ${p.stage} has no check: give the evidence with --note "…"`);
-  const gate = processOf(p).gates.find((g) => g.stage === p.stage && !p.approvals[g.name]);
+  const gate = processOf(p).gates.find((g) => g.stage === p.stage && !gateApproved(p, g));
   if (gate) fail(`${p.slug}: needs the owner's ${gate.name} approval (govern approve ${p.slug} ${gate.name} --quote "…")`);
-  const list = stagesOf(p);
-  const from = p.stage, i = list.indexOf(from);
+  const from = p.stage;
   const passed = { authority: chk ? "check" : "note", ...(chk ? { check: chk } : {}), ...(note ? { note } : {}) };
   if (note) p.notes.push({ at: nowIso(), stage: from, text: note });
-  const next = list[i + 1];
-  if (next === undefined) {
-    p.finished = nowIso();
-    save(p);
-    appendLedger(p.slug, { kind: "advance", from, to: "finished", ...passed });
-    return out(`${p.slug}: ${from} was the last stage — lane finished`);
-  }
-  p.stage = next;
+  completeStage(p, destinations);
   save(p);
-  appendLedger(p.slug, { kind: "advance", from, to: p.stage, ...passed });
-  out(`${p.slug}: ${from} → ${p.stage}${chk ? ` (check ${chk} ok)` : ""}`);
+  appendLedger(p.slug, { kind: "advance", from, to: p.finished ? "finished" : p.stage, destinations, ...passed });
+  out(p.finished ? `${p.slug}: ${from} was the last stage — lane finished` : `${p.slug}: ${from} → ${activeStages(p).join(', ')}${chk ? ` (check ${chk} ok)` : ""}`);
 }
 
 /** The chain of "after" links from lane `from` that reaches lane `to`, or null. Lanes that no longer exist end a chain. */
@@ -440,7 +498,7 @@ function cmdManual(a: Args): void {
 
 function cmdPublish(a: Args): void {
   const p = load(a._[1]);
-  const missing = (["final", "publish"] as const).filter((g) => !p.approvals[g]);
+  const missing = (["final", "publish"] as const).filter((g) => !gateApproved(p, processOf(p).gates.find(x=>x.name===g)!));
   if (missing.length) fail(`${p.slug}: no owner approval recorded for: ${missing.join(", ")} (govern approve ${p.slug} <gate> --quote "…")`);
   const vpkg = resolveFile(p, "vpkg"), release = resolveFile(p, "release");
   if (!vpkg) fail(`${p.slug}: name the filed package first: govern file ${p.slug} vpkg ../../packages/<file>.vpkg.zip`);
@@ -667,6 +725,15 @@ export const COMMANDS: readonly Cmd[] = [
     } },
   { name: "approve", section: 0, flags: { value: ["quote", "by"] },
     lines: [["<slug> <gate> --quote \"<the owner's words>\" [--by NAME]", "(gates come from the lane's process; --by: the gate's decision owner,\nrequired when the process names one other than owner. In a Claude session the quote\nmust be in a message the person typed; a Codex session is refused)"]], run: cmdApprove },
+  { name: "reject", section: 1, flags: { value: ["quote", "by"] },
+    lines: [["<slug> <gate> --quote Q [--by PERSON]", "reject a policy gate; follows rejectTo when declared, otherwise blocks the gate"]],
+    run: (a) => { const p=load(a._[1]); const g=processOf(p).gates.find(g=>g.name===a._[2])??fail('unknown gate'); cmdPolicyDecision(a,p,g,'reject'); } },
+  { name: "data", section: 1, flags: { value: ["set"] },
+    lines: [["<slug> [--set JSON]", "read or merge typed case fields; changed data invalidates policy votes and active human task completion"]], run: cmdData },
+  { name: "human-inbox", section: 1, flags: { value: ["as"] },
+    lines: [["[--as PERSON]", "active tasks assigned to this OS account or claimable through its process roles"]], run: cmdHumanInbox },
+  { name: "human", section: 1, flags: { value: ["as", "to", "quote"] },
+    lines: [["<slug> [list | claim|delegate|complete STAGE] [--as PERSON] [--to PERSON] [--quote Q]", "list, claim, delegate or complete stage tasks; person identity is mapped to the current OS account; mutations require verified human words"]], run: cmdHuman },
   { name: "allow", section: 0, flags: { value: ["extra", "quote", "by"] },
     lines: [["<allowance> --extra N --quote \"<the decision owner's words>\" [--by NAME]", "raise an allowance's limit by N for its current period (govern.config.json: allowances; govern usage\nlists them). --by: the allowance's decision owner, required when it names one other than owner. The quote must\ncontain N as a number (10 matches 10 and 10.0, not 100) and grants once per allowance and period. In a\nClaude session the quote must be in a message the person typed; a Codex session is refused)"]], run: cmdAllow },
   { name: "done", section: 0, flags: { value: ["engine"] }, lines: [["<slug> [--engine claude|codex]", "end the current work segment"]],
@@ -684,8 +751,8 @@ export const COMMANDS: readonly Cmd[] = [
   { name: "check", section: 1, flags: { value: ["set", "stage", "quote"], bool: ["accept"] },
     lines: [["<slug> [--set <command> --stage <stage>]", "run the stage's exit check (or set the lane's own: ledgered; a swap is flagged)"],
       ["<slug> <stage> --accept --quote \"<the owner's words>\"", "the owner accepts that stage's flagged check changes"]], run: cmdCheck },
-  { name: "advance", section: 1, flags: { value: ["note"] },
-    lines: [["<slug> [--note \"<evidence>\"]", "next stage: needs the check to pass (or --note when none and none is required) and the gate"]], run: cmdAdvance },
+  { name: "advance", section: 1, flags: { value: ["note", "stage"] },
+    lines: [["<slug> [--stage STAGE] [--note \"<evidence>\"]", "next stage: needs the check to pass (or --note when none and none is required) and the gate"]], run: cmdAdvance },
   { name: "dep", section: 1, flags: { value: ["after", "rm"] },
     lines: [["<slug> [--after <lane>[:<stage>]] [--rm <lane>]", "this lane waits on another (all of it, or past a stage)"]], run: cmdDep },
   { name: "hook", section: 1, footer: false, noSub: "govern hook stop",
@@ -883,7 +950,9 @@ function main(argv: string[]): void {
   const a = parseArgs(rest, withHelp(entry.flags), label, FLAG_WORDS);
   if (flag(a, "help")) return void out(commandHelp(c.name, sub));
   a._.unshift(...lead);
-  entry.run!(a);
+  const mutations = new Set(['new','note','approve','reject','data','human','advance','cmd','file','dep','check']);
+  if (mutations.has(name)) withLaneLock(laneLockDir(a._[1]), () => entry.run!(a));
+  else entry.run!(a);
   if (c.footer !== false) ctxFooter();
 }
 

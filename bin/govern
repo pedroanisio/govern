@@ -8,8 +8,11 @@
 #     govern work SLUG STAGE [--engine claude|codex] [--open]  |  brief SLUG  |  status [SLUG]
 #     govern note SLUG TEXT  |  approve SLUG GATE --quote "owner's words"  |  done SLUG [--engine E]
 #     govern cmd SLUG [NAME [--timeout S] [--resource R] -- ARGV...] | --rm NAME  |  file SLUG [NAME PATH-OR-GLOB]
+#     govern data SLUG [--set JSON]  |  human SLUG [list|claim|delegate|complete STAGE] [--as PERSON] [--to PERSON] [--quote Q]
+#     govern human-inbox [--as PERSON]
+#     govern reject SLUG GATE --quote Q [--by PERSON]
 #     govern process list|show NAME  |  check SLUG [--set CMD --stage S]  |  check SLUG STAGE --accept --quote Q
-#     govern advance SLUG [--note EVIDENCE]  |  dep SLUG [--after LANE[:STAGE]] [--rm LANE]  |  hook stop
+#     govern advance SLUG [--stage STAGE] [--note EVIDENCE]  |  dep SLUG [--after LANE[:STAGE]] [--rm LANE]  |  hook stop
 #     govern run SLUG CMD [--bg] [--on RESOURCE] [--estimate HOURS] [-- ARGS]  |  allow NAME --extra N --quote "…" [--by OWNER]  |  resources [NAME]  |  wait SLUG [JOB] [--timeout S]  |  jobs SLUG  |  kill SLUG [JOB]
 #     govern slice SLUG RECIPE [--machines N] [--estimate HOURS] [--bg]
 #     govern up RESOURCE [--lane SLUG] [--count N]  |  down TAG|ID [--forget]  |  reap [RESOURCE] [--yes]
@@ -86,7 +89,7 @@
 # KEYWORDS
 #     video workflow codex claude tokens usage orchestration pals-notes youtube
 # SEE ALSO
-#     tools/govern/SKILL.md, docs/govern-design.md
+#     tools/govern/SKILL.md, tools/govern/BUSINESS.md, docs/govern-design.md
 # MANPAGE <<<
 set -eu
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
