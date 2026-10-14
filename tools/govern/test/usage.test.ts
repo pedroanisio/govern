@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { join } from "node:path";
+import { rmSync } from "node:fs";
 import { makeEnv, govern, jsonl, write, present } from "./helpers.ts";
 import { claudeCalls, behaviour, behaviourText, isPoll, BIG_READ_CHARS } from "../lib/usage.ts";
 
@@ -125,4 +126,54 @@ test("usage measures a grok segment from the session store: one call per turn in
   // a grok segment with no session store entry says so instead of showing zeros silently
   govern(e, ["work", slug, "script"], { GROK_AGENT: "grok", GROK_SESSION_ID: "gs-missing" });
   assert.match(govern(e, ["usage", slug]).out, / script grok.*no transcript found/);
+});
+
+/** A grok session folder: usage.json (turn totals at their end) and, optionally, events.jsonl with each turn's start. */
+function grokSession(root: string, id: string, turns: { n: number; start?: number; end: number; input: number }[]): void {
+  const dir = join(root, encodeURIComponent("/some/cwd"), id);
+  write(join(dir, "usage.json"), JSON.stringify({ sessionId: id, turns: turns.map((t) => ({ turnNumber: t.n, endedAt: new Date(t.end).toISOString(), inputTokens: t.input, outputTokens: 10, cachedReadTokens: 0, cacheCreationTokens: 0, modelCalls: 1, costUsdTicks: 1e8, primaryModelId: "grok-4.7-build" })) }));
+  const ev = turns.filter((t) => t.start !== undefined).map((t) => JSON.stringify({ ts: new Date(t.start!).toISOString(), type: "turn_started", turn_number: t.n - 1 }));
+  if (ev.length) write(join(dir, "events.jsonl"), ev.join("\n") + "\n");
+}
+const workStart = (e: ReturnType<typeof makeEnv>, slug: string) => Date.parse(present(jsonl(join(e.projects, slug, "govern", "ledger.jsonl")).filter((x) => x.kind === "work").pop(), "the work entry").t);
+
+test("usage: a grok turn that started before the segment belongs to it only by majority of its running time; without start times the figure is flagged", () => {
+  const e = makeEnv();
+  const slug = "film/shorts2";
+  assert.equal(govern(e, ["new", slug, "--kind", "short", "--title", "A Test", "--lang", "en"]).code, 0);
+  govern(e, ["work", slug, "plan"], { GROK_AGENT: "grok", GROK_SESSION_ID: "gs-a" });
+  const t1 = workStart(e, slug);
+  // turn 1 ran 9 s before the segment and ended 1 s inside it: by end time it would count, by overlap it does not.
+  // turn 2 started 1 s before and ended 9 s inside: it counts.
+  grokSession(join(e.root, "grok-sessions"), "gs-a", [
+    { n: 1, start: t1 - 9000, end: t1 + 1000, input: 1000 },
+    { n: 2, start: t1 - 1000, end: t1 + 9000, input: 2000 },
+  ]);
+  const row = present(govern(e, ["usage", slug]).out.split("\n").find((l) => / plan grok/.test(l)), "the grok row");
+  assert.match(row, /\s1\s+2k\s/);
+  assert.doesNotMatch(row, /turn granularity/);
+  // the same turns without events.jsonl: counted by end time, and the row says so
+  grokSession(join(e.root, "grok-sessions"), "gs-a", [{ n: 1, end: t1 + 1000, input: 1000 }, { n: 2, end: t1 + 9000, input: 2000 }]);
+  rmSync(join(e.root, "grok-sessions", encodeURIComponent("/some/cwd"), "gs-a", "events.jsonl"), { force: true });
+  const row2 = present(govern(e, ["usage", slug]).out.split("\n").find((l) => / plan grok/.test(l)), "the grok row");
+  assert.match(row2, /\s2\s+3k\s/);
+  assert.match(row2, /turn granularity/);
+});
+
+test("usage: grok sessions are found in govern's private home as well as in the real ~/.grok", () => {
+  const e = makeEnv();
+  const slug = "film/shorts3";
+  assert.equal(govern(e, ["new", slug, "--kind", "short", "--title", "A Test", "--lang", "en"]).code, 0);
+  const home = join(e.root, "home"), priv = join(e.root, "priv-grok");
+  const env = { GOVERN_GROK_SESSIONS: "", HOME: home, GOVERN_GROK_HOME: priv };
+  govern(e, ["work", slug, "plan"], { ...env, GROK_AGENT: "grok", GROK_SESSION_ID: "gs-open" });
+  const t1 = workStart(e, slug);
+  govern(e, ["work", slug, "script"], { ...env, GROK_AGENT: "grok", GROK_SESSION_ID: "gs-sealed" });
+  const t2 = workStart(e, slug);
+  grokSession(join(home, ".grok", "sessions"), "gs-open", [{ n: 1, start: t1 + 100, end: t1 + 500, input: 4000 }]);
+  grokSession(join(priv, "sessions"), "gs-sealed", [{ n: 1, start: t2 + 100, end: t2 + 500, input: 6000 }]);
+  const out = govern(e, ["usage", slug], env).out;
+  assert.match(present(out.split("\n").find((l) => / plan grok/.test(l)), "plan row"), /\s1\s+4k\s/);
+  assert.match(present(out.split("\n").find((l) => / script grok/.test(l)), "script row"), /\s1\s+6k\s/);
+  assert.doesNotMatch(out, /no transcript found/);
 });

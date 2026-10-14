@@ -13,12 +13,15 @@ import { readJsonl, kTok } from "./util.ts";
 import { ledgerFile } from "./project.ts";
 import { projectsDir, baseline } from "./workspace.ts";
 import * as allowances from "./allowances.ts";
+import { grokHome, realGrokHome } from "./grokhome.ts";
 import { machineLines, machineEntries } from "./resources.ts";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const CLAUDE_DIR = () => process.env.GOVERN_CLAUDE_PROJECTS ?? join(homedir(), ".claude", "projects");
 const CODEX_DIR = () => process.env.GOVERN_CODEX_SESSIONS ?? join(homedir(), ".codex", "sessions");
-const GROK_DIR = () => process.env.GOVERN_GROK_SESSIONS ?? join(homedir(), ".grok", "sessions");
+/** Where grok sessions live: GOVERN_GROK_SESSIONS alone when set; else govern's private home (the sealed runs of the queue) and
+ *  the real ~/.grok (interactive sessions opened by `work --open`, which use the owner's own home on purpose). */
+const GROK_DIRS = (): string[] => process.env.GOVERN_GROK_SESSIONS ? [process.env.GOVERN_GROK_SESSIONS] : [...new Set([join(grokHome(), "sessions"), join(realGrokHome(), "sessions")])];
 export const CTX_WARN = Number(process.env.GOVERN_CTX_WARN ?? 150000);
 
 interface Price { in: number; cw: number; cr: number; out: number }
@@ -27,10 +30,10 @@ const PRICES: Record<string, Price> = (() => {
   return existsSync(f) ? JSON.parse(readFileSync(f, "utf8")).models ?? {} : {};
 })();
 
-export interface Call { t: number; model: string; input: number; cacheRead: number; cacheWrite: number; output: number; ctx: number; sub: boolean; /** the engine's own dollar figure, when it reports one */ usd?: number }
+export interface Call { t: number; model: string; input: number; cacheRead: number; cacheWrite: number; output: number; ctx: number; sub: boolean; /** the engine's own dollar figure, when it reports one */ usd?: number; /** when the call began, if the engine records it (grok turns); absent: only its end is known */ t0?: number }
 /** One tool_use block: `sig` is its name plus canonical input, `bigRead` a Read with no offset/limit whose result is over BIG_READ_CHARS. */
 export interface Tool { t: number; id: string; name: string; sig: string; poll: boolean; agent: boolean; bigRead: boolean }
-export interface Segment { slug: string; stage: string; engine: string; session?: string; start: number; end: number; calls: Call[]; ownerTurns: number; tools: Tool[] }
+export interface Segment { /** some grok turns in `calls` have no start time and were placed by their end only */ coarse?: boolean; slug: string; stage: string; engine: string; session?: string; start: number; end: number; calls: Call[]; ownerTurns: number; tools: Tool[] }
 type Data = { calls: Call[]; owner: number[]; tools: Tool[] };
 
 export function segments(slugs?: string[]): Segment[] {
@@ -217,17 +220,19 @@ function codexCalls(file: string): Data {
 
 /** Grok keeps `<root>/<url-encoded cwd>/<session id>/usage.json`; the folder is found by session id, whatever the cwd was. */
 function grokUsageFile(session: string): string | undefined {
-  const root = GROK_DIR();
-  if (!existsSync(root) || /[\\/]/.test(session)) return undefined;
-  for (const proj of readdirSync(root)) {
-    const f = join(root, proj, session, "usage.json");
-    if (existsSync(f)) return f;
+  if (/[\\/]/.test(session)) return undefined;
+  for (const root of GROK_DIRS()) {
+    if (!existsSync(root)) continue;
+    for (const proj of readdirSync(root)) {
+      const f = join(root, proj, session, "usage.json");
+      if (existsSync(f)) return f;
+    }
   }
   return undefined;
 }
 
-/** USD per tick of `costUsdTicks`: 1e-10, as xAI's API reports cost_in_usd_ticks. Not verified against Grok Build's own
- *  documentation and not compared to a CLI dollar figure; only the order of magnitude matched the probe costs seen. */
+/** USD per tick of `costUsdTicks`: 1e10 ticks per dollar, the unit Grok Build's headless-mode guide gives for its JSON
+ *  `total_cost_usd_ticks` (~/.grok/docs/user-guide/14-headless-mode.md). */
 const USD_PER_TICK = 1e-10;
 
 /** One call per finished turn (a turn may hold several model calls: its context is the per-call mean). The store's
@@ -236,13 +241,21 @@ export function grokCalls(file: string): Data {
   let o: any;
   try { o = JSON.parse(readFileSync(file, "utf8")); } catch { return { calls: [], owner: [], tools: [] }; }
   const num = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? v : 0);
+  // each turn's start: events.jsonl beside usage.json has turn_started with a 0-based turn_number (usage.json counts from 1)
+  const starts = new Map<number, number>();
+  try {
+    for (const l of readFileSync(join(dirname(file), "events.jsonl"), "utf8").split("\n")) {
+      if (!l.includes('"turn_started"')) continue;
+      try { const e = JSON.parse(l); const ts = Date.parse(e.ts); if (e.type === "turn_started" && typeof e.turn_number === "number" && Number.isFinite(ts) && !starts.has(e.turn_number + 1)) starts.set(e.turn_number + 1, ts); } catch { /* partial line */ }
+    }
+  } catch { /* no events file: turns are placed by their end */ }
   const calls: Call[] = [];
   for (const t of Array.isArray(o?.turns) ? o.turns : []) {
     const at = Date.parse(t?.endedAt);
     if (!Number.isFinite(at)) continue;
     const inSide = num(t.inputTokens), cr = Math.min(num(t.cachedReadTokens), inSide), cw = num(t.cacheCreationTokens);
     const n = Math.max(1, num(t.modelCalls));
-    calls.push({ t: at, model: typeof t.primaryModelId === "string" ? t.primaryModelId : "grok", input: Math.max(0, inSide - cr - cw), cacheRead: cr, cacheWrite: cw, output: num(t.outputTokens), ctx: Math.round(inSide / n), sub: false, ...(typeof t.costUsdTicks === "number" ? { usd: t.costUsdTicks * USD_PER_TICK } : {}) });
+    calls.push({ t: at, model: typeof t.primaryModelId === "string" ? t.primaryModelId : "grok", input: Math.max(0, inSide - cr - cw), cacheRead: cr, cacheWrite: cw, output: num(t.outputTokens), ctx: Math.round(inSide / n), sub: false, ...(starts.has(t.turnNumber) && starts.get(t.turnNumber)! <= at ? { t0: starts.get(t.turnNumber)! } : {}), ...(typeof t.costUsdTicks === "number" ? { usd: t.costUsdTicks * USD_PER_TICK } : {}) });
   }
   return { calls, owner: [], tools: [] };
 }
@@ -267,7 +280,15 @@ export function attribute(segs: Segment[]): Segment[] {
       const f = codexRollout(s.slug, s.start);
       if (f) data = load(`x:${f}`, () => codexCalls(f));
     }
-    s.calls = data.calls.filter((c) => c.t >= s.start && c.t < s.end);
+    // a call with a start time belongs where most of its running time lies (a tie goes to the segment holding its end);
+    // one without is placed by its end alone, and the segment is marked so the report says the figure is turn-granular
+    const inSeg = (c: Call) => {
+      if (c.t0 === undefined) return c.t >= s.start && c.t < s.end;
+      const dur = c.t - c.t0, over = Math.min(c.t, s.end) - Math.max(c.t0, s.start);
+      return dur <= 0 ? c.t >= s.start && c.t < s.end : over * 2 > dur || (over * 2 === dur && c.t >= s.start && c.t < s.end);
+    };
+    s.calls = data.calls.filter(inSeg);
+    if (s.engine === "grok" && s.calls.some((c) => c.t0 === undefined)) s.coarse = true;
     s.ownerTurns = data.owner.filter((t) => t >= s.start && t < s.end).length;
     s.tools = data.tools.filter((x) => x.t >= s.start && x.t < s.end).sort((a, b) => a.t - b.t);
   }
@@ -327,7 +348,7 @@ export function report(slugs: string[] | undefined, since?: number): string {
     for (const s of vs) {
       const t = totals(s.calls, s.ownerTurns);
       const when = new Date(s.start).toISOString().slice(5, 16).replace("T", " ");
-      const flags = [t.avgCtx > CTX_WARN ? "ctx>limit" : "", t.subCalls ? `${t.subCalls} subagent calls` : "", s.calls.length === 0 ? "no transcript found" : ""].filter(Boolean);
+      const flags = [t.avgCtx > CTX_WARN ? "ctx>limit" : "", t.subCalls ? `${t.subCalls} subagent calls` : "", s.calls.length === 0 ? "no transcript found" : "", s.coarse ? "turn granularity (no turn start times: turns placed by their end)" : ""].filter(Boolean);
       const b = behaviourText(behaviour(s.tools));
       L.push(row(`${when} ${s.stage} ${s.engine}`, t) + (b ? `  ${b}` : "") + (flags.length ? `  ⚠ ${flags.join(", ")}` : ""));
     }
