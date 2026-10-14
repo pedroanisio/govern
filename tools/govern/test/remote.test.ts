@@ -548,3 +548,35 @@ test("v2 request handler streams artifact bytes and rejects invalid read paramet
     assert.equal((await get("/v1/artifact?lane=r1&name=proof.txt")).status, 413);
   } finally { if (previous === undefined) delete process.env.GOVERN_REPO; else process.env.GOVERN_REPO = previous; }
 });
+
+test("a lane-scoped device reads no session, job or artifact of another lane, and its desk shows only its own sessions", async () => {
+  const e = setup();
+  assert.equal(govern(e, ["new", "r2", "--process", "release"]).code, 0);
+  const cfg = join(e.root, "govern.config.json");
+  write(cfg, JSON.stringify({ ...JSON.parse(readFileSync(cfg, "utf8")), conversationAdapters: { echo: { argv: [process.execPath, join(import.meta.dirname, "fake-conversation.ts"), "echo"] } } }));
+  const run = (args: string[]) => { const r = govern(e, args); assert.equal(r.code, 0, r.err + r.out); return r; };
+  run(["conversation", "create", "chat", "--adapter", "echo", "--lane", "r1"]);
+  run(["conversation", "create", "mine", "--adapter", "echo", "--lane", "r2"]);
+  run(["conversation", "create", "loose", "--adapter", "echo"]);
+  run(["cmd", "r1", "test", "--", "printf", "x\n"]);
+  run(["run", "r1", "test"]);
+  run(["artifact", "add", "r1", write(join(e.root, "proof.txt"), "evidence")]);
+  await serving(e, async (base) => {
+    const phone = await pairPhone(base);
+    const { readState, writeState } = await import("../lib/remote.ts");
+    const all = readState<{ devices: { id: string; lanes?: string[] }[] }>("devices.json", { devices: [] });
+    all.devices.find((d) => d.id === phone.id)!.lanes = ["r2"];
+    writeState("devices.json", all);
+    const get = (path: string) => fetch(base + path, { headers: auth(phone) });
+    const desk = await (await get("/v1/desk")).json() as any;
+    assert.deepEqual(desk.viewer.lanes, ["r2"]);
+    assert.deepEqual(desk.sessions.map((s: any) => s.id), ["mine"]);
+    assert.equal((await get("/v1/session?id=mine")).status, 200);
+    for (const path of ["/v1/session?id=chat", "/v1/session?id=loose", "/v1/job?lane=r1&id=missing", "/v1/artifact?lane=r1&name=proof.txt",
+      "/v1/job?lane=nowhere&id=missing", "/v1/artifact?lane=nowhere&name=proof.txt"]) {
+      const r = await get(path);
+      assert.equal(r.status, 403, path);
+      assert.match((await r.json() as { error: string }).error, /outside this device's scope/, path);
+    }
+  }, { streamIntervalMs: 60_000 });
+});

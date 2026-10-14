@@ -289,12 +289,18 @@ export function remoteServer(o: ServeOptions = {}): Server {
         if (!/^[0-9]+$/.test(raw) || Number(raw) < 1 || Number(raw) > max) throw new BadRequest(`${key} must be 1..${max}`);
         return Number(raw);
       };
-      const lane = () => { const slug = slugOf(url.searchParams.get("lane") ?? undefined); if (!existsSync(stateFile(slug))) throw new NotFound(`no lane ${slug}`); return slug; };
+      const lane = () => {
+        const slug = slugOf(url.searchParams.get("lane") ?? undefined);
+        if (!inScope(device, slug)) throw new Forbidden(`lane ${slug} is outside this device's scope`);
+        if (!existsSync(stateFile(slug))) throw new NotFound(`no lane ${slug}`);
+        return slug;
+      };
       if (route === "GET /v1/desk") return reply(200, personalDesk());
       if (route === "GET /v1/session") {
         const id = url.searchParams.get("id") ?? "", messages = count("messages", 20, 100);
         try { conversations.sessionId(id); } catch (e) { throw new BadRequest((e as Error).message); }
         if (!existsSync(join(conversations.directory(id), "session.json"))) throw new NotFound(`no session ${id}`);
+        if (!inScope(device, conversations.inspect(id).lane ?? null)) throw new Forbidden(`session ${id} is outside this device's scope`);
         return reply(200, sessionDetail(id, messages));
       }
       if (route === "GET /v1/job") {

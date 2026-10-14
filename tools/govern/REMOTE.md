@@ -111,8 +111,9 @@ The library and HTTP server accept an injected clock for deterministic expiry te
 
 `Device.lanes` is absent for every lane; an array restricts access to those slugs, and an empty array grants no lanes.
 Desk and stream responses filter lanes, unreadable entries, session summaries when present, token and machine rows by
-lane, and inbox entries by project. The shared desk cache stays unfiltered. Lane reads and actions outside the scope
-return 403. `govern remote devices` shows each device's scope.
+lane, and inbox entries by project. The shared desk cache stays unfiltered. Lane, job and artifact reads and actions
+outside the scope return 403, checked before the lane's existence; a session is read through its lane, so a session with
+no lane is readable only by an unscoped device. `govern remote devices` shows each device's scope.
 
 The original code flow remains available:
 
