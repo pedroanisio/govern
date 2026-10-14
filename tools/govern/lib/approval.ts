@@ -6,7 +6,7 @@ import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { homedir, userInfo } from "node:os";
 import { join } from "node:path";
 import { fail } from "./util.ts";
-import { callingSession } from "./sessions.ts";
+import { callingSession, pidChain } from "./sessions.ts";
 
 /** Where an approval's words came from, as govern.json and the ledger record it. */
 export type Source =
@@ -17,7 +17,8 @@ export type Source =
  *  CODEX_SANDBOX_NETWORK_DISABLED), not observed in a live Codex shell: unverified, so a Claude check does not rely on them alone. */
 export const CODEX_MARKERS = ["CODEX_THREAD_ID", "CODEX_SESSION_ID", "CODEX_SANDBOX_NETWORK_DISABLED", "CODEX_SANDBOX"];
 
-/** Variables a Grok Build shell sets: GROK_AGENT and GROK_SESSION_ID, observed in a live grok 1.0.52 shell (`env` run through its shell tool, 2026-10-14). */
+/** Variables a Grok Build shell sets: GROK_AGENT and GROK_SESSION_ID, observed in a live grok 1.0.52 shell (`env` run through its shell tool,
+ *  2026-10-14, probe repeated 2026-10-14 with a private GROK_HOME: grok itself sets GROK_AGENT, so it stays a marker). */
 export const GROK_MARKERS = ["GROK_AGENT", "GROK_SESSION_ID"];
 
 /** Variables Claude Code sets in its shells (seen in a live session, 2026-10-14). Any one of them means "inside a session". */
@@ -90,12 +91,26 @@ function readLines(file: string): unknown[] {
   return text.split("\n").filter(Boolean).flatMap((l) => { try { return [JSON.parse(l)]; } catch { return []; } });
 }
 
+/** A grok process among the ancestors of `chain` (an agent can `env -u` the variables of its own shell, but not those of its parents):
+ *  a process named grok, or one whose environ carries a Grok marker. Only names are read from /proc, never values. */
+export function grokAncestor(chain: number[] = pidChain(), read: (pid: number, file: "comm" | "environ") => string | undefined = procText): string | undefined {
+  for (const pid of chain) {
+    if (read(pid, "comm")?.trim() === "grok") return `a parent process (pid ${pid}) is grok`;
+    const m = (read(pid, "environ") ?? "").split("\0").map((kv) => kv.split("=")[0] ?? "").find((k) => GROK_MARKERS.includes(k));
+    if (m) return `a parent process (pid ${pid}) has ${m} in its environment`;
+  }
+  return undefined;
+}
+function procText(pid: number, file: "comm" | "environ"): string | undefined {
+  try { return readFileSync(`/proc/${pid}/${file}`, "utf8"); } catch { return undefined; }
+}
+
 /** Where the approval is being given, and whether it can be checked: a Claude session (its id), a terminal, or a refusal.
  *  Codex first: a Codex run started from a Claude session has that session in its parent chain. */
 export function origin(o: { env?: NodeJS.ProcessEnv; dir?: string; chain?: () => number[] } = {}): { kind: "terminal" } | { kind: "session"; sessionId: string } {
   const env = o.env ?? process.env;
-  const grok = GROK_MARKERS.find((k) => env[k]);
-  if (grok) fail(`an approval from a Grok session cannot be verified (${grok} is set, and govern does not read grok's session store as a record of the person's words): ` +
+  const grok = GROK_MARKERS.find((k) => env[k]) ? `${GROK_MARKERS.find((k) => env[k])} is set` : grokAncestor(o.chain?.());
+  if (grok) fail(`an approval from a Grok session cannot be verified (${grok}, and govern does not read grok's session store as a record of the person's words): ` +
     "ask the person to approve from their own terminal or a Claude session", 1);
   const codex = CODEX_MARKERS.find((k) => env[k]);
   if (codex) fail(`an approval from a Codex session cannot be verified (${codex} is set, and Codex has no transcript format govern can rely on): ` +
