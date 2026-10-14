@@ -1,4 +1,9 @@
 {
+  "checkSummary": {
+    "passed": 1,
+    "failed": 0,
+    "total": 1
+  },
   "slug": "r1",
   "title": "Release one",
   "process": "release",
@@ -6,23 +11,168 @@
   "stage": "draft",
   "stageIndex": 0,
   "stageCount": 2,
-  "active": ["draft"],
+  "active": [
+    "draft"
+  ],
   "state": "open",
   "blockedBy": [],
   "gates": [
-    { "name": "final", "stage": "draft", "owner": "owner", "policy": false, "approved": false, "approvedAt": null, "needs": [] }
+    {
+      "name": "final",
+      "stage": "draft",
+      "owner": "owner",
+      "policy": false,
+      "approved": false,
+      "approvedAt": null,
+      "needs": [],
+      "approvedBy": null,
+      "quote": null,
+      "artifact": null
+    },
+    {
+      "name": "publish",
+      "stage": "ship",
+      "owner": "owner",
+      "policy": false,
+      "approved": false,
+      "approvedAt": null,
+      "needs": [
+        "final"
+      ],
+      "approvedBy": null,
+      "quote": null,
+      "artifact": null
+    }
   ],
   "openAlerts": 1,
   "working": null,
   "lastNote": null,
-  "lastJob": { "name": "test", "status": "ok", "at": "2026-10-14T11:30:00.000Z" },
-  "stages": ["draft", "ship"],
+  "lastJob": {
+    "name": "test",
+    "status": "ok",
+    "at": "2026-10-14T20:12:01.497Z"
+  },
+  "checks": [
+    {
+      "stage": "draft",
+      "name": "test",
+      "ok": true,
+      "exit": 0,
+      "at": "2026-10-14T20:12:01.499Z",
+      "job": "20261014T201201Z-test"
+    }
+  ],
+  "jobs": [
+    {
+      "id": "20261014T201201Z-test",
+      "name": "test",
+      "status": "ok",
+      "start": "2026-10-14T20:12:01.359Z",
+      "end": null,
+      "seconds": 0,
+      "exit": 0,
+      "progress": null
+    }
+  ],
+  "artifacts": [
+    {
+      "name": "proof.txt",
+      "version": 2,
+      "bytes": 8,
+      "sha256": "ee8250fb76e094b34b471f13a73dbbe51d1ae142e9df59d7c0d31ec20f0a0a8e",
+      "modifiedAt": "2026-10-14T20:12:01.543Z",
+      "mediaType": "text/plain",
+      "title": "Proof",
+      "caption": "Latest evidence",
+      "reviews": [
+        {
+          "person": "owner",
+          "device": "d-fixture",
+          "at": "2026-10-14T20:12:01.552Z"
+        }
+      ]
+    }
+  ],
+  "sessions": [
+    {
+      "id": "chat",
+      "title": "Review",
+      "lane": "r1",
+      "engine": "echo",
+      "state": "idle",
+      "updatedAt": "2026-10-14T20:12:02.406Z",
+      "needsDecision": true,
+      "lastMessage": {
+        "id": "reply",
+        "role": "assistant",
+        "at": "2026-10-14T20:12:02.406Z",
+        "text": "reply:hello:previous=0",
+        "runId": "cae63a6e-046b-47db-85dc-195c0a3c2b43",
+        "verification": "transport-only"
+      }
+    }
+  ],
+  "decisions": [],
+  "stages": [
+    "draft",
+    "ship"
+  ],
   "exit": "the release notes are written",
   "check": "test",
   "finished": null,
-  "data": { "orderId": "O-1", "amount": 12.5, "urgent": true },
-  "humanTasks": [{ "stage": "draft", "assignee": "alice", "completedBy": null }],
-  "alerts": [{ "id": "a-1", "stage": "draft", "kind": "due", "at": "2026-10-14T11:00:00.000Z", "message": "draft is due", "acknowledgedAt": null }],
-  "notes": [{ "at": "2026-10-14T10:00:00.000Z", "stage": "draft", "text": "started" }],
-  "ledger": [{ "t": "2026-10-14T10:00:00.000Z", "kind": "cmd-set", "text": "{\"name\":\"test\",\"from\":null,\"to\":[\"true\"],\"stages\":[]}" }]
+  "data": {
+    "orderId": "O-1",
+    "amount": 12.5,
+    "urgent": true
+  },
+  "humanTasks": [
+    {
+      "stage": "draft",
+      "assignee": "alice",
+      "completedBy": null
+    }
+  ],
+  "alerts": [
+    {
+      "id": "a-1",
+      "stage": "draft",
+      "kind": "due",
+      "at": "2026-10-14T11:00:00.000Z",
+      "message": "draft is due",
+      "acknowledgedAt": null
+    }
+  ],
+  "notes": [],
+  "ledger": [
+    {
+      "t": "2026-10-14T20:12:01.497Z",
+      "kind": "job",
+      "text": "{\"id\":\"20261014T201201Z-test\",\"name\":\"test\",\"bg\":false,\"status\":\"ok\",\"exit\":0,\"seconds\":0,\"resource\":\"local\",\"machineSeconds\":0}"
+    },
+    {
+      "t": "2026-10-14T20:12:01.499Z",
+      "kind": "check",
+      "text": "{\"stage\":\"draft\",\"name\":\"test\",\"ok\":true,\"exit\":0,\"job\":\"20261014T201201Z-test\"}"
+    },
+    {
+      "t": "2026-10-14T20:12:01.525Z",
+      "kind": "artifact",
+      "text": "{\"name\":\"proof.txt\",\"sha256\":\"cba06b5736faf67e54b07b561eae94395e774c517a7d910a54369e1263ccfbd4\",\"bytes\":3,\"title\":null,\"caption\":null}"
+    },
+    {
+      "t": "2026-10-14T20:12:01.536Z",
+      "kind": "artifact-reviewed",
+      "text": "{\"artifact\":{\"name\":\"proof.txt\",\"sha256\":\"cba06b5736faf67e54b07b561eae94395e774c517a7d910a54369e1263ccfbd4\"},\"by\":\"old\",\"device\":\"d-old\"}"
+    },
+    {
+      "t": "2026-10-14T20:12:01.550Z",
+      "kind": "artifact",
+      "text": "{\"name\":\"proof.txt\",\"sha256\":\"ee8250fb76e094b34b471f13a73dbbe51d1ae142e9df59d7c0d31ec20f0a0a8e\",\"bytes\":8,\"title\":\"Proof\",\"caption\":\"Latest evidence\"}"
+    },
+    {
+      "t": "2026-10-14T20:12:01.552Z",
+      "kind": "artifact-reviewed",
+      "text": "{\"artifact\":{\"name\":\"proof.txt\",\"sha256\":\"ee8250fb76e094b34b471f13a73dbbe51d1ae142e9df59d7c0d31ec20f0a0a8e\"},\"by\":\"owner\",\"device\":\"d-fixture\"}"
+    }
+  ]
 }

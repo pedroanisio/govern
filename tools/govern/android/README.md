@@ -3,7 +3,7 @@
 Part of [govern](../README.md), in [super-tools](../../../README.md).
 
 An Android app that shows every govern lane and today's telemetry, and lets the owner approve gates and acknowledge
-alerts from the phone. It speaks `govern-remote/1`, the protocol in [REMOTE.md](../REMOTE.md), to `govern remote serve`.
+alerts from the phone. It speaks `govern-remote/2`, the protocol in [REMOTE.md](../REMOTE.md), to `govern remote serve`.
 
 ## What it shows
 
@@ -15,6 +15,18 @@ alerts from the phone. It speaks `govern-remote/1`, the protocol in [REMOTE.md](
 An approval needs your own words and a confirmation with a strong biometric or the screen lock. The phone signs the
 request with a key that lives in its secure hardware and never leaves it; govern records your words with that signature
 as the approval's source. Gates decided by an approval policy (a quorum of named people) are decided at a terminal.
+
+## Protocol reads
+
+The protocol layer carries check summaries, session summaries, available engines, the server hostname and the requesting
+viewer, plus lane checks, jobs, artifacts and decisions. `GovernClient.session(id, messages)` reads the last 20 messages
+by default (1..100). `job(lane, id, lines)` reads the last 100 log lines by default (1..1000).
+`artifact(lane, name, sink)` streams bytes to an OutputStream and returns `ArtifactDownload(bytes, sha256, mediaType)`.
+It leaves the sink open and throws ProtocolException if the computed SHA-256 differs from Govern-Artifact-Sha256;
+use the downloaded bytes only after the call succeeds. These APIs do not require a UI change.
+
+The strict parser covers desk, lane, session and job fixtures. EndToEndTest exercises the new reads against the real
+server and tests refusal of an incorrect artifact digest.
 
 ## Build
 

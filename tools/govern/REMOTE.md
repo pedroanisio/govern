@@ -15,7 +15,7 @@ Part of [govern](README.md), in [super-tools](../../README.md).
 govern remote lets the owner of the work follow every lane and its telemetry from a phone, and approve gates there,
 without weakening the rule that a gate opens only on the owner's own words. It is two parts: `govern remote serve`, an
 HTTP API on the machine that holds the workspace, and the Android app in [android/](android/README.md). This document
-is the protocol both sides implement, `govern-remote/1`, and the reasons for its shape.
+is the protocol both sides implement, `govern-remote/2`, and the reasons for its shape.
 
 ## What the phone must do, and what it must not
 
@@ -132,7 +132,7 @@ authenticated by OS account mapping, which a phone does not have; they stay at t
 
 ## Wire reference
 
-Every response is JSON with `Cache-Control: no-store`, except the stream. Field sets are closed: the app rejects
+Every response is JSON with `Cache-Control: no-store`, except the stream and raw artifact downloads. Field sets are closed: the app rejects
 unknown fields, so adding a field is a new protocol version. The types are in
 [lib/remote-view.ts](lib/remote-view.ts) on the server and
 [Model.kt](android/app/src/main/java/dev/supertools/govern/remote/protocol/Model.kt) in the app, and both are tested
@@ -142,8 +142,11 @@ against the same fixtures in [android/app/src/test/resources/fixtures/](android/
 |---|---|---|---|
 | `GET /v1/health` | none | — | `{protocol, at}` |
 | `POST /v1/pair` | pairing code | `{code, name, publicKey}` | `{protocol, deviceId, person, token}` |
-| `GET /v1/desk` | bearer | — | `Desk`: `{protocol, at, lanes: LaneSummary[], unreadable: {slug, error}[], telemetry}` |
-| `GET /v1/lane?slug=S` | bearer | — | `LaneDetail`: a summary plus stages, exit, check, data, human tasks, alerts, last 20 notes, last 30 ledger lines |
+| `GET /v1/desk` | bearer | — | `Desk`: `{protocol, at, lanes: LaneSummary[], unreadable: {slug, error}[], telemetry, sessions, engines, viewer, host}` |
+| `GET /v1/lane?slug=S` | bearer | — | `LaneDetail`: a summary plus stages, exit, check, data, human tasks, alerts, last 20 notes, last 30 ledger lines, checks, last 10 jobs, artifacts, sessions and decisions |
+| `GET /v1/session?id=ID&messages=N` | bearer | `messages` defaults to 20, range 1..100 | `{protocol, session: SessionSummary, messages: MessageView[], runs: RunView[]}`; last N messages and last 5 runs |
+| `GET /v1/job?lane=S&id=J&lines=N` | bearer | `lines` defaults to 100, range 1..1000 | `{protocol, lane, job: JobView, argv: string[], log: string[]}`; log tail |
+| `GET /v1/artifact?lane=S&name=N` | bearer | plain artifact name | raw bytes, streamed; maximum 32 MiB |
 | `POST /v1/actions` | bearer + `Govern-Signature` | `approve` or `ack` body (above) | `{ok: true, lane: LaneDetail}` |
 | `GET /v1/stream` | bearer | — | `text/event-stream`: `event: desk` with a `Desk`; `event: error` with `{error}`; `: ping` every 15 s |
 
@@ -152,9 +155,60 @@ against the same fixtures in [android/app/src/test/resources/fixtures/](android/
 
 Errors are `{error}` with a status that says who must act: 400 for a malformed request, 401 for a missing, unknown or
 revoked token, 403 when the request does not prove itself (signature, clock, nonce or pairing code), 404 for an unknown
-lane or route, 409 when the lane's state refuses the action (a gate that needs another first, a gate owned by someone
-else, an alert already acknowledged), 413 for a body over 64 KiB, and 429 above 8 open streams. A stream ends after one
+lane, session, job, artifact or route, 409 when the lane's state refuses the action (a gate that needs another first, a gate owned by someone
+else, an alert already acknowledged), 413 for a body over 64 KiB or an artifact over 32 MiB, and 429 above 8 open streams. A stream ends after one
 hour; the app reconnects.
+
+### Read types
+
+All nullable fields below are present as JSON null when absent. Arrays are present even when empty.
+`LaneSummary.checkSummary` is `{passed, failed, total}`: total counts stages with checks, while passed and failed
+count the latest ledger check per such stage. Stages without a result contribute only to total.
+`GateView` also carries `approvedBy: string|null`, `quote: string|null` and `artifact: ArtifactRef|null`.
+
+The desk's `sessions` are all conversations, newest updated first. `engines` is the sorted list of capability profile
+names whose engines are claude, codex or grok. `host` is the server hostname. `viewer` is
+`{person: string, device: string, lanes: string[]|null}` from the requesting device; absent device scopes become null.
+The shared desk cache excludes the viewer, which is attached separately for each request and SSE connection.
+
+| Type | Fields |
+|---|---|
+| `SessionSummary` | `id, title, lane: string|null, engine, state, updatedAt, needsDecision, lastMessage: MessageView|null` |
+| `MessageView` | `id, role: user|assistant, at, text, runId: string|null, verification: transport-only|checked|unverified|null` |
+| `RunView` | `id, state, createdAt, startedAt: string|null, endedAt: string|null, verification: transport-only|checked|unverified|null, error: string|null` |
+| `CheckView` | `stage, name, ok: boolean, exit: number|null, at, job: string|null` |
+| `JobView` | `id, name, status, start, end: string|null, seconds: number|null, exit: number|null, progress: {done, total, failed}|null` |
+| `ArtifactRef` | `name, sha256` |
+| `ArtifactView` | `name, version: number, bytes: number, sha256, modifiedAt, mediaType, title: string|null, caption: string|null, reviews: ArtifactReview[]` |
+| `ArtifactReview` | `person, device, at` |
+| `DecisionView` | `t, kind: approve|changes, gate, by, quote, device: string|null, artifact: ArtifactRef|null` |
+
+Unannotated fields are strings except `needsDecision` (boolean). Session state is closed when closedAt exists,
+otherwise running if any run is running, queued if any is queued, failed if the latest run failed or was interrupted,
+and idle otherwise. updatedAt is the latest message, run or event timestamp (including the session's updatedAt).
+needsDecision means the unfinished session lane has an unapproved non-policy gate at its current stage or no stage.
+Message text is clipped to 400 characters in summaries and 4000 in detail. Verification is null for user messages;
+assistant verification comes from its run. Clients should label assistant output unless verification is checked.
+Run states are queued, running, completed, failed, cancelled or interrupted.
+
+Lane checks contain the latest entry per (stage, name); jobs are newest first and include slice progress when available.
+Lane sessions are restricted to that lane. Decisions come from approve and changes-requested ledger entries,
+newest first, retaining the person's words and any artifact reference.
+
+### Artifact storage and downloads
+
+`govern artifact add <slug> <file> [--name N] [--title T] [--caption C]` copies a file into
+`<lane project directory>/artifacts/` with mode 600 and appends
+`{kind: "artifact", name, sha256, bytes, title, caption}` to the lane ledger. `govern artifact list <slug>` prints
+JSON metadata. Version is the number of artifact ledger entries for that name. Reviews are counted only when their
+artifact name and digest match the current file. A replacement therefore invalidates reviews of older bytes.
+
+Names match `^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`. Downloads reject symlinks and non-regular files, and files above
+32 MiB return 413 before streaming begins. The file descriptor used for hashing is also used for the stream.
+Headers are `Content-Type`, `Content-Length`, `Govern-Artifact-Sha256` and
+`Content-Disposition: attachment; filename="N"`. Clients hash the streamed bytes and reject a digest mismatch.
+Media types follow mp4, webm, mov, png, jpg/jpeg, gif, webp, pdf, txt, md, json, html and zip extensions;
+other extensions use application/octet-stream.
 
 ## Residual risks and their limits
 
@@ -165,7 +219,7 @@ directly; no remote protocol can, and the terminal and session sources share tha
 The app is live only while it is on screen: it holds no background connection and receives no push notifications. A
 push channel needs either Firebase Cloud Messaging, which routes every notification through Google and requires a
 Firebase project, or UnifiedPush with a self-hosted distributor such as ntfy, which adds a server to run. Either can be
-added later as a `notify` event source without changing `govern-remote/1`, because a push would only tell the app to
+added later as a `notify` event source without changing `govern-remote/2`, because a push would only tell the app to
 open the stream.
 
 ## Operating it
@@ -180,3 +234,7 @@ govern remote revoke d-4f1c2a9b7e30                         # the token and key 
 The server keeps its state in `govern-state/remote/` (mode 700): `devices.json` (public keys and token hashes),
 `pairing.json` (the open code's hash), `nonces.json`, and `audit.jsonl`, a log of pairings, refusals, revocations and
 actions.
+
+Read views also consume lane `govern/ledger.jsonl`, `govern/jobs/<id>/job.json`, `log`, `exit`, and slice `slice.json`,
+plus `govern-state/conversations/<id>/session.json`. Artifact bytes live beside `govern.json` in `artifacts/`;
+their versions and reviews live in the lane ledger, with no separate artifact metadata index.

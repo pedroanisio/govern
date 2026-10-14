@@ -5,7 +5,7 @@
 import { createServer as createHttp, type IncomingMessage, type ServerResponse, type Server } from "node:http";
 import { createServer as createHttps } from "node:https";
 import { createHash, createPublicKey, randomBytes, randomInt, timingSafeEqual, verify, X509Certificate, type KeyObject } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync, appendFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync, appendFileSync, createReadStream, closeSync, fstatSync } from "node:fs";
 import { join } from "node:path";
 import { check, obj, str, name, literal, type Shape, reject } from "./shape.ts";
 import { GovernError, fail, nowIso } from "./util.ts";
@@ -15,13 +15,17 @@ import { load, save, appendLedger, stateFile, checkSlug } from "./project.ts";
 import { processOf } from "./process.ts";
 import { ownerApproval } from "./business.ts";
 import { transaction } from "./lifecycle.ts";
-import { deskView, laneDetail, PROTOCOL, type Desk } from "./remote-view.ts";
+import * as artifacts from "./artifacts.ts";
+import * as conversations from "./conversation.ts";
+import * as jobs from "./jobs.ts";
+import { deskView, laneDetail, sessionDetail, jobDetail, PROTOCOL, type Desk } from "./remote-view.ts";
 
 /** Refusals the server maps to a status: a malformed request (400), a signature, clock, nonce or code that does not
  *  prove the request (403), a lane that does not exist (404). Any other GovernError is a state conflict (409). */
 export class BadRequest extends GovernError {}
 export class Forbidden extends GovernError {}
 export class NotFound extends GovernError {}
+export class TooLarge extends GovernError {}
 const parsed = <T>(what: string, raw: unknown, shape: Shape<T>): T => {
   try { return check(what, raw, shape); } catch (e) { throw e instanceof GovernError ? new BadRequest(e.message) : e; }
 };
@@ -29,7 +33,7 @@ const parsed = <T>(what: string, raw: unknown, shape: Shape<T>): T => {
 /** A lane slug from a request: a bad one is a malformed request. */
 const slugOf = (s: string | undefined): string => { try { return checkSlug(s); } catch (e) { throw e instanceof GovernError ? new BadRequest(e.message) : e; } };
 
-export interface Device { id: string; name: string; person: string; publicKey: string; tokenSha256: string; pairedAt: string; revokedAt?: string }
+export interface Device { id: string; name: string; person: string; publicKey: string; tokenSha256: string; pairedAt: string; revokedAt?: string; lanes?: string[] }
 interface Pairing { codeSha256: string; person: string; expires: string; attempts: number }
 
 /** Wrong codes a pairing survives: the next wrong one deletes it, so a code cannot be guessed by trying. */
@@ -194,9 +198,9 @@ const PAIR_REQ = obj({ code: str, name: (v, at) => (typeof v === "string" && v.t
 export function remoteServer(o: ServeOptions = {}): Server {
   const interval = o.streamIntervalMs ?? 3000, maxMs = o.streamMaxMs ?? 3_600_000, pingMs = o.pingMs ?? 15_000;
   let streams = 0;
-  let cache: { at: number; desk: Desk } | undefined;
+  let cache: { at: number; desk: Omit<Desk, "viewer"> } | undefined;
   /** One desk computation per interval, however many streams read it. */
-  const desk = (): Desk => {
+  const desk = (): Omit<Desk, "viewer"> => {
     if (!cache || Date.now() - cache.at >= interval) cache = { at: Date.now(), desk: deskView() };
     return cache.desk;
   };
@@ -211,7 +215,7 @@ export function remoteServer(o: ServeOptions = {}): Server {
     const bearer = /^Bearer (\S+)$/.exec(req.headers.authorization ?? "")?.[1];
     const device = bearer ? deviceOfToken(bearer) : undefined;
     const fault = (e: unknown) => {
-      const status = e instanceof BadRequest ? 400 : e instanceof Forbidden ? 403 : e instanceof NotFound ? 404 : e instanceof GovernError ? 409 : 500;
+      const status = e instanceof BadRequest ? 400 : e instanceof Forbidden ? 403 : e instanceof NotFound ? 404 : e instanceof TooLarge ? 413 : e instanceof GovernError ? 409 : 500;
       return reply(status, { error: status === 500 ? "internal error" : (e as Error).message });
     };
     const body = (then: (b: Buffer) => void) => {
@@ -231,7 +235,38 @@ export function remoteServer(o: ServeOptions = {}): Server {
     });
     if (!device) { req.resume(); return reply(401, { error: "unauthorized: pair this device with govern remote pair" }); }
     try {
-      if (route === "GET /v1/desk") return reply(200, desk());
+      const personalDesk = (): Desk => ({ ...desk(), viewer: { person: device.person, device: device.id, lanes: device.lanes ?? null } });
+      const count = (key: string, fallback: number, max: number): number => {
+        const raw = url.searchParams.get(key);
+        if (raw === null) return fallback;
+        if (!/^[0-9]+$/.test(raw) || Number(raw) < 1 || Number(raw) > max) throw new BadRequest(`${key} must be 1..${max}`);
+        return Number(raw);
+      };
+      const lane = () => { const slug = slugOf(url.searchParams.get("lane") ?? undefined); if (!existsSync(stateFile(slug))) throw new NotFound(`no lane ${slug}`); return slug; };
+      if (route === "GET /v1/desk") return reply(200, personalDesk());
+      if (route === "GET /v1/session") {
+        const id = url.searchParams.get("id") ?? "", messages = count("messages", 20, 100);
+        try { conversations.sessionId(id); } catch (e) { throw new BadRequest((e as Error).message); }
+        if (!existsSync(join(conversations.directory(id), "session.json"))) throw new NotFound(`no session ${id}`);
+        return reply(200, sessionDetail(id, messages));
+      }
+      if (route === "GET /v1/job") {
+        const slug = lane(), id = url.searchParams.get("id") ?? "", lines = count("lines", 100, 1000);
+        if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(id)) throw new BadRequest("job id must be a plain name");
+        if (!jobs.list(slug).includes(id)) throw new NotFound(`no job ${id}`);
+        return reply(200, jobDetail(slug, id, lines));
+      }
+      if (route === "GET /v1/artifact") {
+        const slug = lane(), name = url.searchParams.get("name") ?? "", fd = artifacts.open(slug, name, artifacts.MAX_BYTES);
+        try {
+          const bytes = fstatSync(fd).size, sha256 = artifacts.digest(fd);
+          res.writeHead(200, { "Content-Type": artifacts.mediaType(name), "Content-Length": bytes, "Govern-Artifact-Sha256": sha256,
+            "Content-Disposition": `attachment; filename="${name}"`, "Cache-Control": "no-store" });
+          const stream = createReadStream("", { fd, autoClose: true, start: 0 });
+          stream.on("error", () => res.destroy()); res.on("close", () => stream.destroy()); stream.pipe(res);
+        } catch (e) { closeSync(fd); throw e; }
+        return;
+      }
       if (route === "GET /v1/lane") {
         const slug = slugOf(url.searchParams.get("slug") ?? undefined);
         if (!existsSync(stateFile(slug))) return reply(404, { error: `no lane ${slug}` });
@@ -252,7 +287,7 @@ export function remoteServer(o: ServeOptions = {}): Server {
         const push = () => {
           if (!deviceOfToken(bearer!)) { res.end(); return; } // revoked while streaming
           try {
-            const text = JSON.stringify(desk());
+            const text = JSON.stringify(personalDesk());
             if (text !== last) { last = text; res.write(`event: desk\ndata: ${text}\n\n`); }
           } catch (e) { res.write(`event: error\ndata: ${JSON.stringify({ error: e instanceof GovernError ? e.message : "desk unreadable" })}\n\n`); }
         };
