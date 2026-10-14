@@ -3,84 +3,43 @@ package dev.supertools.govern.remote.ui
 import android.os.Build
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.AssistChip
-import androidx.compose.material3.Button
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
-import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.HorizontalDivider
-import androidx.compose.material3.LinearProgressIndicator
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.Scaffold
-import androidx.compose.material3.SnackbarHost
-import androidx.compose.material3.SnackbarHostState
-import androidx.compose.material3.Surface
-import androidx.compose.material3.Tab
-import androidx.compose.material3.TabRow
-import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
-import androidx.compose.material3.TopAppBar
-import androidx.compose.material3.darkColorScheme
-import androidx.compose.material3.lightColorScheme
-import androidx.compose.foundation.isSystemInDarkTheme
-import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableIntStateOf
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import dev.supertools.govern.remote.protocol.AlertView
-import dev.supertools.govern.remote.protocol.Desk
-import dev.supertools.govern.remote.protocol.GateView
-import dev.supertools.govern.remote.protocol.LaneDetail
-import dev.supertools.govern.remote.protocol.LaneState
-import dev.supertools.govern.remote.protocol.LaneSummary
-import dev.supertools.govern.remote.protocol.Telemetry
-import dev.supertools.govern.remote.security.PairedServer
+import dev.supertools.govern.remote.R
+import dev.supertools.govern.remote.protocol.*
 
-/** Asks the person to confirm and sign: (title, summary, body to sign, message on success). */
+/** Asks the person to confirm and sign: title, summary, exact body and success message. */
 typealias Confirm = (String, String, ByteArray, String) -> Unit
 
 @Composable
 fun App(model: AppModel, confirm: Confirm) {
-    val dark = isSystemInDarkTheme()
-    MaterialTheme(colorScheme = if (dark) darkColorScheme() else lightColorScheme()) {
+    FieldTheme {
+        val current by model.current.collectAsStateWithLifecycle()
+        val hosts by model.hosts.collectAsStateWithLifecycle()
+        val pairing by model.pairing.collectAsStateWithLifecycle()
+        val message by model.message.collectAsStateWithLifecycle()
+        val snack = remember { SnackbarHostState() }
+        LaunchedEffect(message) { message?.let { snack.showSnackbar(it); model.consumeMessage() } }
         Surface(Modifier.fillMaxSize()) {
-            val paired by model.paired.collectAsStateWithLifecycle()
-            val message by model.message.collectAsStateWithLifecycle()
-            val snack = remember { SnackbarHostState() }
-            LaunchedEffect(message) {
-                message?.let { snack.showSnackbar(it); model.consumeMessage() }
-            }
             Scaffold(snackbarHost = { SnackbarHost(snack) }) { pad ->
-                Column(Modifier.padding(pad)) {
-                    val p = paired
-                    if (p == null) PairScreen(model) else Main(model, p, confirm)
+                Box(Modifier.padding(pad)) {
+                    if (pairing || hosts.isEmpty()) PairScreen(model, hosts.isNotEmpty())
+                    else current?.let { Main(model, it, confirm) }
                 }
             }
         }
@@ -88,291 +47,294 @@ fun App(model: AppModel, confirm: Confirm) {
 }
 
 @Composable
-private fun PairScreen(model: AppModel) {
+private fun PairScreen(model: AppModel, canCancel: Boolean) {
     val busy by model.busy.collectAsStateWithLifecycle()
+    val prefill by model.prefill.collectAsStateWithLifecycle()
     var address by rememberSaveable { mutableStateOf("") }
     var code by rememberSaveable { mutableStateOf("") }
     var pin by rememberSaveable { mutableStateOf("") }
-    var name by rememberSaveable { mutableStateOf(Build.MODEL ?: "Android") }
-    val prefill by model.prefill.collectAsStateWithLifecycle()
-    // A scanned link fills each field on its own, so the server address stays in view before the person taps Pair.
+    var name by rememberSaveable { mutableStateOf(Build.MODEL.orEmpty()) }
+    BackHandler(canCancel) { model.cancelPairing() }
     LaunchedEffect(prefill) {
-        prefill?.let { address = it.url; code = it.code; pin = it.pin ?: ""; model.consumePrefill() }
+        prefill?.let { address = it.url; code = it.code; pin = it.pin.orEmpty(); model.consumePrefill() }
     }
-    val isLink = address.trim().startsWith("govern-remote:")
     Column(Modifier.padding(16.dp).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        Text("Pair with govern", style = MaterialTheme.typography.headlineSmall)
-        Text("At your own terminal, run: govern remote pair --url <address the phone reaches>. Scan the QR code it draws with " +
-            "this phone's camera, or paste the pairing link it prints, or type the address and the code.", style = MaterialTheme.typography.bodyMedium)
-        OutlinedTextField(address, { address = it }, Modifier.fillMaxWidth(), label = { Text("Pairing link or server address") }, singleLine = true)
-        if (!isLink) {
-            OutlinedTextField(code, { code = it }, Modifier.fillMaxWidth(), label = { Text("Pairing code") }, singleLine = true)
-            OutlinedTextField(pin, { pin = it }, Modifier.fillMaxWidth(), label = { Text("Certificate pin (self-signed TLS only)") }, singleLine = true)
+        Text(stringResource(R.string.connect_session), style = MaterialTheme.typography.headlineSmall)
+        Text(stringResource(R.string.pair_instructions))
+        OutlinedTextField(address, { address = it }, Modifier.fillMaxWidth(), enabled = !busy, label = { Text(stringResource(R.string.server_address)) }, singleLine = true)
+        if (!address.trim().startsWith("govern-remote:")) {
+            OutlinedTextField(code, { code = it }, Modifier.fillMaxWidth(), enabled = !busy, textStyle = FieldCode, label = { Text(stringResource(R.string.pair_code)) }, singleLine = true)
+            OutlinedTextField(pin, { pin = it }, Modifier.fillMaxWidth(), enabled = !busy, textStyle = FieldCode, label = { Text(stringResource(R.string.certificate_pin)) }, singleLine = true)
         }
-        OutlinedTextField(name, { name = it }, Modifier.fillMaxWidth(), label = { Text("This device's name") }, singleLine = true)
-        Button({ model.pair(address, code, pin, name) }, enabled = !busy && address.isNotBlank()) { Text(if (busy) "Pairing…" else "Pair") }
-        Text("Pairing creates a key in this phone's secure hardware. Every approval you send is signed with it after you confirm " +
-            "with your fingerprint or screen lock.", style = MaterialTheme.typography.bodySmall)
+        OutlinedTextField(name, { name = it }, Modifier.fillMaxWidth(), enabled = !busy, label = { Text(stringResource(R.string.device_name)) }, singleLine = true)
+        Button({ model.pair(address, code, pin, name) }, enabled = !busy && address.isNotBlank()) {
+            Text(stringResource(if (busy) R.string.pairing else R.string.pair))
+        }
+        if (canCancel) TextButton(model::cancelPairing, enabled = !busy) { Text(stringResource(R.string.cancel)) }
+        Text(stringResource(R.string.pair_security), style = MaterialTheme.typography.bodySmall)
     }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun Main(model: AppModel, paired: PairedServer, confirm: Confirm) {
-    val desk by model.desk.collectAsStateWithLifecycle()
-    val link by model.link.collectAsStateWithLifecycle()
+private fun Main(model: AppModel, state: HostState, confirm: Confirm) {
     val lane by model.lane.collectAsStateWithLifecycle()
+    val hosts by model.hosts.collectAsStateWithLifecycle()
     var tab by rememberSaveable { mutableIntStateOf(0) }
-    var menu by remember { mutableStateOf(false) }
-    val open = lane
-    if (open != null) {
-        BackHandler { model.closeLane() }
-        LaneScreen(open, paired, model, confirm)
-        return
-    }
-    Column {
-        TopAppBar(
-            title = {
-                Column {
-                    Text("govern")
-                    Text(linkText(link), style = MaterialTheme.typography.labelSmall)
-                }
-            },
-            actions = { TextButton({ menu = true }) { Text("Device") } },
-        )
-        TabRow(selectedTabIndex = tab) {
-            Tab(tab == 0, { tab = 0 }, text = { Text("Lanes") })
-            Tab(tab == 1, { tab = 1 }, text = { Text("Telemetry") })
-        }
-        val d = desk
-        when {
-            d == null -> Text("Waiting for the desk…", Modifier.padding(16.dp))
-            tab == 0 -> LanesList(d, model::openLane)
-            else -> TelemetryView(d.telemetry)
-        }
-    }
-    if (menu) AlertDialog(
-        onDismissRequest = { menu = false },
-        title = { Text("This device") },
-        text = {
-            Text("Server ${paired.baseUrl}\nDevice ${paired.deviceId}\nApproves as ${paired.person}" +
-                (paired.pin?.let { "\nPinned certificate ${it.take(16)}…" } ?: ""))
-        },
-        confirmButton = { TextButton({ menu = false }) { Text("Close") } },
-        dismissButton = { TextButton({ menu = false; model.unpair() }) { Text("Unpair") } },
-    )
-}
-
-private fun linkText(l: Link): String = when (l) {
-    Link.Connecting -> "connecting…"
-    Link.Live -> "live"
-    is Link.Retrying -> "retrying in ${l.seconds}s: ${l.reason}"
-    is Link.Stopped -> l.reason
-}
-
-@Composable
-private fun LanesList(d: Desk, open: (String) -> Unit) {
-    LazyColumn(Modifier.fillMaxSize(), contentPadding = androidx.compose.foundation.layout.PaddingValues(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        if (d.lanes.isEmpty() && d.unreadable.isEmpty()) item { Text("No lanes yet.") }
-        items(d.lanes, key = { it.slug }) { LaneCard(it) { open(it.slug) } }
-        items(d.unreadable, key = { "x-" + it.slug }) {
-            Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer)) {
-                Column(Modifier.padding(12.dp)) {
-                    Text(it.slug, fontWeight = FontWeight.Bold)
-                    Text("unreadable: ${it.error}", style = MaterialTheme.typography.bodySmall)
-                }
+    BackHandler(lane != null || tab != 0) { if (lane != null) model.closeLane() else tab = 0 }
+    val tabs = listOf(R.string.operation, R.string.hosts, R.string.decisions, R.string.activity)
+    val icons = listOf(R.drawable.ic_operation, R.drawable.ic_hosts, R.drawable.ic_decisions, R.drawable.ic_activity)
+    Scaffold(contentWindowInsets = WindowInsets(0, 0, 0, 0), bottomBar = {
+        NavigationBar(windowInsets = WindowInsets(0, 0, 0, 0)) {
+            tabs.forEachIndexed { index, label ->
+                NavigationBarItem(selected = index == tab, onClick = { model.closeLane(); tab = index },
+                    icon = { Icon(painterResource(icons[index]), contentDescription = null) },
+                    label = { Text(stringResource(label)) })
             }
         }
-        item { Text("updated ${d.at.take(19).replace('T', ' ')} UTC", style = MaterialTheme.typography.labelSmall) }
-    }
-}
-
-/** The first gate not approved yet, as the desk shows it. */
-private fun pendingGate(gates: List<GateView>): GateView? = gates.firstOrNull { !it.approved }
-
-@Composable
-private fun LaneCard(l: LaneSummary, onClick: () -> Unit) {
-    Card(Modifier.fillMaxWidth().clickable(onClick = onClick)) {
-        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(l.slug, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
-                StateChip(l.state)
+    }) { pad ->
+        Column(Modifier.padding(pad)) {
+            TopAppBar(windowInsets = WindowInsets(0, 0, 0, 0), title = { Column {
+                Text(stringResource(R.string.app_name))
+                Text(state.host.name, style = MaterialTheme.typography.labelSmall)
+            } })
+            StatusBanner(state, if (lane != null) model.laneAt.collectAsStateWithLifecycle().value else null)
+            val detail = lane
+            if (detail != null) LaneScreen(detail, state, model, confirm)
+            else when (tab) {
+                0 -> state.desk?.let { DeskScreen(it, model::openLane) } ?: Empty(R.string.waiting_desk)
+                1 -> HostsScreen(hosts, state.host.id, model)
+                2 -> DecisionsScreen(hosts) { decision -> model.selectHost(decision.host.id); model.openLane(decision.lane.slug) }
+                3 -> ActivityScreen(state, model)
             }
-            if (l.title != l.slug) Text(l.title, style = MaterialTheme.typography.bodySmall)
-            Text("${l.process} · stage ${l.stageIndex + 1}/${l.stageCount} ${l.active.joinToString(", ").ifEmpty { l.stage }}",
-                style = MaterialTheme.typography.bodyMedium)
-            if (l.stageCount > 0) LinearProgressIndicator(progress = { (l.stageIndex + 1).toFloat() / l.stageCount }, modifier = Modifier.fillMaxWidth())
-            val g = pendingGate(l.gates)
-            val facts = listOfNotNull(
-                g?.let { "needs ${it.name}" } ?: if (l.gates.isNotEmpty()) "all approved" else null,
-                if (l.openAlerts > 0) "${l.openAlerts} alert${if (l.openAlerts == 1) "" else "s"}" else null,
-                l.working?.let { "● ${it.engine} since ${it.since.take(16).replace('T', ' ')}" },
-                l.lastJob?.let { "job ${it.name} ${it.status}" },
-                if (l.blockedBy.isNotEmpty()) "blocked by ${l.blockedBy.joinToString(", ")}" else null,
-            )
-            if (facts.isNotEmpty()) Text(facts.joinToString(" · "), style = MaterialTheme.typography.labelMedium)
-            l.lastNote?.let { Text(it.text, style = MaterialTheme.typography.bodySmall, maxLines = 2, overflow = TextOverflow.Ellipsis) }
         }
     }
 }
 
 @Composable
-private fun StateChip(s: LaneState) {
-    val text = when (s) { LaneState.FINISHED -> "finished"; LaneState.BLOCKED -> "blocked"; LaneState.READY -> "ready"; LaneState.OPEN -> "open" }
-    AssistChip(onClick = {}, label = { Text(text) })
+private fun StatusBanner(state: HostState, at: String? = null) {
+    val live = state.link == Link.Live
+    val cached = state.desk != null || at != null
+    val label = when {
+        live -> stringResource(R.string.live)
+        cached -> stringResource(R.string.cached_at, at ?: state.desk!!.at)
+        state.link == Link.Connecting -> stringResource(R.string.connecting)
+        else -> stringResource(R.string.offline)
+    }
+    Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp)) {
+        Text(label, color = if (live) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant)
+        if (live) Text(stringResource(R.string.authorized_control), style = MaterialTheme.typography.labelSmall)
+        when (val link = state.link) {
+            is Link.Retrying -> Text(stringResource(R.string.retrying, link.seconds, link.reason), style = MaterialTheme.typography.bodySmall)
+            is Link.Stopped -> Text(link.reason, style = MaterialTheme.typography.bodySmall)
+            else -> Unit
+        }
+    }
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun LaneScreen(l: LaneDetail, paired: PairedServer, model: AppModel, confirm: Confirm) {
-    var approving by remember { mutableStateOf<GateView?>(null) }
+private fun HostsScreen(hosts: List<HostState>, selected: String, model: AppModel) {
     val busy by model.busy.collectAsStateWithLifecycle()
+    var forgetting by remember { mutableStateOf<HostState?>(null) }
+    LazyColumn(contentPadding = PaddingValues(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        item { Button(model::beginPairing, enabled = !busy) { Text(stringResource(R.string.pair_another_host)) } }
+        items(hosts, key = { it.host.id }) { state ->
+            Card(Modifier.fillMaxWidth().clickable { model.selectHost(state.host.id) }) {
+                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Text(state.host.name, fontWeight = FontWeight.Bold)
+                    Text(state.host.baseUrl, style = MaterialTheme.typography.bodySmall)
+                    Text(stringResource(R.string.host_identity, state.host.person, state.host.deviceId), style = FieldCode)
+                    state.host.pin?.let { Text(it, style = FieldCode) }
+                    Text(stringResource(if (state.link == Link.Live) R.string.live else if (state.desk != null) R.string.cached else R.string.offline))
+                    Text(stringResource(R.string.scope, state.host.lanes?.joinToString(", ") ?: stringResource(R.string.all)))
+                    if (state.host.id == selected) Text(stringResource(R.string.selected), color = MaterialTheme.colorScheme.primary)
+                    TextButton({ forgetting = state }, enabled = !busy) { Text(stringResource(R.string.forget_host)) }
+                }
+            }
+        }
+    }
+    forgetting?.let { state ->
+        AlertDialog(onDismissRequest = { forgetting = null }, title = { Text(stringResource(R.string.forget_host)) },
+            text = { Text(stringResource(R.string.forget_description, state.host.name)) },
+            confirmButton = { TextButton({ forgetting = null; model.forget(state.host.id) }, enabled = !busy) { Text(stringResource(R.string.forget_host)) } },
+            dismissButton = { TextButton({ forgetting = null }) { Text(stringResource(R.string.cancel)) } })
+    }
+}
+
+@Composable
+private fun DecisionsScreen(hosts: List<HostState>, open: (PendingDecision) -> Unit) {
+    val pending = pendingDecisions(hosts)
+    LazyColumn(contentPadding = PaddingValues(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        item { Section(stringResource(R.string.needs_you)) }
+        if (pending.isEmpty()) item { Empty(R.string.no_decisions) }
+        items(pending, key = { "${it.host.id}/${it.lane.slug}/${it.gate.name}" }) { decision ->
+            Card(Modifier.fillMaxWidth().clickable { open(decision) }) {
+                Column(Modifier.padding(16.dp)) {
+                    Text(decision.gate.name, fontWeight = FontWeight.Bold)
+                    Text(stringResource(R.string.decision_location, decision.host.name, decision.lane.slug))
+                    val state = hosts.first { it.host.id == decision.host.id }
+                    if (state.link != Link.Live) Text(stringResource(R.string.cached_at, state.desk!!.at), style = MaterialTheme.typography.labelSmall)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ActivityScreen(state: HostState, model: AppModel) {
+    val entries by model.activity.collectAsStateWithLifecycle()
+    LaunchedEffect(state.host.id, state.desk?.at, state.link == Link.Live) { model.loadActivity() }
+    LazyColumn(contentPadding = PaddingValues(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        if (entries.isEmpty()) item { Empty(R.string.no_activity) }
+        items(entries) { entry ->
+            Card(Modifier.fillMaxWidth().clickable { model.openLane(entry.lane) }) {
+                Column(Modifier.padding(12.dp)) {
+                    Text(stringResource(R.string.activity_location, entry.at, entry.lane), style = MaterialTheme.typography.labelSmall)
+                    Text(stringResource(R.string.ledger_entry, entry.kind, entry.text), style = FieldCode)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun DeskScreen(desk: Desk, open: (String) -> Unit) {
+    LazyColumn(contentPadding = PaddingValues(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        if (desk.lanes.isEmpty() && desk.unreadable.isEmpty()) item { Empty(R.string.no_lanes) }
+        items(desk.lanes, key = { it.slug }) { lane ->
+            Card(Modifier.fillMaxWidth().clickable { open(lane.slug) }) {
+                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Text(lane.title, fontWeight = FontWeight.Bold)
+                    Text(lane.slug, style = FieldCode)
+                    Text(stringResource(when (lane.state) { LaneState.FINISHED -> R.string.finished; LaneState.BLOCKED -> R.string.blocked; LaneState.READY -> R.string.ready; LaneState.OPEN -> R.string.open }))
+                    Text(stringResource(R.string.lane_progress, lane.process, lane.stageIndex + 1, lane.stageCount, lane.active.joinToString(", ").ifEmpty { lane.stage }))
+                    if (lane.stageCount > 0) LinearProgressIndicator(progress = { ((lane.stageIndex + 1).toFloat() / lane.stageCount).coerceIn(0f, 1f) }, modifier = Modifier.fillMaxWidth())
+                    lane.gates.firstOrNull { !it.approved }?.let { Text(stringResource(R.string.needs_gate, it.name)) }
+                    if (lane.openAlerts > 0) Text(stringResource(R.string.alert_count, lane.openAlerts))
+                    lane.working?.let { Text(stringResource(R.string.working_since, it.engine, it.since)) }
+                    lane.lastJob?.let { Text(stringResource(R.string.last_job, it.name, it.status)) }
+                    if (lane.blockedBy.isNotEmpty()) Text(stringResource(R.string.blocked_by, lane.blockedBy.joinToString(", ")))
+                    lane.lastNote?.let { Text(it.text, maxLines = 2, overflow = TextOverflow.Ellipsis) }
+                }
+            }
+        }
+        items(desk.unreadable) { Text(stringResource(R.string.unreadable_lane, it.slug, it.error), color = MaterialTheme.colorScheme.error) }
+        item { Text(stringResource(R.string.updated_at, desk.at), style = MaterialTheme.typography.labelSmall) }
+        item { TelemetryView(desk.telemetry) }
+    }
+}
+
+@Composable
+private fun LaneScreen(lane: LaneDetail, state: HostState, model: AppModel, confirm: Confirm) {
+    val busy by model.busy.collectAsStateWithLifecycle()
+    val enabled = !busy && state.link == Link.Live
+    var approving by remember(lane.slug, state.host.id) { mutableStateOf<GateView?>(null) }
     Column {
-        TopAppBar(
-            title = { Text(l.slug, maxLines = 1, overflow = TextOverflow.Ellipsis) },
-            navigationIcon = { TextButton(model::closeLane) { Text("Back") } },
-            actions = { TextButton(model::refreshLane) { Text("Refresh") } },
-        )
-        LazyColumn(Modifier.fillMaxSize(), contentPadding = androidx.compose.foundation.layout.PaddingValues(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        Row {
+            TextButton(model::closeLane) { Text(stringResource(R.string.back)) }
+            TextButton(model::refreshLane, enabled = enabled) { Text(stringResource(R.string.refresh)) }
+        }
+        LazyColumn(contentPadding = PaddingValues(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             item {
-                Text(l.title, style = MaterialTheme.typography.titleMedium)
-                Text("${l.process} · ${l.kind}${l.finished?.let { " · finished ${it.take(10)}" } ?: ""}", style = MaterialTheme.typography.bodySmall)
-                l.exit?.let { Text("exit when: $it", style = MaterialTheme.typography.bodySmall) }
-                l.check?.let { Text("check: $it", style = MaterialTheme.typography.bodySmall) }
+                Text(lane.title, style = MaterialTheme.typography.titleLarge)
+                Text(lane.slug, style = FieldCode)
+                Text(stringResource(R.string.lane_kind, lane.process, lane.kind))
+                lane.finished?.let { Text(stringResource(R.string.finished_at, it)) }
+                lane.exit?.let { Text(stringResource(R.string.exit_when, it)) }
+                lane.check?.let { Text(stringResource(R.string.check_command, it), style = FieldCode) }
             }
-            item { Section("Stages") }
-            items(l.stages) { s ->
-                val here = s in l.active || (l.active.isEmpty() && s == l.stage && l.finished == null)
-                val done = l.stages.indexOf(s) < l.stageIndex || l.finished != null
-                Text((if (here) "▶ " else if (done) "✓ " else "· ") + s, fontWeight = if (here) FontWeight.Bold else FontWeight.Normal)
+            item { Section(stringResource(R.string.stages)) }
+            items(lane.stages) { stage ->
+                val here = stage in lane.active || (lane.active.isEmpty() && stage == lane.stage && lane.finished == null)
+                Text(stage, fontWeight = if (here) FontWeight.Bold else FontWeight.Normal,
+                    color = if (here) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface)
             }
-            if (l.gates.isNotEmpty()) {
-                item { Section("Gates") }
-                items(l.gates, key = { "g-" + it.name }) { g -> GateRow(g, l.gates, paired.person, busy) { approving = g } }
-            }
-            if (l.alerts.isNotEmpty()) {
-                item { Section("Alerts") }
-                items(l.alerts, key = { "a-" + it.id }) { a ->
-                    AlertRow(a, busy) {
-                        confirm("Acknowledge alert", "${l.slug}: ${a.message}", model.ackBody(l.slug, a.id), "alert ${a.id} acknowledged")
+            if (lane.gates.isNotEmpty()) item { Section(stringResource(R.string.gates)) }
+            items(lane.gates) { gate ->
+                val missing = gate.needs.filter { need -> lane.gates.none { it.name == need && it.approved } }
+                Card(Modifier.fillMaxWidth()) {
+                    Column(Modifier.padding(12.dp)) {
+                        Text(gate.name, fontWeight = FontWeight.Bold)
+                        Text(when {
+                            gate.approved -> stringResource(R.string.approved_at, gate.approvedAt.orEmpty())
+                            gate.policy -> stringResource(R.string.policy_gate)
+                            missing.isNotEmpty() -> stringResource(R.string.needs_first, missing.joinToString(", "))
+                            else -> stringResource(R.string.waiting_for, gate.owner)
+                        })
+                        if (!gate.approved && !gate.policy && gate.owner == state.host.person && missing.isEmpty() && lane.finished == null)
+                            Button({ approving = gate }, enabled = enabled) { Text(stringResource(R.string.approve)) }
                     }
                 }
             }
-            if (l.humanTasks.isNotEmpty()) {
-                item { Section("Human tasks") }
-                items(l.humanTasks) { t -> Text("${t.stage}: ${t.completedBy?.let { "completed by $it" } ?: t.assignee?.let { "assigned to $it" } ?: "unclaimed"}") }
+            if (lane.alerts.isNotEmpty()) item { Section(stringResource(R.string.alerts)) }
+            items(lane.alerts) { alert ->
+                Text(alert.message)
+                Text(stringResource(if (alert.acknowledgedAt == null) R.string.open_since else R.string.acknowledged_at, alert.acknowledgedAt ?: alert.at), style = MaterialTheme.typography.bodySmall)
+                if (alert.acknowledgedAt == null) OutlinedButton({
+                    confirm(model.text(R.string.acknowledge_alert), model.text(R.string.action_summary, lane.slug, alert.message),
+                        model.ackBody(lane.slug, alert.id), model.text(R.string.alert_acknowledged, alert.id))
+                }, enabled = enabled) { Text(stringResource(R.string.acknowledge)) }
             }
-            if (l.notes.isNotEmpty()) {
-                item { Section("Decisions") }
-                items(l.notes.reversed()) { n -> Text("${n.at.take(16).replace('T', ' ')} [${n.stage}] ${n.text}", style = MaterialTheme.typography.bodySmall) }
+            if (lane.humanTasks.isNotEmpty()) item { Section(stringResource(R.string.human_tasks)) }
+            items(lane.humanTasks) { task ->
+                Text(stringResource(R.string.task_status, task.stage, task.completedBy?.let { stringResource(R.string.completed_by, it) }
+                    ?: task.assignee?.let { stringResource(R.string.assigned_to, it) } ?: stringResource(R.string.unclaimed)))
             }
-            if (l.ledger.isNotEmpty()) {
-                item { Section("Ledger") }
-                items(l.ledger.reversed()) { e ->
-                    Text("${e.t.take(16).replace('T', ' ')} ${e.kind} ${e.text}", style = MaterialTheme.typography.bodySmall, fontFamily = FontFamily.Monospace, maxLines = 3, overflow = TextOverflow.Ellipsis)
-                }
-            }
+            if (lane.notes.isNotEmpty()) item { Section(stringResource(R.string.notes)) }
+            items(lane.notes.reversed()) { Text(stringResource(R.string.note_entry, it.at, it.stage, it.text)) }
+            if (lane.ledger.isNotEmpty()) item { Section(stringResource(R.string.ledger)) }
+            items(lane.ledger.reversed()) { Text(stringResource(R.string.log_entry, it.t, it.kind, it.text), style = FieldCode) }
         }
     }
-    approving?.let { g ->
-        ApproveDialog(l.slug, g, onDismiss = { approving = null }) { quote ->
+    approving?.let { gate ->
+        ApproveDialog(lane.slug, gate, enabled, { approving = null }) { quote ->
             approving = null
-            val body = try { model.approveBody(l.slug, g.name, quote) } catch (e: IllegalArgumentException) { model.report(e.message ?: "invalid"); return@ApproveDialog }
-            confirm("Approve ${g.name}", "${l.slug}: \"${quote.trim()}\"", body, "${g.name} approved")
+            if (model.isLive(state.host.id)) {
+                val body = try { model.approveBody(lane.slug, gate.name, quote) }
+                    catch (e: IllegalArgumentException) { model.report(model.describe(e)); return@ApproveDialog }
+                confirm(model.text(R.string.approve_gate, gate.name), model.text(R.string.action_summary, lane.slug, quote.trim()), body, model.text(R.string.gate_approved, gate.name))
+            }
         }
     }
+}
+
+@Composable
+private fun ApproveDialog(slug: String, gate: GateView, enabled: Boolean, dismiss: () -> Unit, approve: (String) -> Unit) {
+    var quote by rememberSaveable { mutableStateOf("") }
+    AlertDialog(onDismissRequest = dismiss, title = { Text(stringResource(R.string.approve_gate, gate.name)) },
+        text = { Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text(stringResource(R.string.approval_words, slug))
+            OutlinedTextField(quote, { quote = it }, label = { Text(stringResource(R.string.your_words)) }, minLines = 2)
+        } },
+        confirmButton = { Button({ approve(quote) }, enabled = enabled && quote.trim().length >= 2) { Text(stringResource(R.string.sign_send)) } },
+        dismissButton = { TextButton(dismiss) { Text(stringResource(R.string.cancel)) } })
 }
 
 @Composable
 private fun Section(title: String) {
-    Spacer(Modifier.height(8.dp))
     Text(title, style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.primary)
     HorizontalDivider()
 }
 
 @Composable
-private fun GateRow(g: GateView, all: List<GateView>, person: String, busy: Boolean, approve: () -> Unit) {
-    val missing = g.needs.filter { n -> all.firstOrNull { it.name == n }?.approved != true }
-    val why = when {
-        g.approved -> "approved ${g.approvedAt?.take(16)?.replace('T', ' ') ?: ""}"
-        g.policy -> "decided by an approval policy: at a terminal"
-        g.owner != person -> "decided by ${g.owner}"
-        missing.isNotEmpty() -> "needs ${missing.joinToString(", ")} first"
-        else -> null
-    }
-    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
-        Column(Modifier.weight(1f)) {
-            Text((if (g.approved) "✓ " else "") + g.name, fontWeight = FontWeight.Medium)
-            Text(why ?: "waiting for ${g.owner}${g.stage?.let { " · at $it" } ?: ""}", style = MaterialTheme.typography.bodySmall)
-        }
-        if (why == null) Button(approve, enabled = !busy) { Text("Approve") }
-    }
-}
-
-@Composable
-private fun AlertRow(a: AlertView, busy: Boolean, ack: () -> Unit) {
-    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
-        Column(Modifier.weight(1f)) {
-            Text("${a.kind} · ${a.stage}", fontWeight = FontWeight.Medium)
-            Text(a.message, style = MaterialTheme.typography.bodySmall)
-            Text(a.acknowledgedAt?.let { "acknowledged ${it.take(16).replace('T', ' ')}" } ?: "open since ${a.at.take(16).replace('T', ' ')}",
-                style = MaterialTheme.typography.labelSmall)
-        }
-        if (a.acknowledgedAt == null) OutlinedButton(ack, enabled = !busy) { Text("Ack") }
-    }
-}
-
-@Composable
-private fun ApproveDialog(slug: String, g: GateView, onDismiss: () -> Unit, onApprove: (String) -> Unit) {
-    var quote by rememberSaveable { mutableStateOf("") }
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("Approve ${g.name}") },
-        text = {
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text("$slug. Type your own words: govern records them as your approval, signed by this phone.")
-                OutlinedTextField(quote, { quote = it }, Modifier.fillMaxWidth(), label = { Text("Your words") }, minLines = 2)
-            }
-        },
-        confirmButton = { Button({ onApprove(quote) }, enabled = quote.trim().length >= 2) { Text("Sign and send") } },
-        dismissButton = { TextButton(onDismiss) { Text("Cancel") } },
-    )
-}
+private fun Empty(id: Int) { Text(stringResource(id), Modifier.padding(16.dp)) }
 
 @Composable
 private fun TelemetryView(t: Telemetry) {
-    LazyColumn(Modifier.fillMaxSize(), contentPadding = androidx.compose.foundation.layout.PaddingValues(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-        item { Section("Tokens today (${t.day}) · queue runs and codex asks") }
-        if (t.tokens.isEmpty()) item { Text("none") }
-        items(t.tokens) { r ->
-            Row(Modifier.fillMaxWidth()) {
-                Text(r.lane, Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
-                Text("${r.calls} runs · ${kTok(r.input)} in · ${kTok(r.output)} out${if (r.usd > 0) " · $%.2f".format(r.usd) else ""}",
-                    style = MaterialTheme.typography.bodySmall)
-            }
-        }
-        item { Section("Queue") }
-        items(t.queue.runners) { r -> Text("${r.runner}: ${r.waiting} waiting, ${r.running} running") }
-        item {
-            Text("failed ${t.queue.failed} · unverified replies ${t.queue.unverified}")
-            Text(t.dispatcher?.let { if (it.running) "dispatcher running (pid ${it.pid}, every ${it.interval}s)" else "dispatcher NOT running (pid ${it.pid} gone)" }
-                ?: "dispatcher never started")
-        }
-        item { Section("Your inbox (${t.inbox.size})") }
-        items(t.inbox) { m -> Text("${m.kind} from ${m.from} [${m.project}] ${m.summary}", style = MaterialTheme.typography.bodySmall) }
-        item { Section("Machines today") }
-        if (t.machines.isEmpty()) item { Text("none") }
-        items(t.machines) { m -> Text("${m.lane}: ${m.time}${m.money?.let { " · $it" } ?: ""}") }
-        if (t.allowances.isNotEmpty()) {
-            item { Section("Allowances") }
-            items(t.allowances) { a -> Text(a, fontFamily = FontFamily.Monospace, style = MaterialTheme.typography.bodySmall) }
-        }
-        item { Spacer(Modifier.width(1.dp).height(24.dp)) }
+    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        Section(stringResource(R.string.tokens_today, t.day))
+        if (t.tokens.isEmpty()) Text(stringResource(R.string.none))
+        t.tokens.forEach { Text(stringResource(R.string.token_row, it.lane, it.calls, it.input, it.output, it.usd)) }
+        Section(stringResource(R.string.queue))
+        t.queue.runners.forEach { Text(stringResource(R.string.runner_row, it.runner, it.waiting, it.running)) }
+        Text(stringResource(R.string.queue_status, t.queue.failed, t.queue.unverified))
+        Text(t.dispatcher?.let { stringResource(if (it.running) R.string.dispatcher_running else R.string.dispatcher_stopped, it.pid) } ?: stringResource(R.string.dispatcher_never))
+        Section(stringResource(R.string.inbox, t.inbox.size))
+        t.inbox.forEach { Text(stringResource(R.string.inbox_row, it.kind, it.from, it.project, it.summary)) }
+        Section(stringResource(R.string.machines_today))
+        if (t.machines.isEmpty()) Text(stringResource(R.string.none))
+        t.machines.forEach { Text(stringResource(R.string.machine_row, it.lane, it.time, it.money.orEmpty())) }
+        if (t.allowances.isNotEmpty()) Section(stringResource(R.string.allowances))
+        t.allowances.forEach { Text(it, style = FieldCode) }
     }
-}
-
-private fun kTok(n: Long): String = when {
-    n >= 1_000_000 -> "%.2fM".format(n / 1e6)
-    n >= 1_000 -> "${Math.round(n / 1e3)}k"
-    else -> n.toString()
 }
