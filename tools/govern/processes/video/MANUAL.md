@@ -13,7 +13,7 @@ disclaimer:
 The manual of the `video` process (`govern manual video`). It adds to the general manual (`govern manual`): read that first. A video lane runs plan, script, script-check, sound, preview, produce, final, deliver, with the owner's gates `script`, `final` and `publish`.
 
 You and the owner shape a video together: the work is iterative and creative. `govern` keeps that conversation cheap. Measured on 2026-10-10/11 (PALS-Notes/costs/token-analysis/REPORT-2026-10-11.md), the money did not go into the conversation. It went into four things:
-- re-reading a 468k-token context on every call;
+- re-reading the main session's whole context on every call (the median per call is the workspace's `baseline.mainMedianCtx` in govern.config.json);
 - polling renders from inside the model, about $800;
 - review and fix agent cascades, about $1,400;
 - sessions messaging each other, about $455.
@@ -37,7 +37,8 @@ The owner says what to change. Then:
 2. **Edit the source.** Scene files are generated, so edit the builder, never the XML.
 3. **Build without waiting in the model.** Run `govern run <slug> preview --bg`, then `govern wait <slug>`.
    - In Claude Code, run the wait as one Bash call with `run_in_background: true`. You are notified when it ends, and no tokens are spent while it runs. Never write sleep or poll loops, and never check a job repeatedly.
-   - `wait` prints the exit code, the new files and the last 12 log lines. Use `govern log <slug> --grep RE` only if those lines don't explain a failure.
+   - `wait` prints the exit code, the new files and the last 12 log lines, and exits with the job's exit code. Use `govern log <slug> --grep RE` only if those lines don't explain a failure.
+   - `wait` blocks for at most 540 s (`--timeout S` changes it). A job still running then prints `job ID still running after 540s · wait again with: govern wait <slug> ID` and exits 124: run that printed command again.
    - `govern jobs <slug>` lists the lane's latest jobs (status, exit code, seconds), for when you need a job id or an older result.
 4. **Show the result.**
    - Give the owner the sheet's or preview's path to open.
@@ -63,6 +64,7 @@ These steps run as one verified Codex call each, not as chat work in this sessio
 - Exit 3 means it failed verification. Say so; don't patch the output by hand and present it as verified.
 - Present the result in a few lines, and give the owner the JSON path for the full text.
 - Images can be added with `--image sheet.png`.
+- The `--file` contents of one step are limited to 60000 characters in total. Over the limit the step stops before any Codex call (`inline files are N chars (> 60000); pass fewer or smaller files`): pass fewer or smaller files, such as the one section the step needs. The environment variable `GOVERN_MAX_INLINE` sets another limit; it must be a whole number of characters.
 
 Two steps include the channel's writing guides. The prompts name them by key, `{{include:paths.KEY}}`, and the workspace's govern.config.json maps each key under `paths` to its file (relative to the config's folder, or absolute). A missing key or a missing file stops the step before any Codex call.
 
@@ -85,7 +87,13 @@ A workspace prompt can still include a file inside the workspace by path, `{{inc
 ## The owner's gates
 
 - **The owner sees complete drafts,** not intermediate passes. State the farm pass cost and the film's total when you deliver.
-- **Publish.** `govern publish <slug>` checks the approvals (`final`, `publish`) and the filed package (in the workspace's packages folder), then prints the smm commands. Run those printed commands through Bash, unchanged, so the publish guard sees them. Only do this after the owner's go in this session.
+- **Publish.** `govern publish <slug>` publishes nothing itself. It stops, naming what is missing, unless all of these hold:
+  1. the owner approved the gates `final` and `publish`;
+  2. the lane names its files `vpkg` (the package; a glob means its newest match) and `release` (the release manifest);
+  3. the package sits directly in the workspace's packages folder (`packages` in govern.config.json);
+  4. its sha256 is listed in a `channel-vpkg-SHA256SUMS-*.txt` in that folder.
+
+  It then prints `approvals ✓ (final, publish) · package filed ✓ <package>` and the smm commands to run on the publishing host: a plan (`smm youtube publish release.json --upload`), then the apply (`PACKAGE_FILED=<package> smm youtube publish release.json --upload --apply`). Run those printed commands through Bash, unchanged, so the publish guard sees them. Only do this after the owner's go in this session.
 
 ## Never, in production work
 
@@ -97,4 +105,4 @@ A workspace prompt can still include a file inside the workspace by path, `{{inc
 
 ## Measure
 
-`govern usage` compares a video's segments with the chat baseline (468k context per call, from the workspace's `baseline` config). Report it when the owner asks, or when a video is delivered, alongside the farm cost per pass.
+`govern usage` compares a video's segments with the chat baseline: the median context per call the workspace measured, `baseline.mainMedianCtx` and `baseline.subagentMedianCtx` in govern.config.json. A workspace without `baseline` shows no comparison. Report it when the owner asks, or when a video is delivered, alongside the farm cost per pass.
