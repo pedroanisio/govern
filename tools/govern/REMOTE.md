@@ -86,8 +86,8 @@ limited to 5 attempts against 2^59 values.
 With `--url`, `govern remote pair` also prints the pairing link and draws it as a QR code in the terminal (`--no-qr`
 leaves the code out). The app registers the `govern-remote://pair` link, so the phone's camera opens a scanned code in
 the app. The link only fills the pairing form: the server address stays visible, and nothing is sent until the person
-taps **Pair**. A paired app refuses the link. Because any app or web page on the phone can open such a link, the person
-must check the address before tapping **Pair**: pairing with a server they do not know sends approvals there, not to
+taps **Pair**. A paired app opens the additional-host form without replacing any host until pairing succeeds. Because
+any app or web page on the phone can open such a link, the person must check the address before tapping **Pair**: pairing with a server they do not know sends approvals there, not to
 their own.
 
 The phone generates its key during pairing. The key is ECDSA P-256 in the Android Keystore, in StrongBox hardware when
@@ -155,6 +155,27 @@ revoked token, 403 when the request does not prove itself (signature, clock, non
 lane or route, 409 when the lane's state refuses the action (a gate that needs another first, a gate owned by someone
 else, an alert already acknowledged), 413 for a body over 64 KiB, and 429 above 8 open streams. A stream ends after one
 hour; the app reconnects.
+
+### Android host routing and cached views
+
+The FIELD shell opens one authenticated `/v1/stream` per saved host while foregrounded. Selecting a host routes lane
+reads and actions through that host's endpoint and sealed token. Opening Activity reads `/v1/lane?slug=S` for that
+host's lanes and combines their ledger entries and notes. Decisions combines non-policy, unapproved gates owned by
+the paired person on unfinished lanes from all available desks. These client views add no routes or wire fields.
+An action captures the host and device before biometric confirmation and is refused locally unless that host is live.
+
+`govern-remote-hosts` preferences store a JSON host list and selected ID. A host has `id`, `name`, `baseUrl`, `deviceId`,
+`person`, `pin`, `lanes`, `pairedAt`, `sealedToken` and `keyAlias`. Tokens use the existing AES-GCM Keystore key
+`govern-remote-token-seal`; signing keys use `govern-remote-device-<hostId>`. Migration consumes the old
+`govern-remote` preferences only after persisting the host list and preserves the old `govern-remote-device` alias.
+The same endpoint replaces a host's credentials but retains its local identity and clears previous cached data.
+
+The app stores `desk.json` and `lane-<sha256(slug)>.json` under `noBackupFilesDir/cache/<hostId>/`. Desk files contain
+the wire Desk; lane files wrap the wire LaneDetail as `{at, detail}`. Writes sync a temporary file, then atomically rename it.
+A disconnected host with a snapshot is shown as cached, with its timestamp; cached state never enables an action.
+Forgetting a host deletes only its credentials, signing alias and cache directory. Other hosts and the shared token
+sealing key remain. HTTP `Cache-Control: no-store` still prevents transport caches; these explicit app snapshots
+provide the offline view and are excluded from Android backups.
 
 ## Residual risks and their limits
 

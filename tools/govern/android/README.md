@@ -1,4 +1,4 @@
-# govern remote for Android
+# govern FIELD for Android
 
 Part of [govern](../README.md), in [super-tools](../../../README.md).
 
@@ -7,14 +7,39 @@ alerts from the phone. It speaks `govern-remote/1`, the protocol in [REMOTE.md](
 
 ## What it shows
 
-- **Lanes**: each lane's stage and progress, its state (open, ready, blocked, finished), the next gate it needs, open
-  alerts, the agent working on it, its last job and last note. The list updates live while the app is open.
-- **A lane**: stages, gates with who decides each, alerts, human tasks, the last decisions and the ledger.
-- **Telemetry**: tokens per lane today, queue depth per runner, the dispatcher, your inbox, machine time and allowances.
+- **Operation**: the desk overview, lane progress and telemetry for the selected host.
+- **Hosts**: paired hosts with live, cached or offline state, identity, scope and certificate pin; select, pair or forget a host.
+- **Decisions**: unapproved non-policy gates owned by the paired person, across unfinished lanes on all hosts with a live or cached desk.
+- **Activity**: recent ledger entries and notes for the selected host, newest first. Opening this tab fetches lane details when live.
+- **A lane**: stages, gates, alerts, human tasks, notes and ledger; Back returns to the previous tab.
 
 An approval needs your own words and a confirmation with a strong biometric or the screen lock. The phone signs the
-request with a key that lives in its secure hardware and never leaves it; govern records your words with that signature
-as the approval's source. Gates decided by an approval policy (a quorum of named people) are decided at a terminal.
+request with a Keystore key; govern records your words and signature. Policy gates remain at a terminal.
+Actions and refresh are disabled unless the selected host stream is live. A confirmation captures its host identity
+before authentication, so switching hosts cannot redirect the signed action.
+
+## Hosts, offline cache and languages
+
+Each host retains a random stable ID, endpoint, device ID, person, optional lane scope, pin and pairing timestamp.
+Tokens are sealed individually with AES-GCM. New hosts use the signing alias `govern-remote-device-<hostId>`.
+The existing single pairing migrates automatically and retains `govern-remote-device`; no new pairing is needed.
+Because the legacy preferences contain no timestamp, its `pairedAt` records the migration time.
+Pairing the same endpoint replaces its credentials while retaining its ID and key, and clears the old scope's cache.
+Forgetting a host removes its local credential, signing key and snapshots; it does not revoke the server device.
+Use `govern remote revoke` to revoke that credential on the server.
+
+Each host gets its own foreground stream and reconnect backoff (2–60 seconds). The last desk and each fetched lane
+are written as JSON under `noBackupFilesDir/cache/<hostId>/`, using a synced temporary file and atomic rename.
+Snapshots load on startup or when opening a lane. A cached banner shows the snapshot timestamp when offline;
+a lane never fetched on this phone cannot be opened offline. Corrupt snapshots report an error.
+
+FIELD follows the system dark/light setting, with rounded cards and monospace codes, pins and ledger text.
+English is the default language; Brazilian Portuguese follows the device locale. Both resource sets have matching
+keys and format arguments, enforced by `StringsTest`. Server-authored content and protocol error details remain
+in the language sent by the host.
+
+This checkout's wire types remain `govern-remote/1`. Session summaries and phone-initiated comparison-code pairing
+require the protocol lane's `govern-remote/2` types and client endpoints; the shell currently uses code-based pairing.
 
 ## Build
 
@@ -31,8 +56,9 @@ The APK is `app/build/outputs/apk/debug/app-debug.apk`, signed with the SDK's de
 A release build (`./gradlew assembleRelease`) needs your own signing key.
 
 The unit tests cover the wire types against shared fixtures, the signed action bodies, the event-stream parser, pairing
-links and certificate pinning. `EndToEndTest` starts the real `govern remote serve` under Node (`GOVERN_NODE`, else
-`node` on `PATH`) and `openssl` for a throwaway certificate, then pairs, reads, approves, replays, streams and revokes.
+links and certificate pinning. `HostListTest`, `DeskCacheTest`, `StringsTest` and `DecisionsTest` cover host-list
+migration, atomic snapshots, locale parity and the cross-host decision filter. `EndToEndTest` starts the real
+`govern remote serve` under Node (`GOVERN_NODE`, else `node` on `PATH`) and `openssl` for a throwaway certificate, then pairs, reads, approves, replays, streams and revokes.
 
 ## Pair the phone
 
