@@ -276,6 +276,15 @@ test("the negative probe fails the check when a capability the profile lacks wor
   assert.equal(checks(e, "researcher").ok, false);
 });
 
+test("the negative probe passes when the model reports an error for the missing tool and leaves no trace of it", () => {
+  const e = env();
+  const missing = { result: { capability: "edit", status: "error", evidence: "Write tool not available in function list" } };
+  const r = govern(e, ["caps", "--check", "researcher"], { FAKE_CLAUDE_SCRIPT: script(e, "missing", [...RESEARCHER_OK.slice(0, 3), missing]) });
+  assert.equal(r.code, 0, r.out + r.err);
+  assert.match(r.out, /not-edit\s+ok/);
+  assert.match(r.out, /researcher: check passed \(4 probes\)/);
+});
+
 const MINE = (probe: Record<string, unknown> | undefined, selfTest: "required" | "optional" = "required") => JSON.stringify({ version: 1,
   capabilities: [{ name: "mine", description: "a custom grant", call: "Read", claude: { allow: ["Read"] }, effect: "read", ...(probe ? { probe } : {}) }],
   profiles: [{ name: "mine-only", engine: "claude", capabilities: ["mine"], selfTest }] });

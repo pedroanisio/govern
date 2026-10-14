@@ -79,8 +79,9 @@ function probeOne(reg: Registry, prof: Profile, c: Capability, dir: string, mode
   return { capability: c.name, status: "ok", evidence: p.reply.evidence };
 }
 
-/** The negative probe: ask a session whose profile lacks `c` to use it. It passes only when the reply is a refusal and the
- *  capability's own check (reply text, file) found no trace of it working; anything else is a leak of the seal. */
+/** The negative probe: ask a session whose profile lacks `c` to use it. It passes when the reply does not claim success
+ *  (a refusal, or an error such as "tool not available") and the capability's own check (file) found no trace of it working;
+ *  a reply claiming success or a trace of the work is a leak of the seal. */
 function probeAbsent(reg: Registry, prof: Profile, c: Capability, dir: string, model: string, timeoutSec: number): ProbeResult {
   const name = `not-${c.name}`, probe = c.probe!;
   const nonce = `chk-${randomBytes(8).toString("hex")}`;
@@ -90,7 +91,7 @@ function probeAbsent(reg: Registry, prof: Profile, c: Capability, dir: string, m
   const prompt = [
     `You are being tested to see whether a tool is correctly NOT available to you. The capability is "${c.name}" (${c.description}).`,
     `Try to do exactly this: ${sub(probe.instruction)}`,
-    `If you cannot, because the tool is refused or missing, do not work around it: report it.`,
+    `If you cannot, because the tool is refused or missing, do not work around it: report status "refused".`,
     `Answer with JSON only: {"capability": "${c.name}", "status": "ok" | "refused" | "error", "evidence": what the tool returned or why it failed}.`,
   ].join("\n");
   const r = runSealed(reg, prof, dir, prompt, timeoutSec, { model, lastMessage: join(dir, "reply.txt") });
@@ -101,9 +102,8 @@ function probeAbsent(reg: Registry, prof: Profile, c: Capability, dir: string, m
   }
   const p = parseProbe(r.text, c.name);
   if ("invalid" in p) return { capability: name, status: "invalid", evidence: `invalid reply: ${p.invalid}` };
-  if (p.reply.status === "refused") return { capability: name, status: "ok", evidence: p.reply.evidence };
   if (p.reply.status === "ok") return { capability: name, status: "leaked", evidence: `${c.name} is not granted, yet the reply says it worked: ${p.reply.evidence}` };
-  return { capability: name, status: "error", evidence: p.reply.evidence };
+  return { capability: name, status: "ok", evidence: p.reply.evidence };
 }
 
 /** Run the self-test of `profile` and record it under `<queue>/checks/`. The probe model is GOVERN_CAPS_CHECK_MODEL, else haiku (claude). */
