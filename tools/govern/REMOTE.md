@@ -25,8 +25,7 @@ and the agent working on the lane. Telemetry is the desk's lower half: tokens pe
 the dispatcher, the owner's inbox, machine time and allowances. The owner's decisions are approving a gate and
 acknowledging a timer alert.
 
-The phone does not advance lanes, run commands or send tasks, because those are the agents' work and they run checks that
-take minutes on the workspace machine. [PURPOSE.md](PURPOSE.md) puts the owner at the gates and the agents at the work;
+The phone does not advance lanes or run arbitrary commands. It can create a scoped conversation and send signed guidance to an existing session; the agents run the work and its checks on the workspace machine. [PURPOSE.md](PURPOSE.md) puts the owner at the gates and the agents at the work;
 the protocol follows that split. Every other remote capability would widen what a stolen phone can do without giving
 the owner anything a gate does not already give.
 
@@ -123,7 +122,7 @@ limited to 5 attempts against 2^59 values.
 
 With `--url`, `govern remote pair` also prints the pairing link and draws it as a QR code in the terminal (`--no-qr`
 leaves the code out). The app registers the `govern-remote://pair` link, so the phone's camera opens a scanned code in
-the app. The link only fills the pairing form: the server address stays visible, and nothing is sent until the person
+the app. A code-bearing link fills the pairing form: the server address stays visible, and nothing is sent until the person
 taps **Pair**. A paired app opens the additional-host form without replacing any host until pairing succeeds. Because
 any app or web page on the phone can open such a link, the person must check the address before tapping **Pair**: pairing with a server they do not know sends approvals there, not to
 their own.
@@ -301,8 +300,8 @@ other extensions use application/octet-stream.
 
 The FIELD shell opens one authenticated `/v1/stream` per saved host while foregrounded. Selecting a host routes lane
 reads and actions through that host's endpoint and sealed token. Opening Activity reads `/v1/lane?slug=S` for that
-host's lanes and combines their ledger entries and notes. Decisions combines non-policy, unapproved gates owned by
-the paired person on unfinished lanes from all available desks. These client views add no routes or wire fields.
+host's lanes and combines their decisions, ledger entries and notes. Decisions combines non-policy, unapproved gates owned by
+the paired person at the current stage (or with no stage) on unfinished lanes from all available desks. These client views add no routes or wire fields.
 An action captures the host and device before biometric confirmation and is refused locally unless that host is live.
 
 `govern-remote-hosts` preferences store a JSON host list and selected ID. A host has `id`, `name`, `baseUrl`, `deviceId`,
@@ -350,3 +349,21 @@ their versions and reviews live in the lane ledger, with no separate artifact me
 
 Signed actions also update lane `govern.json` notes and `govern/ledger.jsonl`; instruct/session update conversation
 `session.json` through the conversation runtime. No new action state files are introduced.
+
+### FIELD screen consumption
+
+The Android overview aggregates the existing desk sessions and current-stage decision gates across hosts. Opening a
+session uses `/v1/session` plus its `/v1/lane`; check evidence opens `/v1/job` with `lines=1000`. The new-session form
+uses the selected desk’s scoped lanes and advertised engines. Signed instruct/session results refresh the displayed
+SessionDetail. No screen introduces a route, field or server state file.
+
+Decision artifact downloads use `/v1/artifact` and compare the verified response digest with the displayed ArtifactView.
+The app confirms and signs `reviewed` before opening that exact cached file through a non-exported FileProvider.
+The hero selects the most recently modified artifact, independently of filename ordering.
+Approve/changes include its name and SHA and the person’s unprefilled quote; a 409 reloads evidence. The Android
+artifact cache is `cacheDir/artifacts/<hostId>/<sha256>/<name>` and grants read access only for the opened file.
+
+Code-less links initiate `/v1/pair/request`. The phone displays ComparisonCode and requested scope, polls with the
+request secret until the injected-clock expiry, posts cancellation on request, and seals confirmed credentials in
+HostStore. Waiting request data stays in memory; it is not a new persistent state file. Legacy code links retain the
+existing explicit form submission.
