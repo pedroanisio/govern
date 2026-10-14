@@ -50,6 +50,27 @@ export interface Call {
   outputs?: Record<string, string>;
 }
 export const CALL = obj({ process: name }, { kind: name, inputs: record(name), outputs: record(name) });
+export interface ForEach {
+  process: string;
+  kind?: string;
+  collection: string;
+  itemField: string;
+  maxItems: number;
+  concurrency?: number;
+  inputs?: Record<string, string>;
+  outputs?: Record<string, string>;
+}
+export const FOREACH = obj(
+  { process: name, collection: name, itemField: name, maxItems: posInt },
+  { kind: name, concurrency: posInt, inputs: record(name), outputs: record(name) }
+);
+export interface Batch {
+  items: Scalar[];
+  children: Record<string, string>;
+  synced: boolean;
+  snapshot: Snapshot;
+}
+const BATCH = obj({ items: arr(scalar), children: record(str), synced: boolean, snapshot: (v, p) => SNAPSHOT(v, p) });
 export interface StageRuntime {
   enteredAt: string;
   generation: number;
@@ -63,6 +84,7 @@ export interface StageRuntime {
   eventId?: string;
   child?: string;
   childSynced?: boolean;
+  batch?: Batch;
 }
 export const RUNTIME = record(
   obj(
@@ -75,7 +97,8 @@ export const RUNTIME = record(
       compensation: literal("running", "failed", "done"),
       eventId: name,
       child: str,
-      childSynced: boolean
+      childSynced: boolean,
+      batch: BATCH
     }
   )
 );
@@ -116,11 +139,12 @@ export interface Invocation {
   parent: string;
   stage: string;
   generation: number;
+  itemIndex?: number;
 }
-export const INVOCATION = obj({ parent: str, stage: name, generation: posInt });
+export const INVOCATION = obj({ parent: str, stage: name, generation: posInt }, { itemIndex: nonnegative });
 interface ProcessLike {
   name: string;
-  fields?: Record<string, { type: string }>;
+  fields?: Record<string, { type: string; items?: { type: string } }>;
   people?: Record<string, { roles?: string[] }>;
   calendars?: Record<string, Calendar>;
   stages: {
@@ -130,6 +154,7 @@ interface ProcessLike {
     event?: EventWait;
     onError?: ErrorPolicy;
     call?: Call;
+    foreach?: ForEach;
     human?: { role?: string; assignee?: string };
     join?: unknown;
   }[];
@@ -186,6 +211,8 @@ export function validateLifecycleProcess(p: ProcessLike): void {
     }
     if (s.event) {
       field(s.event.correlationField, at + ".event.correlationField");
+      if (fields[s.event.correlationField]!.type === "array")
+        reject(at + ".event.correlationField", "event correlation must be scalar");
       for (const dest of Object.keys(s.event.outputs ?? {})) {
         field(dest, at + ".event.outputs");
         if (dest === s.event.correlationField)
@@ -196,6 +223,24 @@ export function validateLifecycleProcess(p: ProcessLike): void {
       if (s.call.process === p.name) reject(at + ".call", "recursive self-call");
       for (const source of Object.values(s.call.inputs ?? {})) field(source, at + ".call.inputs");
       for (const dest of Object.keys(s.call.outputs ?? {})) field(dest, at + ".call.outputs");
+    }
+    if (s.foreach) {
+      const f = s.foreach;
+      field(f.collection, at + ".foreach.collection");
+      if (fields[f.collection]!.type !== "array") reject(at + ".foreach.collection", "foreach requires an array field");
+      if (f.process === p.name) reject(at + ".foreach", "recursive self-call");
+      if (f.maxItems > 10000 || (f.concurrency ?? 4) > 256)
+        reject(at + ".foreach", "maximum 10000 items and 256 concurrent cases");
+      if (Object.hasOwn(f.inputs ?? {}, f.itemField))
+        reject(at + ".foreach.inputs", "itemField cannot be overridden by static inputs");
+      for (const source of Object.values(f.inputs ?? {})) field(source, at + ".foreach.inputs");
+      for (const dest of Object.keys(f.outputs ?? {})) {
+        field(dest, at + ".foreach.outputs");
+        if (fields[dest]!.type !== "array") reject(at + ".foreach.outputs", "collected outputs require array fields");
+        if (dest === f.collection || Object.values(f.inputs ?? {}).includes(dest))
+          reject(at + ".foreach.outputs", "outputs cannot overwrite frozen inputs");
+      }
+      if (s.event || s.call) reject(at + ".foreach", "foreach cannot share a stage with event or call");
     }
     if (s.call && s.event) reject(at, "a stage cannot both call a subprocess and wait for an external event");
     if (s.onError) {

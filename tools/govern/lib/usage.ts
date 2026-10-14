@@ -12,6 +12,7 @@ import { fileURLToPath } from "node:url";
 import { readJsonl, kTok } from "./util.ts";
 import { ledgerFile } from "./project.ts";
 import { projectsDir, baseline } from "./workspace.ts";
+import { list as conversationList } from './conversation.ts';
 import * as allowances from "./allowances.ts";
 import { grokHome, realGrokHome } from "./grokhome.ts";
 import { machineLines, machineEntries } from "./resources.ts";
@@ -362,6 +363,14 @@ export function report(slugs: string[] | undefined, since?: number): string {
     L.push(row("TOTAL conversation", t) + (b ? `  ${b}` : ""));
     if (t.owner) L.push(`per message from you: ${kTok(Math.round(t.inputSide / t.owner))} input-side tokens`);
     L.push(...mach, "");
+  }
+  for(const s of conversationList()) {
+    if(slugs && (!s.lane || !slugs.includes(s.lane)))continue;
+    const runs=s.runs.filter(r=>r.endedAt&&(!since||Date.parse(r.endedAt)>=since));
+    if(!runs.length)continue;
+    const input=runs.reduce((n,r)=>n+(r.usage?.input??0),0),output=runs.reduce((n,r)=>n+(r.usage?.output??0),0);
+    const usd=runs.reduce((n,r)=>n+(r.usage?.costUsd??0),0),unknown=runs.filter(r=>r.host&&r.usage?.costUsd===undefined).length;
+    L.push(`govern conversations: ${s.id}${s.lane?` [${s.lane}]`:''}: ${runs.length} turns, ${input} in, ${output} out, $${usd.toFixed(2)} recorded${unknown?`, ${unknown} costs unknown`:''}`);
   }
   if (!L.length) L.push("no govern work segments or asks recorded yet");
   const allow = allowances.shown();

@@ -2,11 +2,12 @@
 import * as lifecycle from './lib/lifecycle.ts';
 import { enterRuntime } from './lib/lifecycle-runtime.ts';
 import { eventServer } from './lib/event-server.ts';
+import { SUBS as CONVERSATION_SUBS } from './lib/conversation-cli.ts';
 import { withLaneLock } from './lib/lane-lock.ts';
 // govern — run lanes of work (videos, software, ops, any process) through their stages with agents, cheaply and under the owner's gates.
 // The manual for the AI operating it is SKILL.md (govern manual). Usage: govern help.
 import { activeStages, enterTasks, isGraph, requireActive, validateRequired, nextStages, completeStage, setData, authenticatedPerson, humanAction, requireHumanComplete, gateApproved, policyVote, rejectRoute } from './lib/business.ts';
-import { scalar } from './lib/business-schema.ts';
+import { scalar, value } from './lib/business-schema.ts';
 import { check, record } from './lib/shape.ts';
 import { spawnSync } from "node:child_process";
 import { readFileSync, globSync, mkdirSync } from "node:fs";
@@ -81,7 +82,7 @@ function passSkipped(p: Project, to: string): void {
   if (b.length) fail(`${p.slug} is blocked by ${b.join(", ")}`);
   for (const s of list.slice(Math.max(from, 0), target)) {
     const def=processOf(p).stages.find(x=>x.name===s)!;
-    if(def.event||def.call||def.onError||def.timer)fail(`${p.slug}: lifecycle stage ${s} must be completed with govern advance, not skipped`);
+    if(def.event||def.call||def.foreach||def.onError||def.timer)fail(`${p.slug}: lifecycle stage ${s} must be completed with govern advance, not skipped`);
     validateRequired(p, s);
     requireHumanComplete(p, s);
     const chk = checkOf(p, s);
@@ -184,7 +185,7 @@ function cmdData(a:Args):void {
   const p=load(a._[1]), text=opt(a,'set');
   if(text!==undefined) {
     let raw:unknown; try {raw=JSON.parse(text);} catch {fail('--set must be a JSON object');}
-    const patch=check('case data',raw,record(scalar));
+    const patch=check('case data',raw,record(value));
     setData(p,patch); save(p); appendLedger(p.slug,{kind:'data',fields:Object.keys(patch)});
   }
   out(JSON.stringify(p.data??{},null,2));
@@ -295,7 +296,7 @@ function cmdAdvance(a: Args): void {
   requireActive(p);
   const attemptedStage=p.stage;if(lifecycle.tickTimers(p)){save(p);if(!activeStages(p).includes(attemptedStage)){out(`${p.slug}: routed by deadline escalation to ${p.stage}`);return;}p.stage=attemptedStage;}
   const stageDef=processOf(p).stages.find(s=>s.name===p.stage)!;
-  if(stageDef.call)lifecycle.syncChild(p,p.stage);
+  if(stageDef.call||stageDef.foreach)lifecycle.syncChild(p,p.stage);
   lifecycle.requireLifecycleReady(p);
   validateRequired(p);
   requireHumanComplete(p);
@@ -366,7 +367,7 @@ function cmdRecover(a:Args):void {
 }
 function cmdMigrate(a:Args):void {
   const quote=opt(a,'quote');if(!quote||quote.trim().length<2)fail('--quote is required: the human migration decision');const source=verifyQuote(quote!);
-  const map=check('stage map',jsonValue(opt(a,'map')),record((x,p)=>typeof x==='string'?x:fail(`${p} must be a stage name`))),data=check('migration data',jsonValue(opt(a,'data')),record((x,p)=>x===null?null:scalar(x,p)));
+  const map=check('stage map',jsonValue(opt(a,'map')),record((x,p)=>typeof x==='string'?x:fail(`${p} must be a stage name`))),data=check('migration data',jsonValue(opt(a,'data')),record((x,p)=>x===null?null:value(x,p)));
   lifecycle.transaction(checkSlug(a._[2]),()=>{const p=load(a._[2]);lifecycle.migrate(p,map,data,quote!);appendLedger(p.slug,{kind:'migration-source',source});out(`${p.slug}: migrated to revision ${p.processSnapshot!.revision}`);});
 }
 function cmdTick(a:Args):void {
@@ -379,8 +380,8 @@ function cmdTick(a:Args):void {
       for(const stage of [...activeStages(p)]){
         const current=load(slug);if(!activeStages(current).includes(stage))continue;
         const s=processOf(current).stages.find(s=>s.name===stage)!,r=current.runtime?.[stage];
-        if(s.call)lifecycle.syncChild(current,stage);
-        if(!(r?.eventId||r?.childSynced||(r?.retryAt&&Date.parse(r.retryAt)<=Date.now())))continue;
+        if(s.call||s.foreach)lifecycle.syncChild(current,stage);
+        if(!(r?.eventId||r?.childSynced||r?.batch?.synced||(r?.retryAt&&Date.parse(r.retryAt)<=Date.now())))continue;
         const args=parseArgs([slug,'--stage',stage,'--note','Declared workflow event, child completion or scheduled retry verified'],{value:['stage','note']},'advance');args._.unshift('advance');cmdAdvance(args);
       }
     });}catch(e){if(!(e instanceof GovernError))throw e;failed=true;out(`${slug}: blocked: ${e.message}`);}
@@ -732,13 +733,13 @@ function serviceUnit(bin: string, interval: string, reapEvery: number | undefine
 
 /** One help line: the usage after `govern <command>[ <sub>]`, and what it does. */
 type Line = readonly [usage: string, help?: string];
-export interface Sub { lines: readonly Line[]; flags?: FlagSpec; run: (a: Args) => void }
+export interface Sub { lines: readonly Line[]; flags?: FlagSpec; run: (a: Args) => void | Promise<void> }
 export interface Cmd {
   name: string;
   section: number;
   lines?: readonly Line[];
   flags?: FlagSpec;
-  run?: (a: Args) => void;
+  run?: (a: Args) => void | Promise<void>;
   /** Subcommands: the word right after the command, each with its own flags. */
   subs?: Record<string, Sub>;
   /** The subcommand a bare `govern <name>` runs; without one, a missing or unknown subcommand is refused with `noSub`. */
@@ -767,6 +768,7 @@ const REAP_TIMEOUT = 120;
 const TASK_SUBS = "govern task send|list|show|inbox|close|reply|forward|dispatch|install-service (govern help)";
 
 export const COMMANDS: readonly Cmd[] = [
+  {name:'conversation',section:0,footer:false,subs:CONVERSATION_SUBS,noSub:'govern conversation create|list|show|history|send|run|cancel|recover|context|events|close (govern help)'},
   { name: "init", section: 0, flags: { bool: ["nested"] },
     lines: [["[<dir>] [--nested]", "make <dir> (default: here) a workspace by the convention: .govern/ with projects, queue, processes; inside another workspace only with --nested"]],
     run: (a) => out(`created ${initWorkspace(a._[1] ?? process.cwd(), { nested: flag(a, "nested") })}`) },
@@ -835,7 +837,7 @@ export const COMMANDS: readonly Cmd[] = [
     out((p.alerts??[]).map(x=>`${x.id} ${x.kind} ${x.acknowledgedAt?'acknowledged':'open'}: ${x.message}`).join('\n')||'(no alerts)');
   }},
   {name:'subprocess',section:1,lines:[["<slug> <stage>","start the declared child if needed and sync its outputs only after it finishes"]],run:a=>{
-    const p=load(a._[1]),stage=a._[2]??p.stage,ready=lifecycle.syncChild(p,stage);out(`${stage}: ${ready?'child complete; outputs synced':`waiting for ${p.runtime![stage]!.child}`}`);
+    const p=load(a._[1]),stage=a._[2]??p.stage,ready=lifecycle.syncChild(p,stage);out(`${stage}: ${ready?'child complete; outputs synced':`waiting for ${p.runtime![stage]!.batch ? `${Object.keys(p.runtime![stage]!.batch!.children).length}/${p.runtime![stage]!.batch!.items.length} item cases` : p.runtime![stage]!.child}`}`);
   }},
   {name:'recover',section:1,flags:{value:['stage','action','quote']},lines:[["<slug> [--stage S] --action retry|compensated --quote Q","human recovery: reset exhausted retries, or confirm compensation after investigating an uncertain result"]],run:cmdRecover},
   { name: "dep", section: 1, flags: { value: ["after", "rm"] },
@@ -1014,12 +1016,12 @@ const FLAG_WORDS: ReadonlySet<string> = new Set(
     .flatMap((f) => [...(withHelp(f).bool ?? []), ...(f?.value ?? []), ...(f?.multi ?? [])]),
 );
 
-function main(argv: string[]): void {
+async function main(argv: string[]): Promise<void> {
   const name = argv[0];
   if (name === undefined || name === "-h" || name === "--help") return void out(HELP);
   if (name.startsWith("--")) fail(`the command comes first: govern <command> [<args>] [--flags] (got ${name} first; govern help)`);
   const c = byName.get(name) ?? unknownCommand(name);
-  let entry: { flags?: FlagSpec; run?: (a: Args) => void } = c, label = c.name, sub: string | undefined, rest = argv.slice(1);
+  let entry: { flags?: FlagSpec; run?: (a: Args) => void | Promise<void> } = c, label = c.name, sub: string | undefined, rest = argv.slice(1);
   const lead = [name];
   if (c.subs) {
     const word = argv[1];
@@ -1037,12 +1039,12 @@ function main(argv: string[]): void {
   a._.unshift(...lead);
   const mutations = new Set(['new','note','approve','reject','data','human','advance','cmd','file','dep','check','event','alerts','subprocess','recover']);
   if (mutations.has(name)) withLaneLock(laneLockDir(a._[1]), () => entry.run!(a));
-  else entry.run!(a);
+  else await entry.run!(a);
   if (c.footer !== false) ctxFooter();
 }
 
 if (import.meta.main) {
-  try { main(process.argv.slice(2)); }
+  try { await main(process.argv.slice(2)); }
   catch (e) {
     if (e instanceof GovernError) { process.stderr.write(`govern: ${e.message}\n`); process.exitCode = e.code; }
     else throw e;

@@ -5,7 +5,7 @@
 import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join, dirname, resolve } from "node:path";
 import { fail } from "./util.ts";
-import { obj, str, posInt, record, parseFile, type Shape } from "./shape.ts";
+import { obj, str, posInt, record, arr, parseFile, type Shape } from "./shape.ts";
 import { RESOURCES } from "./resources.ts";
 
 export const CONFIG_FILE = "govern.config.json";
@@ -32,6 +32,8 @@ export interface WorkspaceConfig {
   allowances?: unknown;
   /** Where locks and other shared run state live (default: govern-state beside the lanes' folder). */
   state?: string;
+  /** Trusted local NDJSON conversation adapters; task runners remain separate. */
+  conversationAdapters?: Record<string, { argv: string[] }>;
 }
 /** A file path, or the list shape lib/resources.ts checks (kept as written: resources() builds the registry). */
 const resourcesShape: Shape<unknown> = (v, p) => (typeof v === "string" ? v : (RESOURCES(v, p), v));
@@ -39,6 +41,7 @@ const CONFIG = obj({}, {
   projects: str, queue: str, processes: str, workflow: str, tuningLog: str, packages: str, prompts: str, paths: record(str),
   baseline: obj({ mainMedianCtx: posInt, subagentMedianCtx: posInt, source: str }),
   capabilities: str, resources: resourcesShape, allowances: (v: unknown) => v, state: str,
+  conversationAdapters: record(obj({argv: arr(str, {nonEmpty: true})})),
 });
 
 const isDir = (p: string): boolean => { try { return statSync(p).isDirectory(); } catch { return false; } };

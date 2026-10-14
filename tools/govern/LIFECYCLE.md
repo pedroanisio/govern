@@ -200,3 +200,5 @@ node --test --disable-warning=ExperimentalWarning tools/govern/test/lifecycle.te
 ```
 
 The tests exercise HTTP authentication and delivery, calendars across DST and holidays, deduplication, durable retries, compensation failures, actual child completion, frozen definitions and rejected migrations. Existing business/CLI/process/validation suites cover compatibility.
+
+See [Loops and dynamic branching](ITERATION.md) for bounded repeats, conditional fan-out, typed collections, and per-item subprocess joins.

@@ -109,6 +109,8 @@ function procText(pid: number, file: "comm" | "environ"): string | undefined {
  *  Codex first: a Codex run started from a Claude session has that session in its parent chain. */
 export function origin(o: { env?: NodeJS.ProcessEnv; dir?: string; chain?: () => number[] } = {}): { kind: "terminal" } | { kind: "session"; sessionId: string } {
   const env = o.env ?? process.env;
+  if (env.GOVERN_CONVERSATION_RUN || (o.chain?.() ?? pidChain()).some(pid => (procText(pid, 'environ') ?? '').split('\0').some(kv => kv.startsWith('GOVERN_CONVERSATION_RUN='))))
+    fail("an approval from a conversation model runtime cannot be verified: the human must approve from their own terminal or a verified Claude session", 1);
   const grok = GROK_MARKERS.find((k) => env[k]) ? `${GROK_MARKERS.find((k) => env[k])} is set` : grokAncestor(o.chain?.());
   if (grok) fail(`an approval from a Grok session cannot be verified (${grok}, and govern does not read grok's session store as a record of the person's words): ` +
     "ask the person to approve from their own terminal or a Claude session", 1);

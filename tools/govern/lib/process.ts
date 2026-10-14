@@ -8,7 +8,7 @@ import { fail, sha256 } from "./util.ts";
 import { obj, arr, str, name, literal, record, posInt, check, reject, keyPath, type Shape } from "./shape.ts";
 import { NAME_CHARS } from "./resources.ts";
 import { ROUTE, JOIN, HUMAN, FIELD, PEOPLE, POLICY, validateBusinessProcess, type Route, type Join, type Human, type Field, type Person, type Policy } from './business-schema.ts';
-import { TIMER, EVENT_WAIT, ERROR_POLICY, CALL, CALENDARS, validateLifecycleProcess, type Timer, type EventWait, type ErrorPolicy, type Call, type Calendar, type Snapshot } from './lifecycle-schema.ts';
+import { TIMER, EVENT_WAIT, ERROR_POLICY, CALL, CALENDARS, validateLifecycleProcess, type Timer, type EventWait, type ErrorPolicy, type Call, type Calendar, type Snapshot, FOREACH, type ForEach } from './lifecycle-schema.ts';
 import { processesDir } from "./workspace.ts";
 import type { Project } from "./project.ts";
 
@@ -16,7 +16,7 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 const BUILTIN = resolve(HERE, "..", "processes");
 
 /** `requires: "check"`: only a passing check moves a lane past the stage, never a note, never a skip. */
-export interface StageDef { name: string; exit?: string; check?: string; requires?: "check"; next?: Route[]; join?: Join; human?: Human; requiredFields?: string[]; timer?:Timer; event?:EventWait; onError?:ErrorPolicy; call?:Call }
+export interface StageDef { name: string; exit?: string; check?: string; requires?: "check"; next?: Route[]; join?: Join; human?: Human; requiredFields?: string[]; timer?:Timer; event?:EventWait; onError?:ErrorPolicy; call?:Call; foreach?:ForEach }
 /** `owner`: who decides the gate (default "owner"); `govern approve --by` must name them. */
 export interface GateDef { name: string; stage?: string; needs?: string[]; message?: string; owner?: string; policy?: Policy }
 /** What a new lane of the process starts with: commands and named files, each group optionally only when a file already
@@ -57,7 +57,7 @@ export interface Process {
 
 export const extraDir = (): string | undefined => processesDir();
 
-const STAGE = obj({ name }, { exit: str, check: name, requires: literal("check"), next: arr(ROUTE), join: JOIN, human: HUMAN, requiredFields: arr(name), timer:TIMER, event:EVENT_WAIT, onError:ERROR_POLICY, call:CALL });
+const STAGE = obj({ name }, { exit: str, check: name, requires: literal("check"), next: arr(ROUTE), join: JOIN, human: HUMAN, requiredFields: arr(name), timer:TIMER, event:EVENT_WAIT, onError:ERROR_POLICY, call:CALL, foreach:FOREACH });
 const GATE = obj({ name }, { stage: name, needs: arr(name), message: str, owner: name, policy: POLICY });
 /** The recipe placeholders each step may use: a name here in a step that cannot have it is refused, not left as text. */
 const SLICE_VARS = ["pieces", "out", "tag", "piece", "id"];

@@ -38,6 +38,7 @@ govern exists so that whoever owns the work keeps the decisions and knows where 
 ### Core Capabilities
 
 - **Lanes.** Work moves through a process's stages, with exit checks and gates. Video, software and operations are built in; a workspace adds its own.
+- **Conversations.** Durable messages, serial turns, streamed progress, cancellation and explicit restart recovery, independent of a harness's session store.
 - **Briefs.** Each session starts from a compact brief, not from the history.
 - **Jobs.** Builds and checks run without a model waiting on them.
 - **Verified one-shot model steps,** each with a schema and checks.
@@ -48,7 +49,7 @@ govern exists so that whoever owns the work keeps the decisions and knows where 
 
 govern does **not**:
 
-- act as a chat or an agent itself;
+- implement messaging channels or its own model; its durable conversation runtime uses configured agent harnesses;
 - schedule clusters or replace CI. It governs work on existing machines and services;
 - judge the work. Judgement stays with agents and people;
 - belong to one project. PALS Notes is its first user, not its scope.
