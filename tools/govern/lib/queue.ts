@@ -10,7 +10,7 @@ import { tmpdir, homedir } from "node:os";
 import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync, appendFileSync } from "node:fs";
 import { join, resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { fail, stamp, nowIso, clip } from "./util.ts";
+import { fail, stamp, nowIso, clip, charLimit } from "./util.ts";
 import { repo, projectsDir, queueDir, expandPlaceholders } from "./workspace.ts";
 import * as allowances from "./allowances.ts";
 import * as jobs from "./jobs.ts";
@@ -204,12 +204,13 @@ const save = (m: Message, s: State) => writeFileSync(join(dir(s), `${m.id}.json`
 
 // ---------------------------------------------------------------- the prompt one session gets
 
-export const MAX_FILES_CHARS = Number(process.env.GOVERN_QUEUE_MAX_INLINE ?? 40000);
+/** The most characters of files one queued message inlines (the rest is cut, and marked), unless GOVERN_QUEUE_MAX_INLINE says otherwise. */
+export const MAX_FILES_CHARS = 40000;
 /** The prompt a dispatched agent gets for message `m`: its role and limits, the thread oldest first, the named files
- *  inlined up to MAX_FILES_CHARS in all (marked truncated beyond), and the required JSON reply format. */
-export function prompt(m: Message): string {
+ *  inlined up to `maxChars` in all (marked truncated beyond), and the required JSON reply format. */
+export function prompt(m: Message, maxChars = charLimit("GOVERN_QUEUE_MAX_INLINE", MAX_FILES_CHARS)): string {
   const t = thread(m);
-  let budget = MAX_FILES_CHARS;
+  let budget = maxChars;
   const files = m.files.map((f) => {
     const text = readFileSync(resolve(repo(), f), "utf8");
     const part = text.slice(0, Math.max(0, budget));
@@ -431,6 +432,8 @@ export function dispatch(o: { max?: number; only?: string; timeoutSec?: number }
   const cfg = config();
   // A bad checks declaration stops the dispatcher before any message is claimed or any paid session runs.
   const fromConfig = configChecks(join(QUEUE(), "config.json"), cfg.checks, KINDS);
+  // So does a bad GOVERN_QUEUE_MAX_INLINE: read after a claim, it would leave the message stuck in claimed/.
+  const maxInline = charLimit("GOVERN_QUEUE_MAX_INLINE", MAX_FILES_CHARS);
   const names = runners();
   const maxRuns = cfg.maxRuns ?? 4;
   const limits = allowances.allowances();
@@ -485,8 +488,8 @@ export function dispatch(o: { max?: number; only?: string; timeoutSec?: number }
     const cap = allowances.reservedUsd(taskId); // the reservation is a cap, not a hint
     try {
       r = sealed
-        ? runSealed(reg, sealed, cwd, prompt(m), o.timeoutSec ?? dispatchTimeout(), { lastMessage: join(QUEUE(), "claimed", `${m.id}.reply.txt`), schema: REPLY_SCHEMA, ...(cap !== undefined ? { maxBudgetUsd: cap } : {}) })
-        : runConfigured(def as RunnerDef, m, prompt(m), o.timeoutSec ?? dispatchTimeout());
+        ? runSealed(reg, sealed, cwd, prompt(m, maxInline), o.timeoutSec ?? dispatchTimeout(), { lastMessage: join(QUEUE(), "claimed", `${m.id}.reply.txt`), schema: REPLY_SCHEMA, ...(cap !== undefined ? { maxBudgetUsd: cap } : {}) })
+        : runConfigured(def as RunnerDef, m, prompt(m, maxInline), o.timeoutSec ?? dispatchTimeout());
     } catch (e) { allowances.release(taskId); throw e; }
     allowances.settle(taskId, usdOf(r, sealed?.model));
     const reply = r.error ? { error: r.error } : parseReply(r.text);

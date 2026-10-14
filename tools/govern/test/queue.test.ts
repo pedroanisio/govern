@@ -16,6 +16,21 @@ function env() {
 }
 const answer = { kind: "REVIEW", summary: "two claims unsupported", body: "Claim 3 and 7 have no source." };
 
+test("dispatch caps inlined files at GOVERN_QUEUE_MAX_INLINE chars and refuses a value that is not a whole number", () => {
+  const e = env();
+  write(join(e.root, "notes", "claims.md"), "CLAIM-TEXT-123 and more");
+  govern(e, ["task", "send", "--to", "codex", "--project", "film", "--task", "check", "--summary", "check the claims", "--file", "notes/claims.md"]);
+  const bad = govern(e, ["task", "dispatch"], { FAKE_CODEX_SCRIPTS: reply(e, "ok", answer), GOVERN_QUEUE_MAX_INLINE: "lots" });
+  assert.notEqual(bad.code, 0);
+  assert.match(bad.err + bad.out, /GOVERN_QUEUE_MAX_INLINE must be a whole number of characters/);
+  assert.equal(existsSync(join(e.root, "stdin.log")), false, "no model call");
+  assert.equal(readdirSync(join(e.root, "queue", "open")).filter((f) => f.endsWith(".json")).length, 1, "the message is not claimed: it stays open for the next dispatch");
+  const r = govern(e, ["task", "dispatch"], { FAKE_CODEX_SCRIPTS: reply(e, "ok", answer), GOVERN_QUEUE_MAX_INLINE: "5" });
+  assert.equal(r.code, 0, r.err);
+  const prompt = JSON.parse(present(readFileSync(join(e.root, "stdin.log"), "utf8").split("\n")[0], "the prompt sent"));
+  assert.match(prompt, /<file path="notes\/claims\.md" truncated="18 chars">\nCLAIM\n<\/file>/);
+});
+
 test("send validates and queues a message as a file in open/", () => {
   const e = env();
   assert.match(govern(e, ["task", "send", "--to", "codex", "--project", "film", "--task", "check", "--kind", "NOPE", "--summary", "x"]).err, /--kind must be one of/);

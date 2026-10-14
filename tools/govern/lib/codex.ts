@@ -6,7 +6,7 @@
 import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync, mkdirSync, writeFileSync, globSync } from "node:fs";
 import { join, dirname, resolve, relative } from "node:path";
-import { fail, stamp, sha256, GovernError } from "./util.ts";
+import { fail, stamp, sha256, GovernError, charLimit } from "./util.ts";
 import { emptyRecord } from "./shape.ts";
 import { type Project, projectDir, governDir, appendLedger, brief } from "./project.ts";
 import { repo, promptsDir, pathEntry, configFile } from "./workspace.ts";
@@ -91,7 +91,8 @@ export function readPrompt(name: string, dirs: string[]): PromptFile {
   return { name, meta, body: m ? text.slice(m[0].length) : text, dir: dir! };
 }
 
-export const MAX_INLINE = Number(process.env.GOVERN_MAX_INLINE ?? 60000);
+/** The most characters of --file contents one ask inlines, unless GOVERN_MAX_INLINE says otherwise. */
+export const MAX_INLINE = 60000;
 
 /** Fill {{brief}}, {{files}}, {{lang}}, {{kind}}, {{title}}, {{include:paths.KEY}} (a file the workspace config's "paths"
  *  names), {{include:repo/path}} (a file inside the workspace), {{var.NAME}} (required) and {{opt.NAME}} (optional). */
@@ -104,7 +105,8 @@ export function render(pf: PromptFile, p: Project, files: string[], vars: Record
     total += t.length;
     return `<file path="${f}">\n${t}\n</file>`;
   });
-  if (total > MAX_INLINE) fail(`inline files are ${total} chars (> ${MAX_INLINE}); pass fewer or smaller files`);
+  const max = charLimit("GOVERN_MAX_INLINE", MAX_INLINE);
+  if (total > max) fail(`inline files are ${total} chars (> ${max}); pass fewer or smaller files`);
   const out = pf.body.replace(/\{\{\s*([\w.:\/-]+)\s*\}\}/g, (all, key: string) => {
     if (key === "brief") return brief(p, { notes: 5 });
     if (key === "files") return blocks.length ? blocks.join("\n") : "(no files given)";

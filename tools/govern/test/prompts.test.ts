@@ -32,6 +32,36 @@ test("{{include:paths.KEY}} inlines the file the workspace config names, resolve
   assert.equal(sent(e)[0], "Rules:\nNever say obviously.\n\nEnd.\n"); // the included file's front matter is dropped
 });
 
+test("--file contents over the inline limit stop the step before any call: 60000 chars by default, GOVERN_MAX_INLINE overrides", () => {
+  const { e } = lane("{{files}}");
+  const prompts = join(e.root, "my-prompts"), ok = reply(e, "ok", { done: true });
+  const ask = (file: string, env: Record<string, string> = {}) =>
+    govern(e, ["ask", "film/shorts", "inc", "--file", file], { GOVERN_PROMPTS: prompts, FAKE_CODEX_SCRIPTS: ok, ...env });
+  write(join(e.projects, "film", "shorts", "at.txt"), "x".repeat(60000));
+  write(join(e.projects, "film", "shorts", "over.txt"), "x".repeat(60001));
+  assert.equal(ask("at.txt").code, 0);
+  const over = ask("over.txt");
+  assert.equal(over.code, 2);
+  assert.match(over.err, /inline files are 60001 chars \(> 60000\); pass fewer or smaller files/);
+  assert.equal(sent(e).length, 1);
+  const small = ask("at.txt", { GOVERN_MAX_INLINE: "100" });
+  assert.equal(small.code, 2);
+  assert.match(small.err, /inline files are 60000 chars \(> 100\)/);
+  assert.equal(ask("over.txt", { GOVERN_MAX_INLINE: "70000" }).code, 0);
+  assert.equal(sent(e).length, 2);
+});
+
+test("GOVERN_MAX_INLINE that is not a whole number is refused, never read as no limit", () => {
+  const { e } = lane("{{files}}");
+  write(join(e.projects, "film", "shorts", "f.txt"), "x".repeat(200000));
+  for (const bad of ["abc", "", "1e3", "-5", "12.5", " 100"]) {
+    const r = govern(e, ["ask", "film/shorts", "inc", "--file", "f.txt"], { GOVERN_PROMPTS: join(e.root, "my-prompts"), FAKE_CODEX_SCRIPTS: reply(e, "ok", { done: true }), GOVERN_MAX_INLINE: bad });
+    assert.equal(r.code, 2, JSON.stringify(bad));
+    assert.match(r.err, /GOVERN_MAX_INLINE must be a whole number of characters/, JSON.stringify(bad));
+  }
+  assert.deepEqual(sent(e), []);
+});
+
 test("{{include:paths.KEY}} with no such key is an error naming the prompt, the key and the config, before any call", () => {
   const { e, ask } = lane("{{include:paths.styleGuide}}");
   const r = ask();

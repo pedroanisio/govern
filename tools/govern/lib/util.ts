@@ -14,6 +14,15 @@ export class GovernError extends Error {
 /** Raise a GovernError. A function declaration, not an arrow const, so a call narrows the code after it (asserts never). */
 export function fail(msg: string, code = 2): never { throw new GovernError(msg, code); }
 
+/** A character limit from the environment variable `name`, or `fallback` when it is unset. Any value other than a whole
+ *  number is refused: read as a number it would be NaN, and a NaN limit compares false and so switches the limit off. */
+export function charLimit(name: string, fallback: number): number {
+  const v = process.env[name];
+  if (v === undefined) return fallback;
+  if (!/^\d+$/.test(v)) fail(`${name} must be a whole number of characters, 0 or more (got ${JSON.stringify(v)})`);
+  return Number(v);
+}
+
 /** The flags a command takes: switches (`--k`, `--k=true|false`), value flags (`--k V`, `--k=V`; the last one wins)
  *  and repeatable value flags (every occurrence kept). A flag outside the spec is a usage error. */
 export interface FlagSpec { bool?: readonly string[]; value?: readonly string[]; multi?: readonly string[] }
