@@ -1,13 +1,14 @@
 // Jobs: run a project command in the foreground or detached, wait on it without a model in the loop, stop it by identity.
 import { spawn } from "node:child_process";
-import { existsSync, readFileSync, readdirSync, openSync, closeSync, statSync, readSync, mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, openSync, closeSync, statSync, readSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { fail, readJson, writeJson, stamp, nowIso, sleepSync, shq, changedSince, clip, procOf, procTable, procSource, exited, type ProcStat } from "./util.ts";
 import { fileURLToPath } from "node:url";
 import { type Project, projectDir, governDir, appendLedger, argvOf } from "./project.ts";
 import { repo, pathNamed } from "./workspace.ts";
-import { place, lockDir, slots, costOf, type Price } from "./resources.ts";
+import { place, lockDir, slots, costOf, type Price, type Resource } from "./resources.ts";
 import * as locks from "./locks.ts";
+import * as allowances from "./allowances.ts";
 
 /** pid and procStart (its start time in the process table: /proc field 22, or ps lstart) identify the job's process, so a recycled pid is never taken for it.
  *  pgid: a background job leads its own process group; a foreground job stays in its caller's, so Ctrl-C reaches it. timeout: a foreground job's limit (s). stopped/end: govern stopped it. */
@@ -61,9 +62,34 @@ export function queuedOf(job: Job): JobState["queued"] {
   return { resource: job.resource, ahead: locks.ahead(job.lock.dir, job.lock.id) ?? 0 };
 }
 
+/** Reserve the job's estimate against the lane's allowances (machine-hours, or money in the resource's currency), or
+ *  refuse: the estimate is `estimate` hours, else the command's timeout, else (foreground only) the default limit. A job
+ *  on no resource is not metered. A refusal removes the claimed job directory and stops with exit 1. */
+function reserveFor(p: Project, name: string, id: string, res: Resource | undefined, timeout: number | undefined, bg: boolean, estimate: number | undefined): string | undefined {
+  const list = allowances.allowances();
+  const currency = res?.price.basis === "per-second" || res?.price.basis === "per-hour" ? res.price.currency : undefined;
+  if (!res || !allowances.meters(list, p.slug, currency)) return undefined;
+  const refuse = (why: string): never => { rmSync(jobDir(p.slug, id), { recursive: true, force: true }); return fail(why, 1); };
+  const seconds = estimate !== undefined ? estimate * 3600 : timeout ?? (bg ? undefined : DEFAULT_TIMEOUT);
+  if (seconds === undefined) refuse(`${p.slug}/${name}: no declared duration to reserve against an allowance: pass --estimate HOURS, or give the command a --timeout`);
+  const hours = seconds! / 3600, money = costOf(res, seconds!);
+  const rid = `job:${p.slug}:${id}`;
+  const no = allowances.reserve(list, { lane: p.slug }, { id: rid, label: `${p.slug}/${name} on ${res.name}`, hours, ...(money ? { money } : {}), job: { slug: p.slug, id } }, settleDead);
+  if (no) refuse(`refused: ${no.text}`);
+  return rid;
+}
+
+/** For the allowance sweep: finish a job whose holder died from its own record (ledger entry, settled reservation); true while it still runs. */
+export function settleDead(j: { slug: string; id: string }): boolean {
+  if (!existsSync(join(jobDir(j.slug, j.id), "job.json"))) return false;
+  recordEnd(j.slug, j.id);
+  return state(j.slug, j.id).status === "running";
+}
+
 /** Run a command; on = the resource named with --on (else the command's own, else the job runs locally). A shared
- *  resource's slot is taken first: a foreground job waits for it here, a --bg job's sh waits (lib/lockwait.ts). */
-export function start(p: Project, name: string, extra: string[], bg: boolean, on?: string): JobState {
+ *  resource's slot is taken first: a foreground job waits for it here, a --bg job's sh waits (lib/lockwait.ts).
+ *  estimate: the hours to reserve against an allowance (see reserveFor). */
+export function start(p: Project, name: string, extra: string[], bg: boolean, on?: string, estimate?: number): JobState {
   const base = p.commands[name];
   if (!base) fail(`${p.slug}: no command "${name}" (have: ${Object.keys(p.commands).join(", ") || "none"}; add with govern cmd ${p.slug} ${name} -- <argv>)`);
   const res = place(p.slug, Array.isArray(base) ? undefined : base.resource, on);
@@ -72,7 +98,9 @@ export function start(p: Project, name: string, extra: string[], bg: boolean, on
   const dir = jobDir(p.slug, id);
   const f = join(dir, "job.json"), exitF = join(dir, "exit");
   const cwd = projectDir(p.slug);
-  const timeout = (Array.isArray(base) ? undefined : base.timeout) ?? DEFAULT_TIMEOUT;
+  const declaredTimeout = Array.isArray(base) ? undefined : base.timeout;
+  const timeout = declaredTimeout ?? DEFAULT_TIMEOUT;
+  const reservation = reserveFor(p, name, id, res, declaredTimeout, bg, estimate);
   const max = res && slots(res);
   const lock = res && max !== undefined ? { dir: lockDir(res.name), id: `${p.slug.replaceAll("/", "~")}~${id}`, max, label: `${p.slug} ${id}` } : undefined;
   const job: Job = { id, slug: p.slug, name, argv, cwd, start: nowIso(), bg, ...(bg ? {} : { timeout }),
@@ -102,7 +130,7 @@ export function start(p: Project, name: string, extra: string[], bg: boolean, on
   // GOVERN_JOB_DIR marks every process the job starts, even one that leaves its tree and group: kill and the timeout find
   // them by it (where /proc shows environments).
   const child = spawn("sh", ["-c", script], { cwd, detached: bg, stdio: "ignore", env: { ...process.env, GOVERN_JOB_ID: id, GOVERN_JOB_DIR: dir } });
-  if (!child.pid) fail(`${p.slug}: could not start sh for command "${name}"`);
+  if (!child.pid) { if (reservation) allowances.release(reservation); fail(`${p.slug}: could not start sh for command "${name}"`); }
   // Read before the event loop runs again: the child cannot have been reaped yet, so it is still in the process table.
   const ps = procOf(child.pid!);
   // detached means setsid(): a background child leads a new session and process group whose id is its pid.
@@ -110,6 +138,7 @@ export function start(p: Project, name: string, extra: string[], bg: boolean, on
   writeJson(f, job);
   child.unref();
   if (lock) locks.adopt(lock.dir, lock.id, { pid: child.pid!, ...(ps ? { start: ps.start } : {}) });
+  if (reservation && bg) allowances.adopt(reservation, { pid: child.pid!, ...(ps ? { start: ps.start } : {}) });
   if (bg) {
     appendLedger(p.slug, { kind: "job", id, name, bg: true, status: "started", ...(res ? { resource: res.name } : {}) });
     const queued = lock ? queuedOf(job) : undefined;
@@ -145,7 +174,10 @@ export function recordEnd(slug: string, id: string): boolean {
     throw e;
   }
   const seconds = st.seconds ?? Math.round((Date.now() - Date.parse(st.start)) / 1000);
-  appendLedger(slug, { kind: "job", id, name: st.name, bg: st.bg, status: st.status, exit: st.exit, seconds, ...machineOf(st, seconds) });
+  const machine = machineOf(st, seconds);
+  appendLedger(slug, { kind: "job", id, name: st.name, bg: st.bg, status: st.status, exit: st.exit, seconds, ...machine });
+  const used = typeof machine["machineSeconds"] === "number" ? machine["machineSeconds"] : 0;
+  allowances.settle(`job:${slug}:${id}`, { hours: used / 3600, ...(typeof machine["cost"] === "number" && typeof machine["currency"] === "string" ? { money: { amount: machine["cost"], currency: machine["currency"] } } : {}) });
   return true;
 }
 

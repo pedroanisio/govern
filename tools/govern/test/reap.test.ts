@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { existsSync, readFileSync, readdirSync, writeFileSync, chmodSync, rmSync } from "node:fs";
 import { join } from "node:path";
-import { makeEnv, govern, childEnv, jsonl, write, present, GOVERN, type Env } from "./helpers.ts";
+import { makeEnv, govern, childEnv, jsonl, write, present, GOVERN, setConfig, type Env } from "./helpers.ts";
 import { sleepSync } from "../lib/util.ts";
 
 // A fake provider CLI: "instances" are lines "id tag" in $CLOUD, every call is logged to $CALLS, $PROV_MODE picks a failure.
@@ -27,12 +27,6 @@ case "$1" in
   list) cat "$CLOUD" 2>/dev/null ;;
 esac
 `;
-
-// Merges keys into the workspace config makeEnv wrote, so queue, projects and the rest survive.
-function setConfig(e: Env, keys: Record<string, unknown>): void {
-  const f = join(e.root, "govern.config.json");
-  write(f, JSON.stringify({ ...JSON.parse(readFileSync(f, "utf8")), ...keys }));
-}
 
 interface Rig { e: Env; cloud: string; calls: string; env: Record<string, string>; inst: () => Record<string, any>[] }
 function rig(price: Record<string, unknown> = { basis: "per-hour", currency: "USD", amount: 2 }): Rig {

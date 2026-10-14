@@ -19,13 +19,15 @@ export interface WorkspaceConfig {
   capabilities?: string;
   /** The resource registry: a file (relative to the config) or the list itself; lib/resources.ts checks its shape. */
   resources?: unknown;
+  /** The allowances: a file (relative to the config) or the list itself; lib/allowances.ts checks its shape. */
+  allowances?: unknown;
   /** Where locks and other shared run state live (default: govern-state beside the lanes' folder). */
   state?: string;
 }
 const CONFIG = obj({}, {
   projects: str, queue: str, processes: str, workflow: str, tuningLog: str, packages: str, prompts: str, paths: record(str),
   baseline: obj({ mainMedianCtx: posInt, subagentMedianCtx: posInt, source: str }),
-  capabilities: str, resources: (v: unknown) => v, state: str,
+  capabilities: str, resources: (v: unknown) => v, allowances: (v: unknown) => v, state: str,
 });
 
 /** The nearest folder at or above `dir` that holds a govern.config.json, or undefined. */
@@ -85,10 +87,12 @@ export function pathNamed(name: string): string {
 export const capabilitiesDir = (): string => optional("capabilities", "GOVERN_CAPABILITIES") ?? join(projectsDir(), "..", "capabilities");
 /** Where locks live: GOVERN_STATE, the config's "state", else govern-state beside the lanes' folder. */
 export const stateDir = (): string => optional("state", "GOVERN_STATE") ?? join(dirname(projectsDir()), "govern-state");
-/** The config's "resources" value and the file it came from, or undefined when there is no workspace or no such key. */
-export function resourcesSetting(): { file: string; value: unknown } | undefined {
+/** A workspace list govern reads elsewhere (lib/resources.ts, lib/allowances.ts check its shape). */
+export type DeclaredKey = "resources" | "allowances";
+/** The config's value for `key` and the file it came from, or undefined when there is no workspace or no such key. */
+export function declaredSetting(key: DeclaredKey): { file: string; value: unknown } | undefined {
   const r = findRepo();
   if (!r) return undefined;
-  const v = config().resources;
+  const v = config()[key];
   return v === undefined ? undefined : { file: join(r, CONFIG_FILE), value: v };
 }

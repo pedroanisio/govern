@@ -10,6 +10,9 @@ import { join, resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { fail, stamp, nowIso, clip } from "./util.ts";
 import { repo, projectsDir, queueDir } from "./workspace.ts";
+import * as allowances from "./allowances.ts";
+import * as jobs from "./jobs.ts";
+import { cost } from "./usage.ts";
 import { parseEvents, execArgs, validate, type Usage } from "./codex.ts";
 import { type CheckDef, configChecks, declared, verify, type Verification } from "./replycheck.ts";
 import { registry, getProfile, writes, guardProblem, checkProblem, profileHash, claudeArgs, codexSpec, LEGACY_PROFILES, type Profile, type Registry } from "./caps.ts";
@@ -62,6 +65,8 @@ export interface Message {
   profile?: string;
   /** The lane whose gates authorise a profile with a spend, publish or push capability (default: the project, when it is a lane). */
   lane?: string;
+  /** What the run is expected to cost in model dollars (--estimate-usd): reserved against a matching allowance. */
+  estimateUsd?: number;
   /** sent with --to auto: the runner was chosen by the tuning loop */
   routed?: boolean;
   /** id of the message this one is a copy of (govern task forward) */
@@ -301,6 +306,22 @@ function threadRuns(m: Message): number {
   return thread(m).filter((x) => x.id !== m.id && x.result?.agent && !x.result.closedBy).length;
 }
 
+/** What a run cost in model dollars: the runner's own figure, else the token price of the model; a run that failed with no usage cost nothing; otherwise unknown (charged as reserved). */
+function usdOf(r: RunOut, model: string | undefined): allowances.Actual {
+  const u = r.usage;
+  if (u?.costUsd != null) return { usd: u.costUsd };
+  const priced = u && model ? cost({ model, input: Math.max(0, u.input - u.cached - u.cacheWrite), cacheRead: u.cached, cacheWrite: u.cacheWrite, output: u.output }) : undefined;
+  if (priced !== undefined) return { usd: priced };
+  return r.error && !u ? { usd: 0 } : {};
+}
+
+/** Tell the allowance's decision owner, once per situation, that a task is held and how to release it. */
+function tellHold(m: Message, h: allowances.Refusal): void {
+  const summary = clip(`held: ${h.text.split("\n")[0]}`, 200);
+  if (all().some((x) => x.m.from === "dispatcher" && x.m.kind === "BLOCKED" && x.m.replyTo === m.id && x.m.summary === summary)) return;
+  send({ project: m.project, task: m.task, kind: "BLOCKED", from: "dispatcher", to: h.owner, summary, body: `${m.id} (${m.kind} from ${m.from} to ${m.to}) was not run and stays open.\n${h.text}`, files: [], replyTo: m.id, access: "read-only" });
+}
+
 /** Run every open message addressed to a runner, oldest first, at most `max`. Returns what happened, one line each. */
 export function dispatch(o: { max?: number; only?: string; timeoutSec?: number } = {}): string[] {
   const lines: string[] = [];
@@ -309,6 +330,7 @@ export function dispatch(o: { max?: number; only?: string; timeoutSec?: number }
   const fromConfig = configChecks(join(QUEUE(), "config.json"), cfg.checks, REPLY_KINDS);
   const names = runners();
   const maxRuns = cfg.maxRuns ?? 4;
+  const limits = allowances.allowances();
   const todo = all().filter((x) => x.state === "open" && names.includes(x.m.to) && (!o.only || x.m.to === o.only))
     .slice(0, o.max ?? Infinity);
   for (const { m } of todo) {
@@ -336,12 +358,25 @@ export function dispatch(o: { max?: number; only?: string; timeoutSec?: number }
         continue;
       }
     }
+    const taskId = `task:${m.id}`;
+    const held = allowances.reserve(limits, { ...(laneOf(m) ? { lane: laneOf(m)! } : {}), ...(prof ? { profile: prof } : {}) },
+      { id: taskId, label: `task ${m.id}`, ...(m.estimateUsd !== undefined ? { usd: m.estimateUsd } : {}) }, jobs.settleDead);
+    if (held) {
+      move(m, "claimed", "open");
+      lines.push(`${m.id} → ${m.to}: held: ${held.text.replaceAll("\n", " · ")}`);
+      tellHold(m, held);
+      continue;
+    }
     const t0 = Date.now();
     const def = cfg.runners?.[m.to];
     const cwd = existsSync(join(projectsDir(), m.project)) ? join(projectsDir(), m.project) : repo();
-    const r = sealed
-      ? runSealed(reg, sealed, cwd, prompt(m), o.timeoutSec ?? 900, { lastMessage: join(QUEUE(), "claimed", `${m.id}.reply.txt`), schema: REPLY_SCHEMA })
-      : runConfigured(def!, m, prompt(m), o.timeoutSec ?? 900);
+    let r: RunOut;
+    try {
+      r = sealed
+        ? runSealed(reg, sealed, cwd, prompt(m), o.timeoutSec ?? 900, { lastMessage: join(QUEUE(), "claimed", `${m.id}.reply.txt`), schema: REPLY_SCHEMA })
+        : runConfigured(def!, m, prompt(m), o.timeoutSec ?? 900);
+    } catch (e) { allowances.release(taskId); throw e; }
+    allowances.settle(taskId, usdOf(r, sealed?.model));
     const reply = r.error ? { error: r.error } : parseReply(r.text);
     const seconds = Math.round((Date.now() - t0) / 1000);
     const ok = !("error" in reply);

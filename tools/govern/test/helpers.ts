@@ -109,3 +109,9 @@ export const reply = (e: Env, name: string, value: unknown, usage = { input_toke
     { type: "item.completed", item: { id: "item_0", type: "agent_message", text: typeof value === "string" ? value : JSON.stringify(value) } },
     { type: "turn.completed", usage },
   ].map((x) => JSON.stringify(x)).join("\n") + "\n");
+
+/** Merges keys into the workspace config makeEnv wrote, so projects, queue and the rest survive. */
+export function setConfig(e: Env, keys: Record<string, unknown>): void {
+  const f = join(e.root, "govern.config.json");
+  writeFileSync(f, JSON.stringify({ ...JSON.parse(readFileSync(f, "utf8")), ...keys }));
+}

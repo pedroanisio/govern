@@ -11,6 +11,7 @@ import { fileURLToPath } from "node:url";
 import { readJsonl, kTok } from "./util.ts";
 import { ledgerFile } from "./project.ts";
 import { projectsDir, baseline } from "./workspace.ts";
+import * as allowances from "./allowances.ts";
 import { machineLines, machineEntries } from "./resources.ts";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -303,6 +304,8 @@ export function report(slugs: string[] | undefined, since?: number): string {
     L.push(...mach, "");
   }
   if (!L.length) L.push("no govern work segments or asks recorded yet");
+  const allow = allowances.lines();
+  if (allow.length) L.push("## allowances (used, reserved, left)", ...allow.map((l) => `  ${l}`), "");
   const base = baseline(); // the chat baseline the workspace measured, if its config gives one
   if (base) L.push(`baseline (chat way): median context per call ${kTok(base.mainMedianCtx)} main session, ${kTok(base.subagentMedianCtx)} subagent — ${base.source}`);
   L.push(`target: avg ctx ≤ ${kTok(CTX_WARN)}, no subagent calls in production; in-side = input + cache read + cache write; ~usd only for models in prices.json`);

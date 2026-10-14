@@ -9,6 +9,7 @@ import * as queue from "./queue.ts";
 import { tag } from "./replycheck.ts";
 import { registry, readCheck, checkState, profileHash } from "./caps.ts";
 import { tuningState } from "./tune.ts";
+import * as allowances from "./allowances.ts";
 import { machineSummary, machineEntries, stateDir } from "./resources.ts";
 import { deskLines } from "./reap.ts";
 
@@ -90,5 +91,7 @@ export function desk(): { text: string; failed: number; lanes: number } {
   if (bare) rows2.push(`  ${"(no lane)".padEnd(40)} ${bare.time}${bare.money ? `  ${bare.money}` : ""}`);
   L.push(...(rows2.length ? rows2 : ["  (none)"]));
   try { L.push(...deskLines()); } catch (e) { L.push(`  instance scan unreadable: ${(e as Error).message}`); }
+  const allow = allowances.lines();
+  if (allow.length) L.push("", "ALLOWANCES (used, reserved, left; raise one with govern allow)", ...allow.map((l) => `  ${l}`));
   return { text: L.join("\n"), failed, lanes: slugs.length };
 }

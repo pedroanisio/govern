@@ -21,12 +21,13 @@ export function identity(pid: number): { start: string } | undefined {
   return s && !exited(s) ? { start: s.start } : undefined;
 }
 /** Whether the process the entry names still runs (and is that process, when it recorded a start time). */
-function live(e: Entry): boolean {
+export function live(e: { pid: number; start?: string }): boolean {
   const s = procOf(e.pid);
   return !!s && !exited(s) && (e.start === undefined || s.start === e.start);
 }
 
-function withMutex<T>(dir: string, f: () => T): T {
+/** Run `f` holding the mkdir guard of `dir` (other callers wait, up to 30 s). */
+export function withMutex<T>(dir: string, f: () => T): T {
   mkdirSync(dir, { recursive: true });
   const m = join(dir, "mutex");
   for (const end = Date.now() + MUTEX_WAIT_MS; ; sleepSync(10)) {

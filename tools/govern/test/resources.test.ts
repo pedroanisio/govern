@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { makeEnv, govern, jsonl, write, tempDir, present, type Env } from "./helpers.ts";
+import { makeEnv, govern, jsonl, write, tempDir, present, setConfig, type Env } from "./helpers.ts";
 import { sleepSync } from "../lib/util.ts";
 import { parseResources, costOf, machineLines, type Resource } from "../lib/resources.ts";
 import * as locks from "../lib/locks.ts";
@@ -13,10 +13,6 @@ const parse = (raw: unknown) => parseResources("resources.json", raw);
 const rejects = (raw: unknown, re: RegExp) => assert.throws(() => parse(raw), (e: Error) => re.test(e.message) && e.message.startsWith("resources.json: "));
 
 /** Sets keys of the workspace's govern.config.json, keeping the rest (where the lanes and the queue live). */
-function setConfig(e: Env, keys: Record<string, unknown>): void {
-  const f = join(e.root, "govern.config.json");
-  write(f, JSON.stringify({ ...JSON.parse(readFileSync(f, "utf8")), ...keys }));
-}
 function withResources(list: unknown[]): { e: Env; slug: string } {
   const e = makeEnv();
   setConfig(e, { resources: list });

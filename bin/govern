@@ -9,7 +9,7 @@
 #     govern cmd SLUG [NAME [--timeout S] [--resource R] -- ARGV...] | --rm NAME  |  file SLUG [NAME PATH-OR-GLOB]
 #     govern process list|show NAME  |  check SLUG [--set CMD --stage S]  |  check SLUG STAGE --accept --quote Q
 #     govern advance SLUG [--note EVIDENCE]  |  dep SLUG [--after LANE[:STAGE]] [--rm LANE]  |  hook stop
-#     govern run SLUG CMD [--bg] [--on RESOURCE] [-- ARGS]  |  resources [NAME]  |  wait SLUG [JOB] [--timeout S]  |  jobs SLUG  |  kill SLUG [JOB]
+#     govern run SLUG CMD [--bg] [--on RESOURCE] [--estimate HOURS] [-- ARGS]  |  allow NAME --extra N --quote "…" [--by OWNER]  |  resources [NAME]  |  wait SLUG [JOB] [--timeout S]  |  jobs SLUG  |  kill SLUG [JOB]
 #     govern up RESOURCE [--lane SLUG] [--count N]  |  down TAG|ID [--forget]  |  reap [RESOURCE] [--yes]
 #     govern log SLUG [JOB] [--tail N] [--grep RE]
 #     govern prompts [PROCESS]  |  ask SLUG STEP [--file F]... [--var K=V]... [--image PNG]... [--effort E] [--model M]

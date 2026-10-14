@@ -19,6 +19,7 @@ import { tag, verdict } from "./lib/replycheck.ts";
 import { desk } from "./lib/desk.ts";
 import { listLines, showLines } from "./lib/resources.ts";
 import * as reaping from "./lib/reap.ts";
+import * as allowances from "./lib/allowances.ts";
 import { registry, getProfile, listText, showText } from "./lib/caps.ts";
 import { checkProfile } from "./lib/capcheck.ts";
 import { tune, chooseRunner } from "./lib/tune.ts";
@@ -131,6 +132,28 @@ function cmdApprove(a: Args): void {
   save(p);
   appendLedger(p.slug, { kind: "approve", gate, quote, by: owner, source });
   out(`${p.slug}: ${gate} approved`);
+}
+
+/** A flag's value as a number above 0 (an estimate), or undefined when the flag is absent. */
+function amountOpt(a: Args, k: string): number | undefined {
+  const v = opt(a, k);
+  if (v === undefined) return undefined;
+  const n = Number(v);
+  return v.trim() !== "" && Number.isFinite(n) && n > 0 ? n : fail(`--${k} must be a positive number: ${JSON.stringify(v)}`);
+}
+
+/** `govern allow <allowance> --extra N --quote "…"`: the allowance's decision owner raises its limit for the current period, in their own words. */
+function cmdAllow(a: Args): void {
+  const al = allowances.allowanceNamed(a._[1] ?? fail("govern allow <allowance> --extra N --quote \"…\" (govern usage lists the allowances)"));
+  const extra = amountOpt(a, "extra") ?? fail("--extra must be a positive number: the amount to add to the limit");
+  const owner = al.owner, by = opt(a, "by");
+  if (by === undefined && owner !== "owner") fail(`allowance ${al.name} is decided by ${owner}: pass --by ${owner}`);
+  if (by !== undefined && by !== owner) fail(`allowance ${al.name} is decided by ${owner}, not ${by}`);
+  const quote = opt(a, "quote");
+  if (!quote || quote.trim().length < 2) fail(`--quote is required: ${owner}'s own words approving ${extra} ${allowances.unitName(al)} more for ${al.name} (only ${owner} approves)`);
+  const source = verifyQuote(quote!);
+  allowances.grant(al, extra, quote!, source, owner);
+  out(`${al.name}: +${extra} ${allowances.unitName(al)} approved by ${owner} · limit ${Math.round((al.limit + allowances.status(al).extra) * 1e6) / 1e6}`);
 }
 
 /** Run the stage's exit check as a foreground job; records it in the ledger, prints nothing. */
@@ -328,7 +351,7 @@ function cmdRun(a: Args): void {
   const p = load(a._[1]);
   const name = a._[2];
   if (!name) fail(`govern run ${p.slug} <command> (have: ${Object.keys(p.commands).join(", ") || "none"})`);
-  const st = jobs.start(p, name, a._.slice(3), flag(a, "bg"), opt(a, "on"));
+  const st = jobs.start(p, name, a._.slice(3), flag(a, "bg"), opt(a, "on"), amountOpt(a, "estimate"));
   if (st.queued) return out(`job ${st.id} queued on ${st.queued.resource} (${st.queued.ahead} ahead) · wait with: govern wait ${p.slug} ${st.id}`);
   if (st.status === "running") return out(`job ${st.id} started in the background · wait with: govern wait ${p.slug} ${st.id}`);
   out(jobs.summary(p, st));
@@ -461,12 +484,12 @@ function cmdTask(a: Args): void {
     const body = bodyFile ? readFileSync(bodyFile, "utf8") : opt(a, "body") ?? "";
     const { to, routed } = recipient(opt(a, "to") ?? "");
     const t = queue.resolveTarget(to, { write: flag(a, "write"), profile: opt(a, "profile") });
-    const lane = opt(a, "lane");
+    const lane = opt(a, "lane"), estimateUsd = amountOpt(a, "estimate-usd");
     const m = queue.send({
       ...(t.profile ? { profile: t.profile } : {}), ...(lane ? { lane } : {}),
       project: opt(a, "project") ?? "", task: opt(a, "task") ?? "", kind: opt(a, "kind") ?? "TASK", from: opt(a, "from") ?? resolveAs() ?? fail("cannot tell who is sending (no parent process is a registered Claude Code session): pass --from NAME"),
       to, ...(routed ? { routed: true } : {}), summary: opt(a, "summary") ?? "", body, files: many(a, "file"), replyTo: opt(a, "reply-to"),
-      access: t.access,
+      access: t.access, ...(estimateUsd !== undefined ? { estimateUsd } : {}),
     });
     out(`queued ${m.id} (${m.kind} to ${m.to}${m.profile && (m.profile !== `${m.to}-read` || opt(a, "profile")) && m.profile !== m.to ? `, profile ${m.profile}` : ""})`);
     return wakeNote(m);
@@ -607,6 +630,8 @@ export const COMMANDS: readonly Cmd[] = [
     } },
   { name: "approve", section: 0, flags: { value: ["quote", "by"] },
     lines: [["<slug> <gate> --quote \"<the owner's words>\" [--by NAME]", "(gates come from the lane's process; --by: the gate's decision owner,\nrequired when the process names one other than owner. In a Claude session the quote\nmust be in a message the person typed; a Codex session is refused)"]], run: cmdApprove },
+  { name: "allow", section: 0, flags: { value: ["extra", "quote", "by"] },
+    lines: [["<allowance> --extra N --quote \"<the decision owner's words>\" [--by NAME]", "raise an allowance's limit by N for its current period (govern.config.json: allowances; govern usage\nlists them). --by: the allowance's decision owner, required when it names one other than owner. In a\nClaude session the quote must be in a message the person typed; a Codex session is refused)"]], run: cmdAllow },
   { name: "done", section: 0, flags: { value: ["engine"] }, lines: [["<slug> [--engine claude|codex]", "end the current work segment"]],
     run: (a) => { const p = load(a._[1]); appendLedger(p.slug, { kind: "done", engine: engineOf(a), session: process.env.CLAUDE_CODE_SESSION_ID }); out(`${p.slug}: segment closed`); } },
   { name: "cmd", section: 0, flags: { value: ["timeout", "rm", "resource"] },
@@ -629,8 +654,8 @@ export const COMMANDS: readonly Cmd[] = [
   { name: "hook", section: 1, footer: false, noSub: "govern hook stop",
     subs: { stop: { lines: [["", "Claude Code Stop hook: keeps a session on its lane until the stage's check passes (3 tries)"]], run: cmdHook } } },
 
-  { name: "run", section: 2, flags: { bool: ["bg"], value: ["on"] },
-    lines: [["<slug> <command> [--bg] [--on <resource>] [-- extra args]", "foreground prints a summary; --bg returns a job id; --on runs it on a declared resource (a shared one\nis locked: the job waits its turn, a --bg job shows \"queued on <resource>\")"]], run: cmdRun },
+  { name: "run", section: 2, flags: { bool: ["bg"], value: ["on", "estimate"] },
+    lines: [["<slug> <command> [--bg] [--on <resource>] [--estimate HOURS] [-- extra args]", "foreground prints a summary; --bg returns a job id; --on runs it on a declared resource (a shared one\nis locked: the job waits its turn, a --bg job shows \"queued on <resource>\"). On a resource with an\nallowance (govern allow) the job reserves HOURS (else the command's --timeout, else 1800 s; a --bg job\nneeds one of them) and is refused if that does not fit"]], run: cmdRun },
   { name: "wait", section: 2, flags: { value: ["timeout"] },
     lines: [["<slug> [<job>|last] [--timeout 540]", "block until it ends; exit code = the job's (124 = still running)"]], run: cmdWait },
   { name: "jobs", section: 2, lines: [["<slug>", "the lane's latest jobs: status, exit code, seconds, resource (or queued on it)"]],
@@ -707,9 +732,9 @@ export const COMMANDS: readonly Cmd[] = [
 
   { name: "task", section: 6, noSub: TASK_SUBS,
     subs: {
-      send: { flags: { value: ["to", "project", "task", "kind", "summary", "body", "body-file", "reply-to", "from", "profile", "lane"], multi: ["file"], bool: ["write"] },
+      send: { flags: { value: ["to", "project", "task", "kind", "summary", "body", "body-file", "reply-to", "from", "profile", "lane", "estimate-usd"], multi: ["file"], bool: ["write"] },
         lines: [["--to auto|codex|claude|owner|<session> --project P --task T --kind TASK --summary S (--body B | --body-file F)\n" +
-          "[--file REPO-RELATIVE-PATH]… [--reply-to ID] [--write | --profile P] [--lane SLUG] [--from NAME]", "--to must be a runner, a profile, owner or a LIVE session name;\n--profile P (govern caps) seals the run to P's capabilities; --lane names the lane whose gate authorises a spend, publish or push profile"]], run: cmdTask },
+          "[--file REPO-RELATIVE-PATH]… [--reply-to ID] [--write | --profile P] [--lane SLUG] [--from NAME] [--estimate-usd N]", "--to must be a runner, a profile, owner or a LIVE session name;\n--profile P (govern caps) seals the run to P's capabilities; --lane names the lane whose gate authorises a spend, publish or push profile;\n--estimate-usd N: what the run is expected to cost, reserved against a matching allowance (govern allow)"]], run: cmdTask },
       list: { flags: { value: ["to", "state", "project"] }, lines: [["[--to X] [--state open|claimed|done|failed] [--project P]", "the queue's messages; a dispatcher reply ends with [checked], [unverified] or [shape only] (content check, declared per profile, in queue config.json checks, or built in for REVIEW)"]], run: cmdTask },
       show: { lines: [["<id>", "a message and its thread; a dispatcher reply also shows its check (checked, UNVERIFIED with the reason, or shape only)"]], run: cmdTask },
       inbox: { flags: { value: ["as"], bool: ["all", "hook"] },

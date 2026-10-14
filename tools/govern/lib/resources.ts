@@ -5,7 +5,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join, dirname, resolve } from "node:path";
 import { fail, readJsonl, GovernError } from "./util.ts";
-import { resourcesSetting, stateDir as stateFolder } from "./workspace.ts";
+import { declaredSetting, type DeclaredKey, stateDir as stateFolder } from "./workspace.ts";
 import { obj, arr, record, emptyRecord, str, name, posInt, literal, parseFile, check, reject, type Shape } from "./shape.ts";
 import * as locks from "./locks.ts";
 
@@ -25,9 +25,9 @@ export interface Resource {
   commands?: { start?: string[]; stop?: string[]; list?: string[] };
 }
 
-const nonNegative: Shape<number> = (v, p) => (typeof v === "number" && Number.isFinite(v) && v >= 0 ? v : reject(p, `must be a number, 0 or more (got ${JSON.stringify(v)})`));
+export const nonNegative: Shape<number> = (v, p) => (typeof v === "number" && Number.isFinite(v) && v >= 0 ? v : reject(p, `must be a number, 0 or more (got ${JSON.stringify(v)})`));
 const ARGV = arr(str, { nonEmpty: true });
-const NAME_CHARS: Shape<string> = (v, p) => {
+export const NAME_CHARS: Shape<string> = (v, p) => {
   const s = name(v, p);
   return /^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(s) ? s : reject(p, `may use only letters, digits, "." "_" "-", starting with a letter or digit (got ${JSON.stringify(s)})`);
 };
@@ -63,19 +63,24 @@ const RESOURCES: Shape<Record<string, Resource>> = (v, at) => {
 /** The resources of `raw` (an already-parsed list from `file`), by name; a wrong field is a GovernError naming file and path. */
 export const parseResources = (file: string, raw: unknown): Record<string, Resource> => check(file, raw, RESOURCES);
 
+/** A list declared in the workspace: the file GOVERN_<envVar> names, else govern.config.json `key` (a path, relative to
+ *  the config, or the list itself). `what` names it in the "not found" message; none declared gives `empty`. */
+export function readDeclared<T>(key: DeclaredKey, envVar: string, shape: Shape<T>, empty: () => T, what: string): T {
+  const fromFile = (f: string) => {
+    if (!existsSync(f)) fail(`${what} file ${f} not found`);
+    return parseFile(f, readFileSync(f, "utf8"), shape);
+  };
+  const env = process.env[envVar];
+  if (env) return fromFile(resolve(env));
+  const set = declaredSetting(key);
+  if (!set) return empty();
+  const r = set.value;
+  return typeof r === "string" ? fromFile(resolve(dirname(set.file), r)) : (check(set.file, { [key]: r }, obj({ [key]: shape }, {})) as Record<string, T>)[key] as T;
+}
+
 /** The workspace's resources, by name: GOVERN_RESOURCES (a file), else govern.config.json "resources" (a path, relative
  *  to the config, or the list itself). None declared is an empty registry. */
-export function resources(): Record<string, Resource> {
-  const fromFile = (f: string) => {
-    if (!existsSync(f)) fail(`resources file ${f} not found`);
-    return parseFile(f, readFileSync(f, "utf8"), RESOURCES);
-  };
-  if (process.env.GOVERN_RESOURCES) return fromFile(resolve(process.env.GOVERN_RESOURCES));
-  const set = resourcesSetting();
-  if (!set) return emptyRecord();
-  const r = set.value;
-  return typeof r === "string" ? fromFile(resolve(dirname(set.file), r)) : check(set.file, { resources: r }, obj({ resources: RESOURCES }, {})).resources;
-}
+export const resources = (): Record<string, Resource> => readDeclared("resources", "GOVERN_RESOURCES", RESOURCES, () => emptyRecord(), "resources");
 
 /** One resource by name, or a GovernError listing the ones there are. */
 export function resourceNamed(n: string): Resource {
