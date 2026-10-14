@@ -24,7 +24,7 @@ import * as allowances from "./lib/allowances.ts";
 import { registry, getProfile, listText, showText, failing } from "./lib/caps.ts";
 import { checkProfile } from "./lib/capcheck.ts";
 import { tune, chooseRunner } from "./lib/tune.ts";
-import { verifyQuote } from "./lib/approval.ts";
+import { verifyQuote, GROK_MARKERS } from "./lib/approval.ts";
 import { checkRecipient, requireAs, resolveAs } from "./lib/sessions.ts";
 import { installSkill, skillDrift, sha256File } from "./lib/skill.ts";
 import { writeFileSync, existsSync, unlinkSync } from "node:fs";
@@ -81,6 +81,18 @@ function passSkipped(p: Project, to: string): void {
   }
 }
 
+/** The environment of an interactive session opened by `work --open`: it must not look like it runs inside the session that
+ *  opened it, or the segment it later registers would record the parent's engine. So the other engines' markers are removed:
+ *  Claude's (CLAUDECODE, CLAUDE_CODE_*) unless the child is Claude, Grok's (GROK_AGENT, GROK_SESSION_ID) unless the child is Grok. */
+function openEnv(engine: Engine): NodeJS.ProcessEnv {
+  const env = { ...process.env };
+  for (const k of Object.keys(env)) {
+    if (engine !== "claude" && (k === "CLAUDECODE" || k.startsWith("CLAUDE_CODE_"))) delete env[k];
+    if (engine !== "grok" && GROK_MARKERS.includes(k)) delete env[k];
+  }
+  return env;
+}
+
 function cmdWork(a: Args): void {
   const p = load(a._[1]);
   const stage = stageOf(a._[2], p);
@@ -93,7 +105,8 @@ function cmdWork(a: Args): void {
     appendLedger(p.slug, { kind: "work", stage, engine, session, skillSha: sha256File(SKILL) });
     const first = `Video work session (registered by govern work ${p.slug} ${stage}). Use the govern skill: run \`govern brief ${p.slug}\` first and work from it; do not explore the repository. Then ask me what we change.`;
     const args = engine === "codex" ? ["-C", repo(), first] : ["--session-id", session!, first];
-    const r = spawnSync(engine, args, { cwd: repo(), stdio: "inherit" });
+    const bin = process.env[`GOVERN_${engine.toUpperCase()}_BIN`] ?? engine;
+    const r = spawnSync(bin, args, { cwd: repo(), stdio: "inherit", env: openEnv(engine) });
     appendLedger(p.slug, { kind: "done", engine, session });
     process.exitCode = r.status ?? 0;
     return;

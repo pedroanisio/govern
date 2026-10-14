@@ -306,7 +306,7 @@ test("work: both segment entries name the manual in force (skillSha of tools/gov
   const bin = join(e.root, "bin");
   write(join(bin, "codex"), "#!/bin/sh\nexit 0\n");
   spawnSync("chmod", ["755", join(bin, "codex")]);
-  const o = govern(e, ["work", slug, "script", "--engine", "codex", "--open"], { PATH: `${bin}:${process.env.PATH}` });
+  const o = govern(e, ["work", slug, "script", "--engine", "codex", "--open"], { GOVERN_GROK_BIN: join(bin, "grok") });
   assert.equal(o.code, 0, o.err);
   const opened = ledger(e, slug).filter((x) => x.kind === "work")[1];
   assert.equal(opened.engine, "codex");
@@ -323,13 +323,26 @@ test("work and done: grok is a third engine, detected from its shell markers, op
   assert.equal(govern(e, ["done", slug], { GROK_AGENT: "grok", GROK_SESSION_ID: "gs-1" }).code, 0);
   const [w1, d1] = ledger(e, slug).filter((x) => x.kind === "work" || x.kind === "done").slice(-2);
   assert.deepEqual([w1.engine, w1.session, d1.engine, d1.session], ["grok", "gs-1", "grok", "gs-1"]);
-  // a Claude session wins over a grok marker; the flag wins over both
+  // with both markers in one process (not what --open produces: it strips the other engine's) Claude wins; the flag wins over both
   assert.equal(govern(e, ["work", slug, "script"], { CLAUDE_CODE_SESSION_ID: "c-1", GROK_AGENT: "grok" }).code, 0);
   assert.equal(ledger(e, slug).filter((x) => x.kind === "work").pop().engine, "claude");
   assert.equal(govern(e, ["work", slug, "script", "--engine", "codex"], { GROK_AGENT: "grok" }).code, 0);
   assert.equal(ledger(e, slug).filter((x) => x.kind === "work").pop().engine, "codex");
+  // --open from inside a Claude session: the grok child gets none of Claude's markers and the engine it records is grok;
+  // the binary is GOVERN_GROK_BIN when set
+  write(join(e.root, "own-grok"), `#!/bin/sh\nenv | cut -d= -f1 | grep -E '^(CLAUDECODE|CLAUDE_CODE_|GROK_)' | sort > "${join(e.root, "child-env.txt")}"\nexit 0\n`);
+  spawnSync("chmod", ["755", join(e.root, "own-grok")]);
+  const fromClaude = govern(e, ["work", slug, "script", "--engine", "grok", "--open"], { CLAUDECODE: "1", CLAUDE_CODE_SESSION_ID: "c-9", GOVERN_GROK_BIN: join(e.root, "own-grok") });
+  assert.equal(fromClaude.code, 0, fromClaude.err);
+  assert.equal(readFileSync(join(e.root, "child-env.txt"), "utf8"), "");
+  assert.equal(ledger(e, slug).filter((x) => x.kind === "work").pop().engine, "grok");
+  // and the other way: a claude child opened from a grok shell carries no grok marker
+  write(join(e.root, "own-claude"), `#!/bin/sh\nenv | cut -d= -f1 | grep -E '^GROK_' | sort > "${join(e.root, "child-env2.txt")}"\nexit 0\n`);
+  spawnSync("chmod", ["755", join(e.root, "own-claude")]);
+  assert.equal(govern(e, ["work", slug, "script", "--engine", "claude", "--open"], { GROK_AGENT: "grok", GROK_SESSION_ID: "gs-2", PATH: `${e.root}:${process.env.PATH}`, GOVERN_CLAUDE_BIN: join(e.root, "own-claude") }).code, 0);
+  assert.equal(readFileSync(join(e.root, "child-env2.txt"), "utf8"), "");
   // --open: grok gets --session-id <uuid> and the first prompt, in the repo
-  const o = govern(e, ["work", slug, "script", "--engine", "grok", "--open"], { PATH: `${bin}:${process.env.PATH}` });
+  const o = govern(e, ["work", slug, "script", "--engine", "grok", "--open"], { GOVERN_GROK_BIN: join(bin, "grok") });
   assert.equal(o.code, 0, o.err);
   const opened = ledger(e, slug).filter((x) => x.kind === "work").pop();
   assert.equal(opened.engine, "grok");
