@@ -47,7 +47,8 @@ export function tokensOn(slugs: string[], day: string): Map<string, { calls: num
     byLane.set(lane, x);
   };
   for (const e of readJsonl(join(queue.QUEUE(), "ledger.jsonl"))) if (String(e.t).startsWith(day)) add(e.project, e.usage);
-  for (const s of slugs) for (const e of readJsonl(ledgerFile(s))) if (e.kind === "ask" && String(e.t).startsWith(day)) add(s, e.usage, e.calls ?? 1);
+  for (const s of slugs) for (const e of readJsonl(ledgerFile(s))) if ((e.kind === "ask" || e.kind === "conversation") && String(e.t).startsWith(day)) add(s, e.usage, e.calls ?? 1);
+  for (const e of readJsonl(join(stateDir(), "conversations", "ledger.jsonl"))) if (String(e.t).startsWith(day)) add(`conversation:${e.conversation}`, e.usage, 1);
   return byLane;
 }
 

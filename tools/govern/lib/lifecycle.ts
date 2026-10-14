@@ -1,3 +1,4 @@
+import { syncItems } from "./fanout.ts";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { create, load, save, stateFile, checkSlug, laneSlugs, appendLedger, type Project } from "./project.ts";
@@ -5,7 +6,7 @@ import { processOf, getProcess, freezeProcess, type Process } from "./process.ts
 import { activeStages, requireActive, setData, isGraph, enterTasks, gateApproved } from "./business.ts";
 import { enterRuntime } from "./lifecycle-runtime.ts";
 import { emptyRecord } from "./shape.ts";
-import { type Scalar } from "./business-schema.ts";
+import { type Scalar, type Value } from "./business-schema.ts";
 import { fail, sha256, nowIso } from "./util.ts";
 import * as jobs from "./jobs.ts";
 import { withLaneLock } from "./lane-lock.ts";
@@ -24,9 +25,19 @@ export function resetExecution(p: Project, to: string, reason: string): void {
   if (!pr.stages.some((s) => s.name === to)) fail(`unknown exception destination ${to}`);
   if (Object.values(p.runtime ?? {}).some((r) => r.checkInFlight || r.compensation === "running"))
     fail("resolve interrupted checks or uncertain compensation before rerouting");
-  if (p.runtime && Object.values(p.runtime).some((r) => r.child && !load(r.child).finished))
+  if (
+    p.runtime &&
+    Object.values(p.runtime).some((r) => (r.child && !load(r.child).finished) || (r.batch && !r.batch.synced))
+  )
     fail("cannot reroute a case with unfinished subprocesses; finish or resolve them first");
-  if (p.workflow) p.workflow = { active: [to], completed: [], waiting: [], cancelled: [] };
+  if (p.workflow)
+    p.workflow = {
+      active: [to],
+      completed: [],
+      waiting: [],
+      cancelled: [],
+      ...(p.workflow.loops ? { loops: p.workflow.loops } : {})
+    };
   p.stage = to;
   delete p.finished;
   p.humanTasks = emptyRecord();
@@ -142,9 +153,11 @@ export function deliverEvent(
 }
 export function requireLifecycleReady(p: Project, at = Date.now()): void {
   const s = processOf(p).stages.find((s) => s.name === p.stage)!;
-  if (!s.event && !s.onError && !s.call) return;
+  if (!s.event && !s.onError && !s.call && !s.foreach) return;
   const r = runtimeOf(p);
   if (s.event && !r.eventId) fail(`${p.stage} is waiting for event ${s.event.name}`);
+  if (s.foreach && !r.batch?.synced)
+    fail(`${p.stage} is waiting for foreach item completion (govern subprocess ${p.slug} ${p.stage})`);
   if (s.call && !r.childSynced)
     fail(`${p.stage} is waiting for subprocess completion (govern subprocess ${p.slug} ${p.stage})`);
   if (r.checkInFlight) fail(`${p.stage}: check outcome is uncertain; inspect its job and use govern recover`);
@@ -247,7 +260,7 @@ export function startChild(p: Project, stage: string): string {
     if (processOf(ancestor).name === target.name) fail("recursive subprocess cycle");
     ancestor = ancestor.invocation ? load(ancestor.invocation.parent) : undefined;
   }
-  const data = emptyRecord<Scalar>();
+  const data = emptyRecord<Value>();
   for (const [destination, source] of Object.entries(call.inputs ?? {})) {
     if (!Object.hasOwn(p.data ?? {}, source)) fail(`subprocess input ${source} is missing`);
     data[destination] = p.data![source]!;
@@ -284,6 +297,7 @@ export function startChild(p: Project, stage: string): string {
   return child;
 }
 export function syncChild(p: Project, stage: string): boolean {
+  if (processOf(p).stages.find((s) => s.name === stage)?.foreach) return syncItems(p, stage);
   requireActive(p, stage);
   const child = startChild(p, stage),
     r = runtimeOf(p, stage);
@@ -293,7 +307,7 @@ export function syncChild(p: Project, stage: string): boolean {
     if (c.invocation?.parent !== p.slug || c.invocation.stage !== stage || c.invocation.generation !== r.generation)
       fail("subprocess invocation mismatch");
     if (!c.finished) return false;
-    const patch = emptyRecord<Scalar>(),
+    const patch = emptyRecord<Value>(),
       call = processOf(p).stages.find((s) => s.name === stage)!.call!;
     for (const [destination, source] of Object.entries(call.outputs ?? {})) {
       if (!Object.hasOwn(c.data ?? {}, source)) fail(`finished subprocess is missing output ${source}`);
@@ -315,7 +329,7 @@ export function pin(p: Project): void {
 export function migrate(
   p: Project,
   map: Record<string, string>,
-  patch: Record<string, Scalar | null>,
+  patch: Record<string, Value | null>,
   quote: string
 ): void {
   if (p.finished) fail("finished cases cannot migrate");
@@ -325,7 +339,7 @@ export function migrate(
   if (!target.revision || target.revision <= p.processSnapshot.revision)
     fail("migration requires a higher declared process revision");
   if (isGraph(old) !== isGraph(target)) fail("migration must preserve linear versus graph execution");
-  if (activeStages(p).some((s) => p.runtime?.[s]?.child))
+  if (activeStages(p).some((s) => p.runtime?.[s]?.child || p.runtime?.[s]?.batch))
     fail("finish and advance active subprocess calls before migration");
   if (
     Object.values(p.runtime ?? {}).some(
@@ -353,6 +367,14 @@ export function migrate(
   if (candidate.workflow)
     for (const key of ["active", "completed", "waiting", "cancelled"] as const)
       candidate.workflow[key] = candidate.workflow[key].map(rename);
+  if (candidate.workflow?.loops)
+    candidate.workflow.loops = Object.fromEntries(
+      Object.entries(candidate.workflow.loops).map(([id, n]) => [rename(id), n])
+    );
+  if (candidate.workflow?.joinExpected)
+    candidate.workflow.joinExpected = Object.fromEntries(
+      Object.entries(candidate.workflow.joinExpected).map(([id, preds]) => [rename(id), preds.map(rename)])
+    );
   if (candidate.checks)
     candidate.checks = Object.fromEntries(Object.entries(candidate.checks).map(([s, c]) => [rename(s), c]));
   candidate.approvals = emptyRecord();
@@ -364,10 +386,13 @@ export function migrate(
   // Stage generations increase to invalidate deliveries prepared against the old definition.
   for (const stage of activeStages(candidate)) {
     const prior = p.runtime?.[Object.keys(map).find((k) => map[k] === stage) ?? stage];
-    if (prior && target.stages.some((s) => s.name === stage && (s.timer || s.event || s.call || s.onError)))
+    if (
+      prior &&
+      target.stages.some((s) => s.name === stage && (s.timer || s.event || s.call || s.foreach || s.onError))
+    )
       candidate.runtime[stage] = { ...prior, generation: prior.generation, deadlines: emptyRecord(), fired: [] };
   }
-  candidate.data = Object.assign(emptyRecord<Scalar>(), p.data ?? {});
+  candidate.data = Object.assign(emptyRecord<Value>(), p.data ?? {});
   const identities = new Set(target.gates.flatMap((g) => g.policy?.excludeFields ?? []));
   for (const [field, value] of Object.entries(patch)) {
     if (identities.has(field) && Object.hasOwn(p.data ?? {}, field) && value !== p.data![field])

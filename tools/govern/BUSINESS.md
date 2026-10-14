@@ -6,7 +6,7 @@ An example is in [examples/purchase.json](examples/purchase.json). Copy it into 
 
 ## Routing and parallel stages
 
-A graph process declares `next` on **every** stage. Each route has `to`, a nonempty list of destination stage names, and an optional `when`. `next: []` makes a stage terminal. One destination is a normal transition; multiple destinations start parallel stages. Declaration order does not determine graph execution.
+A graph process declares `next` on **every** stage. Each route has `to`, a list of destination stage names (nonempty except for conditional branch dispatch), and an optional `when`. `next: []` makes a stage terminal. One destination is a normal transition; multiple destinations start parallel stages. Declaration order does not determine graph execution.
 
 ```json
 {
@@ -36,7 +36,7 @@ A join declares its direct incoming predecessors:
 
 All incoming predecessors must be listed. An all-join should follow branches that actually run together; joining mutually exclusive alternatives would leave it blocked. The engine refuses a transition that leaves only an unsatisfiable join and no runnable branches.
 
-Graphs must be acyclic and all stages reachable from the first stage. Normal transitions cannot replay completed stages. Rejection is an explicit rework mechanism that resets graph execution at a declared target; general graph loops and BPMN import are not included. Explicit recovery routes are described in [LIFECYCLE.md](LIFECYCLE.md).
+Forward graph routes must be acyclic and all stages reachable from the first stage. Explicit bounded loop routes can replay a declared body and reset its decisions; see [ITERATION.md](ITERATION.md). Rejection resets execution at a declared target while retaining loop counters. BPMN import is not included. Explicit recovery routes are described in [LIFECYCLE.md](LIFECYCLE.md).
 
 ```bash
 govern new purchase-42 --process purchase
@@ -51,7 +51,7 @@ govern advance purchase-42 --stage legal --note 'Legal review recorded'
 
 ## Typed case data
 
-Process `fields` declare top-level scalar fields:
+Process `fields` declare top-level typed fields:
 
 ```json
 {
@@ -61,7 +61,7 @@ Process `fields` declare top-level scalar fields:
 }
 ```
 
-Types are `string`, `number`, `integer`, and `boolean`. `enum`, `default`, `min`, and `max` are validated. String bounds measure length; numeric bounds measure value. Unknown fields, nulls, objects, arrays, and mismatched types are refused. Nested records and attachment forms are not included.
+Types are `string`, `number`, `integer`, `boolean`, and flat scalar `array` collections with an `items` descriptor. `enum`, `default`, `min`, and `max` are validated. String bounds measure length; numeric bounds measure value. Unknown fields, nulls, objects, nested arrays, and mismatched types are refused. Nested records and attachment forms are not included.
 
 `govern data SLUG` prints JSON. `--set JSON` atomically merges a JSON object. Global `required` fields are needed before any stage advances or human task completes. A stage's `requiredFields` adds requirements for that stage only. Defaults are installed when the lane is created. Finished cases are read-only through this command.
 
@@ -138,3 +138,5 @@ Run the business regression suite and type check from the repository root:
 node --test --disable-warning=ExperimentalWarning tools/govern/test/business.test.ts
 npm --prefix tools/govern run typecheck
 ```
+
+See [Loops and dynamic branching](ITERATION.md) for bounded repeats, conditional fan-out, typed collections, and per-item subprocess joins.

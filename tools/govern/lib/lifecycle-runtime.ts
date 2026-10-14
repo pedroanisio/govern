@@ -1,5 +1,5 @@
 import type { Project } from "./project.ts";
-import { processOf } from "./process.ts";
+import { processOf, snapshotProcess } from "./process.ts";
 import { emptyRecord, reject } from "./shape.ts";
 import { fail } from "./util.ts";
 import type { Calendar, StageRuntime } from "./lifecycle-schema.ts";
@@ -39,7 +39,7 @@ export function enterRuntime(p: Project, stages: string[], force = false, at = D
   const pr = processOf(p);
   for (const stage of stages) {
     const s = pr.stages.find((s) => s.name === stage)!;
-    if (!s.timer && !s.event && !s.onError && !s.call) continue;
+    if (!s.timer && !s.event && !s.onError && !s.call && !s.foreach) continue;
     p.runtime ??= emptyRecord<StageRuntime>();
     if (p.runtime[stage] && !force) continue;
     const r: StageRuntime = {
@@ -64,11 +64,21 @@ export function validateRuntime(p: Project, path: string): void {
     ids = new Set(pr.stages.map((s) => s.name));
   for (const [stage, r] of Object.entries(p.runtime ?? {})) {
     const s = pr.stages.find((s) => s.name === stage);
-    if (!s || (!s.timer && !s.event && !s.onError && !s.call))
+    if (!s || (!s.timer && !s.event && !s.onError && !s.call && !s.foreach))
       reject(path + ".runtime", `unknown runtime stage ${stage}`);
     if (new Set(r.fired).size !== r.fired.length) reject(path + ".runtime", "duplicate timer markers");
     if (r.eventId && !s!.event) reject(path + ".runtime", "event receipt on a non-event stage");
     if (r.child && !s!.call) reject(path + ".runtime", "child on a non-call stage");
+    if (r.batch) {
+      if (snapshotProcess(r.batch.snapshot).name !== s!.foreach?.process)
+        reject(path + ".runtime", "foreach snapshot mismatch");
+      if (!s!.foreach || r.batch.items.length > s!.foreach.maxItems) reject(path + ".runtime", "invalid foreach batch");
+      for (const key of Object.keys(r.batch.children))
+        if (!/^(0|[1-9]\d*)$/.test(key) || Number(key) >= r.batch.items.length)
+          reject(path + ".runtime", "invalid item index");
+      if (r.batch.synced && Object.keys(r.batch.children).length !== r.batch.items.length)
+        reject(path + ".runtime", "synced batch has missing children");
+    }
     if (r.childSynced && !r.child) reject(path + ".runtime", "synced child missing");
     if ((r.checkInFlight || r.attempts !== undefined || r.retryAt || r.failure) && !s!.onError)
       reject(path + ".runtime", "retry/check state without an error policy");

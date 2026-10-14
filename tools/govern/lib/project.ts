@@ -1,7 +1,7 @@
 // A lane: its folder, its govern.json (state, commands, process) and its brief. A lane follows a process (lib/process.ts).
 import { existsSync, readFileSync, appendFileSync, mkdirSync, globSync } from "node:fs";
 import { join, dirname, resolve, relative } from "node:path";
-import { WORKFLOW, HUMAN_TASKS, VOTES, scalar, type Scalar, type Workflow, type HumanTask, type Vote } from './business-schema.ts';
+import { WORKFLOW, HUMAN_TASKS, VOTES, value, type Value, type Workflow, type HumanTask, type Vote } from './business-schema.ts';
 import { initializeBusiness, validateCase, gateApproved, setData } from './business.ts';
 import { GovernError, fail, readJson, writeJson, nowIso, latest, plain, clip, readJsonl } from "./util.ts";
 import type { Source } from "./approval.ts";
@@ -55,7 +55,7 @@ export interface Project {
   events?:EventReceipt[];
   alerts?:Alert[];
   invocation?:Invocation;
-  data?: Record<string, Scalar>;
+  data?: Record<string, Value>;
   workflow?: Workflow;
   humanTasks?: Record<string, HumanTask>;
   votes?: Record<string, Vote[]>;
@@ -101,7 +101,7 @@ const PROJECT = obj(
   { version: literal(1), slug: name, title: str, kind: name, lang: name, stage: name, created: iso,
     commands: record(COMMAND), files: record(str), approvals: record(obj({ at: iso, quote: str }, { by: name, source: SOURCE })),
     notes: arr(obj({ at: iso, stage: name, text: str })) },
-  {processSnapshot:SNAPSHOT, runtime:RUNTIME, events:EVENTS, alerts:ALERTS, invocation:INVOCATION, data: record(scalar), workflow: WORKFLOW, humanTasks: HUMAN_TASKS, votes: VOTES, process: name, parent: str, finished: iso, checks: record(name), after: arr(obj({ lane: name }, { stage: name })) },
+  {processSnapshot:SNAPSHOT, runtime:RUNTIME, events:EVENTS, alerts:ALERTS, invocation:INVOCATION, data: record(value), workflow: WORKFLOW, humanTasks: HUMAN_TASKS, votes: VOTES, process: name, parent: str, finished: iso, checks: record(name), after: arr(obj({ lane: name }, { stage: name })) },
 );
 
 /** Parse the text of lane `slug`'s govern.json (`file`): typed, unknown keys refused, then checked against what the types
@@ -153,7 +153,7 @@ export function save(p: Project): void {
   writeJson(f, q);
 }
 
-export function create(given: string, o: { kind?: string; process?: string; title?: string; lang?: string; parent?: string; pin?:boolean; data?:Record<string,Scalar>; snapshot?:Snapshot; invocation?:Invocation }): Project {
+export function create(given: string, o: { kind?: string; process?: string; title?: string; lang?: string; parent?: string; pin?:boolean; data?:Record<string,Value>; snapshot?:Snapshot; invocation?:Invocation }): Project {
   const slug = checkSlug(given);
   if (existsSync(stateFile(slug))) fail(`${slug}: govern.json already exists`);
   let kind: string, proc: string;
@@ -336,11 +336,12 @@ export function brief(p: Project, o: { notes?: number } = {}): string {
   const label = kinded || pr.name === "ops" ? `kind ${p.kind}` : `process ${pr.name}`;
   L.push(`${label}${kinded ? ` · lang ${p.lang}` : ""}${p.parent ? ` · from ${p.parent}` : ""} · stage ${n}/${list.length} ${p.stage}${p.finished ? " (finished)" : ""} · folder ${rel(dir)}`);
   if (manualOf(pr)) L.push(`manual: govern manual ${pr.name}`);
+  if(p.workflow?.loops)L.push(`loop repeats: ${JSON.stringify(p.workflow.loops)}`);
   if (p.workflow) L.push(`active: ${p.workflow.active.join(', ') || '(none)'}${p.workflow.waiting.length ? ` · joins waiting: ${p.workflow.waiting.join(', ')}` : ''}`);
   if (p.data) L.push(`case data: ${JSON.stringify(p.data)}`);
   for (const [stage,t] of Object.entries(p.humanTasks ?? {})) L.push(`human task ${stage}: ${t.completedAt ? `completed by ${t.completedBy}` : t.assignee ? `assigned to ${t.assignee}` : 'unclaimed'}`);
   if(p.processSnapshot)L.push(`process revision: ${p.processSnapshot.revision} (pinned ${p.processSnapshot.hash.slice(0,12)})`);
-  for(const stage of p.workflow?.active??(p.finished?[]:[p.stage])) {const r=p.runtime?.[stage];if(r)L.push(`runtime ${stage}: generation ${r.generation}${r.deadlines.due?` · due ${r.deadlines.due}`:''}${r.retryAt?` · retry ${r.retryAt}`:''}${r.failure?` · failure ${clip(r.failure,120)}`:''}${r.child?` · child ${r.child}${r.childSynced?' (synced)':''}`:''}${r.eventId?` · event ${r.eventId}`:''}`);}
+  for(const stage of p.workflow?.active??(p.finished?[]:[p.stage])) {const r=p.runtime?.[stage];if(r)L.push(`runtime ${stage}: generation ${r.generation}${r.deadlines.due?` · due ${r.deadlines.due}`:''}${r.retryAt?` · retry ${r.retryAt}`:''}${r.failure?` · failure ${clip(r.failure,120)}`:''}${r.batch?` · items ${Object.keys(r.batch.children).length}/${r.batch.items.length}${r.batch.synced?" (synced)":""}`:""}${r.child?` · child ${r.child}${r.childSynced?' (synced)':''}`:''}${r.eventId?` · event ${r.eventId}`:''}`);}
   const alerts=(p.alerts??[]).filter(a=>!a.acknowledgedAt);if(alerts.length)L.push(`alerts: ${alerts.length} unacknowledged (govern alerts ${p.slug})`);
   const ex = exitCondition(p);
   if (ex) L.push(`exit when: ${ex}`);

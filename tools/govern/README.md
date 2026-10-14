@@ -38,6 +38,8 @@ workspace can add its own or override these.
 blocks on them with no model in the loop. The task queue (`govern task …`)
 carries messages between agents.
 
+**Conversations.** `govern conversation` owns durable history, serialized turns, streamed progress, cancellation and explicit restart recovery across agent harnesses. Business state and approvals remain in their cases.
+
 **Workspaces.** A `.govern/` folder in the working directory or above it makes
 that folder a govern workspace. `govern init` creates one.
 
@@ -64,5 +66,8 @@ Documentation:
 - [SKILL.md](SKILL.md) is the operating manual for the AI (`govern manual`).
 - [PURPOSE.md](PURPOSE.md) explains why govern exists.
 - [BUSINESS.md](BUSINESS.md) covers the business-workflow features: routes, parallel stages, case data, human tasks and approval policies.
+- [LIFECYCLE.md](LIFECYCLE.md) covers deadlines, external events, retries and subprocesses.
+- [ITERATION.md](ITERATION.md) covers bounded loops, conditional branches and per-item subprocesses.
+- [CONVERSATIONS.md](CONVERSATIONS.md) covers persistent sessions, adapters, context checkpoints and recovery.
 - [REMOTE.md](REMOTE.md) specifies `govern remote`, the protocol that lets a paired phone follow the lanes and their
   telemetry and approve gates with a signed confirmation. The Android app is in [android/](android/README.md).

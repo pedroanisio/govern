@@ -3,6 +3,12 @@
 # NAME
 #     govern — run lanes of agent work (videos, software, ops, any process) through checked stages, with few tokens
 # SYNOPSIS
+#     govern conversation create ID [--profile P | --adapter A] [--lane SLUG] [--title T] [--timeout S] [--max-context-chars N]
+#     govern conversation list | show ID | history ID | close ID
+#     govern conversation send ID (--message TEXT | --message-file FILE) [--request-id KEY] [--mode queue|interrupt] [--estimate-usd N] [--run [--bg]]
+#     govern conversation run ID [--bg] [--once] | cancel ID RUN-ID [--reason TEXT]
+#     govern conversation recover ID --action continue|retry|cancel --note TEXT
+#     govern conversation context ID --summary TEXT --through MESSAGE-ID | events ID [--after N] [--follow [--timeout S]]
 #     govern init [DIR] [--nested]
 #     govern new SLUG (--process NAME | --kind long|short|ops) [--title T] [--lang L] [--parent SLUG] [--pin]
 #     govern work SLUG STAGE [--engine claude|codex] [--open]  |  brief SLUG  |  status [SLUG]
@@ -66,6 +72,17 @@
 #     `task inbox --hook`), answers with `reply`, and `close`s or `forward`s what is not for it. NAME defaults to
 #     GOVERN_AS, else the registered session found up this process's parent chain.
 # OPTIONS
+#     --adapter A             conversation create: trusted named NDJSON adapter from conversationAdapters in workspace config
+#     --max-context-chars N    conversation create: maximum assembled context characters (default 64000); checkpoint rather than truncate
+#     --message TEXT          conversation send: latest user message
+#     --message-file FILE     conversation send: read the message from a UTF-8 file
+#     --request-id KEY        conversation send: idempotent input key; conflicting content is refused
+#     --mode M                conversation send: queue (default) or interrupt the active run before this follow-up
+#     --run                   conversation send: execute persisted turns after submission
+#     --once                  conversation run: execute at most one turn, including background execution
+#     --reason TEXT           conversation cancel: explanation retained with the cancellation request
+#     --through MESSAGE-ID    conversation context: completed assistant message ending the summarized context
+#     --follow                conversation events: stream durable NDJSON events until --timeout (default 30 seconds)
 #     Each entry names the commands that take the flag; `govern help COMMAND` shows one command's lines.
 #     -h, --help              every command: after a command (`govern advance --help`), that command's lines, the same as
 #                             `govern help advance`; as the first word (`govern --help`, `-h`), this manpage
@@ -85,12 +102,12 @@
 #     --url URL               remote pair: the server's address as the phone reaches it, printed as a pairing link
 #     --advance               tick: progress ready event, subprocess and retry stages through normal gates
 #     --ack ID                alerts: acknowledge an alert without approving a business decision
-#     --action NAME           recover: retry an investigated failure or confirm compensation with compensated
+#     --action NAME           conversation recover, recover: retry an investigated failure or confirm compensation with compensated
 #     --nested                init: make a workspace inside another workspace (refused otherwise)
 #     --process P             new: the process the lane follows (govern process list)
 #     --kind K                new, task send, task reply: new: the lane's kind (long|short|ops, or one the process names);
 #                             task: the message kind (TASK, the default for send; ACK, REVIEW, HANDOFF, BLOCKED…)
-#     --title T               new: the lane's title (default: its slug)
+#     --title T               conversation create, new: the lane's title (default: its slug)
 #     --lang L                new: the lane's language, en (default) or pt-BR
 #     --parent SLUG           new: the lane this one comes from (shown in its brief)
 #     --engine E              work, done: claude or codex (default: claude inside a Claude Code session, else codex)
@@ -101,7 +118,7 @@
 #     --by NAME               approve, reject, allow: the decision owner, required when the gate or allowance names one other
 #                             than owner; on a policy gate, the process person this OS account is mapped to
 #     --extra N               allow: raise the allowance's limit by N for its current period
-#     --timeout S             cmd, wait, up, down, reap: cmd: the command's foreground limit (default 1800); wait: block at
+#     --timeout S             conversation create, conversation events, cmd, wait, up, down, reap: cmd: the command's foreground limit (default 1800); wait: block at
 #                             most S seconds (default 540), exit 124 if the job still runs; up, down, reap: the provider
 #                             command's limit (default 120)
 #     --rm NAME               cmd, dep: remove the named command (cmd) or the dependency on that lane (dep)
@@ -112,15 +129,15 @@
 #     --stage S               check, advance, recover: check: the stage --set applies to, or the active stage to check; advance: the
 #                             active stage to move on from (a lane with parallel stages)
 #     --accept                check: the owner accepts that stage's flagged check changes (with --quote)
-#     --note T                advance, task close: advance: the evidence that a stage with no check is done (also recorded
+#     --note T                conversation recover, advance, task close: advance: the evidence that a stage with no check is done (also recorded
 #                             as a decision); task close: a note recorded with the close
-#     --after LANE[:STAGE]    dep: this lane waits on that lane (all of it, or past STAGE)
-#     --bg                    run, slice: run detached and print the job id; wait with `govern wait`
+#     --after LANE[:STAGE]    conversation events, dep: this lane waits on that lane (all of it, or past STAGE)
+#     --bg                    conversation send, conversation run, run, slice: run detached and print the job id; wait with `govern wait`
 #     --on R                  run: run the command on a declared resource (locked unless it says lock: false)
 #     --override-resource     run: let --on move a command off its own resource (recorded in the job)
 #     --estimate HOURS        run, slice: the time reserved on the resource's allowance; the job is stopped at it
 #     --machines N            slice: how many machines the recipe starts (refused above the resource's maxMachines)
-#     --lane SLUG             up, task send: up: the lane the machines are booked to (default: the job it runs inside);
+#     --lane SLUG             conversation create, up, task send: up: the lane the machines are booked to (default: the job it runs inside);
 #                             task send: the lane whose gate authorises a spend, publish or push profile
 #     --count N               up: how many instances to start (default 1)
 #     --forget                down: book the machine time without running stop, for a machine that is already gone
@@ -140,14 +157,14 @@
 #                             the new recipient
 #     --project P             task send, task list: the message's project; list: only that project's messages
 #     --task T                task send: the task the message belongs to
-#     --summary S             task send, task reply: the one-line summary
+#     --summary S             conversation context, task send, task reply: the one-line summary
 #     --body B                task send, task reply: the message text
 #     --body-file F           task send, task reply: read the message text from F
 #     --reply-to ID           task send: the message this one answers
 #     --from NAME             task send: the sender (default: the registered session up the parent chain)
 #     --write                 task send: let the runner change files in the project folder (default: read-only)
-#     --profile P             task send: seal the run to profile P's capabilities (govern caps); not with --write
-#     --estimate-usd N        task send: what the run is expected to cost, reserved against a matching allowance
+#     --profile P             conversation create, task send: seal the run to profile P's capabilities (govern caps); not with --write
+#     --estimate-usd N        conversation send, task send: what the run is expected to cost, reserved against a matching allowance
 #     --state S               decide ask, task list: decide ask: the state Jev is asked about, as text; task list: only
 #                             messages in state open, claimed, done or failed
 #     --state-file F          decide ask: read the state from F
@@ -188,6 +205,7 @@
 #     · GOVERN_CAPS_CHECK_MODEL (haiku, caps --check) · GOVERN_GROK_CHECK_MODEL (the profile's model, caps --check)
 #     · GOVERN_QUEUE_GROK_MODEL (grok's default) · GOVERN_GROK_MAX_TURNS (25; grok has no dollar cap)
 #     · GOVERN_QUEUE_TIMEOUT_SEC (900, one dispatched run).
+#     Conversation workers: GOVERN_CONVERSATION_RUN (set by the runtime; model-origin approvals are refused).
 #     Jev (decide): TYPESAFE_API_KEY (the TypeSafe key; else the config's decide.envFile) · GOVERN_JEV_MODEL (jev-latest)
 #     · GOVERN_TYPESAFE_URL (https://api.typesafe.ai).
 #     Webhooks: GOVERN_WEBHOOK_TOKEN (event-listen bearer token; at least 16 characters, configured securely).
@@ -215,7 +233,7 @@
 #     video workflow codex claude grok tokens usage orchestration pals-notes youtube
 # SEE ALSO
 #     st-man - tools/govern/SKILL.md (govern manual) - tools/govern/processes/video/MANUAL.md (govern manual video)
-#     - tools/govern/BUSINESS.md - tools/govern/PURPOSE.md - tools/govern/REMOTE.md
+#     - tools/govern/BUSINESS.md - tools/govern/PURPOSE.md - tools/govern/CONVERSATIONS.md - tools/govern/REMOTE.md
 # MANPAGE <<<
 set -eu
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
