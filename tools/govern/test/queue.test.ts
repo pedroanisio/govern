@@ -2,7 +2,7 @@ import { test } from "node:test";
 import { createRequire } from "node:module";
 const require = createRequire(import.meta.url);
 import assert from "node:assert/strict";
-import { readFileSync, existsSync } from "node:fs";
+import { readFileSync, existsSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { makeEnv, govern, childEnv, jsonl, write, reply, present, HERE, tempDir } from "./helpers.ts";
 
@@ -73,6 +73,58 @@ test("dispatch runs claude -p with read-only tools, outside this session's env, 
   assert.equal(call.nested, false);
   assert.deepEqual(call.argv.slice(0, 5), ["-p", "--output-format", "json", "--model", "sonnet"]);
   assert.deepEqual(call.argv.slice(5), ["--allowedTools", "Read", "Grep", "Glob", "--tools", "Read", "Grep", "Glob", "--disallowedTools", "Agent", "Bash", "Edit", "NotebookEdit", "Task", "TodoWrite", "WebFetch", "WebSearch", "Write", "--setting-sources", "", "--strict-mcp-config"], "sealed to the claude-read profile");
+});
+
+test("dispatch runs grok --prompt-file sealed to grok-read: private HOME, compat loaders closed, real GROK_HOME, cost and cache read from its json", () => {
+  const e = env();
+  govern(e, ["task", "send", "--to", "grok", "--project", "film", "--task", "review", "--summary", "review the hook", "--body", "BODY-GROK"]);
+  const r = govern(e, ["task", "dispatch"], { FAKE_GROK_RESULT: JSON.stringify({ kind: "ACK", summary: "looks right", body: "ok" }), CLAUDECODE: "1", CLAUDE_CODE_SESSION_ID: "parent" });
+  assert.equal(r.code, 0, r.err);
+  assert.match(r.out, /→ grok: ACK in \d+s, 10k in \(90% cached\), 200 out, \$0\.012/);
+  const call = jsonl(join(e.root, "grok.log"))[0];
+  assert.equal(call.argv[0], "--prompt-file");
+  assert.deepEqual(call.argv.slice(2), ["--output-format", "json", "--tools", "Read,Grep,Glob", "--permission-mode", "dontAsk", "--cwd", call.cwd], "sealed to the grok-read profile");
+  assert.match(call.prompt, /BODY-GROK/);
+  assert.equal(call.env.GROK_CLAUDE_MCPS_ENABLED, "0");
+  assert.equal(call.env.GROK_CLAUDE_SKILLS_ENABLED, "0");
+  assert.equal(call.env.GROK_CLAUDE_HOOKS_ENABLED, "0");
+  assert.equal(call.env.GROK_MEMORY, "0");
+  assert.equal(call.env.CLAUDECODE, null, "the child does not think it runs inside this Claude Code session");
+  assert.equal(call.env.GROK_HOME, join(e.env.HOME!, ".grok"), "auth stays in the real grok home");
+  assert.notEqual(call.env.HOME, e.env.HOME, "a private HOME hides the user's skills, plugins and Claude settings");
+  assert.equal(call.homeExists, true);
+  assert.equal(existsSync(call.env.HOME), false, "the private HOME is removed after the run");
+  const ledger = jsonl(join(e.root, "queue", "ledger.jsonl"))[0];
+  assert.equal(ledger.agent, "grok");
+  assert.equal(ledger.profile, "grok-read");
+  assert.equal(ledger.usage.input, 10000);
+  assert.equal(ledger.usage.cached, 9000);
+  assert.equal(ledger.usage.costUsd, 0.0123);
+});
+
+test("grok --write maps to grok-write, which may edit; a grok run that fails is reported like claude's", () => {
+  const e = env();
+  mkdirSync(join(e.projects, "film"), { recursive: true });
+  govern(e, ["task", "send", "--to", "grok", "--write", "--project", "film", "--task", "fix", "--summary", "fix it"]);
+  assert.match(govern(e, ["task", "list"]).out, /TASK\s+owner→grok/);
+  const r = govern(e, ["task", "dispatch"], { FAKE_GROK_RESULT: JSON.stringify({ kind: "ACK", summary: "done", body: "ok" }) });
+  assert.match(r.out, /→ grok: ACK/);
+  const call = jsonl(join(e.root, "grok.log"))[0];
+  assert.deepEqual(call.argv.slice(2, 12), ["--output-format", "json", "--tools", "Read,Grep,Glob,Edit,Write", "--permission-mode", "acceptEdits", "--allow", "Edit", "--allow", "Write"]);
+  assert.equal(call.cwd, join(e.projects, "film"));
+  assert.equal(jsonl(join(e.root, "queue", "ledger.jsonl"))[0].profile, "grok-write");
+  for (const [name, extra, why] of [
+    ["exit", { FAKE_GROK_EXIT: "3", FAKE_GROK_RAW: "" }, /grok: no JSON result \(exit 3\)/],
+    ["raw", { FAKE_GROK_RAW: "not json at all" }, /grok: no JSON result/],
+    ["stop", { FAKE_GROK_STOP: "cancelled", FAKE_GROK_RESULT: "" }, /grok: stopped with cancelled/],
+  ] as const) {
+    govern(e, ["task", "send", "--to", "grok", "--project", "film", "--task", `t-${name}`, "--summary", name]);
+    const f = govern(e, ["task", "dispatch"], extra);
+    assert.match(f.out, /→ grok: FAILED/, name);
+    const failed = readdirSync(join(e.root, "queue", "failed")).filter((x) => x.endsWith(".json")).map((x) => JSON.parse(readFileSync(join(e.root, "queue", "failed", x), "utf8")));
+    const m = present(failed.find((x) => x.task === `t-${name}`), `the failed ${name} message`);
+    assert.match(m.result.error, why, name);
+  }
 });
 
 test("--write gives the runner write access; replies thread back to the original", () => {

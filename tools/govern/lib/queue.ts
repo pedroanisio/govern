@@ -5,6 +5,8 @@
 // to an AI agent it starts ONE fresh headless session (codex exec or claude -p) with only that message, its thread and
 // the files it names, verifies the reply, files it as a new message to the sender and closes the original.
 import { spawnSync } from "node:child_process";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir, homedir } from "node:os";
 import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync, appendFileSync } from "node:fs";
 import { join, resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -15,7 +17,7 @@ import * as jobs from "./jobs.ts";
 import { cost } from "./usage.ts";
 import { parseEvents, execArgs, validate, type Usage } from "./codex.ts";
 import { type CheckDef, configChecks, declared, verify, type Verification } from "./replycheck.ts";
-import { registry, getProfile, writes, guardProblem, checkProblem, profileHash, claudeArgs, codexSpec, LEGACY_PROFILES, type Profile, type Registry } from "./caps.ts";
+import { registry, getProfile, writes, guardProblem, checkProblem, profileHash, claudeArgs, codexSpec, grokArgs, LEGACY_PROFILES, type Profile, type Registry } from "./caps.ts";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 /** The queue folder: GOVERN_QUEUE or the config's "queue". */
@@ -23,7 +25,7 @@ export const QUEUE = queueDir;
 export const KINDS = ["TASK", "ACK", "PROGRESS", "BLOCKED", "HANDOFF", "REVIEW", "DECISION", "NOTICE"] as const;
 export const REPLY_KINDS = ["ACK", "PROGRESS", "BLOCKED", "HANDOFF", "REVIEW", "DECISION", "NOTICE"] as const;
 /** Agents the dispatcher always knows. A workspace adds its own in the queue's config.json (`runners`). */
-export const BUILTIN_RUNNERS = ["codex", "claude"] as const;
+export const BUILTIN_RUNNERS = ["codex", "claude", "grok"] as const;
 /** A runner named in config.json: any command that reads the prompt on stdin and prints the reply.
  *  `{repo}`, `{dir}` (the project folder) and `{paths.NAME}` are expanded in argv. format "text": stdout is the reply;
  *  "json-result": stdout is a `claude -p --output-format json` result. */
@@ -43,13 +45,13 @@ export function config(): QueueConfig {
   try { return JSON.parse(readFileSync(f, "utf8")); } catch (e) { return fail(`${f}: not JSON (${(e as Error).message})`); }
 }
 /** Agents the dispatcher can run. Anyone else (owner, a named session) only reads the queue. */
-/** codex, claude and the config.json runners: the queue line of the desk (profiles have their own line). */
+/** codex, claude, grok and the config.json runners: the queue line of the desk (profiles have their own line). */
 export const plainRunners = (): string[] => [...BUILTIN_RUNNERS, ...Object.keys(config().runners ?? {})];
 export const runners = (): string[] => {
   const named = [...registry().profiles.keys()].filter((n) => !(LEGACY_PROFILES as readonly string[]).includes(n) && !plainRunners().includes(n));
   return [...plainRunners(), ...named];
 };
-/** A runner of the queue's config.json that is not claude or codex: it runs unsealed, as it always did, and shadows a profile of its name. */
+/** A runner of the queue's config.json that is not claude, codex or grok: it runs unsealed, as it always did, and shadows a profile of its name. */
 const configuredRunner = (to: string): boolean => !(BUILTIN_RUNNERS as readonly string[]).includes(to) && Object.hasOwn(config().runners ?? {}, to);
 /** Config runners that hide a built-in or workspace profile of the same name (`govern caps` warns about each). */
 export const shadowing = (): string[] => Object.keys(config().runners ?? {}).filter((n) => registry().profiles.has(n));
@@ -79,7 +81,7 @@ export interface Message {
 const dir = (s: State) => join(QUEUE(), s);
 const NAME = /^[a-z0-9][a-z0-9.-]*$/;
 
-/** The profile and access a message to `to` gets: --to claude|codex is claude-read|claude-write (codex-…) as before, --profile
+/** The profile and access a message to `to` gets: --to claude|codex|grok is claude-read|claude-write (codex-…, grok-…) as before, --profile
  *  names another of that engine, and --to <profile> names it directly. A recipient with no profile gets none. */
 export function resolveTarget(to: string, o: { profile?: string; write: boolean }): { profile?: string; access: Message["access"] } {
   const reg = registry();
@@ -87,9 +89,9 @@ export function resolveTarget(to: string, o: { profile?: string; write: boolean 
   if (o.profile !== undefined) {
     if (o.write) fail("--write cannot be combined with --profile: the profile decides what may change");
     const p = getProfile(o.profile, reg);
-    if (to !== p.name && to !== p.engine) fail(`--profile ${p.name} is a ${p.engine} profile; --to ${to} runs ${to === "claude" || to === "codex" ? to : "no profile"}`);
+    if (to !== p.name && to !== p.engine) fail(`--profile ${p.name} is a ${p.engine} profile; --to ${to} runs ${(BUILTIN_RUNNERS as readonly string[]).includes(to) ? to : "no profile"}`);
     name = p.name;
-  } else if (to === "claude" || to === "codex") name = `${to}-${o.write ? "write" : "read"}`;
+  } else if ((BUILTIN_RUNNERS as readonly string[]).includes(to)) name = `${to}-${o.write ? "write" : "read"}`;
   else if (!configuredRunner(to) && reg.profiles.has(to)) {
     if (o.write) fail(`--write does not apply to the profile ${to}: its capabilities decide what may change`);
     name = to;
@@ -97,10 +99,10 @@ export function resolveTarget(to: string, o: { profile?: string; write: boolean 
   if (name === undefined) return { access: o.write ? "write" : "read-only" };
   return { profile: name, access: writes(reg, getProfile(name, reg)) ? "write" : "read-only" };
 }
-/** The profile of a message that names none: claude or codex with the access it carries, or a profile named like the recipient. */
+/** The profile of a message that names none: claude, codex or grok with the access it carries, or a profile named like the recipient. */
 function defaultProfile(m: Pick<Message, "to" | "access">, reg: Registry): string | undefined {
   if (configuredRunner(m.to)) return undefined;
-  if (m.to === "claude" || m.to === "codex") return `${m.to}-${m.access === "write" ? "write" : "read"}`;
+  if ((BUILTIN_RUNNERS as readonly string[]).includes(m.to)) return `${m.to}-${m.access === "write" ? "write" : "read"}`;
   return reg.profiles.has(m.to) ? m.to : undefined;
 }
 /** The lane that authorises a message's profile: --lane, else the project when it is a lane. */
@@ -255,7 +257,7 @@ export function parseReply(text: string | undefined): { kind: string; summary: s
 /** The child must not think it runs inside this Claude Code session. */
 function childEnv(): NodeJS.ProcessEnv {
   const env = { ...process.env };
-  for (const k of Object.keys(env)) if (k === "CLAUDECODE" || k.startsWith("CLAUDE_CODE_")) delete env[k];
+  for (const k of Object.keys(env)) if (k === "CLAUDECODE" || k.startsWith("CLAUDE_CODE_") || k === "GROK_AGENT" || k === "GROK_SESSION_ID") delete env[k];
   return env;
 }
 
@@ -271,6 +273,7 @@ export function runSealed(reg: Registry, prof: Profile, cwd: string, p: string, 
     const res = claudeResult(r.stdout, r.status, r.stderr, r.error);
     return res.error ? { ...res, error: `claude: ${res.error}` } : res;
   }
+  if (prof.engine === "grok") return runGrok(reg, prof, cwd, p, timeoutSec, o);
   const spec = codexSpec(reg, prof);
   const model = o.model ?? prof.model;
   const args = execArgs({ cwd, lastMessage: o.lastMessage, effort: process.env.GOVERN_QUEUE_CODEX_EFFORT ?? "medium", sandbox: spec.sandbox, config: spec.config, addDirs: spec.addDirs, ...(o.schema ? { schema: o.schema } : {}), ...(model ? { model } : {}) });
@@ -278,6 +281,60 @@ export function runSealed(reg: Registry, prof: Profile, cwd: string, p: string, 
   const ev = parseEvents(r.stdout ?? "");
   const text = existsSync(o.lastMessage) ? readFileSync(o.lastMessage, "utf8") : ev.message;
   return { text, usage: ev.usage, turns: ev.turns, error: r.error ? r.error.message : r.status !== 0 ? `codex exit ${r.status}: ${clip(ev.errors[0] ?? r.stderr ?? "", 300)}` : undefined };
+}
+
+/** The environment half of a grok seal. HOME is a private empty folder, so the user's skills (~/.agents), plugins and Claude settings
+ *  permissions are not found; GROK_HOME stays the real one (it holds the login); the Claude-compat MCP, skill and hook loaders and memory
+ *  are switched off. Verified with `grok inspect` and probes (docs/govern-features.md 3.12). Not closed: project-level config under the cwd. */
+export function grokEnv(privateHome: string): NodeJS.ProcessEnv {
+  return { ...childEnv(), HOME: privateHome, GROK_HOME: process.env.GROK_HOME ?? join(homedir(), ".grok"),
+    GROK_CLAUDE_MCPS_ENABLED: "0", GROK_CLAUDE_SKILLS_ENABLED: "0", GROK_CLAUDE_HOOKS_ENABLED: "0", GROK_MEMORY: "0" };
+}
+
+/** One sealed `grok --prompt-file` run: the prompt in a temp file, a private HOME, both removed afterwards. */
+function runGrok(reg: Registry, prof: Profile, cwd: string, p: string, timeoutSec: number, o: SealedOpts): RunOut {
+  const base = mkdtempSync(join(tmpdir(), "govern-grok-"));
+  try {
+    const home = join(base, "home"), promptFile = join(base, "prompt.txt");
+    mkdirSync(home);
+    writeFileSync(promptFile, p);
+    const model = o.model || prof.model || process.env.GOVERN_QUEUE_GROK_MODEL;
+    const args = ["--prompt-file", promptFile, "--output-format", "json", ...(model ? ["--model", model] : []), ...grokArgs(reg, prof), "--cwd", cwd];
+    const r = spawnSync(process.env.GOVERN_GROK_BIN ?? "grok", args, { cwd, encoding: "utf8", timeout: timeoutSec * 1000, maxBuffer: 64 << 20, env: grokEnv(home) });
+    const res = grokResult(r.stdout, r.status, r.stderr, r.error, timeoutSec);
+    return res.error ? { ...res, error: `grok: ${res.error}` } : res;
+  } finally { rmSync(base, { recursive: true, force: true }); }
+}
+
+/**
+ * ⚠ ARCHITECTURAL CONTRACT (PALS's LAW) — LLM OUTPUT IS UNVERIFIED BY DEFAULT
+ *
+ * LLMs statistically produce errors: omissions, hallucinations,
+ * partial completions, schema violations, and silent failures.
+ * These are properties of the model class, not exceptional conditions.
+ *
+ * Any caller of this function that skips output validation is
+ * introducing an architectural omission — not a code bug downstream.
+ *
+ * Verification is mandatory. Treat all LLM output as untrusted input.
+ *
+ * Here: grok's json is only transport. A non-zero exit, a timeout, output that is not JSON, or a stopReason other than
+ * end_turn (grok reports "cancelled" when a permission prompt is auto-denied headless) is an error; the text still goes
+ * through parseReply and the reply check before anyone reads it.
+ */
+function grokResult(stdout: string | undefined, status: number | null, stderr: string | undefined, error: Error | undefined, timeoutSec: number): RunOut {
+  if ((error as NodeJS.ErrnoException | undefined)?.code === "ETIMEDOUT") return { error: `timed out after ${timeoutSec}s` };
+  let o: any;
+  try { o = JSON.parse(stdout ?? ""); } catch { return { error: `no JSON result (exit ${status}): ${clip(stderr || stdout || "", 300)}` }; }
+  if (o === null || typeof o !== "object") return { error: `no JSON result (exit ${status}): not an object` };
+  const u = o.usage ?? {};
+  // The CLI's input_tokens EXCLUDES cache reads (the session store's include them); the total is the sum, as for claude.
+  const usage = { input: (u.input_tokens ?? 0) + (u.cache_read_input_tokens ?? 0) + (u.cache_creation_input_tokens ?? 0), cached: u.cache_read_input_tokens ?? 0, cacheWrite: u.cache_creation_input_tokens ?? 0, output: u.output_tokens ?? 0, reasoning: u.reasoning_tokens ?? 0, ...(typeof o.total_cost_usd === "number" ? { costUsd: o.total_cost_usd } : {}) };
+  const out: RunOut = { text: typeof o.text === "string" ? o.text : undefined, turns: o.num_turns, usage };
+  if (error) out.error = error.message;
+  else if (status !== 0) out.error = `exit ${status}: ${clip(stderr ?? "", 300)}`;
+  else if (o.stopReason !== "end_turn") out.error = `stopped with ${o.stopReason ?? "no stopReason"}${typeof o.text === "string" && o.text ? `: ${clip(o.text, 200)}` : ""}`;
+  return out;
 }
 
 function claudeResult(stdout: string | undefined, status: number | null, stderr: string | undefined, error?: Error): RunOut {

@@ -9,6 +9,7 @@ import { fileURLToPath } from "node:url";
 export const HERE = dirname(fileURLToPath(import.meta.url));
 export const GOVERN = join(HERE, "..", "govern.ts");
 export const FAKE = join(HERE, "fake-codex.ts");
+export const FAKE_GROK = join(HERE, "fake-grok.ts");
 export const fixture = (name: string) => join(HERE, "fixtures", name);
 
 export interface Env { root: string; projects: string; env: { HOME: string; [name: string]: string } }
@@ -51,10 +52,14 @@ export function makeEnv(name = "test"): Env {
   }));
   const fakeBin = join(root, "fake-codex.sh");
   writeFileSync(fakeBin, `#!/bin/sh\nexec ${process.execPath} --disable-warning=ExperimentalWarning ${FAKE} "$@"\n`, { mode: 0o755 });
+  // The fake grok: a test never reaches the real binary, whatever is on PATH.
+  const fakeGrok = join(root, "fake-grok.sh");
+  writeFileSync(fakeGrok, `#!/bin/sh\nexec ${process.execPath} --disable-warning=ExperimentalWarning ${FAKE_GROK} "$@"\n`, { mode: 0o755 });
   return {
     root, projects,
     env: {
       GOVERN_REPO: root, GOVERN_PROJECTS: projects, GOVERN_WORKFLOW: wf, GOVERN_CODEX_BIN: fakeBin,
+      GOVERN_GROK_BIN: fakeGrok, GOVERN_GROK_SESSIONS: join(root, "grok-sessions"), FAKE_GROK_ARGV_OUT: join(root, "grok.log"),
       GOVERN_CLAUDE_PROJECTS: join(root, "claude"), GOVERN_CODEX_SESSIONS: join(root, "codex-sessions"),
       FAKE_CODEX_ARGV_OUT: join(root, "argv.log"), FAKE_CODEX_STDIN_OUT: join(root, "stdin.log"), FAKE_CODEX_COUNTER: join(root, "count"),
       CLAUDE_CODE_SESSION_ID: "",
@@ -75,7 +80,7 @@ export function parentEnv(): NodeJS.ProcessEnv {
 }
 
 /** The variables a Codex shell carries (lib/approval.ts): never inherited from the session running the tests. */
-const AGENT_MARKERS = ["CODEX_THREAD_ID", "CODEX_SESSION_ID", "CODEX_SANDBOX_NETWORK_DISABLED", "CODEX_SANDBOX"];
+const AGENT_MARKERS = ["CODEX_THREAD_ID", "CODEX_SESSION_ID", "CODEX_SANDBOX_NETWORK_DISABLED", "CODEX_SANDBOX", "GROK_AGENT", "GROK_SESSION_ID"];
 
 /** Run the next govern calls of this Env as a registered Claude Code session: the test process (every govern child's
  *  parent) is entered in the registry with `sessionId`, and `lines` become that session's transcript. Without a call to

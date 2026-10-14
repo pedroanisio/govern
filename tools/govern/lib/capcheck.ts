@@ -106,16 +106,19 @@ function probeAbsent(reg: Registry, prof: Profile, c: Capability, dir: string, m
   return { capability: name, status: "ok", evidence: p.reply.evidence };
 }
 
-/** Run the self-test of `profile` and record it under `<queue>/checks/`. The probe model is GOVERN_CAPS_CHECK_MODEL, else haiku (claude). */
+/** Run the self-test of `profile` and record it under `<queue>/checks/`. The probe model is GOVERN_CAPS_CHECK_MODEL, else haiku (claude);
+ *  for grok GOVERN_GROK_CHECK_MODEL, else the profile's model, else grok's own default (Claude's model names mean nothing to grok). */
 export function checkProfile(queueDir: string, reg: Registry, profile: string, timeoutSec = 300): CheckRecord {
   const prof = getProfile(profile, reg);
-  const model = prof.engine === "claude" ? process.env.GOVERN_CAPS_CHECK_MODEL ?? "haiku" : prof.model ?? "default";
+  const model = prof.engine === "claude" ? process.env.GOVERN_CAPS_CHECK_MODEL ?? "haiku" : prof.engine === "grok" ? process.env.GOVERN_GROK_CHECK_MODEL ?? prof.model ?? "default" : prof.model ?? "default";
   const root = join(queueDir, "checks", prof.name, `run-${nowIso().replace(/[-:.]/g, "")}-${randomBytes(3).toString("hex")}`);
-  const pm = prof.engine === "claude" ? model : prof.model ?? "";
+  const pm = prof.engine === "claude" ? model : prof.engine === "grok" ? (model === "default" ? "" : model) : prof.model ?? "";
   const results = capsOf(reg, prof).map((c) => probeOne(reg, prof, c, join(root, c.name), pm, timeoutSec));
-  // Negative probe (claude only): one granted-nowhere capability with a probe, asked for, must be refused.
+  // Negative probe (claude and grok; codex has no per-tool grant to deny): one capability the profile lacks, that the engine can
+  // honour and that has a probe, asked for, must be refused.
   const held = new Set(prof.capabilities);
-  const absent = prof.engine === "claude" ? [...reg.caps.values()].find((c) => !held.has(c.name) && c.probe && c.claude.allow.length > 0) : undefined;
+  const absent = prof.engine === "claude" ? [...reg.caps.values()].find((c) => !held.has(c.name) && c.probe && c.claude.allow.length > 0)
+    : prof.engine === "grok" ? [...reg.caps.values()].find((c) => !held.has(c.name) && c.probe && c.grok) : undefined;
   if (absent) results.push(probeAbsent(reg, prof, absent, join(root, `not-${absent.name}`), pm, timeoutSec));
   rmSync(join(queueDir, "checks", prof.name), { recursive: true, force: true });
   const rec: CheckRecord = { version: 1, profile: prof.name, hash: profileHash(reg, prof), at: nowIso(), model, ok: failing(results, prof).length === 0, results };
