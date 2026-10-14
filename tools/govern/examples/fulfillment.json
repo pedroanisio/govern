@@ -1,0 +1,62 @@
+{
+  "version": 1,
+  "revision": 1,
+  "name": "fulfillment",
+  "description": "Supplier subprocess, correlated payment wait, calendar escalation and bounded check recovery",
+  "fields": {
+    "orderId": { "type": "string", "required": true },
+    "supplier": { "type": "string", "required": true },
+    "supplierApproved": { "type": "boolean" },
+    "paid": { "type": "boolean" }
+  },
+  "calendars": {
+    "office": {
+      "timezone": "America/Sao_Paulo",
+      "weekdays": [1, 2, 3, 4, 5],
+      "start": "09:00",
+      "end": "17:00",
+      "holidays": []
+    }
+  },
+  "setup": [{
+    "commands": {
+      "payment-check": ["node", "-e", "const p=JSON.parse(require('fs').readFileSync('govern.json','utf8'));process.exit(p.data.paid===true?0:1)"]
+    }
+  }],
+  "stages": [
+    {
+      "name": "supplier",
+      "call": {
+        "process": "supplier-review",
+        "inputs": { "name": "supplier" },
+        "outputs": { "supplierApproved": "approved" }
+      },
+      "next": [
+        { "to": ["payment"], "when": { "field": "supplierApproved", "op": "eq", "value": true } },
+        { "to": ["manual"] }
+      ]
+    },
+    {
+      "name": "payment",
+      "event": {
+        "name": "payment.received",
+        "correlationField": "orderId",
+        "requireGeneration": true,
+        "outputs": { "paid": "settled" }
+      },
+      "timer": {
+        "afterSeconds": 28800,
+        "calendar": "office",
+        "reminders": [14400],
+        "escalate": { "afterSeconds": 57600, "to": "manual", "message": "Payment requires manual follow-up" }
+      },
+      "check": "payment-check",
+      "requires": "check",
+      "onError": { "retry": { "attempts": 2, "delaySeconds": 60, "multiplier": 2 }, "to": "manual" },
+      "next": [{ "to": ["ship"] }]
+    },
+    { "name": "ship", "requiredFields": ["paid"], "next": [] },
+    { "name": "manual", "exit": "A person records the exception's resolution", "next": [] }
+  ],
+  "gates": []
+}

@@ -1,4 +1,7 @@
 #!/usr/bin/env node
+import * as lifecycle from './lib/lifecycle.ts';
+import { enterRuntime } from './lib/lifecycle-runtime.ts';
+import { eventServer } from './lib/event-server.ts';
 import { withLaneLock } from './lib/lane-lock.ts';
 // govern — run lanes of work (videos, software, ops, any process) through their stages with agents, cheaply and under the owner's gates.
 // The manual for the AI operating it is SKILL.md (govern manual). Usage: govern help.
@@ -71,6 +74,8 @@ function passSkipped(p: Project, to: string): void {
   const b = blockedBy(p);
   if (b.length) fail(`${p.slug} is blocked by ${b.join(", ")}`);
   for (const s of list.slice(Math.max(from, 0), target)) {
+    const def=processOf(p).stages.find(x=>x.name===s)!;
+    if(def.event||def.call||def.onError||def.timer)fail(`${p.slug}: lifecycle stage ${s} must be completed with govern advance, not skipped`);
     validateRequired(p, s);
     requireHumanComplete(p, s);
     const chk = checkOf(p, s);
@@ -86,7 +91,7 @@ function passSkipped(p: Project, to: string): void {
 function cmdWork(a: Args): void {
   const p = withLaneLock(laneLockDir(a._[1]), () => {
     const p = load(a._[1]), stage = stageOf(a._[2], p);
-    passSkipped(p, stage); p.stage=stage; enterTasks(p); save(p); return p;
+    passSkipped(p, stage); if(!p.workflow&&p.stage!==stage)enterRuntime(p,[stage],true); p.stage=stage; enterTasks(p); save(p); return p;
   });
   const stage = p.stage;
   const engine = engineOf(a);
@@ -269,14 +274,21 @@ function cmdAdvance(a: Args): void {
   if (b.length) fail(`${p.slug} is blocked by ${b.join(", ")}`);
   if (p.finished) fail(`${p.slug} is already finished`);
   requireActive(p);
+  const attemptedStage=p.stage;if(lifecycle.tickTimers(p)){save(p);if(!activeStages(p).includes(attemptedStage)){out(`${p.slug}: routed by deadline escalation to ${p.stage}`);return;}p.stage=attemptedStage;}
+  const stageDef=processOf(p).stages.find(s=>s.name===p.stage)!;
+  if(stageDef.call)lifecycle.syncChild(p,p.stage);
+  lifecycle.requireLifecycleReady(p);
   validateRequired(p);
   requireHumanComplete(p);
   const destinations = nextStages(p);
   const note = opt(a, "note");
   const chk = checkOf(p);
   if (chk) {
-    const r = runCheck(p, chk);
-    if (!r.ok) fail(`${p.slug}: check ${chk} failed (${r.why})\n${r.text}`);
+    lifecycle.beginAttempt(p);
+    let r:ReturnType<typeof runCheck>;
+    try{r=runCheck(p,chk);}catch(e){if(e instanceof GovernError && stageDef.onError)lifecycle.checkFailed(p,e.message);throw e;}
+    if (!r.ok) {lifecycle.checkFailed(p, `${chk}: ${r.why}`);fail(`${p.slug}: check ${chk} failed (${r.why})\n${r.text}`,stageDef.onError?1:2);}
+    lifecycle.checkSucceeded(p);
   } else if (requiresCheck(p, p.stage)) fail(`${p.slug}: stage ${p.stage} requires a check and has none: a note cannot pass it (${setCheckHint(p, p.stage)})`);
   else if (!note) fail(`${p.slug}: stage ${p.stage} has no check: give the evidence with --note "…"`);
   const gate = processOf(p).gates.find((g) => g.stage === p.stage && !gateApproved(p, g));
@@ -319,6 +331,43 @@ function cmdDep(a: Args): void {
   if (add || rm) { save(p); appendLedger(p.slug, { kind: "dep", after: p.after ?? [] }); }
   const labels = (p.after ?? []).map((x) => (x.stage ? `${x.lane}:${x.stage}` : x.lane));
   out(labels.length ? `${p.slug}: after ${labels.join(", ")}` : `${p.slug}: no dependencies`);
+}
+
+function jsonValue(text:string|undefined,fallback:unknown={}):unknown {try{return text===undefined?fallback:JSON.parse(text);}catch{return fail('value must be valid JSON');}}
+function cmdEvent(a:Args):void {
+  const p=load(a._[1]),name=a._[2]??fail('event name required'),id=opt(a,'id')??fail('--id required'),correlation=check('correlation',jsonValue(opt(a,'correlation'),null),scalar);
+  const data=check('event data',jsonValue(opt(a,'data')),record(scalar)),generation=secondsOpt(a,'generation');if(generation!==undefined&&!Number.isSafeInteger(generation))fail('--generation must be a positive safe integer');
+  const accepted=lifecycle.deliverEvent(p,name,id,correlation,data,generation);save(p);out(accepted?'event accepted; stage ready':'duplicate event ignored');
+}
+function cmdRecover(a:Args):void {
+  const p=load(a._[1]),stage=opt(a,'stage')??p.stage;requireActive(p,stage);p.stage=stage;
+  const action=opt(a,'action');if(action!=='retry'&&action!=='compensated')fail('--action must be retry or compensated');
+  const quote=opt(a,'quote');if(!quote||quote.trim().length<2)fail('--quote is required: the human recovery decision');
+  const source=verifyQuote(quote!);lifecycle.recover(p,action as 'retry'|'compensated',quote!);save(p);appendLedger(p.slug,{kind:'recover-source',source});out(`${p.slug}: recovery recorded`);
+}
+function cmdMigrate(a:Args):void {
+  const quote=opt(a,'quote');if(!quote||quote.trim().length<2)fail('--quote is required: the human migration decision');const source=verifyQuote(quote!);
+  const map=check('stage map',jsonValue(opt(a,'map')),record((x,p)=>typeof x==='string'?x:fail(`${p} must be a stage name`))),data=check('migration data',jsonValue(opt(a,'data')),record((x,p)=>x===null?null:scalar(x,p)));
+  lifecycle.transaction(checkSlug(a._[2]),()=>{const p=load(a._[2]);lifecycle.migrate(p,map,data,quote!);appendLedger(p.slug,{kind:'migration-source',source});out(`${p.slug}: migrated to revision ${p.processSnapshot!.revision}`);});
+}
+function cmdTick(a:Args):void {
+  const interval=secondsOpt(a,'interval')??30,advance=flag(a,'advance');
+  const once=()=>{
+    let failed=false;
+    for(const slug of a._[1]?[checkSlug(a._[1])]:laneSlugs())try{lifecycle.transaction(slug,()=>{
+      const p=load(slug);if(p.finished)return;const emitted=lifecycle.tickTimers(p);save(p);if(emitted)out(`${slug}: ${emitted} timer alerts`);
+      if(!advance)return;
+      for(const stage of [...activeStages(p)]){
+        const current=load(slug);if(!activeStages(current).includes(stage))continue;
+        const s=processOf(current).stages.find(s=>s.name===stage)!,r=current.runtime?.[stage];
+        if(s.call)lifecycle.syncChild(current,stage);
+        if(!(r?.eventId||r?.childSynced||(r?.retryAt&&Date.parse(r.retryAt)<=Date.now())))continue;
+        const args=parseArgs([slug,'--stage',stage,'--note','Declared workflow event, child completion or scheduled retry verified'],{value:['stage','note']},'advance');args._.unshift('advance');cmdAdvance(args);
+      }
+    });}catch(e){if(!(e instanceof GovernError))throw e;failed=true;out(`${slug}: blocked: ${e.message}`);}
+    if(failed&&!flag(a,'loop'))process.exitCode=1;
+  };
+  once();if(flag(a,'loop'))setInterval(once,interval*1000);
 }
 
 function cmdProcess(a: Args): void {
@@ -702,10 +751,10 @@ export const COMMANDS: readonly Cmd[] = [
   { name: "init", section: 0, flags: { bool: ["nested"] },
     lines: [["[<dir>] [--nested]", "make <dir> (default: here) a workspace by the convention: .govern/ with projects, queue, processes; inside another workspace only with --nested"]],
     run: (a) => out(`created ${initWorkspace(a._[1] ?? process.cwd(), { nested: flag(a, "nested") })}`) },
-  { name: "new", section: 0, footer: false, flags: { value: ["kind", "process", "title", "lang", "parent"] },
-    lines: [["<slug> (--process NAME | --kind long|short|ops) [--title T] [--lang en|pt-BR] [--parent <slug>]", "create a lane and print its brief"]],
+  { name: "new", section: 0, footer: false, flags: { value: ["kind", "process", "title", "lang", "parent"], bool:["pin"] },
+    lines: [["<slug> (--process NAME | --kind long|short|ops) [--title T] [--lang en|pt-BR] [--parent <slug>] [--pin]", "create a lane and print its brief"]],
     run: (a) => {
-      const p = create(checkSlug(a._[1]), { kind: opt(a, "kind"), process: opt(a, "process"), title: opt(a, "title"), lang: opt(a, "lang"), parent: opt(a, "parent") });
+      const p = create(checkSlug(a._[1]), { kind: opt(a, "kind"), process: opt(a, "process"), title: opt(a, "title"), lang: opt(a, "lang"), parent: opt(a, "parent"), pin:flag(a,"pin") });
       out(`created ${relative(repo(), join(projectDir(p.slug), "govern.json"))}`);
       out(brief(p));
     } },
@@ -743,16 +792,33 @@ export const COMMANDS: readonly Cmd[] = [
     run: cmdCmd },
   { name: "file", section: 0, lines: [["<slug> <name> <path-or-glob>", "name a file (a glob means its newest match)"]], run: cmdFile },
 
-  { name: "process", section: 1, defaultSub: "list", noSub: "govern process list|show <name>",
+  { name: "process", section: 1, defaultSub: "list", noSub: "govern process list|show|pin|migrate",
     subs: {
       list: { lines: [["", "built-in and workspace processes (processes/*.json)"]], run: cmdProcess },
       show: { lines: [["<name>", "one process: its stages, exit checks and gates"]], run: cmdProcess },
+      pin: {lines:[["<slug>","freeze the process definition for this lane"]],run:a=>lifecycle.transaction(checkSlug(a._[2]),()=>{const p=load(a._[2]);lifecycle.pin(p);out(`${p.slug}: pinned revision ${p.processSnapshot!.revision}`);})},
+      migrate: {flags:{value:['map','data','quote']},lines:[["<slug> [--map JSON] [--data JSON] --quote Q","explicitly migrate to a higher process revision; clears decisions and reinitializes active lifecycle state"]],run:cmdMigrate},
     } },
   { name: "check", section: 1, flags: { value: ["set", "stage", "quote"], bool: ["accept"] },
     lines: [["<slug> [--set <command> --stage <stage>]", "run the stage's exit check (or set the lane's own: ledgered; a swap is flagged)"],
       ["<slug> <stage> --accept --quote \"<the owner's words>\"", "the owner accepts that stage's flagged check changes"]], run: cmdCheck },
   { name: "advance", section: 1, flags: { value: ["note", "stage"] },
     lines: [["<slug> [--stage STAGE] [--note \"<evidence>\"]", "next stage: needs the check to pass (or --note when none and none is required) and the gate"]], run: cmdAdvance },
+  {name:'event',section:1,flags:{value:['id','correlation','data','generation']},lines:[["<slug> <name> --id ID --correlation JSON [--data JSON] [--generation N]","deliver a deduplicated event to one matching active stage; adapters supply a stable id"]],run:cmdEvent},
+  {name:'event-listen',section:1,flags:{value:['port']},lines:[["[--port 5001]","loopback POST /events listener; Bearer token comes from GOVERN_WEBHOOK_TOKEN (minimum 16 characters)"]],run:a=>{
+    const token=process.env.GOVERN_WEBHOOK_TOKEN??fail('GOVERN_WEBHOOK_TOKEN is not set; configure it securely before starting the listener');
+    const port=Number(opt(a,'port')??5001);if(!Number.isInteger(port)||port<1||port>65535)fail('--port must be 1..65535');
+    const server=eventServer(token);server.on('error',e=>{process.stderr.write(`event listener: ${e.message}\n`);process.exitCode=1;});server.listen(port,'127.0.0.1',()=>out(`event listener ready on port ${port}`));
+  }},
+  {name:'tick',section:1,flags:{value:['interval'],bool:['advance','loop']},lines:[["[<slug>] [--advance] [--loop --interval 30]","emit due reminders/escalations; optionally advance ready event, child and retry stages through normal checks and gates"]],run:cmdTick},
+  {name:'alerts',section:1,flags:{value:['ack']},lines:[["<slug> [--ack ID]","list timer alerts or acknowledge one; acknowledgement does not approve a gate"]],run:a=>{
+    const p=load(a._[1]),id=opt(a,'ack');if(id){const alert=p.alerts?.find(x=>x.id===id)??fail('unknown alert');alert.acknowledgedAt=nowIso();save(p);appendLedger(p.slug,{kind:'alert-ack',id});}
+    out((p.alerts??[]).map(x=>`${x.id} ${x.kind} ${x.acknowledgedAt?'acknowledged':'open'}: ${x.message}`).join('\n')||'(no alerts)');
+  }},
+  {name:'subprocess',section:1,lines:[["<slug> <stage>","start the declared child if needed and sync its outputs only after it finishes"]],run:a=>{
+    const p=load(a._[1]),stage=a._[2]??p.stage,ready=lifecycle.syncChild(p,stage);out(`${stage}: ${ready?'child complete; outputs synced':`waiting for ${p.runtime![stage]!.child}`}`);
+  }},
+  {name:'recover',section:1,flags:{value:['stage','action','quote']},lines:[["<slug> [--stage S] --action retry|compensated --quote Q","human recovery: reset exhausted retries, or confirm compensation after investigating an uncertain result"]],run:cmdRecover},
   { name: "dep", section: 1, flags: { value: ["after", "rm"] },
     lines: [["<slug> [--after <lane>[:<stage>]] [--rm <lane>]", "this lane waits on another (all of it, or past a stage)"]], run: cmdDep },
   { name: "hook", section: 1, footer: false, noSub: "govern hook stop",
@@ -950,7 +1016,7 @@ function main(argv: string[]): void {
   const a = parseArgs(rest, withHelp(entry.flags), label, FLAG_WORDS);
   if (flag(a, "help")) return void out(commandHelp(c.name, sub));
   a._.unshift(...lead);
-  const mutations = new Set(['new','note','approve','reject','data','human','advance','cmd','file','dep','check']);
+  const mutations = new Set(['new','note','approve','reject','data','human','advance','cmd','file','dep','check','event','alerts','subprocess','recover']);
   if (mutations.has(name)) withLaneLock(laneLockDir(a._[1]), () => entry.run!(a));
   else entry.run!(a);
   if (c.footer !== false) ctxFooter();

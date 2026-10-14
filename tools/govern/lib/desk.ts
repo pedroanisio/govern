@@ -4,7 +4,7 @@ import { gateApproved } from './business.ts';
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { readJsonl, kTok, clip } from "./util.ts";
-import { ledgerFile, stagesOf, laneState, laneSlugs, laneRows } from "./project.ts";
+import { load, ledgerFile, stagesOf, laneState, laneSlugs, laneRows } from "./project.ts";
 import { processOf } from "./process.ts";
 import * as queue from "./queue.ts";
 import { tag } from "./replycheck.ts";
@@ -49,6 +49,8 @@ export function desk(): { text: string; failed: number; lanes: number } {
     return `  ${s.padEnd(40)} ${p.kind.padEnd(5)} ${`${list.indexOf(p.stage) + 1}/${list.length} ${p.stage}`.padEnd(16)} ${gate.padEnd(13)} ${open.padEnd(14)} ${p.workflow ? `active ${p.workflow.active.join(", ")} · ` : ""}${state ? `${state} · ` : ""}${note ? `${ago(note.at)}: ${clip(note.text, 60)}` : ""}`.trimEnd();
   }, "  ");
   L.push(...rows);
+  const alerts=slugs.flatMap(s=>{try{return (load(s).alerts??[]).filter(a=>!a.acknowledgedAt).map(a=>`  ${s} ${a.id}: ${clip(a.message,100)}`);}catch{return [];}});
+  if(alerts.length)L.push('',`TIMER ALERTS (${alerts.length})`,...alerts);
   // ---- owner inbox
   const msgs = queue.all();
   const inbox = msgs.filter((x) => x.state === "open" && x.m.to === "owner");

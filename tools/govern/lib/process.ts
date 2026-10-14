@@ -4,10 +4,11 @@
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { fail } from "./util.ts";
+import { fail, sha256 } from "./util.ts";
 import { obj, arr, str, name, literal, record, posInt, check, reject, keyPath, type Shape } from "./shape.ts";
 import { NAME_CHARS } from "./resources.ts";
 import { ROUTE, JOIN, HUMAN, FIELD, PEOPLE, POLICY, validateBusinessProcess, type Route, type Join, type Human, type Field, type Person, type Policy } from './business-schema.ts';
+import { TIMER, EVENT_WAIT, ERROR_POLICY, CALL, CALENDARS, validateLifecycleProcess, type Timer, type EventWait, type ErrorPolicy, type Call, type Calendar, type Snapshot } from './lifecycle-schema.ts';
 import { processesDir } from "./workspace.ts";
 import type { Project } from "./project.ts";
 
@@ -15,7 +16,7 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 const BUILTIN = resolve(HERE, "..", "processes");
 
 /** `requires: "check"`: only a passing check moves a lane past the stage, never a note, never a skip. */
-export interface StageDef { name: string; exit?: string; check?: string; requires?: "check"; next?: Route[]; join?: Join; human?: Human; requiredFields?: string[] }
+export interface StageDef { name: string; exit?: string; check?: string; requires?: "check"; next?: Route[]; join?: Join; human?: Human; requiredFields?: string[]; timer?:Timer; event?:EventWait; onError?:ErrorPolicy; call?:Call }
 /** `owner`: who decides the gate (default "owner"); `govern approve --by` must name them. */
 export interface GateDef { name: string; stage?: string; needs?: string[]; message?: string; owner?: string; policy?: Policy }
 /** What a new lane of the process starts with: commands and named files, each group optionally only when a file already
@@ -31,6 +32,8 @@ export interface Recipe {
 }
 export interface Process {
   version: 1;
+  revision?: number;
+  calendars?: Record<string, Calendar>;
   name: string;
   description: string;
   /** For a process that keeps the lane's --kind (video: long or short). */
@@ -54,7 +57,7 @@ export interface Process {
 
 export const extraDir = (): string | undefined => processesDir();
 
-const STAGE = obj({ name }, { exit: str, check: name, requires: literal("check"), next: arr(ROUTE), join: JOIN, human: HUMAN, requiredFields: arr(name) });
+const STAGE = obj({ name }, { exit: str, check: name, requires: literal("check"), next: arr(ROUTE), join: JOIN, human: HUMAN, requiredFields: arr(name), timer:TIMER, event:EVENT_WAIT, onError:ERROR_POLICY, call:CALL });
 const GATE = obj({ name }, { stage: name, needs: arr(name), message: str, owner: name, policy: POLICY });
 /** The recipe placeholders each step may use: a name here in a step that cannot have it is refused, not left as text. */
 const SLICE_VARS = ["pieces", "out", "tag", "piece", "id"];
@@ -89,7 +92,7 @@ const RECIPES: Shape<Record<string, Recipe>> = (v, p) => {
   return m;
 };
 const PROCESS = obj({ version: literal(1), name, stages: arr(STAGE, { nonEmpty: true }) },
-  { description: str, kinds: arr(name, { nonEmpty: true }), exitFrom: literal("workflow"), gates: arr(GATE), manual: str, prompts: str,
+  { revision:posInt, calendars:CALENDARS, description: str, kinds: arr(name, { nonEmpty: true }), exitFrom: literal("workflow"), gates: arr(GATE), manual: str, prompts: str,
     fields: record(FIELD), people: PEOPLE, setup: arr(obj({}, { ifFile: str, commands: record(arr(str)), files: record(str) })), recipes: RECIPES });
 
 /** Names unique within a list: the second one is refused at its path. */
@@ -134,7 +137,7 @@ export function parseProcess(file: string, text: string): Process {
   if (Array.isArray(st)) for (const s of st as { name?: unknown; requires?: unknown }[]) {
     if (s && typeof s === "object" && "requires" in s && s.requires !== "check") fail(`${file}: stage ${String(s.name)}: requires must be "check" (got ${JSON.stringify(s.requires)})`);
   }
-  const p = check(file, raw, (v, at) => { const x = PROCESS(v, at); resolveRefs(x); validateBusinessProcess({ ...x, gates: x.gates ?? [] }); return x; });
+  const p = check(file, raw, (v, at) => { const x = PROCESS(v, at); resolveRefs(x); validateLifecycleProcess(x); validateBusinessProcess({ ...x, gates: x.gates ?? [] }); return x; });
   return { ...p, description: p.description ?? "", gates: p.gates ?? [], dir: dirname(file) };
 }
 
@@ -158,21 +161,35 @@ export function getProcess(name: string): Process {
 /** The process's manual file, absolute, or undefined when it names none. */
 export const manualOf = (p: Process): string | undefined => (p.manual ? resolve(p.dir, p.manual) : undefined);
 export const processName = (p: Pick<Project, "process" | "kind">) => p.process ?? (p.kind === "ops" ? "ops" : "video");
-export const processOf = (p: Pick<Project, "process" | "kind">) => getProcess(processName(p));
+export function freezeProcess(pr:Process):Snapshot {
+  const {dir,...definition}=pr, text=JSON.stringify(definition);
+  return {revision:pr.revision??1, hash:sha256(text), definition:text, dir};
+}
+export function snapshotProcess(snapshot:Snapshot):Process {
+  if(sha256(snapshot.definition)!==snapshot.hash)fail('process snapshot checksum mismatch');
+  const pr=parseProcess(join(snapshot.dir,'snapshot.json'),snapshot.definition);
+  if((pr.revision??1)!==snapshot.revision)fail('process snapshot revision mismatch');
+  return pr;
+}
+export const processOf = (p: Pick<Project, "process" | "kind"> & {processSnapshot?:Snapshot}) => p.processSnapshot ? snapshotProcess(p.processSnapshot) : getProcess(processName(p));
 
 export function listLine(p: Process): string {
   return `${p.name.padEnd(8)} ${p.description} · ${p.stages.some(s => s.next !== undefined) ? "graph: " + p.stages.map(s => s.name).join(", ") : p.stages.map((s) => s.name).join(" → ")}`;
 }
 
 export function show(p: Process): string {
-  const L = [`${p.name}: ${p.description}`];
+  const L = [`${p.name}${p.revision!==undefined?` (revision ${p.revision})`:""}: ${p.description}`];
   p.stages.forEach((s, i) => {
     const bits = [s.exit ? `exit: ${s.exit}` : p.exitFrom === "workflow" ? "exit: from the workflow document" : "", s.check ? `check: command "${s.check}"` : "",
       s.requires ? "requires a check" : "",
       s.next !== undefined ? `next: ${s.next.length ? s.next.map(r => `${r.to.join(' + ')}${r.when ? ` when ${JSON.stringify(r.when)}` : ' (fallback)'}`).join('; ') : '(terminal)'}` : '',
       s.join ? `join ${s.join.mode}: ${s.join.stages.join(', ')}` : '',
       s.human ? `human: ${s.human.assignee ?? `role ${s.human.role}`}` : '',
-      s.requiredFields?.length ? `required fields: ${s.requiredFields.join(', ')}` : ''].filter(Boolean);
+      s.requiredFields?.length ? `required fields: ${s.requiredFields.join(', ')}` : '',
+      s.timer ? `timer: due after ${s.timer.afterSeconds}s${s.timer.calendar?` (${s.timer.calendar})`:''}` : '',
+      s.event ? `event: ${s.event.name} correlated by ${s.event.correlationField}` : '',
+      s.call ? `subprocess: ${s.call.process}` : '',
+      s.onError ? `on error: ${JSON.stringify(s.onError)}` : ''].filter(Boolean);
     L.push(`  ${i + 1} ${s.name.padEnd(14)} ${bits.join("  ")}`.trimEnd());
   });
   L.push(p.gates.length ? `gates: ${p.gates.map((g) => `${g.name}${g.stage ? ` (holds ${g.stage})` : ""}${g.needs?.length ? ` after ${g.needs.join(", ")}` : ""}`).join(" · ")}` : "gates: none");

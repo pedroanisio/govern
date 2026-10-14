@@ -1,3 +1,4 @@
+import { enterRuntime } from './lifecycle-runtime.ts';
 import { userInfo } from "node:os";
 import { processOf, type GateDef, type Process } from "./process.ts";
 import type { Project } from "./project.ts";
@@ -109,12 +110,14 @@ export function setData(p: Project, patch: Record<string, Scalar>): void {
   for (const field of identityFields)
     if (Object.hasOwn(p.data ?? {}, field) && Object.hasOwn(patch, field) && p.data![field] !== patch[field])
       fail(`identity field ${field} cannot be changed after it is recorded`);
+  for(const stage of activeStages(p)){const s=processOf(p).stages.find(s=>s.name===stage)!;const r=p.runtime?.[stage];if(r?.child && Object.values(s.call?.inputs??{}).some(f=>Object.hasOwn(patch,f)&&p.data?.[f]!==patch[f]))fail(`subprocess inputs are frozen while ${stage} is active`);}
   const data = Object.assign(emptyRecord<Scalar>(), p.data ?? {}, patch);
   check<Record<string, Scalar>>("case data", data, (v, path) => {
     validateCase({ ...p, data: v as Record<string, Scalar> }, processOf(p), path);
     return v as Record<string, Scalar>;
   });
   if (JSON.stringify(data) === JSON.stringify(p.data ?? {})) return;
+  for(const stage of activeStages(p)){const s=processOf(p).stages.find(s=>s.name===stage)!;if(s.event&&p.runtime?.[stage]&&p.data?.[s.event.correlationField]!==data[s.event.correlationField])delete p.runtime[stage]!.eventId;}
   p.data = data;
   // Votes and active human decisions apply to the case as reviewed, not to a later revision.
   for (const g of processOf(p).gates)
@@ -143,6 +146,7 @@ export function nextStages(p: Project): string[] {
   return selected?.to ?? [];
 }
 export function enterTasks(p: Project): void {
+  enterRuntime(p, activeStages(p));
   const pr = processOf(p);
   for (const stage of activeStages(p)) {
     const def = pr.stages.find((s) => s.name === stage)?.human;
@@ -157,9 +161,11 @@ export function completeStage(p: Project, destinations: string[]): void {
   if (!p.workflow) {
     if (destinations.length) p.stage = destinations[0]!;
     else p.finished = nowIso();
+    if(!p.finished)enterRuntime(p,[p.stage],true);
     enterTasks(p);
     return;
   }
+  const previous=new Set(p.workflow.active);
   const w = p.workflow;
   w.active = w.active.filter((s) => s !== from);
   w.completed.push(from);
@@ -190,6 +196,7 @@ export function completeStage(p: Project, destinations: string[]): void {
     if (w.waiting.length) fail(`${p.slug}: join cannot complete: ${w.waiting.join(", ")} (no active branches remain)`);
     p.finished = nowIso();
   } else p.stage = w.active[0]!;
+  enterRuntime(p,activeStages(p).filter(s=>!previous.has(s)),true);
   enterTasks(p);
 }
 export function authenticatedPerson(pr: Process, requested?: string): string {
@@ -297,5 +304,6 @@ export function rejectRoute(p: Project, g: GateDef): void {
       delete p.approvals[other.name];
       if (p.votes) delete p.votes[other.name];
     }
+  enterRuntime(p,[to],true);
   enterTasks(p);
 }

@@ -36,7 +36,7 @@ A join declares its direct incoming predecessors:
 
 All incoming predecessors must be listed. An all-join should follow branches that actually run together; joining mutually exclusive alternatives would leave it blocked. The engine refuses a transition that leaves only an unsatisfiable join and no runnable branches.
 
-Graphs must be acyclic and all stages reachable from the first stage. Normal transitions cannot replay completed stages. Rejection is an explicit rework mechanism that resets graph execution at a declared target; general loops and BPMN import are not included.
+Graphs must be acyclic and all stages reachable from the first stage. Normal transitions cannot replay completed stages. Rejection is an explicit rework mechanism that resets graph execution at a declared target; general graph loops and BPMN import are not included. Explicit recovery routes are described in [LIFECYCLE.md](LIFECYCLE.md).
 
 ```bash
 govern new purchase-42 --process purchase
@@ -130,7 +130,7 @@ Quorum may not exceed the declared approver pool; exclusions can reduce the elig
 
 Lane state stores `data`, `workflow` (active/completed/waiting/cancelled stages), `humanTasks`, and policy `votes` alongside existing fields. Loading validates these fields against the process. CLI state mutations are serialized per lane using a crash-recoverable lock in the workspace runtime-state directory. Taking a lock never creates a lane folder before its state has been validated. A live lock does not expire while an exit check is running; a contending command waits up to 30 seconds, then asks for a retry. Exit checks should not recursively mutate the same lane.
 
-Create a new lane when adopting a graph definition; converting an existing linear lane in place is refused because it has no execution tokens. Process version pinning/migrations remain separate future work.
+Create a new lane when adopting a graph definition; converting an existing linear lane in place is refused because it has no execution tokens. See [LIFECYCLE.md](LIFECYCLE.md) for revision pinning and explicit migrations.
 
 Run the business regression suite and type check from the repository root:
 

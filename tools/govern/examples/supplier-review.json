@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "revision": 1,
+  "name": "supplier-review",
+  "description": "Reusable supplier review with explicit input and output fields",
+  "fields": {
+    "name": { "type": "string", "required": true },
+    "approved": { "type": "boolean" }
+  },
+  "stages": [
+    { "name": "review", "requiredFields": ["approved"], "next": [] }
+  ],
+  "gates": [{ "name": "decision", "stage": "review" }]
+}

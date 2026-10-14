@@ -35,7 +35,7 @@ test("an unknown flag names the flag and the command's valid flags", () => {
 test("a flag another command takes is refused where it is not declared", () => {
   const r = govern(e, ["new", "other", "--process", "dev", "--bg"]);
   assert.equal(r.code, 2);
-  assert.match(r.err, /new: unknown flag --bg \(valid: --kind, --process, --title, --lang, --parent, --help\)/);
+  assert.match(r.err, /new: unknown flag --bg \(valid: --kind, --process, --title, --lang, --parent, --pin, --help\)/);
   assert.equal(govern(e, ["status"]).out.includes("other"), false, "nothing was created");
 });
 

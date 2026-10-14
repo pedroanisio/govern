@@ -4,14 +4,17 @@
 #     govern — run lanes of agent work (videos, software, ops, any process) through checked stages, with few tokens
 # SYNOPSIS
 #     govern init [DIR] [--nested]
-#     govern new SLUG (--process NAME | --kind long|short|ops) [--title T] [--lang L] [--parent SLUG]
+#     govern new SLUG (--process NAME | --kind long|short|ops) [--title T] [--lang L] [--parent SLUG] [--pin]
 #     govern work SLUG STAGE [--engine claude|codex] [--open]  |  brief SLUG  |  status [SLUG]
 #     govern note SLUG TEXT  |  approve SLUG GATE --quote "owner's words"  |  done SLUG [--engine E]
 #     govern cmd SLUG [NAME [--timeout S] [--resource R] -- ARGV...] | --rm NAME  |  file SLUG [NAME PATH-OR-GLOB]
 #     govern data SLUG [--set JSON]  |  human SLUG [list|claim|delegate|complete STAGE] [--as PERSON] [--to PERSON] [--quote Q]
 #     govern human-inbox [--as PERSON]
 #     govern reject SLUG GATE --quote Q [--by PERSON]
-#     govern process list|show NAME  |  check SLUG [--set CMD --stage S]  |  check SLUG STAGE --accept --quote Q
+#     govern event SLUG NAME --id ID --correlation JSON [--data JSON] [--generation N]
+#     govern event-listen [--port 5001]  |  tick [SLUG] [--advance] [--loop --interval S]
+#     govern alerts SLUG [--ack ID]  |  subprocess SLUG STAGE  |  recover SLUG --action retry|compensated --quote Q
+#     govern process list|show NAME  |  process pin SLUG  |  process migrate SLUG --map JSON --quote Q  |  check SLUG [--set CMD --stage S]  |  check SLUG STAGE --accept --quote Q
 #     govern advance SLUG [--stage STAGE] [--note EVIDENCE]  |  dep SLUG [--after LANE[:STAGE]] [--rm LANE]  |  hook stop
 #     govern run SLUG CMD [--bg] [--on RESOURCE] [--estimate HOURS] [-- ARGS]  |  allow NAME --extra N --quote "…" [--by OWNER]  |  resources [NAME]  |  wait SLUG [JOB] [--timeout S]  |  jobs SLUG  |  kill SLUG [JOB]
 #     govern slice SLUG RECIPE [--machines N] [--estimate HOURS] [--bg]

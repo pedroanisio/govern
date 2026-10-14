@@ -91,7 +91,7 @@ export interface HumanTask {
   completedAt?: string;
   quote?: string;
 }
-const timestamp: Shape<string> = (v, p) =>
+export const timestamp: Shape<string> = (v, p) =>
   typeof v === "string" &&
   /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})$/.test(v) &&
   !Number.isNaN(Date.parse(v))
@@ -116,7 +116,7 @@ export function fieldValue(f: Field, v: Scalar, path: string): void {
 interface BusinessProcess {
   fields?: Record<string, Field>;
   people?: Record<string, Person>;
-  stages: { name: string; next?: Route[]; join?: Join; human?: Human; requiredFields?: string[] }[];
+  stages: { name: string; next?: Route[]; join?: Join; human?: Human; requiredFields?: string[]; onError?: {to?:string}; timer?: {escalate?: {to?:string}} }[];
   gates: { name: string; policy?: Policy }[];
 }
 export function validateBusinessProcess(p: BusinessProcess): void {
@@ -200,7 +200,10 @@ export function validateBusinessProcess(p: BusinessProcess): void {
       done.add(id);
     }
     visit(p.stages[0]!.name);
-    if (done.size !== stages.size) reject("$.stages", "every stage must be reachable from the first stage");
+    const reachable=new Set(done);
+    for(let changed=true;changed;) {changed=false;for(const id of [...reachable]) {const s=stages.get(id)!;for(const to of [...(s.next??[]).flatMap(r=>r.to),s.onError?.to,s.timer?.escalate?.to].filter((x):x is string=>x!==undefined))if(stages.has(to)&&!reachable.has(to)){reachable.add(to);changed=true;}}}
+    for(const id of reachable)visit(id);
+    if (reachable.size !== stages.size) reject("$.stages", "every stage must be reachable from the first stage");
     if (p.stages[0]!.join) reject("$.stages[0].join", "entry stage cannot be a join");
   }
   p.gates.forEach((g, i) => {

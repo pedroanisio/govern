@@ -2,11 +2,13 @@
 import { existsSync, readFileSync, appendFileSync, mkdirSync, globSync } from "node:fs";
 import { join, dirname, resolve, relative } from "node:path";
 import { WORKFLOW, HUMAN_TASKS, VOTES, scalar, type Scalar, type Workflow, type HumanTask, type Vote } from './business-schema.ts';
-import { initializeBusiness, validateCase, gateApproved } from './business.ts';
+import { initializeBusiness, validateCase, gateApproved, setData } from './business.ts';
 import { GovernError, fail, readJson, writeJson, nowIso, latest, plain, clip, readJsonl } from "./util.ts";
 import type { Source } from "./approval.ts";
 import { repo, projectsDir, workflowFile, config, configFile } from "./workspace.ts";
-import { getProcess, processOf, processes, processName, manualOf } from "./process.ts";
+import { getProcess, processOf, processes, processName, manualOf, freezeProcess, snapshotProcess } from "./process.ts";
+import { RUNTIME, EVENTS, ALERTS, SNAPSHOT, INVOCATION, type StageRuntime, type EventReceipt, type Alert, type Snapshot, type Invocation } from './lifecycle-schema.ts';
+import { validateRuntime } from './lifecycle-runtime.ts';
 import { obj, arr, record, emptyRecord, str, name, posInt, literal, parseFile, reject, keyPath, type Shape } from "./shape.ts";
 
 /** Lane kinds that need no --process: a video (long, short) or ops work (engine, lab, docs, channel set-up). */
@@ -48,6 +50,11 @@ export interface Project {
   /** stage → command name: the lane's own exit check, over the process's. */
   checks?: Record<string, string>;
   after?: After[];
+  processSnapshot?:Snapshot;
+  runtime?:Record<string,StageRuntime>;
+  events?:EventReceipt[];
+  alerts?:Alert[];
+  invocation?:Invocation;
   data?: Record<string, Scalar>;
   workflow?: Workflow;
   humanTasks?: Record<string, HumanTask>;
@@ -93,7 +100,7 @@ const PROJECT = obj(
   { version: literal(1), slug: name, title: str, kind: name, lang: name, stage: name, created: iso,
     commands: record(COMMAND), files: record(str), approvals: record(obj({ at: iso, quote: str }, { by: name, source: SOURCE })),
     notes: arr(obj({ at: iso, stage: name, text: str })) },
-  { data: record(scalar), workflow: WORKFLOW, humanTasks: HUMAN_TASKS, votes: VOTES, process: name, parent: str, finished: iso, checks: record(name), after: arr(obj({ lane: name }, { stage: name })) },
+  {processSnapshot:SNAPSHOT, runtime:RUNTIME, events:EVENTS, alerts:ALERTS, invocation:INVOCATION, data: record(scalar), workflow: WORKFLOW, humanTasks: HUMAN_TASKS, votes: VOTES, process: name, parent: str, finished: iso, checks: record(name), after: arr(obj({ lane: name }, { stage: name })) },
 );
 
 /** Parse the text of lane `slug`'s govern.json (`file`): typed, unknown keys refused, then checked against what the types
@@ -108,7 +115,7 @@ export function parseProject(file: string, text: string, slug: string): Project 
     if (laneSlug(p.slug) !== slug) reject(`${at}.slug`, `is ${JSON.stringify(p.slug)}, but the lane is ${JSON.stringify(slug)} (its folder)`);
     p.slug = slug;
     const pname = processName(p);
-    const all = processes();
+    const all = p.processSnapshot ? new Map([[pname,snapshotProcess(p.processSnapshot)]]) : processes();
     const pr = all.get(pname) ?? reject(p.process !== undefined ? `${at}.process` : `${at}.kind`, `no process "${pname}" (have: ${[...all.keys()].join(", ")})`);
     if (p.process === undefined && !(KINDS as readonly string[]).includes(p.kind)) reject(`${at}.kind`, `must be long, short or ops when there is no process (got ${JSON.stringify(p.kind)})`);
     if (pr.kinds && !pr.kinds.includes(p.kind)) reject(`${at}.kind`, `must be ${pr.kinds.join(" or ")} for process ${pr.name} (got ${JSON.stringify(p.kind)})`);
@@ -116,7 +123,10 @@ export function parseProject(file: string, text: string, slug: string): Project 
     if (!stages.includes(p.stage)) reject(`${at}.stage`, `no stage "${p.stage}" in process ${pr.name}`);
     for (const s of Object.keys(p.checks ?? {})) if (!stages.includes(s)) reject(keyPath(`${at}.checks`, s), `no stage "${s}" in process ${pr.name}`);
     (p.after ?? []).forEach((x, i) => { x.lane = laneSlug(x.lane) ?? reject(`${at}.after[${i}].lane`, `bad slug: ${x.lane}`); });
+    if(pr.name!==pname)reject(at+".processSnapshot","snapshot names a different process");
+    if(p.invocation) {p.invocation.parent=checkSlug(p.invocation.parent); if(p.invocation.parent===p.slug)reject(at+".invocation","lane cannot call itself");}
     validateCase(p, pr, at);
+    validateRuntime(p, at);
     return p;
   });
 }
@@ -142,12 +152,13 @@ export function save(p: Project): void {
   writeJson(f, q);
 }
 
-export function create(given: string, o: { kind?: string; process?: string; title?: string; lang?: string; parent?: string }): Project {
+export function create(given: string, o: { kind?: string; process?: string; title?: string; lang?: string; parent?: string; pin?:boolean; data?:Record<string,Scalar>; snapshot?:Snapshot; invocation?:Invocation }): Project {
   const slug = checkSlug(given);
   if (existsSync(stateFile(slug))) fail(`${slug}: govern.json already exists`);
   let kind: string, proc: string;
   if (o.process) {
-    const pr = getProcess(o.process);
+    const pr = o.snapshot ? snapshotProcess(o.snapshot) : getProcess(o.process);
+    if(pr.name!==o.process)fail("snapshot names a different process");
     proc = pr.name;
     if (pr.kinds) {
       if (!o.kind || !pr.kinds.includes(o.kind)) fail(`--kind must be ${pr.kinds.join(" or ")}`);
@@ -158,10 +169,11 @@ export function create(given: string, o: { kind?: string; process?: string; titl
     kind = o.kind!;
     proc = kind === "ops" ? "ops" : "video";
   }
+  const definition = o.snapshot ? snapshotProcess(o.snapshot) : getProcess(proc);
   const dir = projectDir(slug);
   const commands = emptyRecord<string[]>();
   const files = emptyRecord<string>();
-  for (const g of getProcess(proc).setup ?? []) {
+  for (const g of definition.setup ?? []) {
     if (g.ifFile !== undefined && !existsSync(join(dir, g.ifFile))) continue;
     for (const [k, argv] of Object.entries(g.commands ?? {})) commands[k] = [...argv];
     for (const [k, pat] of Object.entries(g.files ?? {})) files[k] = pat;
@@ -169,9 +181,12 @@ export function create(given: string, o: { kind?: string; process?: string; titl
   warnMissingPaths(commands);
   const p: Project = {
     version: 1, slug, title: o.title ?? slug, kind, process: proc, lang: o.lang ?? "en", ...(o.parent ? { parent: o.parent } : {}),
-    stage: getProcess(proc).stages[0].name, created: nowIso(), commands, files, approvals: emptyRecord<Approval>(), notes: [],
+    stage: definition.stages[0].name, created: nowIso(), commands, files, approvals: emptyRecord<Approval>(), notes: [],
   };
+  if(o.snapshot || o.pin || definition.revision!==undefined)p.processSnapshot=o.snapshot??freezeProcess(definition);
+  if(o.invocation)p.invocation=o.invocation;
   initializeBusiness(p);
+  if(o.data)setData(p,o.data);
   save(p);
   return p;
 }
@@ -207,7 +222,7 @@ export const laneSlugs = (): string[] => globSync("**/govern.json", { cwd: proje
  *  listing (exit 2). Every lane's stages, gates and checks come from that shared config, so with a broken process
  *  file no lane's row would be trustworthy. */
 export function laneRows(slugs: string[], row: (slug: string, p: Project) => string, indent = ""): { rows: string[]; failed: number } {
-  processes();
+  if(slugs.some(s=>{try{return !JSON.parse(readFileSync(stateFile(s),"utf8")).processSnapshot;}catch{return true;}}))processes();
   let failed = 0;
   const rows = slugs.map((s) => {
     try { return row(s, load(s)); } catch (e) {
@@ -323,6 +338,9 @@ export function brief(p: Project, o: { notes?: number } = {}): string {
   if (p.workflow) L.push(`active: ${p.workflow.active.join(', ') || '(none)'}${p.workflow.waiting.length ? ` · joins waiting: ${p.workflow.waiting.join(', ')}` : ''}`);
   if (p.data) L.push(`case data: ${JSON.stringify(p.data)}`);
   for (const [stage,t] of Object.entries(p.humanTasks ?? {})) L.push(`human task ${stage}: ${t.completedAt ? `completed by ${t.completedBy}` : t.assignee ? `assigned to ${t.assignee}` : 'unclaimed'}`);
+  if(p.processSnapshot)L.push(`process revision: ${p.processSnapshot.revision} (pinned ${p.processSnapshot.hash.slice(0,12)})`);
+  for(const stage of p.workflow?.active??(p.finished?[]:[p.stage])) {const r=p.runtime?.[stage];if(r)L.push(`runtime ${stage}: generation ${r.generation}${r.deadlines.due?` · due ${r.deadlines.due}`:''}${r.retryAt?` · retry ${r.retryAt}`:''}${r.failure?` · failure ${clip(r.failure,120)}`:''}${r.child?` · child ${r.child}${r.childSynced?' (synced)':''}`:''}${r.eventId?` · event ${r.eventId}`:''}`);}
+  const alerts=(p.alerts??[]).filter(a=>!a.acknowledgedAt);if(alerts.length)L.push(`alerts: ${alerts.length} unacknowledged (govern alerts ${p.slug})`);
   const ex = exitCondition(p);
   if (ex) L.push(`exit when: ${ex}`);
   const chk = checkOf(p);
