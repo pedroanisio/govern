@@ -71,3 +71,7 @@ Documentation:
 - [CONVERSATIONS.md](CONVERSATIONS.md) covers persistent sessions, adapters, context checkpoints and recovery.
 - [REMOTE.md](REMOTE.md) specifies `govern remote`, the protocol that lets a paired phone follow the lanes and their
   telemetry and approve gates with a signed confirmation. The Android app is in [android/](android/README.md).
+- [processes/video/MANUAL.md](processes/video/MANUAL.md) is the manual of the built-in `video` process (`govern manual video`).
+- [OPENCLAW-GAP.md](OPENCLAW-GAP.md) and [OPENCLAW-PARITY.md](OPENCLAW-PARITY.md) are research snapshots, not
+  maintained: how OpenClaw could run on top of govern, and what govern would need to offer an OpenClaw-like
+  assistant.
