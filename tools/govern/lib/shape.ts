@@ -23,6 +23,7 @@ export const name: Shape<string> = (v, p) => {
   if (v === PROTO) throw new ShapeError(p, `"${PROTO}" is not a name`);
   return v;
 };
+export const bool: Shape<boolean> = (v, p) => (typeof v === "boolean" ? v : want(p, "true or false", v));
 export const posInt: Shape<number> = (v, p) => (Number.isInteger(v) && (v as number) > 0 ? (v as number) : want(p, "a whole number, 1 or more", v));
 export const literal = <T extends string | number>(...values: T[]): Shape<T> => (v, p) =>
   (values.includes(v as T) ? (v as T) : want(p, values.map((x) => JSON.stringify(x)).join(" or "), v));

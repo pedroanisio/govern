@@ -29,6 +29,7 @@
 #     govern prompts [PROCESS]  |  ask SLUG STEP [--file F]... [--var K=V]... [--image PNG]... [--effort E] [--model M]
 #     govern usage [SLUG...] [--since DATE]  |  ctx  |  desk  |  tune  |  publish SLUG
 #     govern caps [PROFILE]  |  caps --check PROFILE
+#     govern decide ask --questions F (--state S | --state-file F) [--purpose P] [--json]  |  decide report
 #     govern help [COMMAND]  |  COMMAND --help  |  manual [PROCESS]  |  install-skill [SKILLS-DIR] [--check]
 #     govern task send --to codex|claude|auto|owner|PROFILE|SESSION --project P --task T --kind K --summary S
 #                      (--body B | --body-file F) [--file PATH]... [--reply-to ID] [--write | --profile P]
@@ -155,7 +156,12 @@
 #     --write                 task send: let the runner change files in the project folder (default: read-only)
 #     --profile P             conversation create, task send: seal the run to profile P's capabilities (govern caps); not with --write
 #     --estimate-usd N        conversation send, task send: what the run is expected to cost, reserved against a matching allowance
-#     --state S               task list: only messages in state open, claimed, done or failed
+#     --state S               decide ask, task list: decide ask: the state Jev is asked about, as text; task list: only
+#                             messages in state open, claimed, done or failed
+#     --state-file F          decide ask: read the state from F
+#     --questions F           decide ask: the JSON file of typed questions (choice, score, noul)
+#     --purpose P             decide ask: the name the decision is recorded under (default ask)
+#     --json                  decide ask: print the whole decision as JSON
 #     --as NAME               human-inbox, human, task inbox, task close, task forward, task reply: who you are; human,
 #                             human-inbox: a process person, refused unless this OS account is mapped to it; task: default
 #                             GOVERN_AS, else this session
@@ -191,6 +197,8 @@
 #     · GOVERN_QUEUE_GROK_MODEL (grok's default) · GOVERN_GROK_MAX_TURNS (25; grok has no dollar cap)
 #     · GOVERN_QUEUE_TIMEOUT_SEC (900, one dispatched run).
 #     Conversation workers: GOVERN_CONVERSATION_RUN (set by the runtime; model-origin approvals are refused).
+#     Jev (decide): TYPESAFE_API_KEY (the TypeSafe key; else the config's decide.envFile) · GOVERN_JEV_MODEL (jev-latest)
+#     · GOVERN_TYPESAFE_URL (https://api.typesafe.ai).
 #     Webhooks: GOVERN_WEBHOOK_TOKEN (event-listen bearer token; at least 16 characters, configured securely).
 #     Test and diagnostic: GOVERN_NOW (the allowances clock) · GOVERN_PROC=ps (read the process table with ps).
 #     Set for what govern runs: GOVERN_JOB_ID, GOVERN_JOB_DIR (every job; slice and up read GOVERN_JOB_DIR to find the
@@ -208,6 +216,7 @@
 #     govern run golden-pixel fb gates sheets --bg && govern wait golden-pixel
 #     govern ask you-vs-the-sun metadata --file publication.txt --file timings.json
 #     govern usage --since 2026-10-12
+#     govern decide ask --questions q.json --state-file task.txt   # Jev (TypeSafe System One); logs to the queue's decisions.jsonl
 #     govern new ops/govern --process dev && govern cmd ops/govern test -- node --test 'tools/govern/test/*.test.ts'
 #     govern advance --help                # advance's usage and flags
 #     govern advance ops/govern            # runs the test check; moves to review only when it passes

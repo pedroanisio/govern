@@ -5,7 +5,7 @@
 import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join, dirname, resolve } from "node:path";
 import { fail } from "./util.ts";
-import { obj, str, posInt, record, arr, parseFile, type Shape } from "./shape.ts";
+import { obj, str, bool, posInt, record, arr, parseFile, type Shape } from "./shape.ts";
 import { RESOURCES } from "./resources.ts";
 
 export const CONFIG_FILE = "govern.config.json";
@@ -34,13 +34,15 @@ export interface WorkspaceConfig {
   state?: string;
   /** Trusted local NDJSON conversation adapters; task runners remain separate. */
   conversationAdapters?: Record<string, { argv: string[] }>;
+  /** Jev decisions (lib/decide.ts): shadow asks about every TASK sent; envFile is a dotenv file holding TYPESAFE_API_KEY. */
+  decide?: { shadow?: boolean; envFile?: string };
 }
 /** A file path, or the list shape lib/resources.ts checks (kept as written: resources() builds the registry). */
 const resourcesShape: Shape<unknown> = (v, p) => (typeof v === "string" ? v : (RESOURCES(v, p), v));
 const CONFIG = obj({}, {
   projects: str, queue: str, processes: str, workflow: str, tuningLog: str, packages: str, prompts: str, paths: record(str),
   baseline: obj({ mainMedianCtx: posInt, subagentMedianCtx: posInt, source: str }),
-  capabilities: str, resources: resourcesShape, allowances: (v: unknown) => v, state: str,
+  capabilities: str, resources: resourcesShape, allowances: (v: unknown) => v, state: str, decide: obj({}, { shadow: bool, envFile: str }),
   conversationAdapters: record(obj({argv: arr(str, {nonEmpty: true})})),
 });
 
@@ -123,6 +125,11 @@ export const workflowFile = (): string | undefined => optional("workflow", "GOVE
 /** The workspace-wide prompts folder (GOVERN_PROMPTS replaces every prompts folder), or undefined. */
 export const promptsDir = (): string | undefined => optional("prompts", "GOVERN_PROMPTS");
 export const baseline = (): Baseline | undefined => config().baseline;
+/** The config's decide settings, envFile absolute. */
+export const decideConfig = (): { shadow: boolean; envFile?: string } => {
+  const d = findRepo() ? config().decide : undefined;
+  return { shadow: d?.shadow === true, ...(d?.envFile ? { envFile: resolve(base(), d.envFile) } : {}) };
+};
 /** `text` with {repo}, {dir} and {paths.NAME} expanded: the one expansion every command and runner argv goes through. */
 export const expandPlaceholders = (text: string, dir: string): string =>
   text.replaceAll("{repo}", repo()).replaceAll("{dir}", dir).replace(/\{paths\.([^{}]+)\}/g, (_, n: string) => pathNamed(n));
