@@ -294,7 +294,9 @@ test("streams are bounded in number", async () => {
   const e = setup();
   await serving(e, async (base) => {
     const phone = await pairPhone(base);
-    const open = await Promise.all(Array.from({ length: MAX_STREAMS }, () => fetch(`${base}/v1/stream`, { headers: auth(phone) })));
+    const phones = [phone];
+    for (let i = 1; i < MAX_STREAMS / 2; i++) phones.push(await pairPhone(base));
+    const open = await Promise.all(phones.flatMap(p => Array.from({ length: 2 }, () => fetch(`${base}/v1/stream`, { headers: auth(p) }))));
     assert.ok(open.every((r) => r.status === 200));
     assert.equal((await fetch(`${base}/v1/stream`, { headers: auth(phone) })).status, 429);
     for (const r of open) await r.body?.cancel();

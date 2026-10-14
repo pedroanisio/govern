@@ -99,6 +99,12 @@
       "error": "/home/admin/src/super-tools/_tmp/wt/field-server-read/_tmp/fixture-workspace-v3/projects/broken/govern.json: not JSON (Expected property name or '}' in JSON at position 1 (line 1 column 2))"
     }
   ],
+  "unreadableSessions": [
+    {
+      "id": "broken-chat",
+      "error": "conversation broken-chat: not JSON"
+    }
+  ],
   "telemetry": {
     "day": "2026-10-14",
     "tokens": [

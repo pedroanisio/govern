@@ -31,6 +31,7 @@ class ModelTest {
         assertEquals(41000L, d.telemetry.tokens.single().input)
         assertEquals(0.12, d.telemetry.tokens.single().usd, 1e-9)
         assertEquals("broken", d.unreadable.single().slug)
+        assertEquals("broken-chat", d.unreadableSessions.single().id)
         assertEquals(4242, d.telemetry.dispatcher!!.pid)
     }
 

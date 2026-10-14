@@ -84,7 +84,7 @@ For phone-initiated pairing, `govern remote link --url URL [--tls-cert F] [--lan
 A link without `code` selects request pairing; the existing `code=` link selects the original flow. The phone sends its
 name, P-256 public key and optional lanes to `POST /v1/pair/request`. The reply contains a random request id, a random
 32-byte base64url secret, the host name, and an expiry five minutes later. Only the secret's SHA-256 is stored.
-At most five requests may await confirmation or token delivery; another request returns 429.
+At most 32 requests globally and 2 per client socket address may await confirmation or token delivery; another request returns 429. Forwarded address headers are not used. Expiry, cancellation, refusal and token delivery release capacity.
 
 The phone and terminal independently compute a six-digit comparison code:
 
@@ -96,7 +96,7 @@ code = (uint32_big_endian(hash[0..3]) % 1000000), padded to six digits
 The pin is the certificate fingerprint when the server serves TLS directly; otherwise it is empty.
 `govern remote requests` prints open ids, codes, names, requested lanes and expiry. After comparing the digits with the
 phone, the owner runs `govern remote confirm ID --code NNNNNN [--lane S]... [--all] [--person P]`.
-The default person is `owner`; scope defaults to the requested lanes, or every lane when none were requested.
+The default person is `owner`; scope defaults to the requested lanes. If no lanes were requested (absent or empty), confirmation refuses unless the owner chooses `--lane SLUG` (repeatable) or `--all`.
 Repeated `--lane` replaces that scope; `--all` grants every lane and cannot be combined with `--lane`.
 A wrong code permanently refuses the request. `govern remote refuse ID` also refuses it.
 
@@ -111,7 +111,7 @@ The library and HTTP server accept an injected clock for deterministic expiry te
 
 `Device.lanes` is absent for every lane; an array restricts access to those slugs, and an empty array grants no lanes.
 Desk and stream responses filter lanes, unreadable entries, session summaries when present, token and machine rows by
-lane, and inbox entries by project. The shared desk cache stays unfiltered. Lane, job and artifact reads and actions
+lane, and inbox entries by project. Each returned lane's `blockedBy` contains only in-scope slugs, including lane detail and action replies. Allowance rows tied to out-of-scope lanes or folders are omitted, as are allowance configuration errors. Profile allowance rows and host-level queue counts, dispatcher state and engines stay visible. The shared desk cache stays unfiltered. Lane, job and artifact reads and actions
 outside the scope return 403, checked before the lane's existence; a session is read through its lane, so a session with
 no lane is readable only by an unscoped device. `govern remote devices` shows each device's scope.
 
@@ -183,7 +183,7 @@ against the same fixtures in [android/app/src/test/resources/fixtures/](android/
 | `POST /v1/pair/request` | none | `{name, publicKey, lanes?: string[]}` | 201 `{protocol, id, secret, expires, host}` |
 | `GET /v1/pair/request?id=ID` | `Govern-Pair-Secret` | — | `{protocol, state, expires, person: string|null, deviceId: string|null, token: string|null, lanes: string[]|null, host}` |
 | `POST /v1/pair/cancel` | request secret | `{id, secret}` | `{protocol, state: "cancelled"}` |
-| `GET /v1/desk` | bearer | — | `Desk`: `{protocol, at, lanes: LaneSummary[], unreadable: {slug, error}[], telemetry, sessions, engines, viewer, host}` |
+| `GET /v1/desk` | bearer | — | `Desk`: `{protocol, at, lanes: LaneSummary[], unreadable: {slug, error}[], telemetry, sessions, unreadableSessions: {id, error}[], engines, viewer, host}` |
 | `GET /v1/lane?slug=S` | bearer | — | `LaneDetail`: a summary plus stages, exit, check, data, human tasks, alerts, last 20 notes, last 30 ledger lines, checks, last 10 jobs, artifacts, sessions and decisions |
 | `GET /v1/session?id=ID&messages=N` | bearer | `messages` defaults to 20, range 1..100 | `{protocol, session: SessionSummary, messages: MessageView[], runs: RunView[]}`; last N messages and last 5 runs |
 | `GET /v1/job?lane=S&id=J&lines=N` | bearer | `lines` defaults to 100, range 1..1000 | `{protocol, lane, job: JobView, argv: string[], log: string[]}`; log tail |
@@ -243,7 +243,7 @@ ActionResult fixtures are in `android/app/src/test/resources/fixtures/action-res
 Errors are `{error}` with a status that says who must act: 400 for a malformed request, 401 for a missing, unknown or
 revoked token, 403 when the request does not prove itself (signature, clock, nonce or pairing code), 404 for an unknown
 lane, session, job, artifact or route, 409 when the lane's state refuses the action (a gate that needs another first, a gate owned by someone
-else, an alert already acknowledged), 413 for a body over 64 KiB or an artifact over 32 MiB, and 429 above 8 open streams or 5 open pairing requests. A stream ends after one
+else, an alert already acknowledged), 413 for a body over 64 KiB or an artifact over 32 MiB, and 429 above 8 open streams globally or 2 per device, or 32 open pairing requests globally or 2 per client address. Stream capacity is released on close. A stream ends after one
 hour; the app reconnects.
 
 ### Read types
@@ -253,7 +253,7 @@ All nullable fields below are present as JSON null when absent. Arrays are prese
 count the latest ledger check per such stage. Stages without a result contribute only to total.
 `GateView` also carries `approvedBy: string|null`, `quote: string|null` and `artifact: ArtifactRef|null`.
 
-The desk's `sessions` are all conversations, newest updated first. `engines` is the sorted list of capability profile
+The desk's `sessions` are readable conversations, newest updated first. A session whose lane cannot be loaded with a GovernError keeps its lane name and has `needsDecision: false`. Unreadable conversations are skipped and listed in `unreadableSessions: {id: string, error: string}[]`, always present; a scoped device receives it empty, since an unreadable conversation's lane is unknown. `engines` is the sorted list of capability profile
 names whose engines are claude, codex or grok, plus workspace `conversationAdapters` names (deduplicated). `host` is the server hostname. `viewer` is
 `{person: string, device: string, lanes: string[]|null}` from the requesting device; absent device scopes become null.
 The shared desk cache excludes the viewer, which is attached separately for each request and SSE connection.
@@ -350,3 +350,5 @@ their versions and reviews live in the lane ledger, with no separate artifact me
 
 Signed actions also update lane `govern.json` notes and `govern/ledger.jsonl`; instruct/session update conversation
 `session.json` through the conversation runtime. No new action state files are introduced.
+
+Change requests require the gate's decision owner, using the same default `owner` as approvals; a mismatch returns 409 without a decision, note or instruction. Session selection runs before recording the decision and note, then the instruction is sent. Desk cache expiry and legacy pairing expiry use the server's injected clock.

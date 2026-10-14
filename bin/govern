@@ -186,7 +186,8 @@
 #                             human, human-inbox: a process person, refused unless this OS account is mapped to it; task:
 #                             default GOVERN_AS, else this session; remote pair: the person the device approves as (owner)
 #     --all                   task inbox, remote confirm: task inbox: messages in every state, not only open ones; remote
-#                             confirm: grant the device every lane
+#                             confirm: grant the device every lane. With no requested lanes, choose --lane SLUG
+#                             (repeatable) or --all; confirmation never grants every lane implicitly
 #     --hook                  task inbox: the UserPromptSubmit hook form, silent when empty
 #     --max N                 task dispatch: run at most N messages
 #     --only E                task dispatch: only messages for codex or claude

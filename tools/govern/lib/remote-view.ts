@@ -1,6 +1,6 @@
 // The structured views govern remote serves (docs: REMOTE.md): the desk as data, one lane in full, and the telemetry of
 // today. They read the same files as `govern desk` and `govern brief`, and run no model and no check.
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { hostname } from "node:os";
 import * as conversations from "./conversation.ts";
 import * as jobs from "./jobs.ts";
@@ -63,7 +63,8 @@ export interface Telemetry {
   inbox: { id: string; kind: string; from: string; project: string; summary: string; created: string }[];
   allowances: string[];
 }
-export interface Desk { viewer: Viewer; sessions: SessionSummary[]; engines: string[]; host: string; protocol: string; at: string; lanes: LaneSummary[]; unreadable: LaneError[]; telemetry: Telemetry }
+export interface SessionError { id: string; error: string }
+export interface Desk { viewer: Viewer; sessions: SessionSummary[]; unreadableSessions: SessionError[]; engines: string[]; host: string; protocol: string; at: string; lanes: LaneSummary[]; unreadable: LaneError[]; telemetry: Telemetry }
 
 const gateViews = (p: Project): GateView[] => processOf(p).gates.map((g) => {
   const approved = gateApproved(p, g);
@@ -148,7 +149,9 @@ export function deskView(): Omit<Desk, "viewer"> {
       unreadable.push({ slug: s, error: e.message });
     }
   }
-  return { sessions: sessions(), engines: engines(), host: hostname(), protocol: PROTOCOL, at: new Date().toISOString(), lanes, unreadable, telemetry: telemetry(slugs) };
+  const unreadableSessions: SessionError[] = [];
+  const listed = sessions(unreadableSessions);
+  return { sessions: listed, unreadableSessions, engines: engines(), host: hostname(), protocol: PROTOCOL, at: new Date().toISOString(), lanes, unreadable, telemetry: telemetry(slugs) };
 }
 
 function checkSummary(p: Project, led: Record<string, unknown>[]): CheckSummary {
@@ -184,14 +187,28 @@ function messageView(s: conversations.Conversation, m: conversations.Message, li
     verification: m.role === "assistant" ? s.runs.find(r => r.id === m.runId)?.verification ?? null : null };
 }
 export function sessionSummary(s: conversations.Conversation): SessionSummary {
-  const p = s.lane ? load(s.lane) : null, last = s.runs.at(-1), message = s.messages.at(-1);
+  let p: Project | null = null;
+  try { p = s.lane ? load(s.lane) : null; } catch (e) { if (!(e instanceof GovernError)) throw e; }
+  const last = s.runs.at(-1), message = s.messages.at(-1);
   const state = s.closedAt ? "closed" : s.runs.some(r => r.state === "running") ? "running" : s.runs.some(r => r.state === "queued") ? "queued" : last && ["failed", "interrupted"].includes(last.state) ? "failed" : "idle";
   return { id: s.id, title: s.title, lane: s.lane ?? null, engine: s.adapter.name, state,
     updatedAt: [s.updatedAt, ...s.messages.map(m => m.at), ...s.events.map(e => e.at), ...s.runs.flatMap(r => [r.createdAt, r.startedAt, r.endedAt].filter((t): t is string => !!t))].sort().at(-1)!,
     needsDecision: !!p && !p.finished && gateViews(p).some(g => !g.policy && !g.approved && (g.stage === null || g.stage === p.stage)),
     lastMessage: message ? messageView(s, message, 400) : null };
 }
-export const sessions = (): SessionSummary[] => conversations.list().map(sessionSummary).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+export function sessions(unreadable: SessionError[] = []): SessionSummary[] {
+  if (!existsSync(conversations.root())) return [];
+  return readdirSync(conversations.root(), { withFileTypes: true })
+    .filter(d => d.isDirectory() && /^[a-z0-9][a-z0-9.-]{0,79}$/.test(d.name))
+    .flatMap(d => {
+      try { return [sessionSummary(conversations.inspect(d.name))]; }
+      catch (e) {
+        if (!(e instanceof GovernError) && !(e instanceof Error && "code" in e)) throw e;
+        unreadable.push({ id: d.name, error: e.message });
+        return [];
+      }
+    }).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+}
 export function sessionDetail(id: string, messages = 20): SessionDetail {
   const s = conversations.inspect(id);
   return { protocol: PROTOCOL, session: sessionSummary(s), messages: s.messages.slice(-messages).map(m => messageView(s, m, 4000)),

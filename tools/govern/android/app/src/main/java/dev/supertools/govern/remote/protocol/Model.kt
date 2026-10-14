@@ -90,6 +90,10 @@ enum class LaneState {
 @Serializable
 data class LaneError(val slug: String, val error: String)
 
+/** A conversation the server could not read; only unscoped devices receive them. */
+@Serializable
+data class SessionError(val id: String, val error: String)
+
 @Serializable
 data class AlertView(
     val id: String,
@@ -180,6 +184,7 @@ data class Desk(
     val unreadable: List<LaneError>,
     val telemetry: Telemetry,
     val sessions: List<SessionSummary>,
+    val unreadableSessions: List<SessionError>,
     val engines: List<String>,
     val viewer: Viewer,
     val host: String,
