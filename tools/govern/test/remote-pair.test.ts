@@ -7,7 +7,8 @@ import { join } from "node:path";
 import { makeEnv, govern, write, asSession } from "./helpers.ts";
 import { remoteServer, devices, scoped, Forbidden, BadRequest, createPairing, pair, deviceOfToken } from "../lib/remote.ts";
 import { comparisonCode, requestPairing, pollPairing, confirmPairing, cancelPairing, refusePairing, requests, TooMany } from "../lib/remote-pair.ts";
-import { deskView, PROTOCOL } from "../lib/remote-view.ts";
+import { deskView, laneSummary, PROTOCOL } from "../lib/remote-view.ts";
+import { create, load } from "../lib/project.ts";
 
 const vectors = [
   ["r-0123456789ab", "public-key", "", "121684"],
@@ -75,9 +76,10 @@ test("request confirm poll delivers a sealed token once and permits authenticate
   assert.equal(devices().length, 1);
 }));
 
-test("wrong comparison refuses permanently; cancellation, expiry and five open requests are enforced", async () => workspace(async (_e, base, clock) => {
+test("wrong comparison refuses permanently; cancellation, expiry and 32 open requests are enforced", async () => workspace(async (_e, base, clock) => {
   const publicKey = publicOf(key()), now = () => clock.now;
-  const make = () => requestPairing({ name: "phone", publicKey }, { now });
+  let address = 0;
+  const make = () => requestPairing({ name: "phone", publicKey }, { now, address: String(address++) });
   const r = make();
   assert.throws(() => confirmPairing(r.id, "wrong", { now }), Forbidden);
   assert.equal(pollPairing(r.id, r.secret, now).state, "refused");
@@ -89,7 +91,7 @@ test("wrong comparison refuses permanently; cancellation, expiry and five open r
   const expired = make(); clock.now += 300_000;
   assert.equal(pollPairing(expired.id, expired.secret, now).state, "expired");
   assert.throws(() => confirmPairing(expired.id, comparisonCode(expired.id, publicKey, null), { now }));
-  for (let i = 0; i < 5; i++) make();
+  for (let i = 0; i < 32; i++) make();
   assert.equal((await post(base, "/v1/pair/request", { name: "sixth", publicKey })).status, 429);
   clock.now += 300_000;
   assert.equal(requests(now).length, 0);
@@ -153,7 +155,8 @@ test("remote requests confirm refuse link and device scopes work at the terminal
 test("pairing state transitions validate secrets, seal once, expire and share device creation", async () => local((e) => {
   let time = Date.parse("2026-10-14T20:00:00Z"); const now = () => time;
   const publicKey = publicOf(key());
-  const make = (lanes?: string[]) => requestPairing({ name: "phone", publicKey, ...(lanes ? { lanes } : {}) }, { now, pin: "cert-pin" });
+  let address = 0;
+  const make = (lanes?: string[]) => requestPairing({ name: "phone", publicKey, ...(lanes ? { lanes } : {}) }, { now, pin: "cert-pin", address: String(address++) });
   const confirm = (r: ReturnType<typeof make>, extra = {}) => confirmPairing(r.id, comparisonCode(r.id, publicKey, "cert-pin"), { now, ...extra });
   assert.throws(() => requestPairing({ name: " ", publicKey }, { now }), BadRequest);
   assert.throws(() => requestPairing({ name: "phone", publicKey: "wrong" }, { now }), BadRequest);
@@ -185,30 +188,42 @@ test("pairing state transitions validate secrets, seal once, expire and share de
   assert.throws(() => confirm(cancel));
   const refuse = make(); refusePairing(refuse.id, now);
   assert.equal(pollPairing(refuse.id, refuse.secret, now).state, "refused");
-  const expire = make(), pending = make(), undelivered = confirm(pending);
+  const expire = make(), pending = make(), undelivered = confirm(pending, { all: true });
   time += 300_000;
   for (const r of [expire, pending]) assert.equal(pollPairing(r.id, r.secret, now).state, "expired");
   assert.ok(devices().find((x) => x.id === undelivered.id)?.revokedAt, "a device whose token was never delivered is revoked at expiry");
   assert.equal(devices().find((x) => x.id === d.id)?.revokedAt, undefined, "a delivered device stays paired");
   assert.ok(!readFileSync(state, "utf8").includes('"sealed"'));
-  for (let i = 0; i < 5; i++) make();
+  for (let i = 0; i < 32; i++) make();
   assert.throws(() => make(), TooMany);
   time += 300_000; assert.equal(requests(now).length, 0); make();
   const legacy = pair(createPairing("alice", 10).code, "legacy", publicKey);
   assert.equal(deviceOfToken(legacy.token)?.person, "alice"); assert.equal(legacy.device.lanes, undefined);
 }));
 
-test("scope filtering preserves global desks and excludes unassigned sessions for restricted devices", async () => local(() => {
+test("scope filtering preserves global desks and excludes unassigned sessions for restricted devices", async () => local((e) => {
   const publicKey = publicOf(key()), r = requestPairing({ name: "scope", publicKey, lanes: [] });
-  const d = confirmPairing(r.id, comparisonCode(r.id, publicKey, null));
-  const desk = { ...deskView(), unreadable: [{ slug: "r1", error: "private" }], sessions: [{ lane: null }, { lane: "r1" }] };
+  const d = confirmPairing(r.id, comparisonCode(r.id, publicKey, null), { lanes: [] });
+  const desk = { ...deskView(), unreadable: [{ slug: "r1", error: "private" }], unreadableSessions: [{ id: "c1", error: "private" }], sessions: [{ lane: null }, { lane: "r1" }] };
   desk.telemetry.tokens.push({ lane: "r1", calls: 1, input: 1, output: 1, usd: 1 });
   desk.telemetry.machines.push({ lane: "r1", time: "1s", money: null });
   desk.telemetry.inbox.push({ project: "r1", id: "m", kind: "TASK", from: "x", summary: "private", created: "x" });
+  write(join(e.root, "PALS-Notes/processes/release.json"), JSON.stringify({ version: 1, name: "release", stages: [{ name: "draft" }], gates: [] }));
+  create("r1", { process: "release" });
+  desk.lanes = [{ ...laneSummary(load("r1")), blockedBy: ["r1", "r2"] }];
+  desk.telemetry.allowances = ["private  lane:r2  model-usd/day", "mine  lane:r1  model-usd/day", "host  profile:codex  model-usd/day"];
   const view = scoped(desk, d);
+  assert.deepEqual(view.telemetry.allowances, ["host  profile:codex  model-usd/day"]);
+  assert.equal(view.telemetry.queue, desk.telemetry.queue);
+  assert.equal(view.telemetry.dispatcher, desk.telemetry.dispatcher);
+  assert.equal(view.engines, desk.engines);
+  assert.deepEqual([view.unreadableSessions, scoped(desk, { ...d, lanes: ["r1"] }).unreadableSessions], [[], []], "an unreadable session's lane is unknown: no scoped device sees it");
   assert.deepEqual([view.unreadable, view.sessions, view.telemetry.tokens, view.telemetry.machines, view.telemetry.inbox], [[], [], [], [], []]);
   const allowed = scoped(desk, { ...d, lanes: ["r1"] });
   assert.deepEqual(allowed.sessions, [{ lane: "r1" }]);
+  assert.deepEqual(allowed.telemetry.allowances, desk.telemetry.allowances.slice(1));
+  assert.deepEqual(allowed.lanes[0]!.blockedBy, ["r1"]);
+  assert.deepEqual(desk.lanes[0]!.blockedBy, ["r1", "r2"]);
   assert.deepEqual([allowed.unreadable.length, allowed.telemetry.tokens.length, allowed.telemetry.machines.length, allowed.telemetry.inbox.length], [1, 1, 1, 1]);
   assert.equal(desk.sessions.length, 2); assert.equal(desk.telemetry.tokens.length, 1);
   assert.equal(scoped(desk, { ...d, lanes: undefined }), desk);

@@ -15,7 +15,7 @@ import { stateDir, config } from "./workspace.ts";
 import { withLaneLock } from "./lane-lock.ts";
 import { load, save, appendLedger, ledgerFile, stateFile, checkSlug } from "./project.ts";
 import { processOf } from "./process.ts";
-import { ownerApproval, gateApproved } from "./business.ts";
+import { ownerApproval, requireGateOwner, gateApproved } from "./business.ts";
 import { transaction } from "./lifecycle.ts";
 import * as artifacts from "./artifacts.ts";
 import * as conversations from "./conversation.ts";
@@ -93,12 +93,12 @@ export function p256(b64: string): KeyObject {
 
 /** Pairs the device that presents the current code: its key is stored and a bearer token returned (once; only its hash is kept).
  *  A wrong code counts against the pairing, an expired one is deleted. */
-export function pair(code: string, deviceName: string, publicKey: string): { device: Device; token: string } {
+export function pair(code: string, deviceName: string, publicKey: string, now = Date.now()): { device: Device; token: string } {
   p256(publicKey);
   return locked(() => {
     const pg = readState<Pairing | null>("pairing.json", null);
     if (!pg) throw new Forbidden("no pairing code is open: run govern remote pair at the owner's terminal");
-    if (Date.parse(pg.expires) < Date.now()) { writeState("pairing.json", null); throw new Forbidden("the pairing code expired: run govern remote pair again"); }
+    if (Date.parse(pg.expires) <= now) { writeState("pairing.json", null); throw new Forbidden("the pairing code expired: run govern remote pair again"); }
     const ok = timingSafeEqual(Buffer.from(sha(normalizeCode(code)), "hex"), Buffer.from(pg.codeSha256, "hex"));
     if (!ok) {
       const attempts = pg.attempts + 1;
@@ -106,7 +106,7 @@ export function pair(code: string, deviceName: string, publicKey: string): { dev
       audit({ kind: "pair-refused", attempts });
       throw new Forbidden(attempts >= PAIR_ATTEMPTS ? "wrong pairing code; the code is now void: run govern remote pair again" : "wrong pairing code");
     }
-    const paired = createDevice(deviceName, publicKey, pg.person);
+    const paired = createDevice(deviceName, publicKey, pg.person, undefined, now);
     writeState("pairing.json", null);
     return paired;
   });
@@ -134,13 +134,22 @@ export function revokeUndelivered(ids: readonly string[], now: number): void {
 export const inScope = (device: Device, slug: string | null): boolean => device.lanes === undefined || (slug !== null && device.lanes.includes(slug));
 
 /** Filter only after the shared cache, including optional session summaries supplied by the read views. */
-export function scoped<T extends Omit<Desk, "viewer" | "sessions"> & { sessions?: { lane: string | null }[] }>(desk: T, device: Device): T {
+export function scoped<T extends Omit<Desk, "viewer" | "sessions" | "unreadableSessions"> & { sessions?: { lane: string | null }[]; unreadableSessions?: unknown[] }>(desk: T, device: Device): T {
   if (device.lanes === undefined) return desk;
-  return { ...desk, lanes: desk.lanes.filter((x) => inScope(device, x.slug)), unreadable: desk.unreadable.filter((x) => inScope(device, x.slug)),
+  return { ...desk, lanes: desk.lanes.filter((x) => inScope(device, x.slug)).map(x => ({ ...x, blockedBy: x.blockedBy.filter(slug => inScope(device, slug)) })), unreadable: desk.unreadable.filter((x) => inScope(device, x.slug)),
+    // an unreadable conversation's lane is unknown, so no scoped device may see it
+    ...(desk.unreadableSessions ? { unreadableSessions: [] } : {}),
     ...(desk.sessions ? { sessions: desk.sessions.filter((x) => inScope(device, x.lane)) } : {}),
-    telemetry: { ...desk.telemetry, tokens: desk.telemetry.tokens.filter((x) => inScope(device, x.lane)),
+    telemetry: { ...desk.telemetry, allowances: desk.telemetry.allowances.filter(line => {
+      // shown() formats the consumer in the second column; config errors may expose lane data too.
+      if (line.startsWith("allowances: config error")) return false;
+      const lane = /^\S+\s+lane:(\S+)\s/.exec(line)?.[1];
+      return lane === undefined || inScope(device, lane);
+    }), tokens: desk.telemetry.tokens.filter((x) => inScope(device, x.lane)),
       machines: desk.telemetry.machines.filter((x) => inScope(device, x.lane)), inbox: desk.telemetry.inbox.filter((x) => inScope(device, x.project)) } };
 }
+
+const scopedLane = (lane: LaneDetail, device: Device): LaneDetail => ({ ...lane, blockedBy: lane.blockedBy.filter(slug => inScope(device, slug)) });
 
 export function revoke(id: string): Device {
   return locked(() => {
@@ -243,11 +252,12 @@ export function perform(device: Device, a: Action, body: Buffer, signature: stri
         const { by, source } = p.approvals[g.name]!;
         appendLedger(p.slug, { kind: "approve", gate: g.name, quote: a.quote, by, source, device: device.id, ...evidence });
       } else {
+        requireGateOwner(g, device.person);
         if (gateApproved(p, g)) fail(`gate ${g.name} is already approved`);
+        const open = sessions().find(s => s.lane === p.slug && s.state !== "closed");
         const text = `changes requested on ${g.name} by ${device.person}: ${a.quote}`;
         appendLedger(p.slug, { kind: "changes-requested", gate: g.name, quote: a.quote, by: device.person, device: device.id, ...evidence });
         p.notes.push({ at: nowIso(), stage: p.stage, text }); save(p);
-        const open = sessions().find(s => s.lane === p.slug && s.state !== "closed");
         if (open) send(open.id, text, "queue");
       }
     } else if (a.action === "reviewed") {
@@ -269,7 +279,7 @@ export function perform(device: Device, a: Action, body: Buffer, signature: stri
   };
   if (slug === null) apply(); else transaction(slug, apply);
   audit({ kind: a.action, device: device.id, lane: slug, ...("gate" in a ? { gate: a.gate } : {}), ...("alert" in a ? { alert: a.alert } : {}), ...(session ? { session } : {}) });
-  return { ok: true, lane: slug === null ? null : laneDetail(load(slug)), session: session === null ? null : sessionDetail(session) };
+  return { ok: true, lane: slug === null ? null : scopedLane(laneDetail(load(slug)), device), session: session === null ? null : sessionDetail(session) };
 }
 
 
@@ -286,10 +296,11 @@ export function remoteServer(o: ServeOptions = {}): Server {
   const now = o.now ?? Date.now, pin = o.tls ? certPin(o.tls.cert) : null;
   const interval = o.streamIntervalMs ?? 3000, maxMs = o.streamMaxMs ?? 3_600_000, pingMs = o.pingMs ?? 15_000;
   let streams = 0;
+  const deviceStreams = new Map<string, number>();
   let cache: { at: number; desk: Omit<Desk, "viewer"> } | undefined;
   /** One desk computation per interval, however many streams read it. */
   const desk = (): Omit<Desk, "viewer"> => {
-    if (!cache || Date.now() - cache.at >= interval) cache = { at: Date.now(), desk: deskView() };
+    if (!cache || now() - cache.at >= interval) cache = { at: now(), desk: deskView() };
     return cache.desk;
   };
   const handler = (req: IncomingMessage, res: ServerResponse): void => {
@@ -318,7 +329,7 @@ export function remoteServer(o: ServeOptions = {}): Server {
       let raw: unknown;
       try { raw = JSON.parse(b.toString("utf8")); } catch { return reply(400, { error: "invalid JSON" }); }
       const r = parsed("pairing request", raw, PAIR_REQ);
-      const { device: d, token } = pair(r.code, r.name, r.publicKey);
+      const { device: d, token } = pair(r.code, r.name, r.publicKey, now());
       reply(200, { protocol: PROTOCOL, deviceId: d.id, person: d.person, token, host: hostname() });
     });
     if (route === "POST /v1/pair/request" || route === "POST /v1/pair/cancel") return body((b) => {
@@ -326,7 +337,7 @@ export function remoteServer(o: ServeOptions = {}): Server {
       try { raw = JSON.parse(b.toString("utf8")); } catch { return reply(400, { error: "invalid JSON" }); }
       if (route === "POST /v1/pair/request") {
         const r = parsed("pairing request", raw, obj({ name: str, publicKey: str }, { lanes: arr(str) }));
-        return reply(201, pairing.requestPairing(r, { now, pin }));
+        return reply(201, pairing.requestPairing(r, { now, pin, address: req.socket.remoteAddress }));
       }
       const r = parsed("pairing cancellation", raw, obj({ id: str, secret: str }));
       reply(200, pairing.cancelPairing(r.id, r.secret, now));
@@ -381,7 +392,7 @@ export function remoteServer(o: ServeOptions = {}): Server {
         const slug = slugOf(url.searchParams.get("slug") ?? undefined);
         if (!inScope(device, slug)) throw new Forbidden(`lane ${slug} is outside this device's scope`);
         if (!existsSync(stateFile(slug))) return reply(404, { error: `no lane ${slug}` });
-        return reply(200, laneDetail(load(slug)));
+        return reply(200, scopedLane(laneDetail(load(slug)), device));
       }
       if (route === "POST /v1/actions") return body((b) => {
         const sig = req.headers["govern-signature"];
@@ -392,7 +403,9 @@ export function remoteServer(o: ServeOptions = {}): Server {
       });
       if (route === "GET /v1/stream") {
         if (streams >= MAX_STREAMS) return reply(429, { error: `at most ${MAX_STREAMS} streams` });
+        if ((deviceStreams.get(device.id) ?? 0) >= 2) return reply(429, { error: "at most 2 streams per device" });
         streams++;
+        deviceStreams.set(device.id, (deviceStreams.get(device.id) ?? 0) + 1);
         res.writeHead(200, { "Content-Type": "text/event-stream; charset=utf-8", "Cache-Control": "no-store", Connection: "keep-alive" });
         let last = "";
         const push = () => {
@@ -405,7 +418,10 @@ export function remoteServer(o: ServeOptions = {}): Server {
         push();
         const tick = setInterval(push, interval), ping = setInterval(() => res.write(": ping\n\n"), pingMs);
         const end = setTimeout(() => res.end(), maxMs);
-        res.on("close", () => { clearInterval(tick); clearInterval(ping); clearTimeout(end); streams--; });
+        res.on("close", () => { clearInterval(tick); clearInterval(ping); clearTimeout(end); streams--;
+          const remaining = (deviceStreams.get(device.id) ?? 1) - 1;
+          if (remaining) deviceStreams.set(device.id, remaining); else deviceStreams.delete(device.id);
+        });
         return;
       }
       req.resume();

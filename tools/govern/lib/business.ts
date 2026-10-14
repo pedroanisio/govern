@@ -389,13 +389,18 @@ export function gateApproved(p: Project, g: GateDef | undefined, at = Date.now()
     new Set(votes.filter((v) => v.decision === "approve").map((v) => v.by)).size >= q.quorum
   );
 }
+/** Resolve and require the decision owner shared by approvals and change requests. */
+export function requireGateOwner(g: GateDef, by: string | undefined): string {
+  const owner = g.owner ?? "owner";
+  if (by === undefined && owner !== "owner") fail(`gate ${g.name} is decided by ${owner}: pass --by ${owner}`);
+  if (by !== undefined && by !== owner) fail(`gate ${g.name} is decided by ${owner}, not ${by}`);
+  return owner;
+}
 /** Records the owner's approval of gate `g` (one without a policy) on `p`: `by` must be the gate's decision owner (omitted
  *  only when that owner is "owner"), `quote` the owner's own words, and every gate it needs already approved. `source` says
  *  where the words came from; it runs after those checks, so a refusal names the missing approval before the quote is checked. */
 export function ownerApproval(p: Project, g: GateDef, by: string | undefined, quote: string | undefined, source: () => Source): void {
-  const owner = g.owner ?? "owner", gates = processOf(p).gates;
-  if (by === undefined && owner !== "owner") fail(`gate ${g.name} is decided by ${owner}: pass --by ${owner}`);
-  if (by !== undefined && by !== owner) fail(`gate ${g.name} is decided by ${owner}, not ${by}`);
+  const owner = requireGateOwner(g, by), gates = processOf(p).gates;
   if (!quote || quote.trim().length < 2) fail(`--quote is required: ${owner}'s own words approving the ${g.name} (only ${owner} approves)`);
   for (const need of g.needs ?? []) if (!gateApproved(p, gates.find((x) => x.name === need)!)) fail(g.message ?? `needs the ${need} approval first`);
   const src = source();

@@ -1068,7 +1068,7 @@ export const COMMANDS: readonly Cmd[] = [
         lines: [["[--as PERSON] [--minutes 10] [--url URL] [--tls-cert F] [--no-qr]", "a one-time code that pairs one phone (govern-remote app) as PERSON (default owner); only from the\nowner's own terminal. --url and --tls-cert add the server and its certificate pin to the printed pairing link,\nalso drawn as a QR code the phone's camera opens in the app (--no-qr: the link only)"]], run: cmdRemote },
       requests: { lines: [["", "open phone pairing requests with comparison code, name, lanes and expiry; owner's terminal only"]], run: cmdRemote },
       confirm: { flags: { value: ["code", "person"], multi: ["lane"], bool: ["all"] },
-        lines: [["<id> --code NNNNNN [--lane S]... [--all] [--person P]", "compare the phone's code and pair it; defaults to requested lanes and owner; --all grants every lane"]], run: cmdRemote },
+        lines: [["<id> --code NNNNNN [--lane S]... [--all] [--person P]", "compare the phone's code and pair it; defaults to requested lanes and owner; with no requested lanes choose --lane SLUG (repeatable) or --all"]], run: cmdRemote },
       refuse: { lines: [["<id>", "refuse a phone's pairing request; owner's terminal only"]], run: cmdRemote },
       link: { flags: { value: ["url", "tls-cert", "lane"], bool: ["no-qr"] },
         lines: [["[--url URL] [--tls-cert F] [--lane S] [--no-qr]", "print a QR and link for phone-initiated pairing (default http://127.0.0.1:5002); owner's terminal only"]], run: cmdRemote },

@@ -12,7 +12,7 @@ type State = "waiting" | "confirmed" | "refused" | "expired" | "cancelled";
 interface Sealed { iv: string; tag: string; data: string }
 interface PairRequest {
   id: string; name: string; publicKey: string; secretSha256: string; expires: string; pin: string | null;
-  state: State; lanes?: string[]; person?: string; deviceId?: string; sealed?: Sealed;
+  address?: string; state: State; lanes?: string[]; person?: string; deviceId?: string; sealed?: Sealed;
 }
 export interface PairRequestBody { name: string; publicKey: string; lanes?: string[] }
 const hash = (s: string) => createHash("sha256").update(s).digest();
@@ -64,16 +64,18 @@ function unseal(s: Sealed): string {
   return Buffer.concat([cipher.update(Buffer.from(s.data, "base64")), cipher.final()]).toString("utf8");
 }
 
-export function requestPairing(body: PairRequestBody, o: { pin?: string | null; now?: Clock } = {}) {
+export function requestPairing(body: PairRequestBody, o: { pin?: string | null; now?: Clock; address?: string } = {}) {
   if (!body.name.trim() || body.name.length > 80) throw new BadRequest("name must be 1..80 characters");
   p256(body.publicKey);
   const lanes = lanesOf(body.lanes), now = o.now ?? Date.now;
   return locked(() => {
     const rs = current(now);
-    if (rs.filter((r) => r.state === "waiting" || r.sealed).length >= 5) throw new TooMany("at most 5 open pairing requests");
+    const open = rs.filter(r => r.state === "waiting" || r.sealed), address = o.address ?? "unknown";
+    if (open.length >= 32) throw new TooMany("at most 32 open pairing requests");
+    if (open.filter(r => (r.address ?? "unknown") === address).length >= 2) throw new TooMany("at most 2 open pairing requests per client address");
     const secret = randomBytes(32).toString("base64url");
     const r: PairRequest = { id: `r-${randomBytes(12).toString("hex")}`, name: body.name.trim(), publicKey: body.publicKey,
-      secretSha256: hash(secret).toString("hex"), expires: new Date(now() + 300_000).toISOString(), pin: o.pin ?? null, state: "waiting",
+      secretSha256: hash(secret).toString("hex"), expires: new Date(now() + 300_000).toISOString(), pin: o.pin ?? null, state: "waiting", address,
       ...(lanes === undefined ? {} : { lanes }) };
     rs.push(r); save(rs);
     return { protocol: PROTOCOL, id: r.id, secret, expires: r.expires, host: hostname() };
@@ -95,6 +97,7 @@ export function confirmPairing(id: string, code: string, o: { person?: string; l
     const person = o.person ?? "owner";
     if (!/^[a-z][a-z0-9_.-]*$/i.test(person)) throw new BadRequest(`bad person name: ${person}`);
     if (o.all && o.lanes !== undefined) throw new BadRequest("--all and --lane cannot be combined");
+    if (!o.all && o.lanes === undefined && !r.lanes?.length) throw new BadRequest("choose the lanes: --lane SLUG (repeatable) or --all");
     const lanes = o.all ? undefined : lanesOf(o.lanes ?? r.lanes);
     const { device, token } = createDevice(r.name, r.publicKey, person, lanes, now());
     r.state = "confirmed"; r.person = person; r.deviceId = device.id;
