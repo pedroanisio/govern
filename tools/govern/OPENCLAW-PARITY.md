@@ -1,6 +1,6 @@
 # Govern's capability gap to OpenClaw
 
-Implementation update: the persistent conversation runtime is now implemented; see [CONVERSATIONS.md](CONVERSATIONS.md). The comparison below records the research baseline and remaining platform gaps.
+> **Snapshot as of `9bf5bd3` (2026-10-14), not maintained.** Persistent conversations, the remote API and signed device approvals have since shipped; see [CONVERSATIONS.md](CONVERSATIONS.md) and [REMOTE.md](REMOTE.md). The comparison below records the research baseline.
 
 Research date: 2026-10-14. Scope: what Govern itself would need to offer an OpenClaw-like assistant experience. This differs from the [OpenClaw-over-Govern integration assessment](OPENCLAW-GAP.md).
 

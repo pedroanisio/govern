@@ -1,6 +1,6 @@
 # OpenClaw over Govern: capability gap and integration plan
 
-Implementation update: Govern now owns a [persistent conversation runtime](CONVERSATIONS.md). The comparison below records the integration research baseline; channels and authenticated remote decision sources remain separate additions.
+> **Snapshot as of `9bf5bd3` (2026-10-14), not maintained.** Persistent conversations, the remote API and signed device approvals have since shipped; see [CONVERSATIONS.md](CONVERSATIONS.md) and [REMOTE.md](REMOTE.md). The comparison below records the research baseline.
 
 Research date: 2026-10-14. “OpenClaw” means [openclaw/openclaw](https://github.com/openclaw/openclaw). This assessment compares its current upstream documentation with Govern's local implementation, including the unpushed loops and dynamic branching work. It is a documentation and source review, not a deployed integration or performance benchmark. Upstream `main` is mutable; the pages below were retrieved for this review.
 
