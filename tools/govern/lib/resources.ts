@@ -32,7 +32,7 @@ const NAME_CHARS: Shape<string> = (v, p) => {
   return /^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(s) ? s : reject(p, `may use only letters, digits, "." "_" "-", starting with a letter or digit (got ${JSON.stringify(s)})`);
 };
 const PRICE_RAW = obj({ basis: literal("free", "per-second", "per-hour", "per-month") }, { currency: str, amount: nonNegative });
-const PRICE: Shape<Price> = (v, at) => {
+export const PRICE: Shape<Price> = (v, at) => {
   const x = PRICE_RAW(v, at);
   if (x.basis === "free") {
     if (x.currency !== undefined) reject(`${at}.currency`, "a free resource has no currency");
@@ -110,6 +110,8 @@ export function costOf(r: Pick<Resource, "price">, seconds: number): { amount: n
   return undefined;
 }
 
+/** The ledger entries that book machine time: a job on a resource, and the end of an `up` (down, reap). */
+const MACHINE_KINDS = ["job", "down", "reap"];
 const money = (n: number) => (n === 0 || n >= 0.01 ? n.toFixed(2) : n.toFixed(4));
 /** "0.5 USD/hour", "free" */
 export const priceShort = (p: Price) => (p.basis === "free" ? "free" : `${p.amount} ${p.currency}/${p.basis.slice(4)}`);
@@ -122,7 +124,7 @@ const plural = (n: number, w: string) => `${n} ${w}${n === 1 ? "" : "s"}`;
 export function machineSummary(entries: Record<string, unknown>[]): { time: string; money?: string } | undefined {
   const secs = emptyRecord<number>(), cost = emptyRecord<Record<string, number>>(), monthly = new Set<string>();
   for (const e of entries) {
-    if (e["kind"] !== "job" || typeof e["machineSeconds"] !== "number") continue;
+    if (!MACHINE_KINDS.includes(String(e["kind"])) || typeof e["machineSeconds"] !== "number") continue;
     const r = typeof e["resource"] === "string" ? e["resource"] : "local";
     secs[r] = (secs[r] ?? 0) + e["machineSeconds"];
     if (typeof e["cost"] === "number" && typeof e["currency"] === "string") {
@@ -174,5 +176,5 @@ export function showLines(n: string): string[] {
   return L;
 }
 
-/** All of a lane's ledger entries that are jobs with machine time, for reports. */
-export const machineEntries = (ledgerPath: string): Record<string, unknown>[] => readJsonl(ledgerPath).filter((e) => e.kind === "job" && typeof e.machineSeconds === "number");
+/** All of a lane's ledger entries with machine time (jobs, down, reap), for reports. */
+export const machineEntries = (ledgerPath: string): Record<string, unknown>[] => readJsonl(ledgerPath).filter((e) => MACHINE_KINDS.includes(e.kind) && typeof e.machineSeconds === "number");

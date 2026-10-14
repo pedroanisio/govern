@@ -18,6 +18,7 @@ import * as queue from "./lib/queue.ts";
 import { tag, verdict } from "./lib/replycheck.ts";
 import { desk } from "./lib/desk.ts";
 import { listLines, showLines } from "./lib/resources.ts";
+import * as reaping from "./lib/reap.ts";
 import { registry, getProfile, listText, showText } from "./lib/caps.ts";
 import { checkProfile } from "./lib/capcheck.ts";
 import { tune, chooseRunner } from "./lib/tune.ts";
@@ -512,9 +513,14 @@ function cmdTask(a: Args): void {
     process.on("SIGTERM", stop); process.on("SIGINT", stop);
     // setTimeout, not a blocking sleep: signals are handled only when the event loop turns.
     // The tuning measurement runs hourly in the same loop: reading transcripts, no model.
-    let lastTune = 0;
+    let lastTune = 0, lastReap = 0;
+    const reapEvery = secondsOpt(a, "reap-every");
     const tick = () => {
       once();
+      if (reapEvery && Date.now() - lastReap >= reapEvery * 1000) {
+        lastReap = Date.now();
+        try { for (const r of reaping.scan([], REAP_TIMEOUT)) out(`[reap] ${r.resource}: ${r.status === "ok" ? `${r.orphans.length} with no job` : r.why}`); } catch (e) { out(`[reap] failed: ${(e as Error).message}`); }
+      }
       if (Date.now() - lastTune > 3600e3) { lastTune = Date.now(); try { out(`[tune] ${tune()}`); } catch (e) { out(`[tune] failed: ${(e as Error).message}`); } }
       setTimeout(tick, secs * 1000);
     };
@@ -528,7 +534,7 @@ function cmdTask(a: Args): void {
     const bin = resolve(HERE, "..", "..", "bin", "govern");
     writeFileSync(unit, [
       "[Unit]", "Description=govern task dispatcher (one fresh codex/claude session per queued message)", "",
-      "[Service]", `WorkingDirectory=${repo()}`, `ExecStart=${bin} task dispatch --loop --interval ${opt(a, "interval") ?? 30}`,
+      "[Service]", `WorkingDirectory=${repo()}`, `ExecStart=${bin} task dispatch --loop --interval ${opt(a, "interval") ?? 30}${secondsOpt(a, "reap-every") ? ` --reap-every ${secondsOpt(a, "reap-every")}` : ""}`,
       `Environment=PATH=${process.env.PATH}`, `Environment=GOVERN_REPO=${repo()}`, `Environment=GOVERN_QUEUE=${queue.QUEUE()}`, "Restart=on-failure", "RestartSec=30", "",
       "[Install]", "WantedBy=default.target", "",
     ].join("\n"));
@@ -573,6 +579,8 @@ const SECTIONS: readonly (readonly [title: string, notes?: readonly string[]])[]
   ["publish (prints the commands; the publish guard hook must see them)"],
 ];
 
+/** How long a provider command (start, stop, list) may run when --timeout is not given. */
+const REAP_TIMEOUT = 120;
 const TASK_SUBS = "govern task send|list|show|inbox|close|reply|forward|dispatch|install-service (govern help)";
 
 export const COMMANDS: readonly Cmd[] = [
@@ -635,6 +643,33 @@ export const COMMANDS: readonly Cmd[] = [
     } },
   { name: "resources", section: 2, lines: [["[<name>]", "the declared resources (govern.config.json: resources), or one with its lock holder and the queue behind it"]],
     run: (a) => out((a._[1] ? showLines(a._[1]) : listLines()).join("\n")) },
+  { name: "up", section: 2, flags: { value: ["lane", "count", "timeout"] },
+    lines: [["<resource> [--lane <slug>] [--count N] [--timeout 120]", "run the resource's start command under a unique govern tag (env GOVERN_TAG, placeholders {tag} {count} {lane} {resource}),\n" +
+      "read the instance ids it prints one per line, and record tag, ids, lane and start time (state and ledger)"]],
+    run: (a) => {
+      const n = opt(a, "count") ?? "1";
+      if (!/^[1-9]\d*$/.test(n)) fail(`--count must be a whole number, 1 or more: ${JSON.stringify(n)}`);
+      const { rec, problem } = reaping.up(a._[1] ?? fail("govern up <resource> [--lane <slug>] [--count N]"), { lane: opt(a, "lane"), count: Number(n), timeout: secondsOpt(a, "timeout") ?? REAP_TIMEOUT });
+      if (problem) fail(problem, 1);
+      out([`started ${rec.resource}: tag ${rec.tag}`, ...rec.ids].join("\n"));
+    } },
+  { name: "down", section: 2, flags: { value: ["timeout"], bool: ["forget"] },
+    lines: [["<tag|id> [--forget] [--timeout 120]", "run the stop command (placeholder {id}) for a tag's instances or one id, and book the machine time from up;\n" +
+      "--forget books it without running stop, for a machine that is already gone"]],
+    run: (a) => {
+      const r = reaping.down(a._[1] ?? fail("govern down <tag|id> [--forget]"), { timeout: secondsOpt(a, "timeout") ?? REAP_TIMEOUT, forget: flag(a, "forget") });
+      if (r.lines.length) out(r.lines.join("\n"));
+      if (r.problems.length) fail(r.problems.join("\n"), 1);
+    } },
+  { name: "reap", section: 2, flags: { bool: ["yes"], value: ["timeout"] },
+    lines: [["[<resource>] [--yes] [--timeout 120]", "run each resource's list command (prints `id tag` lines): show the instances govern started that run with no live job\n" +
+      "or lease. Lists only unless --yes, which runs stop and ledgers the reap. Instances without a tag govern recorded are never touched;\n" +
+      "a command that fails, times out or prints nothing parseable is reported, never read as \"nothing to reap\""]],
+    run: (a) => {
+      const r = reaping.reap(a._[1] ? [a._[1]] : [], { yes: flag(a, "yes"), timeout: secondsOpt(a, "timeout") ?? REAP_TIMEOUT });
+      if (r.lines.length) out(r.lines.join("\n"));
+      if (r.problems.length) fail(r.problems.join("\n"), 1);
+    } },
   { name: "log", section: 2, flags: { value: ["tail", "grep"] }, lines: [["<slug> [<job>] [--tail 40] [--grep RE]", "a job's log"]],
     run: (a) => { const p = load(a._[1]); const id = jobs.find(p.slug, a._[2]); out(jobs.tail(p.slug, id, Number(opt(a, "tail") ?? 40), opt(a, "grep")).join("\n") || "(empty log)"); } },
   { name: "kill", section: 2,
@@ -683,9 +718,9 @@ export const COMMANDS: readonly Cmd[] = [
       forward: { flags: { value: ["to", "as"] }, lines: [["<id> --to NAME [--as NAME]", "pass a message on to another recipient"]], run: cmdTask },
       reply: { flags: { value: ["kind", "summary", "body", "body-file", "as"] },
         lines: [["<id> --kind K --summary S (--body B | --body-file F) [--as NAME]", "answer the sender, then close <id>"]], run: cmdTask },
-      dispatch: { flags: { value: ["max", "only", "interval"], bool: ["loop"] },
-        lines: [["[--max N] [--only codex|claude] [--loop --interval 30]", "run the open messages addressed to runners"]], run: cmdTask },
-      "install-service": { flags: { value: ["interval"] }, lines: [["[--interval 30]", "a user systemd service running dispatch --loop"]], run: cmdTask },
+      dispatch: { flags: { value: ["max", "only", "interval", "reap-every"], bool: ["loop"] },
+        lines: [["[--max N] [--only codex|claude] [--loop --interval 30 [--reap-every S]]", "run the open messages addressed to runners; --reap-every lists each resource's tagged instances\nevery S seconds into state for the desk (off by default; lists only, never stops a machine)"]], run: cmdTask },
+      "install-service": { flags: { value: ["interval", "reap-every"] }, lines: [["[--interval 30] [--reap-every S]", "a user systemd service running dispatch --loop"]], run: cmdTask },
     } },
 
   { name: "caps", section: 6, flags: { bool: ["check"] },

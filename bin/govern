@@ -10,6 +10,7 @@
 #     govern process list|show NAME  |  check SLUG [--set CMD --stage S]  |  check SLUG STAGE --accept --quote Q
 #     govern advance SLUG [--note EVIDENCE]  |  dep SLUG [--after LANE[:STAGE]] [--rm LANE]  |  hook stop
 #     govern run SLUG CMD [--bg] [--on RESOURCE] [-- ARGS]  |  resources [NAME]  |  wait SLUG [JOB] [--timeout S]  |  jobs SLUG  |  kill SLUG [JOB]
+#     govern up RESOURCE [--lane SLUG] [--count N]  |  down TAG|ID [--forget]  |  reap [RESOURCE] [--yes]
 #     govern log SLUG [JOB] [--tail N] [--grep RE]
 #     govern prompts [PROCESS]  |  ask SLUG STEP [--file F]... [--var K=V]... [--image PNG]... [--effort E] [--model M]
 #     govern usage [SLUG...] [--since DATE]  |  ctx  |  desk  |  tune  |  publish SLUG
@@ -21,7 +22,7 @@
 #     govern task list [--to X] [--state S] [--project P]  |  show ID  |  inbox [--as NAME] [--all] [--hook]
 #     govern task close ID [--as NAME] [--note T]  |  forward ID --to NAME [--as NAME]
 #     govern task reply ID --kind K --summary S (--body B | --body-file F) [--as NAME]
-#     govern task dispatch [--max N] [--only codex|claude] [--loop --interval S]  |  install-service [--interval S]
+#     govern task dispatch [--max N] [--only codex|claude] [--loop --interval S [--reap-every S]]  |  install-service [--interval S]
 # DESCRIPTION
 #     The control surface an AI uses while it works on a video with the owner. State (stage, decisions,
 #     approvals, commands, files) lives in the lane's govern.json under the workspace's projects folder, so a session starts from
