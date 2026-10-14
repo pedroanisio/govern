@@ -138,12 +138,16 @@ export const decideConfig = (): { shadow: boolean; envFile?: string } => {
 /** `text` with {repo}, {dir} and {paths.NAME} expanded: the one expansion every command and runner argv goes through. */
 export const expandPlaceholders = (text: string, dir: string): string =>
   text.replaceAll("{repo}", repo()).replaceAll("{dir}", dir).replace(/\{paths\.([^{}]+)\}/g, (_, n: string) => pathNamed(n));
-/** A named path from the config's "paths", absolute. */
-export function pathNamed(name: string): string {
+/** A named path from the config's "paths", absolute (relative entries resolve against the config's folder);
+ *  undefined when the config has no such key. Own keys only: "constructor" is not a path just because objects have it. */
+export function pathEntry(name: string): string | undefined {
   const p = config().paths;
   const v = p && Object.hasOwn(p, name) ? p[name] : undefined;
-  if (v === undefined) fail(`${configFile()} has no paths.${name} (a command uses {paths.${name}})`);
-  return resolve(base(), v!);
+  return v === undefined ? undefined : resolve(base(), v);
+}
+/** A named path from the config's "paths", absolute. */
+export function pathNamed(name: string): string {
+  return pathEntry(name) ?? fail(`${configFile()} has no paths.${name} (a command uses {paths.${name}})`);
 }
 /** The workspace's capability grants folder: GOVERN_CAPABILITIES, the config's "capabilities", else beside the lanes;
  *  undefined with no workspace (built-in capabilities only). */

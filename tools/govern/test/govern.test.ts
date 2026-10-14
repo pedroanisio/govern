@@ -1,10 +1,10 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync, writeFileSync, mkdirSync, readdirSync } from "node:fs";
+import { readFileSync, writeFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
-import { makeEnv, govern, childEnv, jsonl, write, reply, fixture, present, GOVERN, HERE } from "./helpers.ts";
+import { makeEnv, govern, childEnv, jsonl, write, reply, setConfig, fixture, present, GOVERN, HERE } from "./helpers.ts";
 import { parseEvents, execArgs, validate } from "../lib/codex.ts";
 
 const state = (e: ReturnType<typeof makeEnv>, slug: string) => JSON.parse(readFileSync(join(e.projects, slug, "govern.json"), "utf8"));
@@ -490,8 +490,10 @@ test("manual prints the skill", () => {
 
 test("the shipped prompts all render with a brief and their schemas compile", () => {
   const { e, slug } = video();
-  mkdirSync(join(e.root, "pals-notes-channel", "writing"), { recursive: true });
-  for (const f of ["pals-notes-channel/writing/SCRIPT-STYLE-GUIDE.md", "var/media-business/channels/palsnotes/workflow/script/post-validation/en-US-writing.md", "var/media-business/channels/palsnotes/workflow/script/post-validation/pt-BR-writing.md"]) write(join(e.root, f), "rules");
+  // the guides the video prompts include, named in the workspace config's paths (MANUAL.md, "Steps that go to Codex")
+  const guides = { scriptStyleGuide: "guides/style.md", enUsWritingGuide: "guides/en-US.md", ptBrWritingGuide: "guides/pt-BR.md" };
+  for (const f of Object.values(guides)) write(join(e.root, f), "rules");
+  setConfig(e, { paths: { filmBuild: "film_build.py", ...guides } });
   const steps = govern(e, ["prompts"]).out.split("\n").filter(Boolean).map((l) => l.replace(/\s.*/s, ""));
   // The inventory is prompts/*.md; each has its schemas/<name>.json, and schemas/ holds nothing else but the queue's.
   const shipped = readdirSync(join(HERE, "..", "processes", "video", "prompts")).filter((f) => f.endsWith(".md")).map((f) => f.slice(0, -3)).sort();
@@ -501,7 +503,7 @@ test("the shipped prompts all render with a brief and their schemas compile", ()
   for (const s of steps) {
     const r = govern(e, ["ask", slug, s], { FAKE_CODEX_SCRIPTS: reply(e, `r-${s}`, "{}") });
     assert.equal(r.code, 3, `${s}: ${r.err}`); // {} fails the schema, but the prompt rendered and codex was called
-    assert.doesNotMatch(r.err, /unfilled|include not found/);
+    assert.doesNotMatch(r.err, /unfilled|include/);
   }
 });
 

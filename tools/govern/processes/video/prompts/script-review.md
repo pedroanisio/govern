@@ -8,11 +8,11 @@ You review a PALS Notes script before it is recorded. Judge it as a listener hea
 {{brief}}
 
 The channel's script style guide:
-{{include:pals-notes-channel/writing/SCRIPT-STYLE-GUIDE.md}}
+{{include:paths.scriptStyleGuide}}
 
 The read-aloud checks for this language ({{lang}}): use the en-US list for English and the pt-BR list for Portuguese.
-{{include:var/media-business/channels/palsnotes/workflow/script/post-validation/en-US-writing.md}}
-{{include:var/media-business/channels/palsnotes/workflow/script/post-validation/pt-BR-writing.md}}
+{{include:paths.enUsWritingGuide}}
+{{include:paths.ptBrWritingGuide}}
 
 Script:
 {{files}}

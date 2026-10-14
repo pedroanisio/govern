@@ -9,7 +9,7 @@ Você adapta um roteiro do PALS Notes do inglês para português do Brasil falad
 {{brief}}
 
 Regras de texto (etapa 3 do fluxo):
-{{include:var/media-business/channels/palsnotes/workflow/script/post-validation/pt-BR-writing.md}}
+{{include:paths.ptBrWritingGuide}}
 
 Também:
 - Mantenha cada número, unidade e afirmação exatamente como no original; não acrescente nem tire fatos.

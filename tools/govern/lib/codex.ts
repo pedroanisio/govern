@@ -5,11 +5,11 @@
 // One-shot Codex steps: prompt template → `codex exec --json --output-schema` → verified JSON.
 import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync, mkdirSync, writeFileSync, globSync } from "node:fs";
-import { join, dirname, resolve } from "node:path";
+import { join, dirname, resolve, relative } from "node:path";
 import { fail, stamp, sha256, GovernError } from "./util.ts";
 import { emptyRecord } from "./shape.ts";
 import { type Project, projectDir, governDir, appendLedger, brief } from "./project.ts";
-import { repo, promptsDir } from "./workspace.ts";
+import { repo, promptsDir, pathEntry, configFile } from "./workspace.ts";
 import { getProcess, processName } from "./process.ts";
 import { loadRules, applyRules } from "./rules.ts";
 
@@ -93,7 +93,8 @@ export function readPrompt(name: string, dirs: string[]): PromptFile {
 
 export const MAX_INLINE = Number(process.env.GOVERN_MAX_INLINE ?? 60000);
 
-/** Fill {{brief}}, {{files}}, {{lang}}, {{kind}}, {{title}}, {{include:repo/path}}, {{var.NAME}} (required) and {{opt.NAME}} (optional). */
+/** Fill {{brief}}, {{files}}, {{lang}}, {{kind}}, {{title}}, {{include:paths.KEY}} (a file the workspace config's "paths"
+ *  names), {{include:repo/path}} (a file inside the workspace), {{var.NAME}} (required) and {{opt.NAME}} (optional). */
 export function render(pf: PromptFile, p: Project, files: string[], vars: Record<string, string>): string {
   let total = 0;
   const blocks = files.map((f) => {
@@ -110,6 +111,14 @@ export function render(pf: PromptFile, p: Project, files: string[], vars: Record
     if (key === "lang") return p.lang;
     if (key === "kind") return p.kind;
     if (key === "title") return p.title;
+    if (key.startsWith("include:paths.")) {
+      // a file the workspace names in its config: the prompt stays portable, the workspace says where its guide lives
+      const name = key.slice("include:paths.".length);
+      const f = pathEntry(name);
+      if (f === undefined) fail(`prompt ${pf.name}: include paths.${name}: no such key in ${relative(repo(), configFile())} paths`);
+      if (!existsSync(f!)) fail(`prompt ${pf.name}: include paths.${name}: file not found: ${f}`);
+      return readFileSync(f!, "utf8").replace(/^---\n[\s\S]*?\n---\n/, "");
+    }
     if (key.startsWith("include:")) {
       const f = resolve(repo(), key.slice(8));
       if (!f.startsWith(repo() + "/") || !existsSync(f)) fail(`prompt ${pf.name}: include not found: ${key.slice(8)}`);

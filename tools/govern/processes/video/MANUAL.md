@@ -4,7 +4,7 @@ disclaimer:
     No information within this document should be taken for granted.
     Any statement or premise not backed by a real logical definition
     or verifiable reference may be invalid, erroneous, or a hallucination.
-  generated_by: "Claude Sonnet 5.5 via Claude Code"
+  generated_by: "Claude Sonnet 5.5 via Claude Code; revised by Claude Opus 5.5 via Claude Code"
   date: "2026-10-14"
 ---
 
@@ -63,6 +63,24 @@ These steps run as one verified Codex call each, not as chat work in this sessio
 - Exit 3 means it failed verification. Say so; don't patch the output by hand and present it as verified.
 - Present the result in a few lines, and give the owner the JSON path for the full text.
 - Images can be added with `--image sheet.png`.
+
+Two steps include the channel's writing guides. The prompts name them by key, `{{include:paths.KEY}}`, and the workspace's govern.config.json maps each key under `paths` to its file (relative to the config's folder, or absolute). A missing key or a missing file stops the step before any Codex call.
+
+| Key | File | Used by |
+|---|---|---|
+| `scriptStyleGuide` | the channel's script style guide | script-review |
+| `enUsWritingGuide` | the en-US read-aloud checks | script-review |
+| `ptBrWritingGuide` | the pt-BR read-aloud checks | script-review, ptbr |
+
+For example, beside `filmBuild`:
+
+```json
+"scriptStyleGuide": "pals-notes-channel/writing/SCRIPT-STYLE-GUIDE.md",
+"enUsWritingGuide": "var/media-business/channels/palsnotes/workflow/script/post-validation/en-US-writing.md",
+"ptBrWritingGuide": "var/media-business/channels/palsnotes/workflow/script/post-validation/pt-BR-writing.md"
+```
+
+A workspace prompt can still include a file inside the workspace by path, `{{include:docs/guide.md}}`.
 
 ## The owner's gates
 
