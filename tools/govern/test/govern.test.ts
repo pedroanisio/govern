@@ -313,6 +313,34 @@ test("work: both segment entries name the manual in force (skillSha of tools/gov
   assert.equal(opened.skillSha, skill);
 });
 
+test("work and done: grok is a third engine, detected from its shell markers, opened with a session id and the first prompt", () => {
+  const { e, slug } = video();
+  const bin = join(e.root, "bin");
+  write(join(bin, "grok"), `#!/bin/sh\nprintf '%s\\n' "$PWD" "$@" > "${join(e.root, "grok-open.txt")}"\nexit 0\n`);
+  spawnSync("chmod", ["755", join(bin, "grok")]);
+  // detected from the markers a Grok shell exports
+  assert.equal(govern(e, ["work", slug, "script"], { GROK_AGENT: "grok", GROK_SESSION_ID: "gs-1" }).code, 0);
+  assert.equal(govern(e, ["done", slug], { GROK_AGENT: "grok", GROK_SESSION_ID: "gs-1" }).code, 0);
+  const [w1, d1] = ledger(e, slug).filter((x) => x.kind === "work" || x.kind === "done").slice(-2);
+  assert.deepEqual([w1.engine, w1.session, d1.engine, d1.session], ["grok", "gs-1", "grok", "gs-1"]);
+  // a Claude session wins over a grok marker; the flag wins over both
+  assert.equal(govern(e, ["work", slug, "script"], { CLAUDE_CODE_SESSION_ID: "c-1", GROK_AGENT: "grok" }).code, 0);
+  assert.equal(ledger(e, slug).filter((x) => x.kind === "work").pop().engine, "claude");
+  assert.equal(govern(e, ["work", slug, "script", "--engine", "codex"], { GROK_AGENT: "grok" }).code, 0);
+  assert.equal(ledger(e, slug).filter((x) => x.kind === "work").pop().engine, "codex");
+  // --open: grok gets --session-id <uuid> and the first prompt, in the repo
+  const o = govern(e, ["work", slug, "script", "--engine", "grok", "--open"], { PATH: `${bin}:${process.env.PATH}` });
+  assert.equal(o.code, 0, o.err);
+  const opened = ledger(e, slug).filter((x) => x.kind === "work").pop();
+  assert.equal(opened.engine, "grok");
+  assert.match(opened.session, /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
+  const argv = readFileSync(join(e.root, "grok-open.txt"), "utf8").split("\n");
+  assert.deepEqual(argv.slice(1, 3), ["--session-id", opened.session]);
+  assert.match(argv[3] ?? "", /govern brief /);
+  assert.equal(ledger(e, slug).pop().kind, "done");
+  assert.match(govern(e, ["work", slug, "script", "--engine", "gemini"]).err, /--engine must be claude, codex or grok/);
+});
+
 test("ask: unfilled required placeholders and unknown steps are refused before calling codex", () => {
   const { e, slug } = video();
   assert.match(govern(e, ["ask", slug, "nope"]).err, /no prompt "nope"/);

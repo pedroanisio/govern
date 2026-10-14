@@ -46,11 +46,17 @@ function ctxFooter(): void {
   if (c && c.ctx > CTX_WARN) out(`⚠ this session reads ${kTok(c.ctx)} per call (limit ${kTok(CTX_WARN)}): ${CTX_ADVICE}.`);
 }
 
-function engineOf(a: Args): "claude" | "codex" {
-  const e = opt(a, "engine") ?? (process.env.CLAUDE_CODE_SESSION_ID ? "claude" : "codex");
-  if (e !== "claude" && e !== "codex") fail("--engine must be claude or codex");
-  return e as "claude" | "codex";
+type Engine = "claude" | "codex" | "grok";
+/** The engine of a work segment: --engine, else the session running govern (Claude Code by CLAUDE_CODE_SESSION_ID, Grok
+ *  by the GROK_AGENT / GROK_SESSION_ID its shells export), else codex. */
+function engineOf(a: Args): Engine {
+  const e = opt(a, "engine") ?? (process.env.CLAUDE_CODE_SESSION_ID ? "claude" : process.env.GROK_AGENT || process.env.GROK_SESSION_ID ? "grok" : "codex");
+  if (e !== "claude" && e !== "codex" && e !== "grok") fail("--engine must be claude, codex or grok");
+  return e as Engine;
 }
+/** The id of the running session of `engine` (what the usage report finds its transcript by); codex has none. */
+const sessionOf = (engine: Engine): string | undefined =>
+  engine === "claude" ? process.env.CLAUDE_CODE_SESSION_ID : engine === "grok" ? process.env.GROK_SESSION_ID : undefined;
 
 /** Whether the process lets only a passing check move the lane past `stage` (no note, no skip). */
 const requiresCheck = (p: Project, stage: string) => processOf(p).stages.find((s) => s.name === stage)?.requires === "check";
@@ -83,16 +89,16 @@ function cmdWork(a: Args): void {
   save(p);
   const engine = engineOf(a);
   if (flag(a, "open")) {
-    const session = engine === "claude" ? randomUUID() : undefined;
+    const session = engine === "codex" ? undefined : randomUUID();
     appendLedger(p.slug, { kind: "work", stage, engine, session, skillSha: sha256File(SKILL) });
     const first = `Video work session (registered by govern work ${p.slug} ${stage}). Use the govern skill: run \`govern brief ${p.slug}\` first and work from it; do not explore the repository. Then ask me what we change.`;
-    const args = engine === "claude" ? ["--session-id", session!, first] : ["-C", repo(), first];
+    const args = engine === "codex" ? ["-C", repo(), first] : ["--session-id", session!, first];
     const r = spawnSync(engine, args, { cwd: repo(), stdio: "inherit" });
     appendLedger(p.slug, { kind: "done", engine, session });
     process.exitCode = r.status ?? 0;
     return;
   }
-  appendLedger(p.slug, { kind: "work", stage, engine, session: engine === "claude" ? process.env.CLAUDE_CODE_SESSION_ID : undefined, skillSha: sha256File(SKILL) });
+  appendLedger(p.slug, { kind: "work", stage, engine, session: sessionOf(engine), skillSha: sha256File(SKILL) });
   out(brief(p));
 }
 
@@ -592,7 +598,7 @@ function serviceUnit(bin: string, interval: string, reapEvery: number | undefine
   const env: [string, string][] = [["PATH", process.env.PATH ?? ""], ["GOVERN_REPO", repo()], ["GOVERN_QUEUE", queue.QUEUE()]];
   for (const k of ["GOVERN_STATE", "GOVERN_PROJECTS"]) if (process.env[k]) env.push([k, process.env[k]!]);
   return [
-    "[Unit]", "Description=govern task dispatcher (one fresh codex/claude session per queued message)", "",
+    "[Unit]", "Description=govern task dispatcher (one fresh codex/claude/grok session per queued message)", "",
     "[Service]", `WorkingDirectory=${repo().replace(/%/g, "%%")}`,
     `ExecStart=${unitWord(bin, true)} task dispatch --loop --interval ${interval}${reapEvery ? ` --reap-every ${reapEvery}` : ""}`,
     ...env.map(([k, v]) => `Environment=${unitWord(`${k}=${v}`)}`), "Restart=on-failure", "RestartSec=30", "",
@@ -630,7 +636,7 @@ const SECTIONS: readonly (readonly [title: string, notes?: readonly string[]])[]
   ["measure"],
   ["this help and the operating manual"],
   ["task queue between agents (one fresh headless session per message; nothing runs while the queue waits)", [
-    "(sessions are not woken by the queue: tell them \"govern task show <id>\" with SendMessage; the dispatcher runs codex, claude",
+    "(sessions are not woken by the queue: tell them \"govern task show <id>\" with SendMessage; the dispatcher runs codex, claude, grok",
     " and the runners named in the queue's config.json, and stops a thread after maxRuns dispatched runs)"]],
   ["the owner's screen"],
   ["publish (prints the commands; the publish guard hook must see them)"],
@@ -652,7 +658,7 @@ export const COMMANDS: readonly Cmd[] = [
       out(brief(p));
     } },
   { name: "work", section: 0, flags: { value: ["engine"], bool: ["open"] },
-    lines: [["<slug> <stage> [--engine claude|codex] [--open]", "start a work segment, print the brief"]], run: cmdWork },
+    lines: [["<slug> <stage> [--engine claude|codex|grok] [--open]", "start a work segment, print the brief"]], run: cmdWork },
   { name: "brief", section: 0, lines: [["<slug>", "the compact context (stage, exit condition, approvals, files, decisions)"]], run: (a) => out(brief(load(a._[1]))) },
   { name: "status", section: 0, lines: [["[<slug>]", "one line per lane, or the brief of one"]], run: cmdStatus },
   { name: "note", section: 0, lines: [["<slug> \"<decision>\"", "record a decision (state lives in files, not in the chat)"]],
@@ -666,11 +672,11 @@ export const COMMANDS: readonly Cmd[] = [
       out(`${p.slug}: noted (${p.notes.length})`);
     } },
   { name: "approve", section: 0, flags: { value: ["quote", "by"] },
-    lines: [["<slug> <gate> --quote \"<the owner's words>\" [--by NAME]", "(gates come from the lane's process; --by: the gate's decision owner,\nrequired when the process names one other than owner. In a Claude session the quote\nmust be in a message the person typed; a Codex session is refused)"]], run: cmdApprove },
+    lines: [["<slug> <gate> --quote \"<the owner's words>\" [--by NAME]", "(gates come from the lane's process; --by: the gate's decision owner,\nrequired when the process names one other than owner. In a Claude session the quote\nmust be in a message the person typed; a Codex or Grok session is refused)"]], run: cmdApprove },
   { name: "allow", section: 0, flags: { value: ["extra", "quote", "by"] },
-    lines: [["<allowance> --extra N --quote \"<the decision owner's words>\" [--by NAME]", "raise an allowance's limit by N for its current period (govern.config.json: allowances; govern usage\nlists them). --by: the allowance's decision owner, required when it names one other than owner. The quote must\ncontain N as a number (10 matches 10 and 10.0, not 100) and grants once per allowance and period. In a\nClaude session the quote must be in a message the person typed; a Codex session is refused)"]], run: cmdAllow },
-  { name: "done", section: 0, flags: { value: ["engine"] }, lines: [["<slug> [--engine claude|codex]", "end the current work segment"]],
-    run: (a) => { const p = load(a._[1]); appendLedger(p.slug, { kind: "done", engine: engineOf(a), session: process.env.CLAUDE_CODE_SESSION_ID }); out(`${p.slug}: segment closed`); } },
+    lines: [["<allowance> --extra N --quote \"<the decision owner's words>\" [--by NAME]", "raise an allowance's limit by N for its current period (govern.config.json: allowances; govern usage\nlists them). --by: the allowance's decision owner, required when it names one other than owner. The quote must\ncontain N as a number (10 matches 10 and 10.0, not 100) and grants once per allowance and period. In a\nClaude session the quote must be in a message the person typed; a Codex or Grok session is refused)"]], run: cmdAllow },
+  { name: "done", section: 0, flags: { value: ["engine"] }, lines: [["<slug> [--engine claude|codex|grok]", "end the current work segment"]],
+    run: (a) => { const p = load(a._[1]); appendLedger(p.slug, { kind: "done", engine: engineOf(a), session: sessionOf(engineOf(a)) }); out(`${p.slug}: segment closed`); } },
   { name: "cmd", section: 0, flags: { value: ["timeout", "rm", "resource"] },
     lines: [["<slug> [<name> [--timeout S] [--resource R] -- <argv…>] | --rm <name>", "list or set the lane's commands (S: foreground limit, default 1800; R: the resource it runs on (checked now), so\nrun needs no --on; ledgered; redefining or removing a stage's check command is flagged)"]],
     run: cmdCmd },
@@ -772,7 +778,7 @@ export const COMMANDS: readonly Cmd[] = [
   { name: "task", section: 6, noSub: TASK_SUBS,
     subs: {
       send: { flags: { value: ["to", "project", "task", "kind", "summary", "body", "body-file", "reply-to", "from", "profile", "lane", "estimate-usd"], multi: ["file"], bool: ["write"] },
-        lines: [["--to auto|codex|claude|owner|<session> --project P --task T --kind TASK --summary S (--body B | --body-file F)\n" +
+        lines: [["--to auto|codex|claude|grok|owner|<session> --project P --task T --kind TASK --summary S (--body B | --body-file F)\n" +
           "[--file REPO-RELATIVE-PATH]… [--reply-to ID] [--write | --profile P] [--lane SLUG] [--from NAME] [--estimate-usd N]", "--to must be a runner, a profile, owner or a LIVE session name;\n--profile P (govern caps) seals the run to P's capabilities; --lane names the lane whose gate authorises a spend, publish or push profile;\n--estimate-usd N: what the run is expected to cost, reserved against a matching allowance (govern allow)"]], run: cmdTask },
       list: { flags: { value: ["to", "state", "project"] }, lines: [["[--to X] [--state open|claimed|done|failed] [--project P]", "the queue's messages; a dispatcher reply ends with [checked], [unverified] or [shape only] (content check, declared per profile, in queue config.json checks, or built in for REVIEW)"]], run: cmdTask },
       show: { lines: [["<id>", "a message and its thread; a dispatcher reply also shows its check (checked, UNVERIFIED with the reason, or shape only)"]], run: cmdTask },
@@ -783,7 +789,7 @@ export const COMMANDS: readonly Cmd[] = [
       reply: { flags: { value: ["kind", "summary", "body", "body-file", "as"] },
         lines: [["<id> --kind K --summary S (--body B | --body-file F) [--as NAME]", "answer the sender, then close <id>"]], run: cmdTask },
       dispatch: { flags: { value: ["max", "only", "interval", "reap-every"], bool: ["loop"] },
-        lines: [["[--max N] [--only codex|claude] [--loop --interval 30 [--reap-every S]]", "run the open messages addressed to runners; --reap-every lists each resource's tagged instances\nevery S seconds into state for the desk (off by default; lists only, never stops a machine)"]], run: cmdTask },
+        lines: [["[--max N] [--only codex|claude|grok] [--loop --interval 30 [--reap-every S]]", "run the open messages addressed to runners; --reap-every lists each resource's tagged instances\nevery S seconds into state for the desk (off by default; lists only, never stops a machine)"]], run: cmdTask },
       "install-service": { flags: { value: ["interval", "reap-every"] }, lines: [["[--interval 30] [--reap-every S]", "a user systemd service running dispatch --loop"]], run: cmdTask },
     } },
 
