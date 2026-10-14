@@ -1,0 +1,4 @@
+# jsonschema replaces a partial handwritten validator; Pillow decodes the PNG and
+# makes review reductions. Install sr-core[validate] from the operator's checkout.
+jsonschema>=4.23,<5
+Pillow>=10,<13

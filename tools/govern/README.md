@@ -25,7 +25,7 @@ starts from `govern brief` instead of re-reading history.
 - each stage's exit condition and the command that checks it;
 - the owner's gates.
 
-The built-in processes are in [processes/](processes/): video, ops and dev. A
+The built-in processes are in [processes/](processes/): video, ops, dev and infographic. A
 workspace can add its own or override these.
 
 **Moving a lane.** `govern advance` moves a lane on only when all of these hold:
@@ -58,6 +58,10 @@ launcher. `tsc` is a dev dependency used only for type checking.
 
 `make lint` type-checks it, and `make test` runs the suites in [test/](test/).
 Both need `npm ci --ignore-scripts --prefix tools/govern`, or `make ts-deps`.
+
+The **infographic** process produces one sourced 4K frame through intake, design,
+production, visual review, owner approval and reproducible delivery. See its
+[manual](processes/infographic/MANUAL.md) for configuration and operator input.
 
 Documentation:
 

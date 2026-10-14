@@ -1,0 +1,161 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://govern.local/infographic/review/1.0.0",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "version",
+    "candidateSha256",
+    "reviewer",
+    "verdict",
+    "inspected",
+    "criteria",
+    "issues"
+  ],
+  "properties": {
+    "version": {
+      "type": "integer",
+      "enum": [
+        1
+      ]
+    },
+    "candidateSha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "reviewer": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200
+    },
+    "verdict": {
+      "type": "string",
+      "enum": [
+        "ready",
+        "revise"
+      ]
+    },
+    "inspected": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "full",
+        "half",
+        "thumbnail"
+      ],
+      "properties": {
+        "full": {
+          "type": "boolean"
+        },
+        "half": {
+          "type": "boolean"
+        },
+        "thumbnail": {
+          "type": "boolean"
+        }
+      }
+    },
+    "criteria": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "fidelity",
+        "narrative",
+        "originality",
+        "finish"
+      ],
+      "properties": {
+        "fidelity": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "score",
+            "evidence"
+          ],
+          "properties": {
+            "score": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 10
+            },
+            "evidence": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 2000
+            }
+          }
+        },
+        "narrative": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "score",
+            "evidence"
+          ],
+          "properties": {
+            "score": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 10
+            },
+            "evidence": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 2000
+            }
+          }
+        },
+        "originality": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "score",
+            "evidence"
+          ],
+          "properties": {
+            "score": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 10
+            },
+            "evidence": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 2000
+            }
+          }
+        },
+        "finish": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "score",
+            "evidence"
+          ],
+          "properties": {
+            "score": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 10
+            },
+            "evidence": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 2000
+            }
+          }
+        }
+      }
+    },
+    "issues": {
+      "type": "array",
+      "minItems": 0,
+      "maxItems": 30,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 1800
+      }
+    }
+  }
+}
