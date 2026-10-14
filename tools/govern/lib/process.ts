@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 import { fail } from "./util.ts";
 import { obj, arr, str, name, literal, record, posInt, check, reject, keyPath, type Shape } from "./shape.ts";
 import { NAME_CHARS } from "./resources.ts";
+import { ROUTE, JOIN, HUMAN, FIELD, PEOPLE, POLICY, validateBusinessProcess, type Route, type Join, type Human, type Field, type Person, type Policy } from './business-schema.ts';
 import { processesDir } from "./workspace.ts";
 import type { Project } from "./project.ts";
 
@@ -14,9 +15,9 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 const BUILTIN = resolve(HERE, "..", "processes");
 
 /** `requires: "check"`: only a passing check moves a lane past the stage, never a note, never a skip. */
-export interface StageDef { name: string; exit?: string; check?: string; requires?: "check" }
+export interface StageDef { name: string; exit?: string; check?: string; requires?: "check"; next?: Route[]; join?: Join; human?: Human; requiredFields?: string[] }
 /** `owner`: who decides the gate (default "owner"); `govern approve --by` must name them. */
-export interface GateDef { name: string; stage?: string; needs?: string[]; message?: string; owner?: string }
+export interface GateDef { name: string; stage?: string; needs?: string[]; message?: string; owner?: string; policy?: Policy }
 /** What a new lane of the process starts with: commands and named files, each group optionally only when a file already
  *  exists in the lane's folder (`ifFile`). A command's argv may use {repo}, {dir}, {python} and {paths.NAME}. */
 export interface SetupGroup { ifFile?: string; commands?: Record<string, string[]>; files?: Record<string, string> }
@@ -43,6 +44,8 @@ export interface Process {
   manual?: string;
   /** The process's prompts (`govern ask`): a folder relative to the process file; each prompt's schema and rules are beside it. */
   prompts?: string;
+  fields?: Record<string, Field>;
+  people?: Record<string, Person>;
   setup?: SetupGroup[];
   recipes?: Record<string, Recipe>;
   /** The folder of the process file (not a key of it): what manual and prompts are relative to. */
@@ -51,8 +54,8 @@ export interface Process {
 
 export const extraDir = (): string | undefined => processesDir();
 
-const STAGE = obj({ name }, { exit: str, check: name, requires: literal("check") });
-const GATE = obj({ name }, { stage: name, needs: arr(name), message: str, owner: name });
+const STAGE = obj({ name }, { exit: str, check: name, requires: literal("check"), next: arr(ROUTE), join: JOIN, human: HUMAN, requiredFields: arr(name) });
+const GATE = obj({ name }, { stage: name, needs: arr(name), message: str, owner: name, policy: POLICY });
 /** The recipe placeholders each step may use: a name here in a step that cannot have it is refused, not left as text. */
 const SLICE_VARS = ["pieces", "out", "tag", "piece", "id"];
 const STEP_VARS: Record<string, string[]> = { prepare: ["pieces", "out"], split: ["pieces", "out", "tag"], piece: SLICE_VARS, join: ["pieces", "out", "tag"], verify: ["pieces", "out", "tag"] };
@@ -87,7 +90,7 @@ const RECIPES: Shape<Record<string, Recipe>> = (v, p) => {
 };
 const PROCESS = obj({ version: literal(1), name, stages: arr(STAGE, { nonEmpty: true }) },
   { description: str, kinds: arr(name, { nonEmpty: true }), exitFrom: literal("workflow"), gates: arr(GATE), manual: str, prompts: str,
-    setup: arr(obj({}, { ifFile: str, commands: record(arr(str)), files: record(str) })), recipes: RECIPES });
+    fields: record(FIELD), people: PEOPLE, setup: arr(obj({}, { ifFile: str, commands: record(arr(str)), files: record(str) })), recipes: RECIPES });
 
 /** Names unique within a list: the second one is refused at its path. */
 function unique(items: { name: string }[], what: string, at: string): void {
@@ -131,7 +134,7 @@ export function parseProcess(file: string, text: string): Process {
   if (Array.isArray(st)) for (const s of st as { name?: unknown; requires?: unknown }[]) {
     if (s && typeof s === "object" && "requires" in s && s.requires !== "check") fail(`${file}: stage ${String(s.name)}: requires must be "check" (got ${JSON.stringify(s.requires)})`);
   }
-  const p = check(file, raw, (v, at) => { const x = PROCESS(v, at); resolveRefs(x); return x; });
+  const p = check(file, raw, (v, at) => { const x = PROCESS(v, at); resolveRefs(x); validateBusinessProcess({ ...x, gates: x.gates ?? [] }); return x; });
   return { ...p, description: p.description ?? "", gates: p.gates ?? [], dir: dirname(file) };
 }
 
@@ -158,16 +161,22 @@ export const processName = (p: Pick<Project, "process" | "kind">) => p.process ?
 export const processOf = (p: Pick<Project, "process" | "kind">) => getProcess(processName(p));
 
 export function listLine(p: Process): string {
-  return `${p.name.padEnd(8)} ${p.description} · ${p.stages.map((s) => s.name).join(" → ")}`;
+  return `${p.name.padEnd(8)} ${p.description} · ${p.stages.some(s => s.next !== undefined) ? "graph: " + p.stages.map(s => s.name).join(", ") : p.stages.map((s) => s.name).join(" → ")}`;
 }
 
 export function show(p: Process): string {
   const L = [`${p.name}: ${p.description}`];
   p.stages.forEach((s, i) => {
     const bits = [s.exit ? `exit: ${s.exit}` : p.exitFrom === "workflow" ? "exit: from the workflow document" : "", s.check ? `check: command "${s.check}"` : "",
-      s.requires ? "requires a check" : ""].filter(Boolean);
+      s.requires ? "requires a check" : "",
+      s.next !== undefined ? `next: ${s.next.length ? s.next.map(r => `${r.to.join(' + ')}${r.when ? ` when ${JSON.stringify(r.when)}` : ' (fallback)'}`).join('; ') : '(terminal)'}` : '',
+      s.join ? `join ${s.join.mode}: ${s.join.stages.join(', ')}` : '',
+      s.human ? `human: ${s.human.assignee ?? `role ${s.human.role}`}` : '',
+      s.requiredFields?.length ? `required fields: ${s.requiredFields.join(', ')}` : ''].filter(Boolean);
     L.push(`  ${i + 1} ${s.name.padEnd(14)} ${bits.join("  ")}`.trimEnd());
   });
   L.push(p.gates.length ? `gates: ${p.gates.map((g) => `${g.name}${g.stage ? ` (holds ${g.stage})` : ""}${g.needs?.length ? ` after ${g.needs.join(", ")}` : ""}`).join(" · ")}` : "gates: none");
+  for (const g of p.gates) if (g.policy) L.push(`  policy ${g.name}: ${g.policy.quorum} of ${g.policy.people?.join(', ') ?? `role ${g.policy.role}`}${g.policy.excludeFields?.length ? `; excludes ${g.policy.excludeFields.join(', ')}` : ''}${g.policy.expiresSeconds ? `; expires after ${g.policy.expiresSeconds}s` : ''}${g.policy.rejectTo ? `; reject to ${g.policy.rejectTo}` : ''}`);
+  if (p.fields) L.push(`fields: ${Object.entries(p.fields).map(([k,f])=>`${k} (${f.type}${f.required ? ', required' : ''})`).join(', ')}`);
   return L.join("\n");
 }

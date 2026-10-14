@@ -1,3 +1,4 @@
+import { gateApproved } from './business.ts';
 // The owner's one screen: every lane, the owner's inbox, the queue and today's tokens. Reads files only: no model,
 // no transcript scan (that is `govern usage`).
 import { existsSync, readFileSync } from "node:fs";
@@ -41,11 +42,11 @@ export function desk(): { text: string; failed: number; lanes: number } {
     const lastWork = [...led].reverse().find((e) => e.kind === "work" || e.kind === "done");
     const open = lastWork?.kind === "work" ? `● ${lastWork.engine} ${ago(lastWork.t)}` : "";
     const gates = processOf(p).gates;
-    const gate = !gates.length ? "" : (() => { const g = gates.find((x) => !p.approvals[x.name]); return g ? `needs ${g.name}` : "all approved"; })();
+    const gate = !gates.length ? "" : (() => { const g = gates.find((x) => !gateApproved(p, x)); return g ? `needs ${g.name}` : "all approved"; })();
     const note = p.notes.at(-1);
     const list = stagesOf(p);
     const state = laneState(p);
-    return `  ${s.padEnd(40)} ${p.kind.padEnd(5)} ${`${list.indexOf(p.stage) + 1}/${list.length} ${p.stage}`.padEnd(16)} ${gate.padEnd(13)} ${open.padEnd(14)} ${state ? `${state} · ` : ""}${note ? `${ago(note.at)}: ${clip(note.text, 60)}` : ""}`.trimEnd();
+    return `  ${s.padEnd(40)} ${p.kind.padEnd(5)} ${`${list.indexOf(p.stage) + 1}/${list.length} ${p.stage}`.padEnd(16)} ${gate.padEnd(13)} ${open.padEnd(14)} ${p.workflow ? `active ${p.workflow.active.join(", ")} · ` : ""}${state ? `${state} · ` : ""}${note ? `${ago(note.at)}: ${clip(note.text, 60)}` : ""}`.trimEnd();
   }, "  ");
   L.push(...rows);
   // ---- owner inbox

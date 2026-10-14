@@ -1,3 +1,4 @@
+import { gateApproved } from './business.ts';
 // Capabilities and profiles: what a queued agent may do, named once, and the sealed command line each engine gets for it.
 // A capability is one grant (Claude permission patterns, the Codex equivalent, a side-effect class, secret NAMES only). A
 // profile is a list of capabilities plus an engine and model. Built-ins live in tools/govern/capabilities/*.json; a
@@ -233,7 +234,7 @@ export function guardProblem(reg: Registry, p: Profile, lane: string | undefined
     if (!existsSync(join(projectsDir(), lane, "govern.json"))) return laneGiven ? `--lane ${lane}: no such lane (${what})` : `it needs a lane: pass --lane <slug> for a lane whose "${gate}" gate is approved (${what})`;
     const l = load(lane);
     if (!processOf(l).gates.some((g) => g.name === gate)) return `lane ${lane}'s process "${processOf(l).name}" has no "${gate}" gate, so it cannot authorise profile ${p.name} (${what})`;
-    if (!l.approvals[gate]) return `lane ${lane} has not approved its "${gate}" gate (${what}; govern approve ${lane} ${gate} --quote "…")`;
+    if (!gateApproved(l, processOf(l).gates.find(g=>g.name===gate)!)) return `lane ${lane} has not approved its "${gate}" gate (${what}; govern approve ${lane} ${gate} --quote "…")`;
   }
   return undefined;
 }
