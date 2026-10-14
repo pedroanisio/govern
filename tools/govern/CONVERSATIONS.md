@@ -11,13 +11,19 @@ govern conversation run support --bg
 govern conversation events support --follow --timeout 30
 govern conversation show support
 govern conversation history support
+govern conversation list
+govern conversation close support
 ```
 
 `--lane` is optional. A bound conversation uses the case's folder as the execution directory and records usage in its ledger. An unbound conversation uses the workspace root. `create` defaults to `codex-read`, a 1,800-second turn timeout, and a 64,000-character serialized message-context budget. A configured profile's hash is pinned at creation; changing its permission/model definition requires a new conversation. Capability gates and profile self-tests are revalidated before each execution.
 
-`send` persists a user message and queued run before acknowledging it. A repeated `--request-id` with the same text and estimate returns the original run; conflicting reuse fails. `--message-file` accepts UTF-8 files. Input is limited to 256 KiB. `--run` executes after submission; `--run --bg` detaches. Ordinary `run` streams NDJSON events and drains queued turns; `--once` executes one, including with `--bg`. Workers exit when there is no queued work; submit/run again to wake them. They are not a permanently running scheduler.
+A conversation id is 1 to 80 characters of lowercase letters, digits, dots and dashes, starting with a letter or digit. `--timeout` takes whole seconds from 1 to 86,400, and `--max-context-chars` an integer from 1 to 1,000,000.
 
-`show`, `history`, and non-following `events` output JSON. `run` and following `events` output NDJSON. `send --run` first emits its acceptance receipt, then progress events. Follow events with `--after <sequence>` to reconnect without reinterpreting old events. Sequence numbers increase per conversation; `--follow` has a bounded timeout, default 30 seconds.
+`list` prints a JSON array with one entry per conversation in the workspace, `{id, title, closedAt, runs}`, where `runs` is the number of runs; like `show`, it first reconciles a dead worker. `close` marks an idle conversation closed and keeps its history readable. It refuses while any run is queued or running (cancel or finish them first), closing a closed conversation again changes nothing, and `send` to a closed conversation fails.
+
+`send` persists a user message and queued run before acknowledging it. A repeated `--request-id` with the same text and estimate returns the original run; conflicting reuse fails. `--message-file` accepts UTF-8 files. A message must be nonempty and at most 256 KiB in UTF-8. `--mode` is `queue` or `interrupt`, `--estimate-usd` a nonnegative number, and `--request-id` 1 to 256 characters. `--run` executes after submission; `--run --bg` detaches. Ordinary `run` streams NDJSON events and drains queued turns; `--once` executes one, including with `--bg`. Workers exit when there is no queued work; submit/run again to wake them. They are not a permanently running scheduler.
+
+`show`, `history`, and non-following `events` output JSON. `run` and following `events` output NDJSON. `send --run` first emits its acceptance receipt, then progress events. Follow events with `--after <sequence>` (a nonnegative integer) to reconnect without reinterpreting old events. Sequence numbers increase per conversation; `--follow` has a bounded timeout, whole seconds from 1, default 30.
 
 ## Ordering and follow-ups
 
@@ -37,7 +43,7 @@ Runs are `queued`, `running`, `completed`, `failed`, `cancelled` or `interrupted
 - Failure, timeout, malformed output, unfinished tools, output-check rejection, or a missing terminal result retains evidence and records failure. Partial output is never converted into a successful reply.
 - Replies without a declared content check are marked `transport-only`; that does not verify factual accuracy, approve a decision, or finish business work.
 
-Stdout plus stderr is capped at 4 MiB per turn. Stderr diagnostics are bounded. Each state change uses an atomic file replacement with file/directory synchronization under a short per-conversation transaction lock. No lock is held while waiting for a model. Persisted identities and event sequences are validated before use.
+Stdout plus stderr is capped at 4 MiB per turn. Only the last 4,096 characters of stderr are kept as diagnostics. Each state change uses an atomic file replacement with file/directory synchronization under a short per-conversation transaction lock. No lock is held while waiting for a model. Persisted identities and event sequences are validated before use.
 
 ## Cancellation, interruption and restart
 
@@ -67,6 +73,8 @@ If assembled context exceeds `--max-context-chars`, the turn fails before dispat
 ## Native adapters and a custom protocol
 
 `--profile` uses existing Claude, Codex or Grok profiles and their tool permissions, sandbox configuration and sealing limitations. Claude stream-json and Codex JSON events expose progress as emitted by the harness. Grok's current JSON interface yields a buffered final result. Provider completion is validated independently from process exit; each turn runs against Govern-owned context rather than resuming hidden provider history.
+
+Profiles run the `codex`, `claude` and `grok` executables found on `PATH`. Set `GOVERN_CODEX_BIN`, `GOVERN_CLAUDE_BIN` or `GOVERN_GROK_BIN` to run a different executable for that engine. A background worker (`--bg`) inherits the environment of the command that starts it, so set the variable there. Custom adapters run their configured `argv` and ignore these variables.
 
 A workspace can define a trusted custom adapter in `govern.config.json` or `.govern/config.json`:
 
