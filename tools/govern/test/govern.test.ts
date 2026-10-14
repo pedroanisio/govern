@@ -106,16 +106,21 @@ test("run in the foreground prints a summary and returns the command's exit code
 
 test("run --bg returns at once; wait blocks without a model and returns the job's exit", () => {
   const { e, slug } = video();
-  // The job outlasts a loaded machine's node start-up by a wide margin, so "did not wait" is measured against the job's own length.
-  govern(e, ["cmd", slug, "slow", "--", "sh", "-c", "sleep 4; echo finished; exit 3"]);
-  const t0 = Date.now();
-  const r = govern(e, ["run", slug, "slow", "--bg"]);
-  assert.ok(Date.now() - t0 < 3500, "run --bg should not wait for the job");
-  assert.match(r.out, /started in the background/);
-  const w = govern(e, ["wait", slug, "last", "--timeout", "1"]);
-  assert.ok(w.code === 124 || w.code === 3);
-  const w2 = govern(e, ["wait", slug, "--timeout", "20"]);
-  assert.equal(w2.code, 3);
+  // The job cannot finish before the test writes the gate: run --bg returning while it still runs is the proof it did not
+  // wait, however slow the machine. Were it to wait, it would never return, and govern()'s own time limit fails the call.
+  const gate = join(e.root, "gate");
+  govern(e, ["cmd", slug, "slow", "--", "sh", "-c", `while [ ! -f ${gate} ]; do sleep 0.05; done; echo finished; exit 3`]);
+  try {
+    const r = govern(e, ["run", slug, "slow", "--bg"]);
+    assert.equal(r.code, 0, `run --bg should not wait for the job: ${r.err}`);
+    assert.match(r.out, /started in the background/);
+    assert.match(govern(e, ["jobs", slug]).out, /slow running/);
+    const w = govern(e, ["wait", slug, "last", "--timeout", "1"]);
+    assert.equal(w.code, 124, w.out + w.err);
+    assert.match(w.out, /still running after 1s/);
+  } finally { writeFileSync(gate, ""); }
+  const w2 = govern(e, ["wait", slug, "--timeout", "120"]);
+  assert.equal(w2.code, 3, w2.out + w2.err);
   assert.match(w2.out, /finished/);
   assert.match(govern(e, ["jobs", slug]).out, /slow failed exit 3/);
   assert.match(govern(e, ["log", slug, "last", "--grep", "fin"]).out, /^finished$/m);
