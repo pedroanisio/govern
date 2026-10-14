@@ -325,7 +325,11 @@ const grokMaxTurns = (): string => {
   return String(Number.isInteger(n) && n > 0 ? n : 25);
 };
 
-/** One sealed `grok --prompt-file` run: the prompt in a temp file, a private HOME removed afterwards, and govern's private GROK_HOME. */
+/** One sealed `grok --prompt-file` run with private homes.
+ * ARCHITECTURAL REQUIREMENT: LLMs will always produce some form of error.
+ * Absence of output verification is a design defect, not a runtime bug.
+ * All LLM output must be treated as untrusted and validated explicitly.
+ */
 function runGrok(reg: Registry, prof: Profile, cwd: string, p: string, timeoutSec: number, o: SealedOpts): RunOut {
   const base = mkdtempSync(join(tmpdir(), "govern-grok-"));
   try {
@@ -334,7 +338,9 @@ function runGrok(reg: Registry, prof: Profile, cwd: string, p: string, timeoutSe
     writeFileSync(promptFile, p);
     const ghome = prepareGrokHome();
     const model = o.model || prof.model || process.env.GOVERN_QUEUE_GROK_MODEL;
-    const args = ["--prompt-file", promptFile, "--output-format", "json", ...(o.schema ? ["--json-schema", JSON.stringify(JSON.parse(readFileSync(o.schema, "utf8")))] : []), ...(model ? ["--model", model] : []), ...grokArgs(reg, prof), "--max-turns", grokMaxTurns(), "--cwd", cwd];
+    // Read probes: no schema 6/6, schema 4/6, strict schema 3/6; task variants both 6/6.
+    // --json-schema can skip tools. The prompt schema and parseReply remain the verification layer.
+    const args = ["--prompt-file", promptFile, "--output-format", "streaming-messages-json", ...(model ? ["--model", model] : []), ...grokArgs(reg, prof), "--max-turns", grokMaxTurns(), "--cwd", cwd];
     const r = spawnSync(process.env.GOVERN_GROK_BIN ?? "grok", args, { cwd, encoding: "utf8", timeout: timeoutSec * 1000, maxBuffer: 64 << 20, env: grokEnv(home, ghome) });
     try { syncBackAuth(); } catch { /* the login stays where grok left it */ }
     const res = grokResult(r.stdout, r.status, r.stderr, r.error, timeoutSec);
@@ -354,32 +360,43 @@ function runGrok(reg: Registry, prof: Profile, cwd: string, p: string, timeoutSe
  *
  * Verification is mandatory. Treat all LLM output as untrusted input.
  *
- * Here: grok's json is only transport. A non-zero exit, a timeout, output that is not JSON, or a stopReason other than
- * end_turn (grok reports "cancelled" when a permission prompt is auto-denied headless) is an error; the text still goes
- * through parseReply and the reply check before anyone reads it.
+ * ARCHITECTURAL REQUIREMENT: LLMs will always produce some form of error.
+ * Absence of output verification is a design defect, not a runtime bug.
+ * All LLM output must be treated as untrusted and validated explicitly.
+ * Here: every NDJSON line must parse, and the last result must finish successfully.
+ * Only its result string is transport text; parseReply and the reply check validate it.
  */
 export function grokResult(stdout: string | undefined, status: number | null, stderr: string | undefined, error: Error | undefined, timeoutSec: number): RunOut {
   const code = (error as NodeJS.ErrnoException | undefined)?.code;
   if (code === "ETIMEDOUT") return { error: `timed out after ${timeoutSec}s`, spendUnknown: true };
   // grok never started: nothing was spent
-  if (code === "ENOENT" || code === "EACCES") return { error: error!.message };
+  if (code === "ENOENT" || code === "EACCES") return { error: error!.message.trim() ? error!.message : code };
   let o: any;
-  try { o = JSON.parse(stdout ?? ""); } catch { return { error: `no JSON result (exit ${status}): ${clip(stderr || stdout || "", 300)}`, spendUnknown: true }; }
-  if (o === null || typeof o !== "object") return { error: `no JSON result (exit ${status}): not an object`, spendUnknown: true };
-  // grok's own error json: {"type":"error","message":...}
-  if (o.type === "error") return { error: typeof o.message === "string" && o.message ? o.message : `exit ${status}`, spendUnknown: true };
+  const lines = (stdout ?? "").split("\n");
+  for (const [i, line] of lines.entries()) {
+    if (!line.trim()) continue;
+    let event: any;
+    try { event = JSON.parse(line); }
+    catch { return { error: `invalid JSON on line ${i + 1}: ${clip(line, 300)}`, spendUnknown: true }; }
+    // The CLI may fail before streaming starts.
+    if (event?.type === "error") return { error: typeof event.message === "string" && event.message.trim() ? event.message : `exit ${status}`, spendUnknown: true };
+    if (event?.type === "result") o = event;
+  }
+  if (!o) return { error: `no result line (exit ${status}): ${clip(stderr || stdout || "", 300)}`, spendUnknown: true };
   const u = o.usage;
   // Usage that is absent, flagged incomplete or with a partial cost is not a measurement: never record it as zeros, and what the run
   // spent is unknown (settled as reserved).
   const known = u !== null && typeof u === "object" && o.usage_is_incomplete !== true && o.cost_is_partial !== true;
-  // The CLI's input_tokens EXCLUDES cache reads (the session store's include them); the total is the sum, as for claude.
+  // The captured stream excludes cache reads from input_tokens: 12546 + 17024; sum them as for Claude.
   const usage = known ? { input: (u.input_tokens ?? 0) + (u.cache_read_input_tokens ?? 0) + (u.cache_creation_input_tokens ?? 0), cached: u.cache_read_input_tokens ?? 0, cacheWrite: u.cache_creation_input_tokens ?? 0, output: u.output_tokens ?? 0, reasoning: u.reasoning_tokens ?? 0, ...(typeof o.total_cost_usd === "number" ? { costUsd: o.total_cost_usd } : {}) } : undefined;
-  // grok's text joins every turn with no separator (grok 1.0.52, probed 2026-10-14); structuredOutput is the last turn's parsed reply.
-  const text = o.structuredOutput !== null && typeof o.structuredOutput === "object" ? JSON.stringify(o.structuredOutput) : typeof o.text === "string" ? o.text : undefined;
-  const out: RunOut = { text, turns: o.num_turns, ...(usage ? { usage } : { spendUnknown: true }) };
-  if (error) out.error = error.message;
+  const out: RunOut = { text: typeof o.result === "string" ? o.result : undefined, turns: o.num_turns, ...(usage ? { usage } : { spendUnknown: true }) };
+  // Never an empty message: an empty error string would read as success.
+  if (o.is_error === true || o.subtype !== "success") out.error = typeof o.errors?.[0] === "string" && o.errors[0].trim() ? o.errors[0] : `grok failed: subtype ${JSON.stringify(o.subtype ?? null)}${o.is_error === true ? ", is_error" : ""}`;
+  else if (o.stop_reason !== "end_turn") out.error = `stopped with ${o.stop_reason ?? "no stop_reason"}`;
+  else if (error && error.message.trim()) out.error = error.message;
   else if (status !== 0) out.error = `exit ${status}: ${clip(stderr ?? "", 300)}`;
-  else if (o.stopReason !== "end_turn") out.error = `stopped with ${o.stopReason ?? "no stopReason"}${typeof o.text === "string" && o.text ? `: ${clip(o.text, 200)}` : ""}`;
+  else if (error) out.error = `process error ${code ?? error.name}`;
+  else if (typeof o.result !== "string") out.error = "result must be a string";
   return out;
 }
 

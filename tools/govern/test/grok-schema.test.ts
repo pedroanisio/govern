@@ -10,7 +10,7 @@ import { registry, getProfile } from "../lib/caps.ts";
 import { validate } from "../lib/codex.ts";
 import { makeEnv, childEnv, HERE, write } from "./helpers.ts";
 
-test("runGrok passes compact inline schemas only when requested; both capability probes receive the probe schema", (t) => {
+test("runGrok uses streaming without schema flags while capability replies remain validated", (t) => {
   const e = makeEnv("grok-schema");
   const saved = { ...process.env };
   process.env = childEnv(e, { GROK_HOME: join(e.root, "real-grok"), GOVERN_GROK_HOME: join(e.root, "private-grok") });
@@ -20,10 +20,10 @@ test("runGrok passes compact inline schemas only when requested; both capability
     calls.push(argv);
     const negative = opts.cwd.includes("not-edit");
     const probe = opts.cwd.includes("checks");
-    const structuredOutput = probe
+    const finalReply = probe
       ? { capability: negative ? "edit" : "read", status: negative ? "refused" : "ok", evidence: negative ? "unavailable" : readFileSync(join(opts.cwd, "probe.txt"), "utf8") }
       : { kind: "HANDOFF", summary: "done", body: "ok" };
-    return { status: 0, stdout: JSON.stringify({ text: "joined narration" + JSON.stringify(structuredOutput), structuredOutput, stopReason: "end_turn" }), stderr: "" };
+    return { status: 0, stdout: JSON.stringify({ type: "result", subtype: "success", result: JSON.stringify(finalReply), stop_reason: "end_turn" }), stderr: "" };
   });
   syncBuiltinESMExports();
   const reg = registry(), prof = getProfile("grok-read", reg);
@@ -32,8 +32,8 @@ test("runGrok passes compact inline schemas only when requested; both capability
   for (const withSchema of [false, true]) {
     runSealed(reg, prof, e.root, "reply", 30, { lastMessage: join(e.root, "reply.txt"), ...(withSchema ? { schema: path } : {}) });
     const args = calls.at(-1)!;
-    if (withSchema) assert.deepEqual(args.slice(args.indexOf("--output-format"), args.indexOf("--output-format") + 4), ["--output-format", "json", "--json-schema", JSON.stringify(schema)]);
-    else assert.equal(args.includes("--json-schema"), false);
+    assert.deepEqual(args.slice(args.indexOf("--output-format"), args.indexOf("--output-format") + 2), ["--output-format", "streaming-messages-json"]);
+    assert.equal(args.includes("--json-schema"), false);
   }
   calls.length = 0;
   const rec = checkProfile(join(e.root, "queue"), reg, "grok-read");
@@ -41,8 +41,7 @@ test("runGrok passes compact inline schemas only when requested; both capability
   assert.equal(calls.length, 2);
   const probeSchema = JSON.parse(readFileSync(join(HERE, "..", "schemas", "probe-reply.json"), "utf8"));
   for (const args of calls) {
-    assert.ok(args.includes("--json-schema"));
-    assert.deepEqual(JSON.parse(args[args.indexOf("--json-schema") + 1]!), probeSchema);
+    assert.equal(args.includes("--json-schema"), false);
   }
   assert.deepEqual(validate(probeSchema, { capability: "read", status: "ok", evidence: "nonce" }), []);
   assert.ok(validate(probeSchema, { capability: "read", status: "invalid", evidence: "nonce" }).length);

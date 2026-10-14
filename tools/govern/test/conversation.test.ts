@@ -447,7 +447,7 @@ test("native Claude streams text but commits only its successful result, with co
   assert.equal(r.code, 1);
   assert.equal(state(e).messages.filter((m: any) => m.role === "assistant").length, 1);
 });
-test("native Grok buffered results preserve completion and include cache tokens in input", () => {
+test("native Grok streaming results preserve completion and include cache tokens in input", () => {
   const e = setup();
   e.env.FAKE_GROK_RESULT = "native grok";
   e.env.GOVERN_GROK_HOME = join(e.root, "private-grok");
@@ -529,4 +529,75 @@ test("restart recovery rejects a recorded owner from another boot even if its PI
   write(path, JSON.stringify(s));
   assert.equal(state(e).runs[0].state, "interrupted");
   ok(e, ["recover", "chat", "--action", "continue", "--note", "restored after reboot"]);
+});
+
+test("Grok NDJSON conversation commits only the final turn and rejects error streams", () => {
+  for (const trailingNewline of [false, true]) {
+    const e = setup();
+    e.env.GOVERN_GROK_HOME = join(e.root, "private-grok");
+    e.env.GROK_HOME = join(e.root, "test-grok");
+    write(join(e.env.GROK_HOME, "auth.json"), "DUMMY");
+    const capture = readFileSync(join(HERE, "fixtures/grok-stream/stream-success-2turns.ndjson"), "utf8");
+    e.env.FAKE_GROK_RAW = capture.trimEnd() + (trailingNewline ? "\n" : "");
+    json(e, ["create", "chat", "--profile", "grok-read"]);
+    send(e, "read");
+    ok(e, ["run", "chat"]);
+    const replies = state(e).messages.filter((m: any) => m.role === "assistant");
+    assert.equal(replies.length, 1);
+    assert.equal(replies[0].content, '{"capability": "read", "status": "ok", "evidence": "chk-feedface00112233"}');
+    send(e, "fail");
+    e.env.FAKE_GROK_RAW = readFileSync(join(HERE, "fixtures/grok-stream/stream-error-max-turns.ndjson"), "utf8");
+    assert.equal(govern(e, ["conversation", "run", "chat"]).code, 1);
+    assert.equal(state(e).messages.filter((m: any) => m.role === "assistant").length, 1);
+  }
+});
+
+test("Grok stream adapter emits tool events and covers every parse failure", async () => {
+  const { build } = await import("../lib/conversation-adapters.ts");
+  const e = setup(), saved = process.env;
+  process.env = childEnv(e, { GOVERN_GROK_HOME: join(e.root, "private-grok"), GROK_HOME: join(e.root, "test-grok") });
+  let adapter: ReturnType<typeof build> | undefined;
+  try {
+    const s = { id: "chat", cwd: e.root, adapter: { kind: "profile", name: "grok-read" } } as Parameters<typeof build>[0];
+    adapter = build(s, { id: "run", messageId: "msg" } as any, []);
+    assert.equal(adapter.args[adapter.args.indexOf("--output-format") + 1], "streaming-messages-json");
+    const events = readFileSync(join(HERE, "fixtures/grok-stream/stream-success-2turns.ndjson"), "utf8")
+      .split("\n").filter((line) => line.trim()).flatMap((line) => adapter!.parse(JSON.parse(line)));
+    const done = events.filter((event) => event.type === "done");
+    assert.equal(done.length, 1);
+    assert.equal(done[0]?.text, '{"capability": "read", "status": "ok", "evidence": "chk-feedface00112233"}');
+    assert.equal(done[0]?.usage?.input, 29570);
+    assert.ok(events.some((event) => event.type === "tool.started"));
+    assert.ok(events.some((event) => event.type === "tool.finished"));
+    for (const name of ["bad-model", "max-turns"]) {
+      const failed = readFileSync(join(HERE, `fixtures/grok-stream/stream-error-${name}.ndjson`), "utf8")
+        .split("\n").filter((line) => line.trim()).flatMap((line) => adapter!.parse(JSON.parse(line)));
+      assert.equal(failed.filter((event) => event.type === "error").length, 1);
+      assert.equal(failed.filter((event) => event.type === "done").length, 0);
+    }
+    assert.deepEqual(adapter.parse({ type: "system" }), []);
+    assert.deepEqual(adapter.parse({ type: "assistant", message: { content: [{ type: "text", text: "preamble" }, { type: "tool_use", id: "t", name: "read" }] } }), [
+      { type: "assistant.delta", text: "preamble" }, { type: "tool.started", id: "t", name: "read" }
+    ]);
+    assert.deepEqual(adapter.parse({ type: "user", message: { content: [{ type: "tool_result", tool_use_id: "t", is_error: true }] } }), [{ type: "tool.finished", id: "t", name: "tool", ok: false }]);
+    for (const o of [null, [], 42]) assert.equal(adapter.parse(o)[0]?.type, "error");
+    for (const extra of [{ is_error: true, errors: ["failure"] }, { subtype: "bad" }, { stop_reason: "cancelled" }, { result: null }]) {
+      assert.equal(adapter.parse({ type: "result", subtype: "success", stop_reason: "end_turn", result: "final", ...extra })[0]?.type, "error");
+    }
+    for (const extra of [{ subtype: "" }, { subtype: undefined }, { is_error: true, errors: [] }]) {
+      const [ev] = adapter.parse({ type: "result", subtype: "success", stop_reason: "end_turn", result: "final", ...extra });
+      assert.equal(ev?.type, "error");
+      assert.match((ev as { text: string }).text, /^grok failed: subtype /);
+    }
+    for (const message of ["early", null]) assert.equal(adapter.parse({ type: "error", message })[0]?.type, "error");
+    for (const message of ["", "  ", null]) assert.equal((adapter.parse({ type: "error", message })[0] as { text: string }).text, "grok failed");
+    for (const type of ["assistant", "user"]) {
+      assert.deepEqual(adapter.parse({ type }), []);
+      assert.throws(() => adapter!.parse({ type, message: { content: {} } }));
+    }
+    for (const extra of [{}, { usage: {}, usage_is_incomplete: true }, { usage: {}, cost_is_partial: true }]) {
+      assert.deepEqual(adapter.parse({ type: "result", subtype: "success", stop_reason: "end_turn", result: "final", ...extra }), [{ type: "done", text: "final" }]);
+    }
+    assert.throws(() => adapter!.parse({ type: "result", subtype: "success", stop_reason: "end_turn", result: "final", usage: { input_tokens: -1 } }), /invalid runtime usage/);
+  } finally { adapter?.finish(); process.env = saved; }
 });

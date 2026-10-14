@@ -1,9 +1,9 @@
 #!/usr/bin/env node
-// Fake `grok --prompt-file F --output-format json` for govern's tests.
+// Fake `grok --prompt-file F --output-format streaming-messages-json` for govern's tests.
 //   FAKE_GROK_ARGV_OUT   append {argv, cwd, env, prompt} (JSON) to this file; env = the seal variables as the child saw them
 //                        (HOME, GROK_HOME, GROK_CLAUDE_*_ENABLED, GROK_MEMORY, CLAUDECODE), prompt = the --prompt-file's text
-//   FAKE_GROK_RESULT     the `text` field (default: empty)
-//   FAKE_GROK_STOP       the `stopReason` field (default end_turn)
+//   FAKE_GROK_RESULT     the `result` field (default: empty)
+//   FAKE_GROK_STOP       the `stop_reason` field (default end_turn)
 //   FAKE_GROK_RAW        print this instead of the JSON result (to test non-JSON output)
 //   FAKE_GROK_EXIT       exit with this status after printing
 //   FAKE_GROK_SLEEP     sleep this many seconds before answering (to test the timeout)
@@ -49,10 +49,16 @@ if (process.env.FAKE_GROK_REFRESH === "1" && gh) { const t = join(gh, "auth.tmp"
 if (process.env.FAKE_GROK_ERRJSON !== undefined) { process.stdout.write(JSON.stringify({ type: "error", message: process.env.FAKE_GROK_ERRJSON })); process.exit(1); }
 const nousage = process.env.FAKE_GROK_NOUSAGE;
 if (process.env.FAKE_GROK_RAW !== undefined) process.stdout.write(process.env.FAKE_GROK_RAW);
-else process.stdout.write(JSON.stringify({
-  text, stopReason: process.env.FAKE_GROK_STOP ?? "end_turn", sessionId: "01a13a1d-0000-7000-8000-000000000000", requestId: "r", cwd: process.cwd(),
+else {
+const stop = process.env.FAKE_GROK_STOP ?? "end_turn";
+const emit = (event: unknown) => process.stdout.write(JSON.stringify(event) + "\n");
+emit({ type: "system", subtype: "init" });
+emit({ type: "assistant", message: { content: [{ type: "text", text }] } });
+emit({
+  type: "result", result: text, stop_reason: stop, subtype: stop === "end_turn" ? "success" : "error_max_turns", is_error: stop !== "end_turn", ...(stop !== "end_turn" ? { errors: [`stopped with ${stop}`] } : {}), sessionId: "01a13a1d-0000-7000-8000-000000000000", requestId: "r", cwd: process.cwd(),
   // the CLI's own json: input_tokens EXCLUDES cache reads (verified: 12776 + 1920 + 49 = 14745 total)
   ...(nousage === "1" ? {} : { usage: { input_tokens: 1000, cache_read_input_tokens: 9000, cache_creation_input_tokens: 0, output_tokens: 200, reasoning_tokens: 50, total_tokens: 10200 } }),
   num_turns: 2, ...(nousage ? (nousage === "incomplete" ? { usage_is_incomplete: true, cost_is_partial: true } : {}) : { total_cost_usd: 0.0123, total_cost_usd_ticks: 123000000 }),
-}));
+});
+}
 process.exit(Number(process.env.FAKE_GROK_EXIT ?? 0));

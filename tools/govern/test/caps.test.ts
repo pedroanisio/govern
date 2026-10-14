@@ -467,9 +467,8 @@ test("the check runs the same probes for a grok profile, including the negative 
   assert.equal(calls.length, 2, "one grant and one negative probe");
   for (const c of calls) {
     assert.equal(c.argv[c.argv.indexOf("--tools") + 1], "Read,Grep,Glob", "the probe runs under the profile's own grant");
-    const schemaIndex = c.argv.indexOf("--json-schema");
-    assert.ok(schemaIndex >= 0, "both positive and negative probes receive a schema");
-    assert.deepEqual(JSON.parse(c.argv[schemaIndex + 1]), JSON.parse(readFileSync(join(HERE, "..", "schemas", "probe-reply.json"), "utf8")));
+    assert.equal(c.argv.includes("--json-schema"), false);
+    assert.equal(c.argv[c.argv.indexOf("--output-format") + 1], "streaming-messages-json");
     assert.match(c.cwd, /checks\/grok-read\/run-/);
   }
   const rec = checks(e, "grok-read");

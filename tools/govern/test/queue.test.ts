@@ -104,7 +104,7 @@ test("dispatch runs grok --prompt-file sealed to grok-read: private HOME and a p
   assert.match(r.out, /→ grok: ACK in \d+s, 10k in \(90% cached\), 200 out, \$0\.012/);
   const call = jsonl(join(e.root, "grok.log"))[0];
   assert.equal(call.argv[0], "--prompt-file");
-  assert.deepEqual(call.argv.slice(2), ["--output-format", "json", "--json-schema", JSON.stringify(JSON.parse(readFileSync(join(HERE, "..", "schemas", "queue-reply.json"), "utf8"))), "--tools", "Read,Grep,Glob", "--permission-mode", "dontAsk", "--deny", "MCPTool(*)", "--deny", "Read(**/auth.json)", "--max-turns", "25", "--cwd", call.cwd], "sealed to the grok-read profile");
+  assert.deepEqual(call.argv.slice(2), ["--output-format", "streaming-messages-json", "--tools", "Read,Grep,Glob", "--permission-mode", "dontAsk", "--deny", "MCPTool(*)", "--deny", "Read(**/auth.json)", "--max-turns", "25", "--cwd", call.cwd], "sealed to the grok-read profile");
   assert.match(call.prompt, /BODY-GROK/);
   for (const k of GROK_TOGGLES) assert.equal(call.env[k], "0", k);
   assert.equal(call.env.GROK_MEMORY, "0");
@@ -215,7 +215,8 @@ test("grok --write maps to grok-write, which may edit; a grok run that fails is 
   const r = govern(e, ["task", "dispatch"], { FAKE_GROK_RESULT: JSON.stringify({ kind: "ACK", summary: "done", body: "ok" }) });
   assert.match(r.out, /→ grok: ACK/);
   const call = jsonl(join(e.root, "grok.log"))[0];
-  assert.deepEqual(call.argv.slice(2, 14), ["--output-format", "json", "--json-schema", JSON.stringify(JSON.parse(readFileSync(join(HERE, "..", "schemas", "queue-reply.json"), "utf8"))), "--tools", "Read,Grep,Glob,Edit,Write", "--permission-mode", "acceptEdits", "--allow", "Edit(./**)", "--allow", "Write(./**)"], "edits are scoped to the task's folder, never a bare Edit/Write");
+  assert.deepEqual(call.argv.slice(2, 12), ["--output-format", "streaming-messages-json", "--tools", "Read,Grep,Glob,Edit,Write", "--permission-mode", "acceptEdits", "--allow", "Edit(./**)", "--allow", "Write(./**)"], "edits are scoped to the task's folder, never a bare Edit/Write");
+  assert.ok(!call.argv.includes("--json-schema"));
   assert.ok(!call.argv.includes("Edit") && !call.argv.includes("Write"));
   const denies = call.argv.flatMap((x: string, i: number) => (call.argv[i - 1] === "--deny" ? [x] : []));
   for (const d of ["Edit(**/.grok/**)", "Write(**/.grok/**)", "Edit(**/.mcp.json)", "Write(**/.mcp.json)", "Edit(**/.claude/**)", "Write(**/.claude/**)", "Edit(**/.cursor/**)", "Write(**/.cursor/**)", "MCPTool(*)", "Read(**/auth.json)"])
@@ -223,8 +224,8 @@ test("grok --write maps to grok-write, which may edit; a grok run that fails is 
   assert.equal(call.cwd, join(e.projects, "film"));
   assert.equal(jsonl(join(e.root, "queue", "ledger.jsonl"))[0].profile, "grok-write");
   for (const [name, extra, why] of [
-    ["exit", { FAKE_GROK_EXIT: "3", FAKE_GROK_RAW: "" }, /grok: no JSON result \(exit 3\)/],
-    ["raw", { FAKE_GROK_RAW: "not json at all" }, /grok: no JSON result/],
+    ["exit", { FAKE_GROK_EXIT: "3", FAKE_GROK_RAW: "" }, /grok: no result line \(exit 3\)/],
+    ["raw", { FAKE_GROK_RAW: "not json at all" }, /grok: invalid JSON on line 1/],
     ["stop", { FAKE_GROK_STOP: "cancelled", FAKE_GROK_RESULT: "" }, /grok: stopped with cancelled/],
   ] as const) {
     govern(e, ["task", "send", "--to", "grok", "--project", "film", "--task", `t-${name}`, "--summary", name]);
@@ -435,28 +436,73 @@ test("inbox --hook prints nothing when empty or unresolved, never fails, and oth
 });
 
 
-test("grokResult prefers the structured final reply over joined turns", () => {
-  const result = { text: 'I will read the file.{"kind":"PROGRESS"}' + JSON.stringify(answer), structuredOutput: answer, stopReason: "end_turn", num_turns: 3, usage: { input_tokens: 10, output_tokens: 5 }, total_cost_usd: 0.01 };
-  const out = grokResult(JSON.stringify(result), 0, "", undefined, 30);
-  assert.equal(out.text, JSON.stringify(answer));
+const streamFixture = (name: string) => readFileSync(join(HERE, "fixtures/grok-stream", name), "utf8");
+const streamResult = (extra: Record<string, unknown> = {}) => JSON.stringify({ type: "result", subtype: "success", stop_reason: "end_turn", result: "final", ...extra });
+test("grokResult reads the captured final turn and maps usage", () => {
+  const out = grokResult(streamFixture("stream-success-2turns.ndjson"), 0, "", undefined, 30);
+  assert.equal(out.text, '{"capability": "read", "status": "ok", "evidence": "chk-feedface00112233"}');
   assert.equal(out.error, undefined);
-  assert.equal(out.turns, 3);
-  assert.equal(out.usage?.costUsd, 0.01);
-  assert.equal(out.usage?.input, 10);
+  assert.equal(out.turns, 2);
+  assert.deepEqual(out.usage, { input: 29570, cached: 17024, cacheWrite: 0, output: 577, reasoning: 0, costUsd: 0.01260244 });
 });
-
-test("grokResult keeps text when structuredOutput is absent, null or primitive", () => {
-  for (const extra of [{}, { structuredOutput: null }, { structuredOutput: "wrong" }]) {
-    const out = grokResult(JSON.stringify({ text: "original", stopReason: "end_turn", ...extra }), 0, "", undefined, 30);
-    assert.equal(out.text, "original");
-    assert.equal(out.error, undefined);
+test("grokResult preserves captured bad-model and max-turns errors and spend", () => {
+  for (const [name, pattern, cost] of [["bad-model", /unknown model id/, 0], ["max-turns", /maximum number of turns/, 0.00920312]] as const) {
+    const out = grokResult(streamFixture(`stream-error-${name}.ndjson`), name === "bad-model" ? 1 : 0, name === "bad-model" ? streamFixture("stream-error-bad-model.stderr") : "", undefined, 30);
+    assert.match(out.error!, pattern);
+    assert.equal(out.usage?.costUsd, cost);
+    assert.equal(out.spendUnknown, undefined);
   }
 });
-
-test("grokResult rejects max_turn_requests with null structuredOutput", () => {
-  for (const status of [0, 1]) {
-    const out = grokResult(JSON.stringify({ text: "partial", structuredOutput: null, stopReason: "max_turn_requests" }), status, "Error: max turns reached", undefined, 30);
-    assert.match(out.error!, status ? /exit 1: Error: max turns reached/ : /stopped with max_turn_requests/);
+test("grokResult rejects missing results and malformed lines without extraction", () => {
+  for (const raw of [undefined, "", "null\n42\n[]\n", '{"type":"system"}\n']) {
+    const out = grokResult(raw, 1, "diagnostic", undefined, 30);
+    assert.match(out.error!, /no result line \(exit 1\): diagnostic/);
     assert.equal(out.spendUnknown, true);
   }
+  for (const raw of ['{}\ngarbage\n' + streamResult(), streamResult() + '\nprose {"x":1}']) {
+    const out = grokResult(raw, 0, "", undefined, 30);
+    assert.match(out.error!, /invalid JSON on line 2/);
+    assert.equal(out.spendUnknown, true);
+  }
+});
+test("grokResult checks terminal status, result type, and process errors", () => {
+  for (const [extra, pattern] of [
+    [{ is_error: true, errors: ["reported"] }, /reported/],
+    [{ subtype: "error_max_turns", errors: [""] }, /error_max_turns/],
+    [{ subtype: "error", errors: [42] }, /error/],
+    // an empty or missing subtype must still give a non-empty error, or the failed run would be accepted
+    [{ subtype: "" }, /grok failed: subtype ""/],
+    [{ subtype: undefined }, /grok failed: subtype null/],
+    [{ is_error: true, subtype: "success", errors: [] }, /grok failed: subtype "success", is_error/],
+    [{ stop_reason: "cancelled" }, /stopped with cancelled/],
+    [{ stop_reason: null }, /stopped with/],
+    [{ result: null }, /result.*string/],
+    [{ result: {} }, /result.*string/]
+  ] as const) assert.match(grokResult(streamResult(extra), 0, "", undefined, 30).error!, pattern);
+  assert.match(grokResult(streamResult(), 7, "stderr", undefined, 30).error!, /exit 7: stderr/);
+  assert.match(grokResult(streamResult(), 0, "", new Error("spawn failure"), 30).error!, /spawn failure/);
+  // an empty process-error message must not read as success: dispatch treats a falsy error as none
+  for (const [err, status, pattern] of [[new Error(""), 7, /exit 7: stderr/], [new Error("  "), 0, /process error/], [Object.assign(new Error(""), { code: "ENOENT" }), null, /ENOENT/]] as const)
+    assert.match(grokResult(streamResult(), status, "stderr", err, 30).error!, pattern);
+  for (const code of ["ETIMEDOUT", "ENOENT", "EACCES"]) {
+    const out = grokResult(undefined, null, "", Object.assign(new Error(code), { code }), 30);
+    assert.match(out.error!, code === "ETIMEDOUT" ? /timed out after 30s/ : new RegExp(code));
+    assert.equal(out.spendUnknown, code === "ETIMEDOUT" ? true : undefined);
+  }
+  for (const message of ["early failure", "", null]) {
+    const out = grokResult(JSON.stringify({ type: "error", message }), 1, "", undefined, 30);
+    assert.equal(out.error, message || "exit 1");
+    assert.equal(out.spendUnknown, true);
+  }
+});
+test("grokResult takes the last result and treats incomplete usage as unknown", () => {
+  assert.equal(grokResult(streamResult({ result: "first" }) + '\n\n' + streamResult(), 0, "", undefined, 30).text, "final");
+  for (const extra of [{}, { usage: null }, { usage: {}, usage_is_incomplete: true }, { usage: {}, cost_is_partial: true }]) {
+    const out = grokResult(streamResult(extra), 0, "", undefined, 30);
+    assert.equal(out.error, undefined);
+    assert.equal(out.usage, undefined);
+    assert.equal(out.spendUnknown, true);
+  }
+  assert.deepEqual(grokResult(streamResult({ usage: { input_tokens: 1, cache_read_input_tokens: 2, cache_creation_input_tokens: 3, output_tokens: 4, reasoning_tokens: 5 }, total_cost_usd: 0.1 }), 0, "", undefined, 30).usage,
+    { input: 6, cached: 2, cacheWrite: 3, output: 4, reasoning: 5, costUsd: 0.1 });
 });

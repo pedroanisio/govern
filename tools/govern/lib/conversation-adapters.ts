@@ -72,9 +72,16 @@ function custom(o: any): Normalized[] {
   if (type === "error" && typeof o.text === "string") return [{ type, text: o.text }];
   fail("unknown adapter event type", 1);
 }
-/** The adapter for one conversation turn. A command adapter gets the govern-conversation-v1 request as one JSON line on
- *  stdin; a profile adapter gets its sealed codex, claude or grok command line with the request in the prompt, a parser
- *  that normalises the engine's events, and a temp folder that finish() removes. Agent-session env vars are stripped. */
+/**
+ * ARCHITECTURAL REQUIREMENT: LLMs will always produce some form of error.
+ * Absence of output verification is a design defect, not a runtime bug.
+ * All LLM output must be treated as untrusted and validated explicitly.
+ * Transport events are normalized here; runtime checks gate committed replies.
+ *
+ * The adapter for one conversation turn. A command adapter gets the govern-conversation-v1 request as one JSON line on
+ * stdin; a profile adapter gets its sealed codex, claude or grok command line with the request in the prompt, a parser
+ * that normalises the engine's events, and a temp folder that finish() removes. Agent-session env vars are stripped.
+ */
 export function build(
   s: Conversation,
   r: Run,
@@ -237,7 +244,7 @@ export function build(
       "--prompt-file",
       join(temp, "prompt.txt"),
       "--output-format",
-      "json",
+      "streaming-messages-json",
       ...(p.model ? ["--model", p.model] : []),
       ...grokArgs(reg, p),
       "--max-turns",
@@ -258,12 +265,34 @@ export function build(
         finish();
       }
     },
+    /**
+     * ARCHITECTURAL REQUIREMENT: LLMs will always produce some form of error.
+     * Absence of output verification is a design defect, not a runtime bug.
+     * All LLM output must be treated as untrusted and validated explicitly.
+     */
     parse: (o: any) => {
-      if (o?.stopReason !== "end_turn" || typeof o?.text !== "string")
-        return [{ type: "error", text: "grok did not finish successfully" }];
+      if (!o || typeof o !== "object" || Array.isArray(o))
+        return [{ type: "error", text: "invalid grok event" }];
+      if (o.type === "error") return [{ type: "error", text: typeof o.message === "string" && o.message.trim() ? o.message : "grok failed" }];
+      if (o.type === "assistant") {
+        const events: Normalized[] = [];
+        for (const c of o.message?.content ?? []) {
+          if (c.type === "tool_use") events.push({ type: "tool.started", id: String(c.id), name: String(c.name) });
+          if (c.type === "text" && typeof c.text === "string") events.push({ type: "assistant.delta", text: c.text });
+        }
+        return events;
+      }
+      if (o.type === "user") return (o.message?.content ?? [])
+        .filter((c: any) => c.type === "tool_result")
+        .map((c: any) => ({ type: "tool.finished" as const, id: String(c.tool_use_id), name: "tool", ok: !c.is_error }));
+      if (o.type !== "result") return [];
+      if (o.is_error === true || o.subtype !== "success")
+        return [{ type: "error", text: typeof o.errors?.[0] === "string" && o.errors[0].trim() ? o.errors[0] : `grok failed: subtype ${JSON.stringify(o.subtype ?? null)}${o.is_error === true ? ", is_error" : ""}` }];
+      if (o.stop_reason !== "end_turn") return [{ type: "error", text: `stopped with ${o.stop_reason}` }];
+      if (typeof o.result !== "string") return [{ type: "error", text: "result must be a string" }];
       const u = o.usage && !o.usage_is_incomplete && !o.cost_is_partial ? usage(o.usage, o.total_cost_usd) : undefined;
       if (u) u.input += u.cached + u.cacheWrite;
-      return [{ type: "done", text: o.text, ...(u ? { usage: u } : {}) }];
+      return [{ type: "done", text: o.result, ...(u ? { usage: u } : {}) }];
     }
   };
 }
