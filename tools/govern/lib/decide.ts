@@ -1,0 +1,238 @@
+// Decisions by Jev, TypeSafe's System One model: not a generator but a classifier. It takes a state (text) and typed
+// questions, answers each independently with probabilities, and nothing else. Govern asks it in shadow mode only: every
+// answer is recorded in <queue>/decisions.jsonl, next to the queue ledger's outcomes, so `govern decide report` can tell
+// how well calibrated each question is before anything is allowed to act on one.
+//
+// The key is TYPESAFE_API_KEY, else that one variable from the dotenv file the workspace config's decide.envFile names.
+// It goes to the HTTP child through its environment and is never written anywhere: decisions record the state's sha256
+// and length, not its text, and an error that quotes the key is redacted before it is shown or recorded.
+import { spawnSync } from "node:child_process";
+import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { fail, nowIso, sha256, clip, GovernError } from "./util.ts";
+import { obj, str, arr, record, literal, reject, keyPath, check, type Shape } from "./shape.ts";
+import { configFile, decideConfig, queueDir } from "./workspace.ts";
+import type { Message } from "./queue.ts";
+
+const CALL = fileURLToPath(new URL("./typesafeCall.ts", import.meta.url));
+const DEFAULT_URL = "https://api.typesafe.ai";
+const DEFAULT_MODEL = "jev-latest";
+/** Jev's limit on the state plus the longest question, in tokens; estimated as characters / 3 to stay on the safe side. */
+const MAX_TOKENS = 32000;
+const CHARS_PER_TOKEN = 3;
+const TIMEOUT_MS = 30000;
+
+export type Question =
+  | { type: "choice"; instructions: string; criteria: Record<string, string> }
+  | { type: "score"; instructions: string; criteria: string[] }
+  | { type: "noul"; instructions: string; criteria?: string };
+export type Questions = Record<string, Question>;
+export type Answer =
+  | { type: "choice"; choice: string; confidence: number; probabilities: Record<string, number> }
+  | { type: "score"; score: number; confidence: number; level: string; probabilities: Record<string, number> }
+  | { type: "noul"; p: number };
+export interface Decision { model: string; answers: Record<string, Answer>; usage: { input: number; output: number } }
+
+const atLeast2 = <T>(s: Shape<T>, size: (v: T) => number, what: string): Shape<T> => (v, p) => {
+  const x = s(v, p);
+  return size(x) >= 2 ? x : reject(p, `needs at least 2 ${what}`);
+};
+const QUESTION: Shape<Question> = (v, p) => {
+  const type = literal("choice", "score", "noul")((v as { type?: unknown } | null)?.type, keyPath(p, "type"));
+  if (type === "choice") return obj({ type: str, instructions: str, criteria: atLeast2(record(str), (r) => Object.keys(r).length, "choices") })(v, p) as Question;
+  if (type === "score") return obj({ type: str, instructions: str, criteria: atLeast2(arr(str), (a) => a.length, "levels") })(v, p) as Question;
+  return obj({ type: str, instructions: str }, { criteria: str })(v, p) as Question;
+};
+/** A questions file: name → question. */
+export const QUESTIONS: Shape<Questions> = (v, p) => {
+  const q = record(QUESTION)(v, p);
+  return Object.keys(q).length ? q : reject(p, "no questions");
+};
+
+/** What shadow mode asks about every TASK sent. `success` is scored against the queue ledger's outcome. */
+export const TASK_QUESTIONS: Questions = {
+  kind: { type: "choice", instructions: "What kind of work does this task ask for?", criteria: {
+    edit: "Change code, documents or configuration", review: "Review or check existing work",
+    research: "Find, read or summarise information", run: "Run, operate or deploy something" } },
+  difficulty: { type: "score", instructions: "How hard is this task for a capable coding agent?",
+    criteria: ["Trivial, mechanical", "Routine", "Needs some design", "Hard, cross-cutting", "Very hard, research level"] },
+  success: { type: "noul", instructions: "Will a capable coding agent complete this task correctly on its first attempt, with a reply that passes its check?" },
+};
+
+// --- the reply ---
+
+const unit = (v: unknown, where: string): number =>
+  typeof v === "number" && v >= 0 && v <= 1 ? v : bad(`${where} should be between 0 and 1, got ${JSON.stringify(v)}`);
+const probs = (v: unknown, where: string): Record<string, number> => {
+  if (!v || typeof v !== "object") bad(`${where} should be an object`);
+  return Object.fromEntries(Object.entries(v as object).map(([k, x]) => [k, unit(x, `${where}.${k}`)]));
+};
+function bad(msg: string): never { fail(`TypeSafe's reply: ${msg}`); }
+
+/** The reply checked against the questions asked: every question answered, with its own type, in range. */
+export function checkAnswers(questions: Questions, raw: unknown): Decision {
+  const r = raw as { model?: unknown; answers?: Record<string, any>; usage?: { input_tokens?: unknown; output_tokens?: unknown } } | null;
+  if (!r || typeof r !== "object") bad("not an object");
+  if (typeof r.model !== "string") bad("missing model");
+  const answers: Record<string, Answer> = {};
+  for (const [name, q] of Object.entries(questions)) {
+    const a = r.answers?.[name];
+    if (!a || typeof a !== "object") bad(`no answer for ${name}`);
+    if (a.type !== q.type) bad(`${name} should be a ${q.type} answer, got ${a.type}`);
+    if (q.type === "choice") {
+      if (!Object.hasOwn(q.criteria, a.choice)) bad(`${name} chose ${a.choice}, not one of ${Object.keys(q.criteria).join(", ")}`);
+      answers[name] = { type: "choice", choice: a.choice, confidence: unit(a.confidence, `${name}.confidence`), probabilities: probs(a.probabilities, `${name}.probabilities`) };
+    } else if (q.type === "score") {
+      const p = probs(a.probabilities, `${name}.probabilities`);
+      const top = q.criteria.reduce((best, _, i) => ((p[String(i)] ?? 0) > (p[String(best)] ?? 0) ? i : best), 0);
+      answers[name] = { type: "score", score: unit(a.score, `${name}.score`), confidence: unit(a.confidence, `${name}.confidence`), level: q.criteria[top]!, probabilities: p };
+    } else answers[name] = { type: "noul", p: unit(a.noul, `${name}.noul`) };
+  }
+  const n = (v: unknown) => (typeof v === "number" && v >= 0 ? v : 0);
+  return { model: r.model, answers, usage: { input: n(r.usage?.input_tokens), output: n(r.usage?.output_tokens) } };
+}
+
+// --- the call ---
+
+/** TYPESAFE_API_KEY, else that variable from the config's decide.envFile; undefined when neither has it. */
+function apiKey(): string | undefined {
+  if (process.env.TYPESAFE_API_KEY) return process.env.TYPESAFE_API_KEY;
+  const f = decideConfig().envFile;
+  if (!f) return undefined;
+  if (!existsSync(f)) fail(`${configFile()}: decide.envFile ${f} does not exist`);
+  for (const line of readFileSync(f, "utf8").split("\n")) {
+    const m = /^\s*(?:export\s+)?TYPESAFE_API_KEY\s*=\s*(.*?)\s*$/.exec(line);
+    if (m) return m[1]!.replace(/^(["'])(.*)\1$/, "$2") || undefined;
+  }
+  return undefined;
+}
+const tokens = (s: string) => Math.ceil(s.length / CHARS_PER_TOKEN);
+const longest = (q: Questions) => Math.max(...Object.values(q).map((x) => tokens(JSON.stringify(x))));
+/** `state` cut to fit Jev's limit with these questions, marked where it was cut. */
+export function fit(state: string, questions: Questions): string {
+  const room = (MAX_TOKENS - longest(questions) - 100) * CHARS_PER_TOKEN;
+  return state.length <= room ? state : `${state.slice(0, room)}\n…(clipped: ${state.length - room} more characters)`;
+}
+const decisionsFile = () => join(queueDir(), "decisions.jsonl");
+function note(row: Record<string, unknown>): void {
+  mkdirSync(queueDir(), { recursive: true });
+  appendFileSync(decisionsFile(), JSON.stringify({ t: nowIso(), ...row }) + "\n");
+}
+
+/** Ask Jev `questions` about `state`; the answers, or the failure, are recorded under `purpose` (and `ref`, the thing
+ *  asked about). A failure is a GovernError, with any copy of the key taken out. */
+export function decide(state: string, questions: Questions, o: { purpose: string; ref?: string }): Decision {
+  const base = { purpose: o.purpose, ...(o.ref ? { ref: o.ref } : {}), stateChars: state.length, stateSha256: sha256(state) };
+  const started = Date.now();
+  let key: string | undefined;
+  try {
+    key = apiKey();
+    if (!key) fail(`TYPESAFE_API_KEY is not set: export it, or name a dotenv file holding it as decide.envFile in ${configFile()}`);
+    if (tokens(state) + longest(questions) > MAX_TOKENS) fail(`the state and the longest question come to about ${tokens(state) + longest(questions)} tokens: Jev takes at most 32k tokens (shorten the state)`);
+    const model = process.env.GOVERN_JEV_MODEL || DEFAULT_MODEL;
+    const url = `${(process.env.GOVERN_TYPESAFE_URL || DEFAULT_URL).replace(/\/+$/, "")}/v1/systemone`;
+    const x = spawnSync(process.execPath, ["--disable-warning=ExperimentalWarning", CALL], {
+      input: JSON.stringify({ url, body: { model, state, questions }, timeoutMs: TIMEOUT_MS }), encoding: "utf8",
+      timeout: TIMEOUT_MS + 5000, env: { ...process.env, TYPESAFE_API_KEY: key }, maxBuffer: 16 << 20,
+    });
+    let res: { status?: number; text?: string; error?: string };
+    try { res = JSON.parse(x.stdout); } catch { fail(`could not reach TypeSafe: the call ended without an answer${x.error ? ` (${x.error.message})` : ""}`); }
+    if (res.error !== undefined) fail(`could not reach TypeSafe at ${url}: ${res.error}`);
+    if (res.status !== 200) fail(`TypeSafe answered ${res.status}: ${clip(res.text ?? "", 300)}`);
+    let body: unknown;
+    try { body = JSON.parse(res.text ?? ""); } catch { bad(`not JSON: ${clip(res.text ?? "", 120)}`); }
+    const d = checkAnswers(questions, body);
+    note({ ...base, model: d.model, answers: d.answers, usage: d.usage, seconds: (Date.now() - started) / 1000 });
+    return d;
+  } catch (e) {
+    if (!(e instanceof GovernError)) throw e;
+    const msg = key ? e.message.replaceAll(key, "[key]") : e.message;
+    note({ ...base, error: msg, seconds: (Date.now() - started) / 1000 });
+    throw new GovernError(msg, e.code);
+  }
+}
+
+/** Shadow mode, when the config's decide.shadow is on: ask the task questions about a TASK just sent. Never fails the
+ *  send: a failure is recorded and named on stderr. */
+export function shadowTask(m: Message): void {
+  if (m.kind !== "TASK" || !decideConfig().shadow) return;
+  try { decide(fit(`${m.summary}\n\n${m.body}`, TASK_QUESTIONS), TASK_QUESTIONS, { purpose: "task-send", ref: m.id }); }
+  catch (e) {
+    if (!(e instanceof GovernError)) throw e;
+    process.stderr.write(`govern: decide (shadow): ${e.message}\n`);
+  }
+}
+
+/** A questions file, shape-checked. */
+export const loadQuestions = (file: string): Questions => {
+  if (!existsSync(file)) fail(`--questions ${file}: no such file`);
+  let raw: unknown;
+  try { raw = JSON.parse(readFileSync(file, "utf8")); } catch (e) { fail(`${file}: not JSON (${(e as Error).message})`); }
+  return check(file, raw, QUESTIONS);
+};
+
+/** One line per answer, as `govern decide ask` prints them. */
+export function show(d: Decision): string {
+  return Object.entries(d.answers).map(([name, a]) => {
+    if (a.type === "choice") return `${name}: ${a.choice} (p ${(a.probabilities[a.choice] ?? a.confidence).toFixed(2)})`;
+    if (a.type === "score") return `${name}: ${a.score.toFixed(2)} → ${a.level} (confidence ${a.confidence.toFixed(2)})`;
+    return `${name}: ${a.p.toFixed(2)}`;
+  }).join("\n");
+}
+
+// --- calibration ---
+
+/** Brier score, expected calibration error over `bins` equal-width bins, and the outcome rate. */
+export function calibration(pairs: { p: number; y: 0 | 1 }[], bins = 10): { n: number; brier: number; ece: number; rate: number } {
+  const n = pairs.length;
+  if (!n) return { n: 0, brier: 0, ece: 0, rate: 0 };
+  const brier = pairs.reduce((s, x) => s + (x.p - x.y) ** 2, 0) / n;
+  const groups = new Map<number, { p: number; y: number; k: number }>();
+  for (const x of pairs) {
+    const b = Math.min(bins - 1, Math.floor(x.p * bins));
+    const g = groups.get(b) ?? { p: 0, y: 0, k: 0 };
+    g.p += x.p; g.y += x.y; g.k++;
+    groups.set(b, g);
+  }
+  const ece = [...groups.values()].reduce((s, g) => s + (g.k / n) * Math.abs(g.p / g.k - g.y / g.k), 0);
+  return { n, brier, ece, rate: pairs.reduce((s, x) => s + x.y, 0) / n };
+}
+
+const readRows = (f: string): any[] => (existsSync(f) ? readFileSync(f, "utf8").split("\n").filter(Boolean).flatMap((l) => { try { return [JSON.parse(l)]; } catch { return []; } }) : []);
+const pct = (x: number) => `${Math.round(x * 100)}%`;
+
+/** How each recorded answer did: every noul answer scored against its task's first-try outcome (the run was ok and its
+ *  reply not unverified), every score answer in five buckets with that outcome, cost and time. */
+export function report(): string {
+  const rows = readRows(decisionsFile());
+  if (!rows.length) return `no decisions yet (${decisionsFile()})`;
+  const outcome = new Map<string, { y: 0 | 1; cost?: number; seconds?: number }>();
+  for (const l of readRows(join(queueDir(), "ledger.jsonl")))
+    if (typeof l.id === "string" && !outcome.has(l.id))
+      outcome.set(l.id, { y: l.ok === true && l.verification !== "unverified" ? 1 : 0, cost: l.usage?.costUsd, seconds: l.seconds });
+  const answered = rows.filter((r) => r.answers);
+  const joined = answered.filter((r) => r.ref && outcome.has(r.ref));
+  const pending = answered.filter((r) => r.purpose === "task-send" && !(r.ref && outcome.has(r.ref))).length;
+  const L = [`${rows.length} decisions (${answered.length} answered, ${rows.length - answered.length} failed); ${joined.length} with an outcome, ${pending} not run yet`];
+  const names = [...new Set(joined.flatMap((r) => Object.keys(r.answers)))];
+  for (const name of names) {
+    const with_ = joined.filter((r) => r.answers[name]);
+    const type = with_[0].answers[name].type;
+    if (type === "noul") {
+      const c = calibration(with_.map((r) => ({ p: r.answers[name].p, y: outcome.get(r.ref)!.y })));
+      L.push(`${name} (noul): n ${c.n}, Brier ${c.brier.toFixed(3)}, ECE ${c.ece.toFixed(3)}, outcome rate ${pct(c.rate)}`);
+    } else if (type === "score") {
+      L.push(`${name} (score):`);
+      for (let b = 0; b < 5; b++) {
+        const inB = with_.filter((r) => Math.min(4, Math.floor(r.answers[name].score * 5)) === b).map((r) => outcome.get(r.ref)!);
+        if (!inB.length) continue;
+        const mean = (xs: (number | undefined)[]) => { const v = xs.filter((x): x is number => typeof x === "number"); return v.length ? v.reduce((a, c) => a + c, 0) / v.length : undefined; };
+        const cost = mean(inB.map((o) => o.cost)), secs = mean(inB.map((o) => o.seconds));
+        L.push(`  ${(b / 5).toFixed(1)}–${((b + 1) / 5).toFixed(1)}  n ${inB.length}  ok ${pct(inB.reduce((s, o) => s + o.y, 0) / inB.length)}  ${cost !== undefined ? `$${cost.toFixed(2)}` : "$-"}  ${secs !== undefined ? `${Math.round(secs)}s` : "-"}`);
+      }
+    }
+  }
+  L.push("ok = the run succeeded and its reply was not unverified; a question is fit to act on only once its Brier and ECE stay low over many tasks");
+  return L.join("\n");
+}

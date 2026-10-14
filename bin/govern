@@ -23,6 +23,7 @@
 #     govern prompts [PROCESS]  |  ask SLUG STEP [--file F]... [--var K=V]... [--image PNG]... [--effort E] [--model M]
 #     govern usage [SLUG...] [--since DATE]  |  ctx  |  desk  |  tune  |  publish SLUG
 #     govern caps [PROFILE]  |  caps --check PROFILE
+#     govern decide ask --questions F (--state S | --state-file F) [--purpose P] [--json]  |  decide report
 #     govern help [COMMAND]  |  COMMAND --help  |  manual [PROCESS]  |  install-skill [SKILLS-DIR] [--check]
 #     govern task send --to codex|claude|auto|owner|PROFILE|SESSION --project P --task T --kind K --summary S
 #                      (--body B | --body-file F) [--file PATH]... [--reply-to ID] [--write | --profile P]
@@ -190,6 +191,7 @@
 #     govern run golden-pixel fb gates sheets --bg && govern wait golden-pixel
 #     govern ask you-vs-the-sun metadata --file publication.txt --file timings.json
 #     govern usage --since 2026-10-12
+#     govern decide ask --questions q.json --state-file task.txt   # Jev (TypeSafe System One); logs to the queue's decisions.jsonl
 #     govern new ops/govern --process dev && govern cmd ops/govern test -- node --test 'tools/govern/test/*.test.ts'
 #     govern advance --help                # advance's usage and flags
 #     govern advance ops/govern            # runs the test check; moves to review only when it passes
