@@ -1,0 +1,25 @@
+{
+  "stage": "remote",
+  "typecheck": true,
+  "clean": true,
+  "node": {
+    "files": [
+      "tools/govern/test/remote.test.ts"
+    ],
+    "required": [
+      "the desk shows frozen lanes and imported provenance",
+      "a signed approval on a frozen lane is refused",
+      "the server's desk and lane match the app's contract fixtures (android/app/src/test/resources/fixtures)"
+    ]
+  },
+  "gradle": {
+    "project": "tools/govern/android",
+    "required": [
+      "ModelTest.frozenAndImportedFieldsParse",
+      "ModelTest.versions",
+      "ModelTest.deskFixtureParses",
+      "EndToEndTest.pairReadApproveAndStream",
+      "EndToEndTest.frozenLaneRefusesApproval"
+    ]
+  }
+}

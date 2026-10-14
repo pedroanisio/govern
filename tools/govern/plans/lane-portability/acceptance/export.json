@@ -1,0 +1,21 @@
+{
+  "stage": "export",
+  "typecheck": true,
+  "clean": true,
+  "node": {
+    "files": [
+      "tools/govern/test/export.test.ts",
+      "tools/govern/test/freeze.test.ts"
+    ],
+    "required": [
+      "export writes a bundle whose manifest hashes every file",
+      "export reads the lane under its lock and records the ledger offset",
+      "export --template carries configuration only",
+      "export refuses symlinks and files over the size limit",
+      "export never includes job logs, locks or reservations",
+      "export carries the public keys of devices that signed approvals",
+      "export --freeze freezes the lane before it reads",
+      "a frozen lane can be exported"
+    ]
+  }
+}
