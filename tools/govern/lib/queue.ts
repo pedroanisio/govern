@@ -197,6 +197,13 @@ const save = (m: Message, s: State) => writeFileSync(join(dir(s), `${m.id}.json`
 
 // ---------------------------------------------------------------- the prompt one session gets
 
+/** The folders a codex profile's add-dirs open to writing beside the project folder: the prompt names them, or the model refuses a
+ *  task its sandbox allows. */
+function grantedDirs(m: Message): string[] {
+  const reg = m.profile ? registry() : undefined, p = m.profile ? reg?.profiles.get(m.profile) : undefined;
+  return reg && p?.engine === "codex" ? codexSpec(reg, p).addDirs : [];
+}
+
 export const MAX_FILES_CHARS = Number(process.env.GOVERN_QUEUE_MAX_INLINE ?? 40000);
 export function prompt(m: Message): string {
   const t = thread(m);
@@ -210,7 +217,7 @@ export function prompt(m: Message): string {
   const brief = existsSync(join(projectsDir(), m.project, "govern.json")) ? `The project has a govern brief: run \`govern brief ${m.project}\` if you need its stage and decisions.\n` : "";
   return [
     `You are the "${m.to}" agent of ${config().name ?? "the govern task queue"}. You get one message, do what it asks, and answer once.`,
-    `Work only on what the message asks. ${m.access === "write" ? `You may change files under ${join(projectsDir(), m.project)} only.` : "Do not change any file: this task is read-only."}`,
+    `Work only on what the message asks. ${m.access === "write" ? `You may change files under ${[join(projectsDir(), m.project), ...grantedDirs(m)].join(" and ")} only.` : "Do not change any file: this task is read-only."}`,
     "Do not start other agents, do not message other sessions, do not publish anything. Facts must come from files you open; say what you could not verify.",
     brief,
     `Thread (oldest first):`,
