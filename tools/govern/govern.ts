@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// govern — run a PALS Notes video through its workflow from inside a conversation, cheaply.
+// govern — run lanes of work (videos, software, ops, any process) through their stages with agents, cheaply and under the owner's gates.
 // The manual for the AI operating it is SKILL.md (govern manual). Usage: govern help.
 import { spawnSync } from "node:child_process";
 import { readFileSync, globSync, mkdirSync } from "node:fs";
