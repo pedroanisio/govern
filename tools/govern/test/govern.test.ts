@@ -106,15 +106,21 @@ test("run in the foreground prints a summary and returns the command's exit code
 
 test("run --bg returns at once; wait blocks without a model and returns the job's exit", () => {
   const { e, slug } = video();
-  govern(e, ["cmd", slug, "slow", "--", "sh", "-c", "sleep 1; echo finished; exit 3"]);
-  const t0 = Date.now();
-  const r = govern(e, ["run", slug, "slow", "--bg"]);
-  assert.ok(Date.now() - t0 < 900, "run --bg should not wait");
-  assert.match(r.out, /started in the background/);
-  const w = govern(e, ["wait", slug, "last", "--timeout", "1"]);
-  assert.ok(w.code === 124 || w.code === 3);
-  const w2 = govern(e, ["wait", slug, "--timeout", "20"]);
-  assert.equal(w2.code, 3);
+  // The job cannot finish before the test writes the gate: run --bg returning while it still runs is the proof it did not
+  // wait, however slow the machine. Were it to wait, it would never return, and govern()'s own time limit fails the call.
+  const gate = join(e.root, "gate");
+  govern(e, ["cmd", slug, "slow", "--", "sh", "-c", `while [ ! -f ${gate} ]; do sleep 0.05; done; echo finished; exit 3`]);
+  try {
+    const r = govern(e, ["run", slug, "slow", "--bg"]);
+    assert.equal(r.code, 0, `run --bg should not wait for the job: ${r.err}`);
+    assert.match(r.out, /started in the background/);
+    assert.match(govern(e, ["jobs", slug]).out, /slow running/);
+    const w = govern(e, ["wait", slug, "last", "--timeout", "1"]);
+    assert.equal(w.code, 124, w.out + w.err);
+    assert.match(w.out, /still running after 1s/);
+  } finally { writeFileSync(gate, ""); }
+  const w2 = govern(e, ["wait", slug, "--timeout", "120"]);
+  assert.equal(w2.code, 3, w2.out + w2.err);
   assert.match(w2.out, /finished/);
   assert.match(govern(e, ["jobs", slug]).out, /slow failed exit 3/);
   assert.match(govern(e, ["log", slug, "last", "--grep", "fin"]).out, /^finished$/m);
@@ -306,11 +312,52 @@ test("work: both segment entries name the manual in force (skillSha of tools/gov
   const bin = join(e.root, "bin");
   write(join(bin, "codex"), "#!/bin/sh\nexit 0\n");
   spawnSync("chmod", ["755", join(bin, "codex")]);
-  const o = govern(e, ["work", slug, "script", "--engine", "codex", "--open"], { PATH: `${bin}:${process.env.PATH}` });
+  const o = govern(e, ["work", slug, "script", "--engine", "codex", "--open"], { GOVERN_GROK_BIN: join(bin, "grok") });
   assert.equal(o.code, 0, o.err);
   const opened = ledger(e, slug).filter((x) => x.kind === "work")[1];
   assert.equal(opened.engine, "codex");
   assert.equal(opened.skillSha, skill);
+});
+
+test("work and done: grok is a third engine, detected from its shell markers, opened with a session id and the first prompt", () => {
+  const { e, slug } = video();
+  const bin = join(e.root, "bin");
+  write(join(bin, "grok"), `#!/bin/sh\nprintf '%s\\n' "$PWD" "$@" > "${join(e.root, "grok-open.txt")}"\nexit 0\n`);
+  spawnSync("chmod", ["755", join(bin, "grok")]);
+  // detected from the markers a Grok shell exports
+  assert.equal(govern(e, ["work", slug, "script"], { GROK_AGENT: "grok", GROK_SESSION_ID: "gs-1" }).code, 0);
+  assert.equal(govern(e, ["done", slug], { GROK_AGENT: "grok", GROK_SESSION_ID: "gs-1" }).code, 0);
+  const [w1, d1] = ledger(e, slug).filter((x) => x.kind === "work" || x.kind === "done").slice(-2);
+  assert.deepEqual([w1.engine, w1.session, d1.engine, d1.session], ["grok", "gs-1", "grok", "gs-1"]);
+  // with both markers in one process (not what --open produces: it strips the other engine's) Claude wins; the flag wins over both
+  assert.equal(govern(e, ["work", slug, "script"], { CLAUDE_CODE_SESSION_ID: "c-1", GROK_AGENT: "grok" }).code, 0);
+  assert.equal(ledger(e, slug).filter((x) => x.kind === "work").pop().engine, "claude");
+  assert.equal(govern(e, ["work", slug, "script", "--engine", "codex"], { GROK_AGENT: "grok" }).code, 0);
+  assert.equal(ledger(e, slug).filter((x) => x.kind === "work").pop().engine, "codex");
+  // --open from inside a Claude session: the grok child gets none of Claude's markers and the engine it records is grok;
+  // the binary is GOVERN_GROK_BIN when set
+  write(join(e.root, "own-grok"), `#!/bin/sh\nenv | cut -d= -f1 | grep -E '^(CLAUDECODE|CLAUDE_CODE_|GROK_)' | sort > "${join(e.root, "child-env.txt")}"\nexit 0\n`);
+  spawnSync("chmod", ["755", join(e.root, "own-grok")]);
+  const fromClaude = govern(e, ["work", slug, "script", "--engine", "grok", "--open"], { CLAUDECODE: "1", CLAUDE_CODE_SESSION_ID: "c-9", GOVERN_GROK_BIN: join(e.root, "own-grok") });
+  assert.equal(fromClaude.code, 0, fromClaude.err);
+  assert.equal(readFileSync(join(e.root, "child-env.txt"), "utf8"), "");
+  assert.equal(ledger(e, slug).filter((x) => x.kind === "work").pop().engine, "grok");
+  // and the other way: a claude child opened from a grok shell carries no grok marker
+  write(join(e.root, "own-claude"), `#!/bin/sh\nenv | cut -d= -f1 | grep -E '^GROK_' | sort > "${join(e.root, "child-env2.txt")}"\nexit 0\n`);
+  spawnSync("chmod", ["755", join(e.root, "own-claude")]);
+  assert.equal(govern(e, ["work", slug, "script", "--engine", "claude", "--open"], { GROK_AGENT: "grok", GROK_SESSION_ID: "gs-2", PATH: `${e.root}:${process.env.PATH}`, GOVERN_CLAUDE_BIN: join(e.root, "own-claude") }).code, 0);
+  assert.equal(readFileSync(join(e.root, "child-env2.txt"), "utf8"), "");
+  // --open: grok gets --session-id <uuid> and the first prompt, in the repo
+  const o = govern(e, ["work", slug, "script", "--engine", "grok", "--open"], { GOVERN_GROK_BIN: join(bin, "grok") });
+  assert.equal(o.code, 0, o.err);
+  const opened = ledger(e, slug).filter((x) => x.kind === "work").pop();
+  assert.equal(opened.engine, "grok");
+  assert.match(opened.session, /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
+  const argv = readFileSync(join(e.root, "grok-open.txt"), "utf8").split("\n");
+  assert.deepEqual(argv.slice(1, 3), ["--session-id", opened.session]);
+  assert.match(argv[3] ?? "", /govern brief /);
+  assert.equal(ledger(e, slug).pop().kind, "done");
+  assert.match(govern(e, ["work", slug, "script", "--engine", "gemini"]).err, /--engine must be claude, codex or grok/);
 });
 
 test("ask: unfilled required placeholders and unknown steps are refused before calling codex", () => {

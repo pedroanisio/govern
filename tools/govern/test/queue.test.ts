@@ -2,9 +2,9 @@ import { test } from "node:test";
 import { createRequire } from "node:module";
 const require = createRequire(import.meta.url);
 import assert from "node:assert/strict";
-import { readFileSync, existsSync } from "node:fs";
+import { readFileSync, existsSync, readdirSync, statSync, lstatSync } from "node:fs";
 import { join } from "node:path";
-import { makeEnv, govern, childEnv, jsonl, write, reply, present, HERE, tempDir } from "./helpers.ts";
+import { makeEnv, govern, childEnv, jsonl, write, reply, present, HERE, tempDir, setConfig } from "./helpers.ts";
 
 function env() {
   const e = makeEnv();
@@ -73,6 +73,151 @@ test("dispatch runs claude -p with read-only tools, outside this session's env, 
   assert.equal(call.nested, false);
   assert.deepEqual(call.argv.slice(0, 5), ["-p", "--output-format", "json", "--model", "sonnet"]);
   assert.deepEqual(call.argv.slice(5), ["--allowedTools", "Read", "Grep", "Glob", "--tools", "Read", "Grep", "Glob", "--disallowedTools", "Agent", "Bash", "Edit", "NotebookEdit", "Task", "TodoWrite", "WebFetch", "WebSearch", "Write", "--setting-sources", "", "--strict-mcp-config"], "sealed to the claude-read profile");
+});
+
+const GROK_TOGGLES = ["CLAUDE", "CURSOR"].flatMap((v) => ["AGENTS", "HOOKS", "MCPS", "RULES", "SKILLS"].map((k) => `GROK_${v}_${k}_ENABLED`));
+const privateHome = (e: ReturnType<typeof env>) => join(e.env.XDG_STATE_HOME!, "govern", "grok-home");
+const realAuth = (e: ReturnType<typeof env>) => write(join(e.env.HOME!, ".grok", "auth.json"), "DUMMY-NOT-A-TOKEN");
+
+test("dispatch runs grok --prompt-file sealed to grok-read: private HOME and a private GROK_HOME holding only the login, every loader off, cost and cache read from its json", () => {
+  const e = env();
+  realAuth(e);
+  govern(e, ["task", "send", "--to", "grok", "--project", "film", "--task", "review", "--summary", "review the hook", "--body", "BODY-GROK"]);
+  const r = govern(e, ["task", "dispatch"], { FAKE_GROK_RESULT: JSON.stringify({ kind: "ACK", summary: "looks right", body: "ok" }), CLAUDECODE: "1", CLAUDE_CODE_SESSION_ID: "parent", GROK_CONFIG: "/x/evil.toml", GROK_CONFIG_PATH: "/x/evil2.toml" });
+  assert.equal(r.code, 0, r.err);
+  assert.match(r.out, /→ grok: ACK in \d+s, 10k in \(90% cached\), 200 out, \$0\.012/);
+  const call = jsonl(join(e.root, "grok.log"))[0];
+  assert.equal(call.argv[0], "--prompt-file");
+  assert.deepEqual(call.argv.slice(2), ["--output-format", "json", "--tools", "Read,Grep,Glob", "--permission-mode", "dontAsk", "--deny", "MCPTool(*)", "--deny", "Read(**/auth.json)", "--max-turns", "25", "--cwd", call.cwd], "sealed to the grok-read profile");
+  assert.match(call.prompt, /BODY-GROK/);
+  for (const k of GROK_TOGGLES) assert.equal(call.env[k], "0", k);
+  assert.equal(call.env.GROK_MEMORY, "0");
+  assert.equal(call.env.GROK_CONFIG, null, "a config pointed at by the parent is not followed");
+  assert.equal(call.env.GROK_CONFIG_PATH, null);
+  assert.equal(call.env.CLAUDECODE, null, "the child does not think it runs inside this Claude Code session");
+  assert.equal(call.env.GROK_HOME, privateHome(e), "a govern-owned GROK_HOME, not the user's: its config, plugins and MCP servers are not found");
+  assert.notEqual(call.env.GROK_HOME, join(e.env.HOME!, ".grok"));
+  assert.deepEqual(call.homeInfo.files, ["auth.json", "config.toml"], "only the login and a minimal config");
+  assert.equal(call.homeInfo.authIsLink, true, "the login is linked, so a refresh by in-place write reaches the real file");
+  assert.equal(call.homeInfo.authTarget, join(e.env.HOME!, ".grok", "auth.json"));
+  assert.match(call.homeInfo.config, /\[compat\.claude\][^[]*mcps = false/);
+  assert.notEqual(call.env.HOME, e.env.HOME, "a private HOME hides the user's skills, plugins and Claude settings");
+  assert.equal(call.homeExists, true);
+  assert.equal(existsSync(call.env.HOME), false, "the private HOME is removed after the run");
+  assert.equal(existsSync(privateHome(e)), true, "the private GROK_HOME persists (grok keeps its sessions there)");
+  const ledger = jsonl(join(e.root, "queue", "ledger.jsonl"))[0];
+  assert.equal(ledger.agent, "grok");
+  assert.equal(ledger.profile, "grok-read");
+  assert.equal(ledger.usage.input, 10000);
+  assert.equal(ledger.usage.cached, 9000);
+  assert.equal(ledger.usage.costUsd, 0.0123);
+});
+
+test("GOVERN_GROK_HOME relocates the private GROK_HOME, and --max-turns follows GOVERN_GROK_MAX_TURNS", () => {
+  const e = env();
+  realAuth(e);
+  const where = join(e.root, "my-grok-home");
+  govern(e, ["task", "send", "--to", "grok", "--project", "film", "--task", "t", "--summary", "s"]);
+  assert.equal(govern(e, ["task", "dispatch"], { GOVERN_GROK_HOME: where, GOVERN_GROK_MAX_TURNS: "7", FAKE_GROK_RESULT: JSON.stringify({ kind: "ACK", summary: "s", body: "b" }) }).code, 0);
+  const call = jsonl(join(e.root, "grok.log"))[0];
+  assert.equal(call.env.GROK_HOME, where);
+  assert.equal(call.argv[call.argv.indexOf("--max-turns") + 1], "7");
+});
+
+test("the private GROK_HOME is closed to the world and re-pointed at the real login each run; a login that grok replaced by rename is copied back, never left stale", () => {
+  const e = env();
+  const real = realAuth(e);
+  const send = () => govern(e, ["task", "send", "--to", "grok", "--project", "film", "--task", "t", "--summary", "s"]);
+  send();
+  assert.equal(govern(e, ["task", "dispatch"], { FAKE_GROK_RESULT: JSON.stringify({ kind: "ACK", summary: "s", body: "b" }), FAKE_GROK_REFRESH: "1" }).code, 0);
+  assert.equal(statSync(privateHome(e)).mode & 0o777, 0o700);
+  assert.equal(readFileSync(real, "utf8"), "REFRESHED-DUMMY", "the refreshed login reached the real auth file");
+  assert.equal(statSync(real).mode & 0o777, 0o600);
+  assert.equal(lstatSync(join(privateHome(e), "auth.json")).isSymbolicLink(), true, "and the link is back for the next run");
+  send();
+  govern(e, ["task", "dispatch"], { FAKE_GROK_RESULT: JSON.stringify({ kind: "ACK", summary: "s", body: "b" }) });
+  assert.equal(jsonl(join(e.root, "grok.log"))[1].homeInfo.authIsLink, true);
+});
+
+test("a grok run with no login file still runs sealed: the private home holds the config only and grok reports its own error", () => {
+  const e = env();
+  govern(e, ["task", "send", "--to", "grok", "--project", "film", "--task", "t", "--summary", "s"]);
+  govern(e, ["task", "dispatch"], { FAKE_GROK_ERRJSON: "not logged in" });
+  assert.deepEqual(jsonl(join(e.root, "grok.log"))[0].homeInfo.files, ["config.toml"]);
+});
+
+const budget = (e: ReturnType<typeof env>) => {
+  e.env.GOVERN_STATE = join(e.root, "state");
+  setConfig(e, { allowances: [{ name: "gb", consumer: "profile:grok-read", unit: "model-usd", limit: 10, taskEstimate: 2 }] });
+  return () => (existsSync(join(e.root, "state", "allowances", "gb", "spent.jsonl")) ? jsonl(join(e.root, "state", "allowances", "gb", "spent.jsonl")) : []);
+};
+
+test("a grok run whose usage is missing or incomplete settles as reserved, never as 0, and records no zero usage; a complete run settles at its own cost", () => {
+  for (const [name, mode, extra] of [["omitted", "1", {}], ["incomplete", "incomplete", {}]] as const) {
+    const e = env();
+    const spent = budget(e);
+    govern(e, ["task", "send", "--to", "grok", "--project", "film", "--task", "t", "--summary", name]);
+    const r = govern(e, ["task", "dispatch"], { FAKE_GROK_NOUSAGE: mode, FAKE_GROK_RESULT: JSON.stringify({ kind: "ACK", summary: "s", body: "b" }), ...extra });
+    assert.equal(r.code, 0, r.err);
+    assert.equal(present(spent()[0], "a spent row").actual, 2, `${name}: charged as reserved`);
+    const led = jsonl(join(e.root, "queue", "ledger.jsonl"))[0];
+    assert.equal(led.usage, undefined, `${name}: no usage is better than zero usage`);
+    assert.doesNotMatch(r.out, /0k in/, name);
+  }
+  const e = env();
+  const spent = budget(e);
+  govern(e, ["task", "send", "--to", "grok", "--project", "film", "--task", "t", "--summary", "ok"]);
+  govern(e, ["task", "dispatch"], { FAKE_GROK_RESULT: JSON.stringify({ kind: "ACK", summary: "s", body: "b" }) });
+  assert.equal(present(spent()[0], "a spent row").actual, 0.0123);
+});
+
+test("a grok error with grok's own json reports its message, and still settles as reserved (what it spent is unknown)", () => {
+  const e = env();
+  const spent = budget(e);
+  govern(e, ["task", "send", "--to", "grok", "--project", "film", "--task", "t", "--summary", "s"]);
+  const r = govern(e, ["task", "dispatch"], { FAKE_GROK_ERRJSON: "model grok-9 is not available" });
+  assert.match(r.out, /→ grok: FAILED/);
+  const failed = readdirSync(join(e.root, "queue", "failed")).filter((x) => x.endsWith(".json")).map((x) => JSON.parse(readFileSync(join(e.root, "queue", "failed", x), "utf8")));
+  assert.match(present(failed[0], "the failed message").result.error, /^grok: model grok-9 is not available/);
+  assert.equal(present(spent()[0], "a spent row").actual, 2);
+});
+
+test("a grok run that times out is an error and is charged as reserved, not as nothing", () => {
+  const e = env();
+  const spent = budget(e);
+  govern(e, ["task", "send", "--to", "grok", "--project", "film", "--task", "t", "--summary", "s"]);
+  const r = govern(e, ["task", "dispatch"], { FAKE_GROK_SLEEP: "5", GOVERN_QUEUE_TIMEOUT_SEC: "1" });
+  assert.match(r.out, /→ grok: FAILED/);
+  assert.equal(present(spent()[0], "a spent row").actual, 2);
+});
+
+test("grok --write maps to grok-write, which may edit; a grok run that fails is reported like claude's", () => {
+  const e = env();
+  mkdirSync(join(e.projects, "film"), { recursive: true });
+  govern(e, ["task", "send", "--to", "grok", "--write", "--project", "film", "--task", "fix", "--summary", "fix it"]);
+  assert.match(govern(e, ["task", "list"]).out, /TASK\s+owner→grok/);
+  const r = govern(e, ["task", "dispatch"], { FAKE_GROK_RESULT: JSON.stringify({ kind: "ACK", summary: "done", body: "ok" }) });
+  assert.match(r.out, /→ grok: ACK/);
+  const call = jsonl(join(e.root, "grok.log"))[0];
+  assert.deepEqual(call.argv.slice(2, 12), ["--output-format", "json", "--tools", "Read,Grep,Glob,Edit,Write", "--permission-mode", "acceptEdits", "--allow", "Edit(./**)", "--allow", "Write(./**)"], "edits are scoped to the task's folder, never a bare Edit/Write");
+  assert.ok(!call.argv.includes("Edit") && !call.argv.includes("Write"));
+  const denies = call.argv.flatMap((x: string, i: number) => (call.argv[i - 1] === "--deny" ? [x] : []));
+  for (const d of ["Edit(**/.grok/**)", "Write(**/.grok/**)", "Edit(**/.mcp.json)", "Write(**/.mcp.json)", "Edit(**/.claude/**)", "Write(**/.claude/**)", "Edit(**/.cursor/**)", "Write(**/.cursor/**)", "MCPTool(*)", "Read(**/auth.json)"])
+    assert.ok(denies.includes(d), `denied: ${d}`);
+  assert.equal(call.cwd, join(e.projects, "film"));
+  assert.equal(jsonl(join(e.root, "queue", "ledger.jsonl"))[0].profile, "grok-write");
+  for (const [name, extra, why] of [
+    ["exit", { FAKE_GROK_EXIT: "3", FAKE_GROK_RAW: "" }, /grok: no JSON result \(exit 3\)/],
+    ["raw", { FAKE_GROK_RAW: "not json at all" }, /grok: no JSON result/],
+    ["stop", { FAKE_GROK_STOP: "cancelled", FAKE_GROK_RESULT: "" }, /grok: stopped with cancelled/],
+  ] as const) {
+    govern(e, ["task", "send", "--to", "grok", "--project", "film", "--task", `t-${name}`, "--summary", name]);
+    const f = govern(e, ["task", "dispatch"], extra);
+    assert.match(f.out, /→ grok: FAILED/, name);
+    const failed = readdirSync(join(e.root, "queue", "failed")).filter((x) => x.endsWith(".json")).map((x) => JSON.parse(readFileSync(join(e.root, "queue", "failed", x), "utf8")));
+    const m = present(failed.find((x) => x.task === `t-${name}`), `the failed ${name} message`);
+    assert.match(m.result.error, why, name);
+  }
 });
 
 test("--write gives the runner write access; replies thread back to the original", () => {

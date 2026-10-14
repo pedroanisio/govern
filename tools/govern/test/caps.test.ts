@@ -419,6 +419,65 @@ test("the check works for codex profiles through the same sealed runner", () => 
   assert.equal(argv[argv.indexOf("-s") + 1], "read-only");
 });
 
+// ---------------------------------------------------------------- grok profiles
+
+test("grok-read and grok-write are built in, listed with the engines each capability supports, and shown with their grok flags", () => {
+  const e = env();
+  const list = govern(e, ["caps"]).out;
+  assert.match(list, /^  read\s+read\s+claude, codex, grok\s/m);
+  assert.match(list, /^  web\s+read\s+claude only\s/m);
+  assert.match(list, /^  grok-read\s+grok\s+read\s.*check: not run/m);
+  assert.match(list, /^  grok-write\s+grok\s+read\+edit\s/m);
+  const r = govern(e, ["caps", "grok-write"]).out;
+  assert.match(r, /engine: grok/);
+  assert.match(r, /^grok: --tools Read,Grep,Glob,Edit,Write · --permission-mode acceptEdits · --allow Edit\(\.\/\*\*\) --allow Write\(\.\/\*\*\) · --deny Edit\(\*\*\/\.grok\/\*\*\).* · private HOME and GROK_HOME \(login only\) · GROK_\(CLAUDE\|CURSOR\)_\(AGENTS\|HOOKS\|MCPS\|RULES\|SKILLS\)_ENABLED=0/m);
+  assert.match(r, /no dollar cap/, "grok has no budget flag: the reservation is not a cap");
+  assert.match(govern(e, ["caps", "grok-read"]).out, /^grok: --tools Read,Grep,Glob · --permission-mode dontAsk · --deny MCPTool\(\*\).* · private HOME and GROK_HOME/m);
+  assert.match(govern(e, ["caps", "researcher"]).out, /^grok: not available on grok \(web, gh-read\)/m);
+  assert.match(govern(e, ["caps", "grok-read"]).out, /^grok: .*not fully sealed \(project-level config under the cwd, built-in agents and bundled skills still load; no dollar cap, only --max-turns\)/m);
+});
+
+test("a grok profile that holds a capability grok cannot honour fails to load with a clear message; grok names are reserved", () => {
+  const e = env();
+  write(join(e.root, "caps", "bad.json"), JSON.stringify({ version: 1, profiles: [{ name: "grok-web", engine: "grok", capabilities: ["web"] }] }));
+  const r = govern(e, ["caps"]);
+  assert.equal(r.code, 2);
+  assert.match(r.err, /profile grok-web: capability web is not available on grok/);
+  write(join(e.root, "caps", "bad.json"), JSON.stringify({ version: 1, profiles: [{ name: "grok", engine: "grok", capabilities: ["read"] }] }));
+  assert.match(govern(e, ["caps"]).err, /profile name "grok" is reserved/);
+});
+
+test("an allow pattern that can run grok must come with the spend effect", () => {
+  const e = env();
+  write(join(e.root, "caps", "g.json"), JSON.stringify({ version: 1, capabilities: [{ name: "gk", description: "d", call: "Bash(grok:*)", claude: { allow: ["Bash(grok:*)"] }, effect: "read" }] }));
+  assert.match(govern(e, ["caps"]).err, /can run grok; declare effect spend \(it says read\)/);
+});
+
+test("the check runs the same probes for a grok profile, including the negative probe, with the profile's own flags", () => {
+  const e = env();
+  const probes = script(e, "gk", [ok("read", "NONCE"), no("edit")]);
+  const r = govern(e, ["caps", "--check", "grok-read"], { FAKE_GROK_SCRIPT: probes, FAKE_GROK_COUNTER: join(e.root, "grok-count") });
+  assert.equal(r.code, 0, r.out + r.err);
+  assert.match(r.out, /grok-read: check passed \(2 probes\)/);
+  const calls = jsonl(join(e.root, "grok.log"));
+  assert.equal(calls.length, 2, "one grant and one negative probe");
+  for (const c of calls) {
+    assert.equal(c.argv[c.argv.indexOf("--tools") + 1], "Read,Grep,Glob", "the probe runs under the profile's own grant");
+    assert.match(c.cwd, /checks\/grok-read\/run-/);
+  }
+  const rec = checks(e, "grok-read");
+  assert.deepEqual(rec.results.map((x: { capability: string; status: string }) => [x.capability, x.status]), [["read", "ok"], ["not-edit", "ok"]]);
+  assert.match(govern(e, ["caps", "grok-read"]).out, /check: passed/);
+});
+
+test("the negative probe fails a grok check when a capability the profile lacks works anyway", () => {
+  const e = env();
+  const leak = script(e, "gk-leak", [ok("read", "NONCE"), ok("edit", "wrote it")]);
+  const r = govern(e, ["caps", "--check", "grok-read"], { FAKE_GROK_SCRIPT: leak, FAKE_GROK_COUNTER: join(e.root, "grok-count") });
+  assert.equal(r.code, 1);
+  assert.match(r.out, /not-edit\s+leaked/);
+});
+
 // ---------------------------------------------------------------- the dispatcher never crashes on a message it cannot seal
 
 /** A message written straight into the queue, as an older sender or a hand edit would leave it (no profile unless given). */

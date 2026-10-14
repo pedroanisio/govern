@@ -31,7 +31,7 @@ test("desk shows lanes, the open work segment, the owner's inbox, the queue and 
   assert.match(d, /film\s+long\s+1\/8 plan\s+needs final/);
   assert.match(d, /ops\/engine\s+ops\s+2\/4 doing\s+● claude 0m\s+0m: v0\.5\.0 waits for CI/);
   assert.match(d, /YOUR INBOX \(1\)[\s\S]*REVIEW\s+from codex \[film\] all supported/);
-  assert.match(d, /codex: 0 waiting, 0 running · claude: 1 waiting, 0 running · failed: 0 · dispatcher: not running/);
+  assert.match(d, /codex: 0 waiting, 0 running · claude: 1 waiting, 0 running · grok: 0 waiting, 0 running · failed: 0 · dispatcher: not running/);
   assert.match(d, /TOKENS TODAY[\s\S]*film\s+1 runs\s+20k in\s+300 out/);
 });
 
@@ -47,4 +47,17 @@ test("dispatch --loop writes its pid for desk and removes it on SIGTERM", async 
   p.kill("SIGTERM");
   await new Promise((r) => p.on("close", r));
   assert.equal(existsSync(pidf), false);
+});
+
+test("desk counts grok queue runs and their cost in today's tokens, lists grok beside the other runners and shows an open grok segment", () => {
+  const e = env();
+  govern(e, ["new", "film", "--kind", "long", "--title", "Film"]);
+  govern(e, ["work", "film", "plan"], { GROK_AGENT: "grok", GROK_SESSION_ID: "gs-1" });
+  govern(e, ["task", "send", "--to", "grok", "--project", "film", "--task", "review", "--summary", "review it"]);
+  govern(e, ["task", "dispatch"], { FAKE_GROK_RESULT: JSON.stringify({ kind: "ACK", summary: "fine", body: "ok" }) });
+  govern(e, ["task", "send", "--to", "grok", "--project", "film", "--task", "later", "--summary", "later"]);
+  const d = govern(e, ["desk"]).out;
+  assert.match(d, /grok: 1 waiting, 0 running/);
+  assert.match(d, /film\s+long\s+\S+\s+plan\s+.*● grok/);
+  assert.match(d, /TOKENS TODAY[\s\S]*film\s+1 runs\s+10k in\s+200 out\s+\$0\.01/);
 });

@@ -7,6 +7,7 @@
       "call": "Read, Grep, Glob",
       "claude": { "allow": ["Read", "Grep", "Glob"] },
       "codex": { "sandbox": "read-only" },
+      "grok": { "tools": ["Read", "Grep", "Glob"] },
       "effect": "read",
       "probe": { "instruction": "Read the file probe.txt in the current folder and put its exact contents in evidence.", "expect": "{nonce}" }
     },
@@ -16,6 +17,7 @@
       "call": "Edit, Write (permission mode acceptEdits)",
       "claude": { "allow": ["Edit", "Write"], "permissionMode": "acceptEdits" },
       "codex": { "sandbox": "workspace-write" },
+      "grok": { "tools": ["Edit", "Write"], "allow": ["Edit(./**)", "Write(./**)"], "deny": ["Edit(**/.grok/**)", "Write(**/.grok/**)", "Edit(**/.mcp.json)", "Write(**/.mcp.json)", "Edit(**/.claude/**)", "Write(**/.claude/**)", "Edit(**/.cursor/**)", "Write(**/.cursor/**)"], "permissionMode": "acceptEdits" },
       "effect": "write",
       "probe": { "instruction": "Create the file written.txt in the current folder containing exactly the contents of probe.txt, then say in evidence what you wrote.", "file": { "path": "written.txt", "contains": "{nonce}" } }
     },
@@ -41,6 +43,8 @@
     { "name": "claude-write", "description": "claude -p, may edit files (--to claude --write)", "engine": "claude", "capabilities": ["read", "edit"], "selfTest": "optional" },
     { "name": "codex-read", "description": "codex exec, read-only sandbox (what --to codex does)", "engine": "codex", "capabilities": ["read"], "selfTest": "optional" },
     { "name": "codex-write", "description": "codex exec, workspace-write sandbox (--to codex --write)", "engine": "codex", "capabilities": ["read", "edit"], "selfTest": "optional" },
+    { "name": "grok-read", "description": "grok --prompt-file, read-only tools (--to grok)", "engine": "grok", "capabilities": ["read"], "selfTest": "optional" },
+    { "name": "grok-write", "description": "grok --prompt-file, may edit files (--to grok --write)", "engine": "grok", "capabilities": ["read", "edit"], "selfTest": "optional" },
     { "name": "researcher", "description": "claude -p sonnet: web and GitHub lookups, reads files", "engine": "claude", "model": "sonnet", "capabilities": ["web", "gh-read", "read"] }
   ]
 }

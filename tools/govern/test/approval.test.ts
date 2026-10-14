@@ -1,9 +1,10 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync, rmSync, mkdirSync } from "node:fs";
+import { readFileSync, rmSync, mkdirSync, symlinkSync } from "node:fs";
+import { spawnSync } from "node:child_process";
 import { join } from "node:path";
 import { userInfo } from "node:os";
-import { makeEnv, govern, jsonl, write, asSession, typed, present } from "./helpers.ts";
+import { makeEnv, govern, jsonl, write, asSession, typed, present, childEnv, HERE } from "./helpers.ts";
 import { normalize, typedText, findTyped } from "../lib/approval.ts";
 import { parseProcess } from "../lib/process.ts";
 
@@ -163,6 +164,43 @@ test("an approval from a Codex shell is refused, even under a Claude session", (
     assert.match(r.err, /own terminal or a Claude session/);
   }
   assert.deepEqual(state(e, "film").approvals, {});
+});
+
+test("an approval from a Grok shell is refused, even under a Claude session: grok has no transcript govern can rely on", () => {
+  const e = lane();
+  asSession(e, SID, [typed("approved")]);
+  for (const marker of ["GROK_AGENT", "GROK_SESSION_ID"]) {
+    const r = govern(e, ["approve", "film", "script", "--quote", "approved"], { [marker]: "1" });
+    assert.equal(r.code, 1, marker);
+    assert.match(r.err, /Grok session cannot be verified \(.*is set/);
+    assert.match(r.err, /own terminal or a Claude session/);
+  }
+  assert.deepEqual(state(e, "film").approvals, {});
+});
+
+/** Run govern with its own GROK_* variables removed (what `env -u` does in a Grok shell), under a parent that either has them in its
+ *  environ or is a process named `grok`. */
+function underGrok(e: ReturnType<typeof makeEnv>, how: "environ" | "comm", args: string[]) {
+  const script = write(join(e.root, "spawn-govern.mjs"), `import {spawnSync} from "node:child_process";
+const env = {...process.env}; delete env.GROK_AGENT; delete env.GROK_SESSION_ID;
+const r = spawnSync(process.execPath, ["--disable-warning=ExperimentalWarning", ${JSON.stringify(join(HERE, "..", "govern.ts"))}, ...${JSON.stringify(args)}], {env, encoding: "utf8"});
+process.stdout.write(JSON.stringify({code: r.status, err: r.stderr}));`);
+  const bin = join(e.root, "grok");
+  if (how === "comm") symlinkSync("/bin/sh", bin); // node renames its main thread, a shell keeps the name it was started under
+  const base = childEnv(e);
+  const r = spawnSync(how === "comm" ? bin : process.execPath, how === "comm" ? ["-c", `"$0" "$1"; true`, process.execPath, script] : [script], { env: how === "environ" ? { ...base, GROK_AGENT: "1" } : base, encoding: "utf8" });
+  return JSON.parse(r.stdout);
+}
+
+test("an approval is refused when grok's variables were removed from the shell but a parent process is grok (by its environ or by its name)", () => {
+  for (const how of ["environ", "comm"] as const) {
+    const e = lane();
+    asSession(e, SID, [typed("approved")]);
+    const r = underGrok(e, how, ["approve", "film", "script", "--quote", "approved"]);
+    assert.equal(r.code, 1, how);
+    assert.match(r.err, /Grok session cannot be verified \(a parent process/, how);
+    assert.deepEqual(state(e, "film").approvals, {}, how);
+  }
 });
 
 test("from a plain terminal the approval is recorded as typed by the OS user", () => {

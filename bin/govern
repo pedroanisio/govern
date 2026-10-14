@@ -16,9 +16,9 @@
 #     govern alerts SLUG [--ack ID]  |  subprocess SLUG STAGE  |  recover SLUG --action retry|compensated --quote Q
 #     govern process list|show NAME  |  process pin SLUG  |  process migrate SLUG --map JSON --quote Q  |  check SLUG [--set CMD --stage S]  |  check SLUG STAGE --accept --quote Q
 #     govern advance SLUG [--stage STAGE] [--note EVIDENCE]  |  dep SLUG [--after LANE[:STAGE]] [--rm LANE]  |  hook stop
-#     govern run SLUG CMD [--bg] [--on RESOURCE] [--estimate HOURS] [-- ARGS]  |  allow NAME --extra N --quote "…" [--by OWNER]  |  resources [NAME]  |  wait SLUG [JOB] [--timeout S]  |  jobs SLUG  |  kill SLUG [JOB]
+#     govern run SLUG CMD [--bg] [--on RESOURCE [--override-resource]] [--estimate HOURS] [-- ARGS]  |  allow NAME --extra N --quote "…" [--by OWNER]  |  resources [NAME]  |  wait SLUG [JOB] [--timeout S]  |  jobs SLUG  |  kill SLUG [JOB]
 #     govern slice SLUG RECIPE [--machines N] [--estimate HOURS] [--bg]
-#     govern up RESOURCE [--lane SLUG] [--count N]  |  down TAG|ID [--forget]  |  reap [RESOURCE] [--yes]
+#     govern up RESOURCE [--lane SLUG] [--count N] [--timeout S]  |  down TAG|ID [--forget] [--timeout S]  |  reap [RESOURCE] [--yes] [--timeout S]
 #     govern log SLUG [JOB] [--tail N] [--grep RE]
 #     govern prompts [PROCESS]  |  ask SLUG STEP [--file F]... [--var K=V]... [--image PNG]... [--effort E] [--model M]
 #     govern usage [SLUG...] [--since DATE]  |  ctx  |  desk  |  tune  |  publish SLUG
@@ -26,11 +26,11 @@
 #     govern help [COMMAND]  |  COMMAND --help  |  manual [PROCESS]  |  install-skill [SKILLS-DIR] [--check]
 #     govern task send --to codex|claude|auto|owner|PROFILE|SESSION --project P --task T --kind K --summary S
 #                      (--body B | --body-file F) [--file PATH]... [--reply-to ID] [--write | --profile P]
-#                      [--lane SLUG] [--from NAME]
+#                      [--lane SLUG] [--from NAME] [--estimate-usd N]
 #     govern task list [--to X] [--state S] [--project P]  |  show ID  |  inbox [--as NAME] [--all] [--hook]
 #     govern task close ID [--as NAME] [--note T]  |  forward ID --to NAME [--as NAME]
 #     govern task reply ID --kind K --summary S (--body B | --body-file F) [--as NAME]
-#     govern task dispatch [--max N] [--only codex|claude] [--loop --interval S [--reap-every S]]  |  install-service [--interval S]
+#     govern task dispatch [--max N] [--only codex|claude] [--loop --interval S [--reap-every S]]  |  install-service [--interval S] [--reap-every S]
 # DESCRIPTION
 #     The control surface an AI uses while it works on a video with the owner. State (stage, decisions,
 #     approvals, commands, files) lives in the lane's govern.json under the workspace's projects folder, so a session starts from
@@ -63,24 +63,117 @@
 #     `task inbox --hook`), answers with `reply`, and `close`s or `forward`s what is not for it. NAME defaults to
 #     GOVERN_AS, else the registered session found up this process's parent chain.
 # OPTIONS
-#     --bg          run detached; wait with `govern wait`
-#     --timeout S   wait at most S seconds (default 540); exit 124 if the job is still running
-#     --quote Q     approve: the owner's own words (required; only the owner approves)
-#     --open        work: launch a fresh interactive claude or codex session for this video
-#     --process P   new: the process the lane follows (govern process list)
-#     --note T      advance: the evidence that a stage with no check is done (also recorded as a decision)
-#     --check       install-skill: install nothing; exit 1 when the installed SKILL.md is missing or differs
-#     --help        after a command (`govern advance --help`): that command's lines, the same as `govern help advance`;
-#                   as the first word (`govern --help`, `-h`): this manpage. Every command's flags: `govern help`.
+#     Each entry names the commands that take the flag; `govern help COMMAND` shows one command's lines.
+#     -h, --help              every command: after a command (`govern advance --help`), that command's lines, the same as
+#                             `govern help advance`; as the first word (`govern --help`, `-h`), this manpage
+#     --nested                init: make a workspace inside another workspace (refused otherwise)
+#     --process P             new: the process the lane follows (govern process list)
+#     --kind K                new, task send, task reply: new: the lane's kind (long|short|ops, or one the process names);
+#                             task: the message kind (TASK, the default for send; ACK, REVIEW, HANDOFF, BLOCKED…)
+#     --title T               new: the lane's title (default: its slug)
+#     --lang L                new: the lane's language, en (default) or pt-BR
+#     --parent SLUG           new: the lane this one comes from (shown in its brief)
+#     --engine E              work, done: claude or codex (default: claude inside a Claude Code session, else codex)
+#     --open                  work: launch a fresh interactive claude or codex session for this lane
+#     --quote Q               approve, reject, human, allow, check: the decision owner's own words (in a Claude session,
+#                             from a message the person typed; a Codex or Grok session is refused); allow: it must contain N;
+#                             human: the person's instruction to claim, delegate or complete
+#     --by NAME               approve, reject, allow: the decision owner, required when the gate or allowance names one other
+#                             than owner; on a policy gate, the process person this OS account is mapped to
+#     --extra N               allow: raise the allowance's limit by N for its current period
+#     --timeout S             cmd, wait, up, down, reap: cmd: the command's foreground limit (default 1800); wait: block at
+#                             most S seconds (default 540), exit 124 if the job still runs; up, down, reap: the provider
+#                             command's limit (default 120)
+#     --rm NAME               cmd, dep: remove the named command (cmd) or the dependency on that lane (dep)
+#     --resource R            cmd: the resource the command runs on (checked now), so run needs no --on
+#     --set X                 data, check: data: a JSON object of case fields merged into the lane (changed data invalidates
+#                             policy votes and active human task completion); check: set the lane's own exit check for
+#                             --stage (ledgered; a swap is flagged)
+#     --stage S               check, advance: check: the stage --set applies to, or the active stage to check; advance: the
+#                             active stage to move on from (a lane with parallel stages)
+#     --accept                check: the owner accepts that stage's flagged check changes (with --quote)
+#     --note T                advance, task close: advance: the evidence that a stage with no check is done (also recorded
+#                             as a decision); task close: a note recorded with the close
+#     --after LANE[:STAGE]    dep: this lane waits on that lane (all of it, or past STAGE)
+#     --bg                    run, slice: run detached and print the job id; wait with `govern wait`
+#     --on R                  run: run the command on a declared resource (locked unless it says lock: false)
+#     --override-resource     run: let --on move a command off its own resource (recorded in the job)
+#     --estimate HOURS        run, slice: the time reserved on the resource's allowance; the job is stopped at it
+#     --machines N            slice: how many machines the recipe starts (refused above the resource's maxMachines)
+#     --lane SLUG             up, task send: up: the lane the machines are booked to (default: the job it runs inside);
+#                             task send: the lane whose gate authorises a spend, publish or push profile
+#     --count N               up: how many instances to start (default 1)
+#     --forget                down: book the machine time without running stop, for a machine that is already gone
+#     --yes                   reap: run stop on the instances found and ledger the reap (default: list only)
+#     --tail N                log: the last N lines (default 40)
+#     --grep RE               log: only the lines matching RE
+#     --file F                ask, task send: a file for the step or the message (repeatable)
+#     --var K=V               ask: a prompt variable (repeatable)
+#     --image PNG             ask: an image for the step (repeatable)
+#     --effort E              ask: low, medium or high
+#     --model M               ask: the Codex model
+#     --since DATE            usage: count only work segments and machine time from YYYY-MM-DD on
+#     --check                 install-skill, caps: install-skill: install nothing, exit 1 when the installed SKILL.md is
+#                             missing or differs; caps: self-test a profile's grants in a sealed session
+#     --to X                  human, task send, task list, task forward: human delegate: the person the task goes to; send:
+#                             codex, claude, auto, owner, a profile or a live session; list: only messages to X; forward:
+#                             the new recipient
+#     --project P             task send, task list: the message's project; list: only that project's messages
+#     --task T                task send: the task the message belongs to
+#     --summary S             task send, task reply: the one-line summary
+#     --body B                task send, task reply: the message text
+#     --body-file F           task send, task reply: read the message text from F
+#     --reply-to ID           task send: the message this one answers
+#     --from NAME             task send: the sender (default: the registered session up the parent chain)
+#     --write                 task send: let the runner change files in the project folder (default: read-only)
+#     --profile P             task send: seal the run to profile P's capabilities (govern caps); not with --write
+#     --estimate-usd N        task send: what the run is expected to cost, reserved against a matching allowance
+#     --state S               task list: only messages in state open, claimed, done or failed
+#     --as NAME               human-inbox, human, task inbox, task close, task forward, task reply: who you are; human,
+#                             human-inbox: a process person, refused unless this OS account is mapped to it; task: default
+#                             GOVERN_AS, else this session
+#     --all                   task inbox: messages in every state, not only open ones
+#     --hook                  task inbox: the UserPromptSubmit hook form, silent when empty
+#     --max N                 task dispatch: run at most N messages
+#     --only E                task dispatch: only messages for codex or claude
+#     --loop                  task dispatch: keep dispatching every --interval seconds
+#     --interval S            task dispatch, task install-service: seconds between rounds (default 30)
+#     --reap-every S          task dispatch, task install-service: list each resource's tagged instances every S seconds
+#                             into state for the desk (off by default; never stops a machine)
 #     A value flag takes the next word even when it starts with --, unless that word is a govern flag;
 #     give such a value as --flag=VALUE. A flag the command does not declare is refused (exit 2).
 # EXIT STATUS
 #     0 ok · 1 a failed check (install-skill --check, a lane status or desk could not read, a failed exit check)
 #     · 2 usage or state error · 3 a Codex reply failed verification · a job's exit code for run/wait · 124 wait timed out
 # ENVIRONMENT
-#     GOVERN_REPO (the workspace; else the nearest .govern/ or govern.config.json above the cwd) · GOVERN_PROJECTS · GOVERN_CODEX_BIN · GOVERN_PYTHON · GOVERN_CTX_WARN (150000)
-#     GOVERN_CLAUDE_PROJECTS (~/.claude/projects) · GOVERN_CODEX_SESSIONS (~/.codex/sessions)
-#     GOVERN_PROCESSES (workspace processes folder) · GOVERN_QUEUE · GOVERN_WORKFLOW · GOVERN_PROMPTS · GOVERN_TUNING_LOG (each overrides govern.config.json) · GOVERN_SESSIONS_DIR (~/.claude/sessions) · GOVERN_AS (session name)
+#     Workspace: GOVERN_REPO (the workspace; else the nearest .govern/ or govern.config.json above the cwd).
+#     Each overrides its config key: GOVERN_PROJECTS · GOVERN_QUEUE · GOVERN_TUNING_LOG · GOVERN_PROCESSES · GOVERN_WORKFLOW
+#     · GOVERN_CAPABILITIES (must exist when set) · GOVERN_STATE (locks and reap state; default govern-state beside the
+#     projects folder) · GOVERN_PROMPTS (replaces every prompts folder) · GOVERN_RESOURCES, GOVERN_ALLOWANCES (a file
+#     read instead of the resources or allowances key).
+#     Sessions: GOVERN_AS (session name) · GOVERN_SESSIONS_DIR (~/.claude/sessions) · GOVERN_CLAUDE_PROJECTS
+#     (~/.claude/projects) · GOVERN_CODEX_SESSIONS (~/.codex/sessions) · GOVERN_CLAUDE_SETTINGS (~/.claude/settings.json,
+#     read and written by tune) · GOVERN_GROK_SESSIONS (else the sessions of govern's grok home and of the user's)
+#     · GOVERN_GROK_HOME (govern's private grok home; default $XDG_STATE_HOME, else ~/.local/state, /govern/grok-home)
+#     · GROK_HOME (the user's grok home, where the login is read from; default ~/.grok).
+#     Programs: GOVERN_CODEX_BIN (codex) · GOVERN_CLAUDE_BIN (claude) · GOVERN_GROK_BIN (grok) · GOVERN_PYTHON (python3;
+#     fills {python}).
+#     Limits and models: GOVERN_CTX_WARN (150000) · GOVERN_TARGET_CTX (150000, tune) · GOVERN_MAX_INLINE (60000, ask)
+#     · GOVERN_QUEUE_MAX_INLINE (40000) · GOVERN_QUEUE_CLAUDE_MODEL (sonnet) · GOVERN_QUEUE_CODEX_EFFORT (medium)
+#     · GOVERN_CAPS_CHECK_MODEL (haiku, caps --check) · GOVERN_GROK_CHECK_MODEL (the profile's model, caps --check)
+#     · GOVERN_QUEUE_GROK_MODEL (grok's default) · GOVERN_GROK_MAX_TURNS (25; grok has no dollar cap)
+#     · GOVERN_QUEUE_TIMEOUT_SEC (900, one dispatched run).
+#     Test and diagnostic: GOVERN_NOW (the allowances clock) · GOVERN_PROC=ps (read the process table with ps).
+#     Set for what govern runs: GOVERN_JOB_ID, GOVERN_JOB_DIR (every job; slice and up read GOVERN_JOB_DIR to find the
+#     job they run in) · GOVERN_TAG, GOVERN_LANE, GOVERN_RESOURCE, GOVERN_COUNT, GOVERN_ID (a resource's up, down and
+#     list commands) · GOVERN_PIECES, GOVERN_OUT, GOVERN_TAG, GOVERN_PIECE, GOVERN_ID (a slice recipe's steps)
+#     · GOVERN_REPLY_FILE (a reply check). task install-service copies PATH, GOVERN_STATE and GOVERN_PROJECTS into
+#     the unit; a queued run drops CLAUDECODE and the other CLAUDE_CODE_ variables.
+#     Read from Claude Code and Codex: CLAUDE_CODE_SESSION_ID (the session work, done, ctx and approve act for)
+#     · CLAUDE_CODE_AUTO_COMPACT_WINDOW (the compact window; tune reads and sets it in the Claude settings file) · CLAUDECODE, CLAUDE_CODE_ENTRYPOINT
+#     (mark a Claude session) · CODEX_THREAD_ID, CODEX_SESSION_ID, CODEX_SANDBOX, CODEX_SANDBOX_NETWORK_DISABLED (mark a
+#     Codex session, whose approve and allow are refused) · GROK_AGENT, GROK_SESSION_ID (mark a grok session, whose
+#     approve is refused; a grok process among the callers refuses it too).
 # EXAMPLES
 #     govern work a-millionth-apart/shorts script
 #     govern run golden-pixel fb gates sheets --bg && govern wait golden-pixel
@@ -90,9 +183,10 @@
 #     govern advance --help                # advance's usage and flags
 #     govern advance ops/govern            # runs the test check; moves to review only when it passes
 # KEYWORDS
-#     video workflow codex claude tokens usage orchestration pals-notes youtube
+#     video workflow codex claude grok tokens usage orchestration pals-notes youtube
 # SEE ALSO
-#     tools/govern/SKILL.md, tools/govern/BUSINESS.md, docs/govern-design.md
+#     st-man - tools/govern/SKILL.md (govern manual) - tools/govern/processes/video/MANUAL.md (govern manual video)
+#     - tools/govern/BUSINESS.md - tools/govern/PURPOSE.md
 # MANPAGE <<<
 set -eu
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)

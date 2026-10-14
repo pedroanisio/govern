@@ -4,7 +4,7 @@ const require = createRequire(import.meta.url);
 import assert from "node:assert/strict";
 import { join } from "node:path";
 import { makeEnv, govern, write, reply } from "./helpers.ts";
-import { decideWindow, RULES } from "../lib/tune.ts";
+import { decideWindow, RULES, chooseRunner } from "../lib/tune.ts";
 
 const m = (o: object) => ({ calls: 100, medianCtx: 0, p90Ctx: 0, ownerTurns: 50, autoCompacts: 0, manualCompacts: 0, sessions: 3, subagentCalls: 0, ...o });
 
@@ -57,4 +57,54 @@ test("--to auto routes to the cheapest runner with verified replies, codex by de
     govern(e, ["task", "dispatch"], { FAKE_CODEX_SCRIPTS: reply(e, `ok${i}`, { kind: "ACK", summary: "fine", body: "ok" }) });
   }
   assert.match(govern(e, ["task", "send", "--to", "auto", "--project", "film", "--task", "b", "--summary", "two"]).out, /auto → codex \(codex: 100% verified, mean 20k in over its last \d+ runs\)/);
+});
+
+/** Run `f` with the process env changed, then restore it (chooseRunner reads the queue and the grok binary from the env). */
+function withEnv<T>(vars: Record<string, string | undefined>, f: () => T): T {
+  const old = Object.fromEntries(Object.keys(vars).map((k) => [k, process.env[k]]));
+  for (const [k, v] of Object.entries(vars)) { if (v === undefined) delete process.env[k]; else process.env[k] = v; }
+  try { return f(); } finally { for (const [k, v] of Object.entries(old)) { if (v === undefined) delete process.env[k]; else process.env[k] = v; } }
+}
+const runs = (agent: string, n: number, input: number, ok = true) =>
+  Array.from({ length: n }, () => JSON.stringify({ t: new Date().toISOString(), agent, ok, usage: { input, output: 10 } })).join("\n") + "\n";
+
+test("chooseRunner: grok competes when its binary resolves, on the same rules as codex and claude", () => {
+  const e = makeEnv();
+  const q = join(e.root, "choose-queue");
+  write(join(q, "ledger.jsonl"), runs("codex", 4, 20000) + runs("claude", 4, 30000) + runs("grok", 4, 5000));
+  const at = (grok: string | undefined, seq = 0) => withEnv({ GOVERN_QUEUE: q, GOVERN_GROK_BIN: grok, PATH: join(e.root, "no-bin") }, () => chooseRunner(seq));
+  assert.equal(at(join(e.root, "fake-grok.sh")).runner, "grok");
+  assert.match(at(join(e.root, "fake-grok.sh")).reason, /^grok: 100% verified, mean 5k in over its last 4 runs/);
+  // the binary does not resolve (a path that is not there, or nothing on PATH): grok is not a candidate whatever its numbers
+  assert.equal(at(join(e.root, "missing-grok")).runner, "codex");
+  assert.equal(at(undefined).runner, "codex");
+  // on PATH
+  write(join(e.root, "bin", "grok"), "#!/bin/sh\nexit 0\n");
+  require("node:fs").chmodSync(join(e.root, "bin", "grok"), 0o755);
+  assert.equal(withEnv({ GOVERN_QUEUE: q, GOVERN_GROK_BIN: undefined, PATH: join(e.root, "bin") }, () => chooseRunner(0)).runner, "grok");
+  // exploration: 1 in 10 goes to another candidate, rotating, never to the best
+  const picks = [9, 19, 29].map((n) => at(join(e.root, "fake-grok.sh"), n));
+  assert.ok(picks.every((x) => x.runner !== "grok" && /exploration/.test(x.reason)));
+  assert.deepEqual(new Set(picks.map((x) => x.runner)), new Set(["codex", "claude"]));
+});
+
+test("chooseRunner: a runner under 3 runs or under 90% verified is not a candidate; with none, codex", () => {
+  const e = makeEnv();
+  const q = join(e.root, "choose-queue2");
+  write(join(q, "ledger.jsonl"), runs("grok", 2, 1000) + runs("claude", 9, 1000, false) + runs("claude", 1, 1000));
+  const r = withEnv({ GOVERN_QUEUE: q, GOVERN_GROK_BIN: join(e.root, "fake-grok.sh") }, () => chooseRunner(0));
+  assert.deepEqual([r.runner, /fewer than 3 verified runs per runner: codex by default/.test(r.reason)], ["codex", true]);
+});
+
+test("chooseRunner: runs without recorded usage are skipped in the mean, never counted as zero input", () => {
+  const e = makeEnv();
+  const q = join(e.root, "choose-queue3");
+  const noUsage = (agent: string, n: number) => Array.from({ length: n }, () => JSON.stringify({ t: new Date().toISOString(), agent, ok: true })).join("\n") + "\n";
+  write(join(q, "ledger.jsonl"), runs("codex", 4, 20000) + noUsage("grok", 6));
+  const r = withEnv({ GOVERN_QUEUE: q, GOVERN_GROK_BIN: join(e.root, "fake-grok.sh") }, () => chooseRunner(0));
+  assert.equal(r.runner, "codex");
+  // mixed: grok's mean comes only from the runs that have usage
+  write(join(q, "ledger.jsonl"), runs("codex", 4, 20000) + noUsage("grok", 6) + runs("grok", 3, 30000));
+  const m = withEnv({ GOVERN_QUEUE: q, GOVERN_GROK_BIN: join(e.root, "fake-grok.sh") }, () => chooseRunner(0));
+  assert.equal(m.runner, "codex");
 });
