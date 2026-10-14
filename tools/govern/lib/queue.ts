@@ -34,7 +34,7 @@ export interface QueueConfig {
   /** Dispatched runs one thread may use before it goes to the owner instead (default 4): a stop for agent ping-pong. */
   maxRuns?: number;
   runners?: Record<string, RunnerDef>;
-  /** Content checks on replies by reply kind (lib/replycheck.ts); a profile's own `check` wins over these. */
+  /** Content checks on replies by message kind, the task's or the reply's (lib/replycheck.ts); a profile's own `check` wins over these for content kinds. */
   checks?: Record<string, CheckDef>;
 }
 export function config(): QueueConfig {
@@ -327,7 +327,7 @@ export function dispatch(o: { max?: number; only?: string; timeoutSec?: number }
   const lines: string[] = [];
   const cfg = config();
   // A bad checks declaration stops the dispatcher before any message is claimed or any paid session runs.
-  const fromConfig = configChecks(join(QUEUE(), "config.json"), cfg.checks, REPLY_KINDS);
+  const fromConfig = configChecks(join(QUEUE(), "config.json"), cfg.checks, KINDS);
   const names = runners();
   const maxRuns = cfg.maxRuns ?? 4;
   const limits = allowances.allowances();
@@ -382,7 +382,7 @@ export function dispatch(o: { max?: number; only?: string; timeoutSec?: number }
     const ok = !("error" in reply);
     m.result = { agent: m.to, ok, ...(sealed ? { profile: sealed.name, profileHash: profileHash(reg, sealed) } : {}), usage: r.usage, turns: r.turns, seconds, ...(ok ? {} : { error: (reply as any).error }) };
     // The check runs before the reply is filed, so it never reaches its reader without the mark.
-    const verification = ok ? verify(declared((reply as any).kind, sealed?.check, fromConfig), { id: m.id, text: (reply as any).body, dir: cwd, logDir: join(QUEUE(), "replychecks") }) : undefined;
+    const verification = ok ? verify(declared(m.kind, (reply as any).kind, sealed?.check, fromConfig), { id: m.id, summary: (reply as any).summary, body: (reply as any).body, kinds: [m.kind, (reply as any).kind], dir: cwd, logDir: join(QUEUE(), "replychecks") }) : undefined;
     const answer = ok
       ? send({ project: m.project, task: m.task, kind: (reply as any).kind, from: m.to, to: m.from, summary: (reply as any).summary, body: (reply as any).body, files: [], replyTo: m.id, access: "read-only", ...(verification ? { verification } : {}) })
       : send({ project: m.project, task: m.task, kind: "BLOCKED", from: "dispatcher", to: m.from, summary: `${m.to} reply failed verification`, body: `${(reply as any).error}\nwhole reply: ${keepRaw(m, r.text)}\nRaw reply (unverified, not an answer):\n${clip(String(r.text ?? ""), 4000)}`, files: [], replyTo: m.id, access: "read-only" });

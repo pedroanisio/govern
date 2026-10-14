@@ -56,8 +56,8 @@ test("a REVIEW reply passes the built-in check: the reply is marked checked, wit
   assert.equal(m.verification.state, "checked");
   assert.equal(m.verification.exit, 0);
   assert.ok(existsSync(m.verification.log), "the check's log is kept");
-  assert.match(govern(e, ["task", "list"]).out, /open\s+REVIEW\s.*\[checked\]/);
-  assert.match(govern(e, ["task", "show", m.id]).out, /check: checked \(exit 0\) · log /);
+  assert.match(govern(e, ["task", "list"]).out, /open\s+REVIEW\s.*\[checked: refs exist \(1\)\]/);
+  assert.match(govern(e, ["task", "show", m.id]).out, /check: checked: refs exist \(1\) \(exit 0\) · log /);
 });
 
 test("a failing check marks the reply unverified, keeps its content and the desk says so", () => {
@@ -142,7 +142,7 @@ test("a bad checks entry in the queue config is refused with its path", () => {
   sendTo(e);
   assert.match(dispatch(e, "REVIEW", "x").err, /config\.json: \$\.checks\.REVIEW\.argv/);
   config(e, { checks: { NOPE: { argv: ["true"] } } });
-  assert.match(dispatch(e, "REVIEW", "x").err, /config\.json: \$\.checks\.NOPE: not a reply kind/);
+  assert.match(dispatch(e, "REVIEW", "x").err, /config\.json: \$\.checks\.NOPE: not a message kind/);
 });
 
 test("a reply the owner wrote by hand, and a BLOCKED notice, carry no verification mark", () => {
