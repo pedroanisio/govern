@@ -139,7 +139,12 @@
 #     --write                 task send: let the runner change files in the project folder (default: read-only)
 #     --profile P             task send: seal the run to profile P's capabilities (govern caps); not with --write
 #     --estimate-usd N        task send: what the run is expected to cost, reserved against a matching allowance
-#     --state S               task list: only messages in state open, claimed, done or failed
+#     --state S               decide ask, task list: decide ask: the state Jev is asked about, as text; task list: only
+#                             messages in state open, claimed, done or failed
+#     --state-file F          decide ask: read the state from F
+#     --questions F           decide ask: the JSON file of typed questions (choice, score, noul)
+#     --purpose P             decide ask: the name the decision is recorded under (default ask)
+#     --json                  decide ask: print the whole decision as JSON
 #     --as NAME               human-inbox, human, task inbox, task close, task forward, task reply: who you are; human,
 #                             human-inbox: a process person, refused unless this OS account is mapped to it; task: default
 #                             GOVERN_AS, else this session
@@ -174,6 +179,8 @@
 #     · GOVERN_CAPS_CHECK_MODEL (haiku, caps --check) · GOVERN_GROK_CHECK_MODEL (the profile's model, caps --check)
 #     · GOVERN_QUEUE_GROK_MODEL (grok's default) · GOVERN_GROK_MAX_TURNS (25; grok has no dollar cap)
 #     · GOVERN_QUEUE_TIMEOUT_SEC (900, one dispatched run).
+#     Jev (decide): TYPESAFE_API_KEY (the TypeSafe key; else the config's decide.envFile) · GOVERN_JEV_MODEL (jev-latest)
+#     · GOVERN_TYPESAFE_URL (https://api.typesafe.ai).
 #     Webhooks: GOVERN_WEBHOOK_TOKEN (event-listen bearer token; at least 16 characters, configured securely).
 #     Test and diagnostic: GOVERN_NOW (the allowances clock) · GOVERN_PROC=ps (read the process table with ps).
 #     Set for what govern runs: GOVERN_JOB_ID, GOVERN_JOB_DIR (every job; slice and up read GOVERN_JOB_DIR to find the
