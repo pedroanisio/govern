@@ -1,17 +1,27 @@
 // Jobs: run a project command in the foreground or detached, wait on it without a model in the loop, stop it by identity.
 import { spawn } from "node:child_process";
-import { existsSync, readFileSync, readdirSync, openSync, closeSync, statSync, readSync, mkdirSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, openSync, closeSync, statSync, readSync, mkdirSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { fail, readJson, writeJson, stamp, nowIso, sleepSync, shq, changedSince, clip, procOf, procTable, procSource, exited, type ProcStat } from "./util.ts";
+import { fileURLToPath } from "node:url";
 import { type Project, projectDir, governDir, appendLedger, argvOf, REPO } from "./project.ts";
+import { place, lockDir, slots, costOf, type Price } from "./resources.ts";
+import * as locks from "./locks.ts";
 
 /** pid and procStart (its start time in the process table: /proc field 22, or ps lstart) identify the job's process, so a recycled pid is never taken for it.
  *  pgid: a background job leads its own process group; a foreground job stays in its caller's, so Ctrl-C reaches it. timeout: a foreground job's limit (s). stopped/end: govern stopped it. */
 export interface Job {
   id: string; slug: string; name: string; argv: string[]; cwd: string; start: string; pid?: number; pgid?: number; procStart?: string; bg: boolean;
   timeout?: number; stopped?: "timeout" | "killed"; end?: string;
+  /** The resource it runs on and its price then (a later change to the registry does not reprice it); lock: the slot it
+   *  takes (its job directory's `acquired` file says when it got it). */
+  resource?: string; price?: Price; lock?: { dir: string; id: string; max: number; label: string };
 }
-export interface JobState extends Job { status: "running" | "ok" | "failed" | "lost" | "timeout" | "killed"; exit?: number; seconds?: number }
+export interface JobState extends Job {
+  status: "running" | "ok" | "failed" | "lost" | "timeout" | "killed"; exit?: number; seconds?: number;
+  /** Set on a job that waits for its resource: how many are ahead of it. */
+  queued?: { resource: string; ahead: number };
+}
 /** What `govern kill` did: its processes exited on SIGTERM, needed SIGKILL, had already exited, or the pid is not provably the job's. */
 export type KillOutcome = "terminated" | "killed" | "already-exited" | "not-owned";
 
@@ -40,19 +50,50 @@ function claim(slug: string, name: string): string {
   }
 }
 
-export function start(p: Project, name: string, extra: string[], bg: boolean): JobState {
+const LOCKWAIT = fileURLToPath(new URL("./lockwait.ts", import.meta.url));
+const acquiredFile = (slug: string, id: string) => join(jobDir(slug, id), "acquired");
+
+/** A job that waits for its resource: how many are ahead of it (a waiting job has no `acquired` file yet). */
+export function queuedOf(job: Job): JobState["queued"] {
+  if (!job.lock || !job.resource || existsSync(acquiredFile(job.slug, job.id))) return undefined;
+  return { resource: job.resource, ahead: locks.ahead(job.lock.dir, job.lock.id) ?? 0 };
+}
+
+/** Run a command; on = the resource named with --on (else the command's own, else the job runs locally). A shared
+ *  resource's slot is taken first: a foreground job waits for it here, a --bg job's sh waits (lib/lockwait.ts). */
+export function start(p: Project, name: string, extra: string[], bg: boolean, on?: string): JobState {
   const base = p.commands[name];
   if (!base) fail(`${p.slug}: no command "${name}" (have: ${Object.keys(p.commands).join(", ") || "none"}; add with govern cmd ${p.slug} ${name} -- <argv>)`);
+  const res = place(p.slug, Array.isArray(base) ? undefined : base.resource, on);
   const argv = expand(p, [...argvOf(base), ...extra]);
   const id = claim(p.slug, name);
   const dir = jobDir(p.slug, id);
   const f = join(dir, "job.json"), exitF = join(dir, "exit");
   const cwd = projectDir(p.slug);
   const timeout = (Array.isArray(base) ? undefined : base.timeout) ?? DEFAULT_TIMEOUT;
-  const job: Job = { id, slug: p.slug, name, argv, cwd, start: nowIso(), bg, ...(bg ? {} : { timeout }) };
+  const max = res && slots(res);
+  const lock = res && max !== undefined ? { dir: lockDir(res.name), id: `${p.slug.replaceAll("/", "~")}~${id}`, max, label: `${p.slug} ${id}` } : undefined;
+  const job: Job = { id, slug: p.slug, name, argv, cwd, start: nowIso(), bg, ...(bg ? {} : { timeout }),
+    ...(res ? { resource: res.name, price: res.price } : {}), ...(lock ? { lock } : {}) };
   writeJson(f, job);
+  const me = procOf(process.pid);
+  if (lock) {
+    // In line before anything runs, as this govern (a foreground job's wait is here), then handed to the job's sh.
+    locks.enqueue(lock.dir, { id: lock.id, label: lock.label, pid: process.pid, ...(me ? { start: me.start } : {}) });
+    if (!bg) {
+      writeJson(f, { ...job, pid: process.pid, ...(me ? { procStart: me.start } : {}) });
+      while (!locks.tryAcquire(lock.dir, lock.id, lock.max)) sleepSync(POLL_MS);
+    }
+  }
+  if (res && (!lock || !bg)) writeFileSync(acquiredFile(p.slug, id), nowIso() + "\n");
   // The exit code goes to exit.tmp and is renamed to exit: a poller never sees an exit file that exists but is not yet written.
-  const script = `${argv.map(shq).join(" ")} > ${shq(join(dir, "log"))} 2>&1; echo $? > ${shq(exitF)}.tmp && mv -f ${shq(exitF)}.tmp ${shq(exitF)}`;
+  const exitIt = `echo $rc > ${shq(exitF)}.tmp && mv -f ${shq(exitF)}.tmp ${shq(exitF)}`;
+  const logF = shq(join(dir, "log"));
+  const lockCmd = (verb: string, ...rest: string[]) => [process.execPath, "--disable-warning=ExperimentalWarning", LOCKWAIT, verb, ...rest].map(shq).join(" ");
+  const script = lock && bg
+    ? `${lockCmd("wait", lock.dir, lock.id, String(lock.max), dir, lock.label)} > ${logF} 2>&1; rc=$?; ` +
+      `if [ $rc -eq 0 ]; then ${argv.map(shq).join(" ")} >> ${logF} 2>&1; rc=$?; ${lockCmd("release", lock.dir, lock.id)} >> ${logF} 2>&1; fi; ${exitIt}`
+    : `${argv.map(shq).join(" ")} > ${logF} 2>&1; rc=$?; ${exitIt}`;
   // A foreground job is spawned, not spawnSync'd, and then waited on synchronously: spawnSync gives no pid while the child
   // runs, so neither a timeout nor govern kill could find it. It is not detached: it stays in govern's process group, so a
   // terminal's Ctrl-C (or anything else that signals the caller's group) stops it with govern. Its timeout stops its tree.
@@ -66,9 +107,11 @@ export function start(p: Project, name: string, extra: string[], bg: boolean): J
   Object.assign(job, { pid: child.pid, ...(bg ? { pgid: child.pid } : {}), ...(ps ? { procStart: ps.start } : {}) });
   writeJson(f, job);
   child.unref();
+  if (lock) locks.adopt(lock.dir, lock.id, { pid: child.pid!, ...(ps ? { start: ps.start } : {}) });
   if (bg) {
-    appendLedger(p.slug, { kind: "job", id, name, bg: true, status: "started" });
-    return { ...job, status: "running" };
+    appendLedger(p.slug, { kind: "job", id, name, bg: true, status: "started", ...(res ? { resource: res.name } : {}) });
+    const queued = lock ? queuedOf(job) : undefined;
+    return { ...job, status: "running", ...(queued && queued.ahead >= lock!.max ? { queued } : {}) };
   }
   // Waits on the job's own process only: whether someone marked the job stopped is not whether it has stopped.
   const running = () => !readExit(dir) && alive(job);
@@ -84,6 +127,7 @@ export function start(p: Project, name: string, extra: string[], bg: boolean): J
     for (const end = Date.now() + KILL_GRACE_MS + 1000; state(p.slug, id).status === "running" && Date.now() < end;) sleepSync(POLL_MS);
     if (state(p.slug, id).status === "running") stop(job, dir);
   }
+  if (lock) locks.release(lock.dir, lock.id);
   recordEnd(p.slug, id);
   return state(p.slug, id);
 }
@@ -99,8 +143,21 @@ export function recordEnd(slug: string, id: string): boolean {
     throw e;
   }
   const seconds = st.seconds ?? Math.round((Date.now() - Date.parse(st.start)) / 1000);
-  appendLedger(slug, { kind: "job", id, name: st.name, bg: st.bg, status: st.status, exit: st.exit, seconds });
+  appendLedger(slug, { kind: "job", id, name: st.name, bg: st.bg, status: st.status, exit: st.exit, seconds, ...machineOf(st, seconds) });
   return true;
+}
+
+/** Where the job ran and for how long: its resource ("local" when none), the seconds it held it (the wall seconds less
+ *  any wait in line; none for a job that never got its slot), and, for a priced resource, the basis, and the money when
+ *  that is time-based. */
+function machineOf(st: JobState, seconds: number): Record<string, unknown> {
+  if (!st.resource) return { resource: "local", machineSeconds: seconds };
+  let got: number | undefined;
+  try { got = Date.parse(readFileSync(acquiredFile(st.slug, st.id), "utf8").trim()); } catch { got = undefined; }
+  const machineSeconds = got === undefined ? 0 : Math.max(0, seconds - Math.round((got - Date.parse(st.start)) / 1000));
+  const price = st.price ?? { basis: "free" as const };
+  const cost = costOf({ price }, machineSeconds);
+  return { resource: st.resource, machineSeconds, basis: price.basis, ...(cost ? { cost: cost.amount, currency: cost.currency } : {}) };
 }
 
 export function list(slug: string): string[] {

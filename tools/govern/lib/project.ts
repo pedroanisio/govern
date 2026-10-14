@@ -44,12 +44,15 @@ export const KINDS = ["long", "short", "ops"] as const;
 /** The video process's owner gates, in order (other processes name their own). */
 export const GATES = ["script", "final", "publish"] as const;
 
-/** A command with settings: its argv and how long it may run in the foreground (seconds). A plain argv array is the same
- *  command with the default timeout. */
-export interface Command { argv: string[]; timeout?: number }
+/** A command with settings: its argv, how long it may run in the foreground (seconds), and the resource it runs on (so
+ *  `govern run` needs no --on). A plain argv array is the same command with the default timeout and no resource. */
+export interface Command { argv: string[]; timeout?: number; resource?: string }
 export const argvOf = (c: string[] | Command): string[] => (Array.isArray(c) ? c : c.argv);
-/** A command as one line: its argv, and its own timeout when it has one. */
-export const commandLine = (c: string[] | Command): string => `${argvOf(c).join(" ")}${!Array.isArray(c) && c.timeout ? ` (timeout ${c.timeout}s)` : ""}`;
+/** A command as one line: its argv, and its own timeout and resource when it has them. */
+export const commandLine = (c: string[] | Command): string => {
+  const own = Array.isArray(c) ? [] : [c.timeout ? `timeout ${c.timeout}s` : "", c.resource ? `on ${c.resource}` : ""].filter(Boolean);
+  return `${argvOf(c).join(" ")}${own.length ? ` (${own.join(", ")})` : ""}`;
+};
 
 /** `by`: whose words (the gate's decision owner); `source`: where they were found (lib/approval.ts). Both absent on approvals recorded before they existed. */
 export interface Approval { at: string; quote: string; by?: string; source?: Source }
@@ -104,7 +107,7 @@ const iso: Shape<string> = (v, at) =>
   (typeof v === "string" && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})$/.test(v) && !Number.isNaN(Date.parse(v))
     ? v : reject(at, `must be an ISO timestamp (got ${JSON.stringify(v)})`));
 const ARGV = arr(str, { nonEmpty: true });
-const COMMAND_OBJ = obj({ argv: ARGV }, { timeout: posInt });
+const COMMAND_OBJ = obj({ argv: ARGV }, { timeout: posInt, resource: name });
 /** A command: a plain argv array, or {argv, timeout?}. */
 const COMMAND: Shape<string[] | Command> = (v, at) =>
   (Array.isArray(v) ? ARGV(v, at) : typeof v === "object" && v !== null ? COMMAND_OBJ(v, at)

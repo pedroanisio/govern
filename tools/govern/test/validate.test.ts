@@ -123,7 +123,7 @@ test("govern.json: unknown keys, wrong types and dangling references are refused
   badLane({ commands: { t: ["node", 1] } }, "$.commands.t[1]: must be a string (got 1)");
   badLane({ commands: { t: { argv: ["x"], timeout: 0 } } }, "$.commands.t.timeout: must be a whole number, 1 or more (got 0)");
   badLane({ commands: { t: { argv: ["x"], timeout: "5" } } }, `$.commands.t.timeout: must be a whole number, 1 or more (got "5")`);
-  badLane({ commands: { t: { argv: ["x"], timout: 5 } } }, `$.commands.t.timout: unknown key "timout" (known: argv, timeout)`);
+  badLane({ commands: { t: { argv: ["x"], timout: 5 } } }, `$.commands.t.timout: unknown key "timout" (known: argv, timeout, resource)`);
   badLane({ commands: { t: { timeout: 5 } } }, "$.commands.t.argv: missing");
   badLane({ files: { spec: ["a"] } }, "$.files.spec: must be a string (got an array)");
   badLane({ checks: { build: 1 } }, "$.checks.build: must be a non-empty string (got 1)");

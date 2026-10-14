@@ -10,6 +10,7 @@ import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { readJsonl, kTok } from "./util.ts";
 import { PROJECTS, ledgerFile } from "./project.ts";
+import { machineLines, machineEntries } from "./resources.ts";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const CLAUDE_DIR = () => process.env.GOVERN_CLAUDE_PROJECTS ?? join(homedir(), ".claude", "projects");
@@ -270,7 +271,10 @@ export const behaviourText = (b: Behaviour): string =>
 
 export function report(slugs: string[] | undefined, since?: number): string {
   const segs = attribute(segments(slugs)).filter((s) => !since || s.start >= since);
-  const videos = [...new Set([...segs.map((s) => s.slug), ...(slugs ?? [])])].sort();
+  // machine time and money (jobs run on resources) come from the lane's ledger, beside the tokens
+  const machine = (v: string) => machineLines(machineEntries(ledgerFile(v)).filter((e) => !since || Date.parse(String(e["t"])) >= since));
+  const ranOn = slugs ? [] : globSync("**/govern/ledger.jsonl", { cwd: PROJECTS }).map((f) => dirname(dirname(f))).filter((v) => machine(v).length);
+  const videos = [...new Set([...segs.map((s) => s.slug), ...(slugs ?? []), ...ranOn])].sort();
   const L: string[] = [];
   const row = (label: string, t: Totals) =>
     `${label.padEnd(34)} ${String(t.calls).padStart(5)} ${kTok(t.inputSide).padStart(8)} ${kTok(t.output).padStart(7)} ${kTok(t.avgCtx).padStart(7)} ${kTok(t.maxCtx).padStart(7)} ${(Math.round(t.cacheShare * 100) + "%").padStart(5)} ${String(t.owner).padStart(4)} ${t.usd != null ? ("$" + t.usd.toFixed(2)).padStart(8) : "       -"}`;
@@ -278,7 +282,8 @@ export function report(slugs: string[] | undefined, since?: number): string {
   for (const v of videos) {
     const vs = segs.filter((s) => s.slug === v);
     const asks = readJsonl(ledgerFile(v)).filter((e) => e.kind === "ask" && (!since || Date.parse(e.t) >= since));
-    if (!vs.length && !asks.length) continue;
+    const mach = machine(v);
+    if (!vs.length && !asks.length && !mach.length) continue;
     L.push(`## ${v}`, head);
     for (const s of vs) {
       const t = totals(s.calls, s.ownerTurns);
@@ -296,7 +301,7 @@ export function report(slugs: string[] | undefined, since?: number): string {
     const b = behaviourText(vs.map((s) => behaviour(s.tools)).reduce(addB, behaviour([])));
     L.push(row("TOTAL conversation", t) + (b ? `  ${b}` : ""));
     if (t.owner) L.push(`per message from you: ${kTok(Math.round(t.inputSide / t.owner))} input-side tokens`);
-    L.push("");
+    L.push(...mach, "");
   }
   if (!L.length) L.push("no govern work segments or asks recorded yet");
   L.push(`baseline (chat way): median context per call ${kTok(BASELINE.mainMedianCtx)} main session, ${kTok(BASELINE.subagentMedianCtx)} subagent — ${BASELINE.source}`);

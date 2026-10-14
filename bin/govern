@@ -6,10 +6,10 @@
 #     govern new SLUG (--process NAME | --kind long|short|ops) [--title T] [--lang L] [--parent SLUG]
 #     govern work SLUG STAGE [--engine claude|codex] [--open]  |  brief SLUG  |  status [SLUG]
 #     govern note SLUG TEXT  |  approve SLUG GATE --quote "owner's words"  |  done SLUG [--engine E]
-#     govern cmd SLUG [NAME [--timeout S] -- ARGV...] | --rm NAME  |  file SLUG [NAME PATH-OR-GLOB]
+#     govern cmd SLUG [NAME [--timeout S] [--resource R] -- ARGV...] | --rm NAME  |  file SLUG [NAME PATH-OR-GLOB]
 #     govern process list|show NAME  |  check SLUG [--set CMD --stage S]  |  check SLUG STAGE --accept --quote Q
 #     govern advance SLUG [--note EVIDENCE]  |  dep SLUG [--after LANE[:STAGE]] [--rm LANE]  |  hook stop
-#     govern run SLUG CMD [--bg] [-- ARGS]  |  wait SLUG [JOB] [--timeout S]  |  jobs SLUG  |  kill SLUG [JOB]
+#     govern run SLUG CMD [--bg] [--on RESOURCE] [-- ARGS]  |  resources [NAME]  |  wait SLUG [JOB] [--timeout S]  |  jobs SLUG  |  kill SLUG [JOB]
 #     govern log SLUG [JOB] [--tail N] [--grep RE]
 #     govern prompts  |  ask SLUG STEP [--file F]... [--var K=V]... [--image PNG]... [--effort E] [--model M]
 #     govern usage [SLUG...] [--since DATE]  |  ctx  |  desk  |  tune  |  publish SLUG

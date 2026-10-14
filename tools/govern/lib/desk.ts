@@ -7,6 +7,7 @@ import { ledgerFile, stagesOf, laneState, laneSlugs, laneRows } from "./project.
 import { processOf } from "./process.ts";
 import * as queue from "./queue.ts";
 import { tuningState } from "./tune.ts";
+import { machineSummary, machineEntries } from "./resources.ts";
 
 const ago = (iso: string) => {
   const m = Math.round((Date.now() - Date.parse(iso)) / 60000);
@@ -65,5 +66,12 @@ export function desk(): { text: string; failed: number; lanes: number } {
   if (!byLane.size) L.push("  (none)");
   for (const [lane, x] of [...byLane].sort((a, b) => b[1].input - a[1].input))
     L.push(`  ${lane.padEnd(40)} ${String(x.calls).padStart(3)} runs ${kTok(x.input).padStart(7)} in ${kTok(x.output).padStart(6)} out${x.usd ? `  $${x.usd.toFixed(2)}` : ""}`);
+  // ---- machines today (jobs run on resources: seconds, and money where the price is by time)
+  L.push("", "MACHINES TODAY (jobs on resources and locally; seconds held, money where time-priced)");
+  const rows2 = slugs.flatMap((s) => {
+    const m = machineSummary(machineEntries(ledgerFile(s)).filter((e) => String(e["t"]).startsWith(day)));
+    return m ? [`  ${s.padEnd(40)} ${m.time}${m.money ? `  ${m.money}` : ""}`] : [];
+  });
+  L.push(...(rows2.length ? rows2 : ["  (none)"]));
   return { text: L.join("\n"), failed, lanes: slugs.length };
 }

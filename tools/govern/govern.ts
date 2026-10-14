@@ -15,6 +15,7 @@ import { ask, readPrompt, PROMPTS } from "./lib/codex.ts";
 import { report, currentCtx, CTX_WARN } from "./lib/usage.ts";
 import * as queue from "./lib/queue.ts";
 import { desk } from "./lib/desk.ts";
+import { listLines, showLines } from "./lib/resources.ts";
 import { tune, chooseRunner } from "./lib/tune.ts";
 import { verifyQuote } from "./lib/approval.ts";
 import { checkRecipient, requireAs, resolveAs } from "./lib/sessions.ts";
@@ -275,7 +276,7 @@ function cmdHook(a: Args): void {
 
 /** Whether two stored commands run the same argv with the same timeout (a plain argv has the default one). */
 const sameCommand = (a: string[] | Command, b: string[] | Command) =>
-  JSON.stringify([argvOf(a), Array.isArray(a) ? null : a.timeout ?? null]) === JSON.stringify([argvOf(b), Array.isArray(b) ? null : b.timeout ?? null]);
+  JSON.stringify([argvOf(a), Array.isArray(a) ? null : a.timeout ?? null, Array.isArray(a) ? null : a.resource ?? null]) === JSON.stringify([argvOf(b), Array.isArray(b) ? null : b.timeout ?? null, Array.isArray(b) ? null : b.resource ?? null]);
 
 /** The stages of the lane's process whose effective check is the command `name`. */
 const stagesChecking = (p: Project, name: string) => stagesOf(p).filter((s) => checkOf(p, s) === name);
@@ -298,9 +299,9 @@ function cmdCmd(a: Args): void {
   if (!name) { for (const [k, v] of Object.entries(p.commands)) out(`${k}: ${commandLine(v)}`); return; }
   const argv = a._.slice(3);
   if (!argv.length) fail(`give the argv after --: govern cmd ${p.slug} ${name} -- {python} build.py --preview`);
-  const timeout = secondsOpt(a, "timeout");
+  const timeout = secondsOpt(a, "timeout"), resource = opt(a, "resource");
   const from = p.commands[name] ?? null;
-  const to: string[] | Command = timeout === undefined ? argv : { argv, timeout };
+  const to: string[] | Command = timeout === undefined && resource === undefined ? argv : { argv, ...(timeout !== undefined ? { timeout } : {}), ...(resource !== undefined ? { resource } : {}) };
   if (from && sameCommand(from, to)) return out(`${p.slug}: ${name} is already ${commandLine(to)} — nothing changed`);
   p.commands[name] = to;
   save(p);
@@ -322,7 +323,8 @@ function cmdRun(a: Args): void {
   const p = load(a._[1]);
   const name = a._[2];
   if (!name) fail(`govern run ${p.slug} <command> (have: ${Object.keys(p.commands).join(", ") || "none"})`);
-  const st = jobs.start(p, name, a._.slice(3), flag(a, "bg"));
+  const st = jobs.start(p, name, a._.slice(3), flag(a, "bg"), opt(a, "on"));
+  if (st.queued) return out(`job ${st.id} queued on ${st.queued.resource} (${st.queued.ahead} ahead) · wait with: govern wait ${p.slug} ${st.id}`);
   if (st.status === "running") return out(`job ${st.id} started in the background · wait with: govern wait ${p.slug} ${st.id}`);
   out(jobs.summary(p, st));
   process.exitCode = st.exit ?? 1;
@@ -568,8 +570,8 @@ export const COMMANDS: readonly Cmd[] = [
     lines: [["<slug> <gate> --quote \"<the owner's words>\" [--by NAME]", "(gates come from the lane's process; --by: the gate's decision owner,\nrequired when the process names one other than owner. In a Claude session the quote\nmust be in a message the person typed; a Codex session is refused)"]], run: cmdApprove },
   { name: "done", section: 0, flags: { value: ["engine"] }, lines: [["<slug> [--engine claude|codex]", "end the current work segment"]],
     run: (a) => { const p = load(a._[1]); appendLedger(p.slug, { kind: "done", engine: engineOf(a), session: process.env.CLAUDE_CODE_SESSION_ID }); out(`${p.slug}: segment closed`); } },
-  { name: "cmd", section: 0, flags: { value: ["timeout", "rm"] },
-    lines: [["<slug> [<name> [--timeout S] -- <argv…>] | --rm <name>", "list or set the lane's commands (S: foreground limit, default 1800; ledgered;\nredefining or removing a stage's check command is flagged)"]],
+  { name: "cmd", section: 0, flags: { value: ["timeout", "rm", "resource"] },
+    lines: [["<slug> [<name> [--timeout S] [--resource R] -- <argv…>] | --rm <name>", "list or set the lane's commands (S: foreground limit, default 1800; R: the resource it runs on, so\nrun needs no --on; ledgered; redefining or removing a stage's check command is flagged)"]],
     run: cmdCmd },
   { name: "file", section: 0, lines: [["<slug> <name> <path-or-glob>", "name a file (a glob means its newest match)"]], run: cmdFile },
 
@@ -588,12 +590,20 @@ export const COMMANDS: readonly Cmd[] = [
   { name: "hook", section: 1, footer: false, noSub: "govern hook stop",
     subs: { stop: { lines: [["", "Claude Code Stop hook: keeps a session on its lane until the stage's check passes (3 tries)"]], run: cmdHook } } },
 
-  { name: "run", section: 2, flags: { bool: ["bg"] },
-    lines: [["<slug> <command> [--bg] [-- extra args]", "foreground prints a summary; --bg returns a job id"]], run: cmdRun },
+  { name: "run", section: 2, flags: { bool: ["bg"], value: ["on"] },
+    lines: [["<slug> <command> [--bg] [--on <resource>] [-- extra args]", "foreground prints a summary; --bg returns a job id; --on runs it on a declared resource (a shared one\nis locked: the job waits its turn, a --bg job shows \"queued on <resource>\")"]], run: cmdRun },
   { name: "wait", section: 2, flags: { value: ["timeout"] },
     lines: [["<slug> [<job>|last] [--timeout 540]", "block until it ends; exit code = the job's (124 = still running)"]], run: cmdWait },
-  { name: "jobs", section: 2, lines: [["<slug>", "the lane's latest jobs: status, exit code, seconds"]],
-    run: (a) => { const p = load(a._[1]); for (const id of jobs.list(p.slug).slice(-15)) { const s = jobs.state(p.slug, id); out(`${id} ${s.status}${s.exit != null ? ` exit ${s.exit}` : ""}${s.seconds != null ? ` ${s.seconds}s` : ""}`); } } },
+  { name: "jobs", section: 2, lines: [["<slug>", "the lane's latest jobs: status, exit code, seconds, resource (or queued on it)"]],
+    run: (a) => {
+      const p = load(a._[1]);
+      for (const id of jobs.list(p.slug).slice(-15)) {
+        const s = jobs.state(p.slug, id), q = s.status === "running" ? jobs.queuedOf(s) : undefined;
+        out(`${id} ${s.status}${s.exit != null ? ` exit ${s.exit}` : ""}${s.seconds != null ? ` ${s.seconds}s` : ""}${q ? ` (queued on ${q.resource})` : s.resource ? ` (on ${s.resource})` : ""}`);
+      }
+    } },
+  { name: "resources", section: 2, lines: [["[<name>]", "the declared resources (govern.config.json: resources), or one with its lock holder and the queue behind it"]],
+    run: (a) => out((a._[1] ? showLines(a._[1]) : listLines()).join("\n")) },
   { name: "log", section: 2, flags: { value: ["tail", "grep"] }, lines: [["<slug> [<job>] [--tail 40] [--grep RE]", "a job's log"]],
     run: (a) => { const p = load(a._[1]); const id = jobs.find(p.slug, a._[2]); out(jobs.tail(p.slug, id, Number(opt(a, "tail") ?? 40), opt(a, "grep")).join("\n") || "(empty log)"); } },
   { name: "kill", section: 2,
