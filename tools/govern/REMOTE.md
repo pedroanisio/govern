@@ -117,7 +117,9 @@ no lane is readable only by an unscoped device. `govern remote devices` shows ea
 
 The original code flow remains available:
 
-The code is 12 characters from a 30-letter alphabet without look-alike letters (about 59 bits), valid for 10 minutes by
+The code is 12 characters from a 30-character alphabet, `ABCDEFGHJKMNPQRSTVWXYZ23456789`: the capital letters
+without the look-alikes I, L, O and U, and the digits 2 to 9 (about 59 bits). It is printed in groups of four
+(`XXXX-XXXX-XXXX`) and accepted with or without the dashes or spaces, in either case. It is valid for 10 minutes by
 default (1 to 60), single-use, and void after 5 wrong tries. Only its SHA-256 is stored. Guessing it is therefore
 limited to 5 attempts against 2^59 values.
 
@@ -136,8 +138,10 @@ minimum API 30; Ed25519 would need API 33. The phone sends the public key as bas
 which Android exports and Node's `crypto.createPublicKey` reads directly.
 
 The server answers with a device id, host name and a 256-bit bearer token (RFC 6750). The device record stores only
-the token's SHA-256; request pairing temporarily stores the sealed token as described above; the phone stores the token sealed by an AES-GCM key in its own Keystore, and excludes it from backups.
-`govern remote revoke <device>` stops the token at once and ends the device's open stream.
+the token's SHA-256; request pairing temporarily stores the sealed token as described above; the phone stores the token
+sealed by an AES-GCM key in its own Keystore, and excludes it from backups. `govern remote revoke <device>` stops the
+token at once: the server reads the device list on every request, so the device's next request gets 401, and its open
+stream ends at the stream's next desk check, within 3 seconds.
 
 ## Approval integrity: signed actions
 
@@ -252,8 +256,16 @@ ActionResult fixtures are in `android/app/src/test/resources/fixtures/action-res
 Errors are `{error}` with a status that says who must act: 400 for a malformed request, 401 for a missing, unknown or
 revoked token, 403 when the request does not prove itself (signature, clock, nonce or pairing code), 404 for an unknown
 lane, session, job, artifact or route, 409 when the lane's state refuses the action (a gate that needs another first, a gate owned by someone
-else, an alert already acknowledged), 413 for a body over 64 KiB or an artifact over 32 MiB, and 429 above 8 open streams globally or 2 per device, or 32 open pairing requests globally or 2 per client address. Stream capacity is released on close. A stream ends after one
-hour; the app reconnects.
+else, an alert already acknowledged), 413 for a body over 64 KiB or an artifact over 32 MiB, 429 above 8 open streams globally or 2 per device, or 32 open pairing requests globally or 2 per client address, and 500 with
+`{error: "internal error"}` for an unexpected server fault, whose detail is not sent. Stream capacity is released on close.
+The token is checked before the route: every request other than `GET /v1/health`, `POST /v1/pair`, `POST /v1/pair/request`,
+`GET /v1/pair/request` and `POST /v1/pair/cancel` without a valid token gets 401, even on a path that does not exist, so
+only a paired device can learn that a route is unknown. A stream ends after one hour; the app reconnects.
+
+The server answers 408 and closes the connection when a request's headers have not arrived within 10 seconds or the
+whole request within 30 seconds (Node's `headersTimeout` and `requestTimeout`, which Node checks every 30 seconds, so
+the cut can come that much later). These limits cover receiving the request only; a stream's response runs its full
+hour.
 
 ### Read types
 
@@ -348,10 +360,19 @@ govern remote devices                                       # paired devices
 govern remote revoke d-4f1c2a9b7e30                         # the token and key stop working now
 ```
 
-The server keeps its state in `govern-state/remote/` (mode 700): `devices.json` (public keys and token hashes),
+`govern remote pair --as PERSON` pairs the device for that person (default `owner`), and the device can then approve
+only gates whose decision owner is that person; `--minutes N` sets how long the code is valid. With `--url`, `pair`
+also prints a pairing link, `govern-remote://pair?url=…&code=…[&pin=…]`, whose values are URL-encoded; `pin` appears
+only with `--tls-cert` and is the certificate's SHA-256 fingerprint as 64 lowercase hex digits without colons. Run
+from an agent session, `pair` refuses and exits 1.
+
+The server keeps its state in `remote/` inside govern's state directory (mode 700). The state directory is
+`$GOVERN_STATE` when that is set, else the workspace config's `state` path, else `.govern/state` in a `.govern`
+workspace, else `govern-state/` beside the lanes folder. The files are `devices.json` (public keys and token hashes),
 `pairing.json` (the open code's hash), `requests.json` (request state, secret hashes, pin and pending sealed tokens),
 `pair-key.json` (the AES-GCM sealing key), `nonces.json`, and `audit.jsonl`, a log of code pairing refusals, device
-pairings, revocations and actions. State files are mode 600 and changes share the remote `lock/` transaction lock.
+pairings, revocations and actions, all mode 600. `lock/` holds the mutex that lets one process at a time, the server or
+a CLI command, change those files; a contender waits up to 30 seconds, and a lock left by a dead process is broken.
 
 Read views also consume lane `govern/ledger.jsonl`, `govern/jobs/<id>/job.json`, `log`, `exit`, and slice `slice.json`,
 plus `govern-state/conversations/<id>/session.json`. Artifact bytes live beside `govern.json` in `artifacts/`;
