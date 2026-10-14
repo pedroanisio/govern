@@ -69,8 +69,8 @@ background runs complete. The screens submit these actions only after device con
 
 ## Build
 
-The app needs a JDK 17 or newer and an Android SDK with platform 35 and build-tools 35. The Gradle wrapper fetches
-Gradle and the dependencies.
+The app needs a JDK 17 or newer and an Android SDK with platform 35. It sets no `buildToolsVersion`, so the Android
+Gradle plugin (8.7.3) picks the build-tools version it needs. The Gradle wrapper fetches Gradle and the dependencies.
 
 ```sh
 export ANDROID_HOME=/path/to/android-sdk      # or: echo "sdk.dir=/path/to/android-sdk" > local.properties
@@ -132,7 +132,8 @@ the original flow; an explicitly empty code is invalid. Opening a link without a
 
 ## Requirements
 
-Android 11 (API 30) or newer, with a screen lock. The app connects only over HTTPS, except to `localhost`,
+Android 11 (API 30) or newer, with a screen lock: the signing key requires user authentication, so the Android
+Keystore refuses to create it on a phone without one. The app connects only over HTTPS, except to `localhost`,
 `127.0.0.1` and the emulator's `10.0.2.2` for development (`adb reverse tcp:5002 tcp:5002`).
 
 ## Evidence and session interaction
