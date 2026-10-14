@@ -64,9 +64,24 @@ export function makeEnv(): Env {
  *  from the session running it (Claude Code exports its settings env). */
 export function parentEnv(): NodeJS.ProcessEnv {
   const { CLAUDE_CODE_AUTO_COMPACT_WINDOW: _, ...inherited } = process.env;
-  for (const k of Object.keys(inherited)) if (k.startsWith("GOVERN_")) delete inherited[k];
+  for (const k of Object.keys(inherited)) if (k.startsWith("GOVERN_") || k === "CLAUDECODE" || AGENT_MARKERS.includes(k)) delete inherited[k];
   return inherited;
 }
+
+/** The variables a Codex shell carries (lib/approval.ts): never inherited from the session running the tests. */
+const AGENT_MARKERS = ["CODEX_THREAD_ID", "CODEX_SESSION_ID", "CODEX_SANDBOX_NETWORK_DISABLED", "CODEX_SANDBOX"];
+
+/** Run the next govern calls of this Env as a registered Claude Code session: the test process (every govern child's
+ *  parent) is entered in the registry with `sessionId`, and `lines` become that session's transcript. Without a call to
+ *  this, a test's approvals come from a plain terminal. */
+export function asSession(e: Env, sessionId: string, lines: unknown[] = [], project = "proj"): string {
+  write(join(present(e.env.GOVERN_SESSIONS_DIR, "GOVERN_SESSIONS_DIR"), `${process.pid}.json`), JSON.stringify({ pid: process.pid, sessionId, name: "tester", cwd: e.root }));
+  return write(join(e.root, "claude", project, `${sessionId}.jsonl`), lines.map((l) => JSON.stringify(l)).join("\n") + "\n");
+}
+/** A transcript line for a message the person typed. */
+export const typed = (text: string | unknown[], extra: Record<string, unknown> = {}) =>
+  ({ type: "user", uuid: `u-${Math.abs(hash(JSON.stringify(text)))}`, timestamp: "2026-10-14T09:00:00.000Z", origin: { kind: "human" }, message: { role: "user", content: text }, ...extra });
+const hash = (s: string) => [...s].reduce((h, c) => (h * 31 + c.charCodeAt(0)) | 0, 7);
 
 /** A govern child's environment: parentEnv(), then the test's own, then the call's. */
 export function childEnv(e: Env, env: Record<string, string> = {}): NodeJS.ProcessEnv {

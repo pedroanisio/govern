@@ -68,3 +68,20 @@ export function checkRecipient(to: string, runners: readonly string[]): { sessio
   const names = [...new Set(live.map((s) => s.name))].sort();
   return fail(`--to ${to}: no live session "${to}" (valid: ${[...runners, "auto", "owner", ...names].join(", ")})`);
 }
+
+/** The Claude Code session that is the caller: the first live registry entry (named or not) up the parent chain. Its
+ *  `sessionId` is the registry's, absent when the file does not carry one. Never reads *.key files. */
+export function callingSession(o: { dir?: string; chain?: () => number[] } = {}): { pid: number; sessionId?: string } | undefined {
+  const dir = o.dir ?? SESSIONS_DIR();
+  let files: string[];
+  try { files = readdirSync(dir).filter((f) => f.endsWith(".json")).sort(); } catch { return undefined; }
+  const live: { pid: number; sessionId?: string }[] = [];
+  for (const f of files) {
+    try {
+      const x = JSON.parse(readFileSync(join(dir, f), "utf8"));
+      if (Number.isInteger(x?.pid) && isAlive(x.pid, typeof x.procStart === "string" ? x.procStart : undefined))
+        live.push({ pid: x.pid, ...(typeof x.sessionId === "string" ? { sessionId: x.sessionId } : {}) });
+    } catch { /* not a session file */ }
+  }
+  return (o.chain ?? (() => pidChain()))().map((p) => live.find((s) => s.pid === p)).find(Boolean);
+}

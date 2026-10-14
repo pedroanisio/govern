@@ -3,6 +3,7 @@ import { existsSync, readFileSync, appendFileSync, mkdirSync, globSync } from "n
 import { join, dirname, resolve, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import { GovernError, fail, readJson, writeJson, nowIso, latest, plain, clip, readJsonl } from "./util.ts";
+import type { Source } from "./approval.ts";
 import { getProcess, processOf, processes, processName } from "./process.ts";
 import { obj, arr, record, emptyRecord, str, name, posInt, literal, parseFile, reject, keyPath, type Shape } from "./shape.ts";
 
@@ -50,7 +51,8 @@ export const argvOf = (c: string[] | Command): string[] => (Array.isArray(c) ? c
 /** A command as one line: its argv, and its own timeout when it has one. */
 export const commandLine = (c: string[] | Command): string => `${argvOf(c).join(" ")}${!Array.isArray(c) && c.timeout ? ` (timeout ${c.timeout}s)` : ""}`;
 
-export interface Approval { at: string; quote: string }
+/** `by`: whose words (the gate's decision owner); `source`: where they were found (lib/approval.ts). Both absent on approvals recorded before they existed. */
+export interface Approval { at: string; quote: string; by?: string; source?: Source }
 export interface Note { at: string; stage: string; text: string }
 /** Another lane this one waits on: met when that lane is finished, or (with `stage`) has moved past that stage. */
 export interface After { lane: string; stage?: string }
@@ -107,9 +109,14 @@ const COMMAND_OBJ = obj({ argv: ARGV }, { timeout: posInt });
 const COMMAND: Shape<string[] | Command> = (v, at) =>
   (Array.isArray(v) ? ARGV(v, at) : typeof v === "object" && v !== null ? COMMAND_OBJ(v, at)
     : reject(at, `must be an argv array or {argv, timeout?} (got ${JSON.stringify(v)})`));
+const SOURCE: Shape<Source> = (v, at) => {
+  const k = typeof v === "object" && v !== null ? (v as { kind?: unknown }).kind : undefined;
+  return k === "terminal" ? obj({ kind: literal("terminal"), user: str })(v, at) : k === "session" ? obj({ kind: literal("session"), sessionId: str, message: str, messageAt: str })(v, at)
+    : reject(at, `must be {kind: "terminal", user} or {kind: "session", sessionId, message, messageAt}`);
+};
 const PROJECT = obj(
   { version: literal(1), slug: name, title: str, kind: name, lang: name, stage: name, created: iso,
-    commands: record(COMMAND), files: record(str), approvals: record(obj({ at: iso, quote: str })),
+    commands: record(COMMAND), files: record(str), approvals: record(obj({ at: iso, quote: str }, { by: name, source: SOURCE })),
     notes: arr(obj({ at: iso, stage: name, text: str })) },
   { process: name, parent: str, finished: iso, checks: record(name), after: arr(obj({ lane: name }, { stage: name })) },
 );

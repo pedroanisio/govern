@@ -16,6 +16,7 @@ import { report, currentCtx, CTX_WARN } from "./lib/usage.ts";
 import * as queue from "./lib/queue.ts";
 import { desk } from "./lib/desk.ts";
 import { tune, chooseRunner } from "./lib/tune.ts";
+import { verifyQuote } from "./lib/approval.ts";
 import { checkRecipient, requireAs, resolveAs } from "./lib/sessions.ts";
 import { installSkill, skillDrift, sha256File } from "./lib/skill.ts";
 import { writeFileSync, existsSync, unlinkSync } from "node:fs";
@@ -112,13 +113,17 @@ function cmdApprove(a: Args): void {
   const gates = processOf(p).gates;
   const g = gates.find((x) => x.name === a._[2]) ?? fail(`gate must be one of ${gates.map((x) => x.name).join(", ") || "(none: this process has no gates)"}`);
   const gate = g.name;
+  const owner = g.owner ?? "owner", by = opt(a, "by");
+  if (by === undefined && owner !== "owner") fail(`gate ${gate} is decided by ${owner}: pass --by ${owner}`);
+  if (by !== undefined && by !== owner) fail(`gate ${gate} is decided by ${owner}, not ${by}`);
   const quote = opt(a, "quote");
-  if (!quote || quote.trim().length < 2) fail(`--quote is required: the owner's own words approving the ${gate} (only the owner approves)`);
+  if (!quote || quote.trim().length < 2) fail(`--quote is required: ${owner}'s own words approving the ${gate} (only ${owner} approves)`);
   for (const need of g.needs ?? []) if (!p.approvals[need]) fail(g.message ?? `needs the ${need} approval first`);
-  p.approvals[gate] = { at: nowIso(), quote: quote! };
-  p.notes.push({ at: nowIso(), stage: p.stage, text: `owner approved ${gate}: "${quote}"` });
+  const source = verifyQuote(quote!);
+  p.approvals[gate] = { at: nowIso(), quote: quote!, by: owner, source };
+  p.notes.push({ at: nowIso(), stage: p.stage, text: `${owner} approved ${gate}: "${quote}"` });
   save(p);
-  appendLedger(p.slug, { kind: "approve", gate, quote });
+  appendLedger(p.slug, { kind: "approve", gate, quote, by: owner, source });
   out(`${p.slug}: ${gate} approved`);
 }
 
@@ -558,8 +563,8 @@ export const COMMANDS: readonly Cmd[] = [
       appendLedger(p.slug, { kind: "note", text });
       out(`${p.slug}: noted (${p.notes.length})`);
     } },
-  { name: "approve", section: 0, flags: { value: ["quote"] },
-    lines: [["<slug> <gate> --quote \"<the owner's words>\"", "(gates come from the lane's process)"]], run: cmdApprove },
+  { name: "approve", section: 0, flags: { value: ["quote", "by"] },
+    lines: [["<slug> <gate> --quote \"<the owner's words>\" [--by NAME]", "(gates come from the lane's process; --by: the gate's decision owner,\nrequired when the process names one other than owner. In a Claude session the quote\nmust be in a message the person typed; a Codex session is refused)"]], run: cmdApprove },
   { name: "done", section: 0, flags: { value: ["engine"] }, lines: [["<slug> [--engine claude|codex]", "end the current work segment"]],
     run: (a) => { const p = load(a._[1]); appendLedger(p.slug, { kind: "done", engine: engineOf(a), session: process.env.CLAUDE_CODE_SESSION_ID }); out(`${p.slug}: segment closed`); } },
   { name: "cmd", section: 0, flags: { value: ["timeout", "rm"] },

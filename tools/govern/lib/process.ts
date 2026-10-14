@@ -13,7 +13,8 @@ const BUILTIN = resolve(HERE, "..", "processes");
 
 /** `requires: "check"`: only a passing check moves a lane past the stage, never a note, never a skip. */
 export interface StageDef { name: string; exit?: string; check?: string; requires?: "check" }
-export interface GateDef { name: string; stage?: string; needs?: string[]; message?: string }
+/** `owner`: who decides the gate (default "owner"); `govern approve --by` must name them. */
+export interface GateDef { name: string; stage?: string; needs?: string[]; message?: string; owner?: string }
 export interface Process {
   version: 1;
   name: string;
@@ -30,7 +31,7 @@ export interface Process {
 export const extraDir = () => process.env.GOVERN_PROCESSES ?? CONFIG.processes ?? join(PROJECTS, "..", "processes");
 
 const STAGE = obj({ name }, { exit: str, check: name, requires: literal("check") });
-const GATE = obj({ name }, { stage: name, needs: arr(name), message: str });
+const GATE = obj({ name }, { stage: name, needs: arr(name), message: str, owner: name });
 const PROCESS = obj({ version: literal(1), name, stages: arr(STAGE, { nonEmpty: true }) },
   { description: str, kinds: arr(name, { nonEmpty: true }), exitFrom: literal("workflow"), gates: arr(GATE) });
 
