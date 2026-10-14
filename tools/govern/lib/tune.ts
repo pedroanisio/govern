@@ -127,7 +127,9 @@ export function chooseRunner(seq: number): { runner: Runner; reason: string } {
   const runs = readJsonl(join(queue.QUEUE(), "ledger.jsonl"));
   const stats = candidates().map((r) => {
     const last = runs.filter((e) => e.agent === r).slice(-30);
-    return { r, n: last.length, okRate: last.length ? last.filter((e) => e.ok).length / last.length : 0, meanIn: last.length ? last.reduce((a, e) => a + (e.usage?.input ?? 0), 0) / last.length : Infinity };
+    // a run with no recorded usage (timeout, incomplete report) has unknown input: it is left out of the mean, never counted as zero
+    const metered = last.filter((e) => typeof e.usage?.input === "number");
+    return { r, n: last.length, okRate: last.length ? last.filter((e) => e.ok).length / last.length : 0, meanIn: metered.length ? metered.reduce((a, e) => a + e.usage.input, 0) / metered.length : Infinity };
   });
   const good = stats.filter((s) => s.n >= 3 && s.okRate >= 0.9).sort((a, b) => a.meanIn - b.meanIn);
   const best = good[0]?.r ?? "codex";

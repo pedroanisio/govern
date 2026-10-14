@@ -95,3 +95,16 @@ test("chooseRunner: a runner under 3 runs or under 90% verified is not a candida
   const r = withEnv({ GOVERN_QUEUE: q, GOVERN_GROK_BIN: join(e.root, "fake-grok.sh") }, () => chooseRunner(0));
   assert.deepEqual([r.runner, /fewer than 3 verified runs per runner: codex by default/.test(r.reason)], ["codex", true]);
 });
+
+test("chooseRunner: runs without recorded usage are skipped in the mean, never counted as zero input", () => {
+  const e = makeEnv();
+  const q = join(e.root, "choose-queue3");
+  const noUsage = (agent: string, n: number) => Array.from({ length: n }, () => JSON.stringify({ t: new Date().toISOString(), agent, ok: true })).join("\n") + "\n";
+  write(join(q, "ledger.jsonl"), runs("codex", 4, 20000) + noUsage("grok", 6));
+  const r = withEnv({ GOVERN_QUEUE: q, GOVERN_GROK_BIN: join(e.root, "fake-grok.sh") }, () => chooseRunner(0));
+  assert.equal(r.runner, "codex");
+  // mixed: grok's mean comes only from the runs that have usage
+  write(join(q, "ledger.jsonl"), runs("codex", 4, 20000) + noUsage("grok", 6) + runs("grok", 3, 30000));
+  const m = withEnv({ GOVERN_QUEUE: q, GOVERN_GROK_BIN: join(e.root, "fake-grok.sh") }, () => chooseRunner(0));
+  assert.equal(m.runner, "codex");
+});
