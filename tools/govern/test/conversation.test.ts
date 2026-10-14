@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { join } from "node:path";
-import { readFileSync, chmodSync } from "node:fs";
+import { readFileSync, chmodSync, mkdirSync } from "node:fs";
 import { spawn } from "node:child_process";
 import { makeEnv, govern, write, childEnv, GOVERN, HERE, type Env } from "./helpers.ts";
 function setup() {
@@ -16,7 +16,13 @@ function setup() {
   );
   write(file, JSON.stringify(c));
   e.env.FAKE_CONVERSATION_LOG = join(e.root, "requests.jsonl");
+  e.env.FAKE_CONVERSATION_RELEASE = join(e.root, "release");
+  mkdirSync(e.env.FAKE_CONVERSATION_RELEASE);
   return e;
+}
+/** Lets the "slow" adapter finish its reply to this message. */
+function release(e: Env, message: string) {
+  write(join(e.env.FAKE_CONVERSATION_RELEASE!, encodeURIComponent(message)), "");
 }
 function ok(e: Env, args: string[]) {
   const r = govern(e, ["conversation", ...args]);
@@ -95,6 +101,8 @@ test("follow-ups are queued, streamed events persist, and concurrent workers ser
   await until(e, (s) => s.runs[0].partial === "part:");
   send(e, "two");
   const b = worker(e);
+  release(e, "one");
+  release(e, "two");
   const results = await Promise.all([a.done, b.done]);
   assert.ok(
     results.every((r) => r.code === 0),
@@ -121,6 +129,7 @@ test("cancellation retains partial progress, stops the run, and permits a queued
   await until(e, (s) => s.runs[0].partial === "part:");
   send(e, "continue");
   ok(e, ["cancel", "chat", first.run.id, "--reason", "changed my mind"]);
+  release(e, "continue");
   assert.equal((await w.done).code, 0);
   const s = state(e);
   assert.deepEqual(
@@ -143,6 +152,7 @@ test("a killed worker is interrupted, never replayed, and requires explicit reco
   send(e, "new task");
   assert.equal(govern(e, ["conversation", "run", "chat"]).code, 1);
   ok(e, ["recover", "chat", "--action", "continue", "--note", "inspected the effects"]);
+  release(e, "new task");
   ok(e, ["run", "chat"]);
   assert.deepEqual(
     state(e).runs.map((r: any) => r.state),
@@ -171,7 +181,8 @@ test("queued cancellation, close, input validation, and traversal preserve exist
 test("timeouts and output limits fail without committing a reply", () => {
   for (const adapter of ["hang", "oversize"]) {
     const e = setup();
-    create(e, adapter, ["--timeout", "1"]);
+    // Oversize gets a timeout it cannot reach, so only its output limit can fail it.
+    create(e, adapter, ["--timeout", adapter === "hang" ? "1" : "600"]);
     send(e, "bounded");
     assert.equal(govern(e, ["conversation", "run", "chat"]).code, 1);
     const s = state(e);
@@ -187,6 +198,7 @@ test("interrupt follow-up cancels the active turn before the new one starts", as
   const w = worker(e);
   await until(e, (s) => s.runs[0].partial === "part:");
   send(e, "replacement", ["--mode", "interrupt"]);
+  release(e, "replacement");
   assert.equal((await w.done).code, 0);
   assert.deepEqual(
     state(e).runs.map((r: any) => r.state),
@@ -200,9 +212,11 @@ test("background worker outlives the command and event followers replay progress
   const receipt = json(e, ["run", "chat", "--bg"]);
   assert.ok(receipt.pid > 0);
   await until(e, (s) => s.runs[0].partial === "part:");
+  release(e, "background");
+  await until(e, (s) => s.runs[0].state === "completed");
   const follower = spawn(
     process.execPath,
-    ["--disable-warning=ExperimentalWarning", GOVERN, "conversation", "events", "chat", "--follow", "--timeout", "3"],
+    ["--disable-warning=ExperimentalWarning", GOVERN, "conversation", "events", "chat", "--follow", "--timeout", "1"],
     { env: childEnv(e), stdio: ["ignore", "pipe", "pipe"] }
   );
   let out = "";
@@ -331,6 +345,7 @@ test("explicit retry after interruption creates a new attempt and does not lose 
   await until(e, (s) => s.runs[0].state === "interrupted" && !s.runs[0].host?.running);
   await new Promise((r) => setTimeout(r, 500));
   ok(e, ["recover", "chat", "--action", "retry", "--note", "external effects checked; retry approved"]);
+  release(e, "retry work");
   ok(e, ["run", "chat"]);
   assert.deepEqual(
     state(e).runs.map((r: any) => r.state),
@@ -363,6 +378,7 @@ test("graceful worker shutdown cancels active work and leaves queued turns for r
     state(e).runs.map((r: any) => r.state),
     ["cancelled", "queued"]
   );
+  release(e, "later");
   ok(e, ["run", "chat"]);
   assert.equal(state(e).runs[1].state, "completed");
 });
