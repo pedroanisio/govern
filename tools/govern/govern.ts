@@ -36,6 +36,7 @@ import { checkProfile } from "./lib/capcheck.ts";
 import { tune, chooseRunner } from "./lib/tune.ts";
 import { verifyQuote, origin, GROK_MARKERS } from "./lib/approval.ts";
 import * as remote from "./lib/remote.ts";
+import * as artifacts from "./lib/artifacts.ts";
 import { checkRecipient, requireAs, resolveAs } from "./lib/sessions.ts";
 import { installSkill, skillDrift, sha256File } from "./lib/skill.ts";
 import { writeFileSync, existsSync, unlinkSync } from "node:fs";
@@ -1025,6 +1026,14 @@ export const COMMANDS: readonly Cmd[] = [
     out(d.text);
     if (d.failed) unreadable(d.failed, d.lanes);
   } },
+  { name: "artifact", section: 7, noSub: "govern artifact add|list (lane evidence)",
+    subs: {
+      add: { flags: { value: ["name", "title", "caption"] },
+        lines: [["<slug> <file> [--name N] [--title T] [--caption C]", "copy evidence into the lane and record its digest and version"]],
+        run: (a) => { out(JSON.stringify(artifacts.add(checkSlug(a._[2]), a._[3] ?? fail("govern artifact add <slug> <file>"), { name: opt(a, "name"), title: opt(a, "title"), caption: opt(a, "caption") }), null, 2)); } },
+      list: { lines: [["<slug>", "list artifacts with current digests and reviews"]],
+        run: (a) => { const slug = checkSlug(a._[2]); load(slug); out(JSON.stringify(artifacts.list(slug), null, 2)); } },
+    } },
   { name: "remote", section: 7, noSub: "govern remote pair|devices|revoke|serve (the protocol: tools/govern/REMOTE.md)",
     subs: {
       pair: { flags: { value: ["as", "minutes", "url", "tls-cert"], bool: ["no-qr"] },

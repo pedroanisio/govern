@@ -1,0 +1,49 @@
+{
+  "protocol": "govern-remote/2",
+  "session": {
+    "id": "chat",
+    "title": "Review",
+    "lane": "r1",
+    "engine": "echo",
+    "state": "idle",
+    "updatedAt": "2026-10-14T20:12:02.406Z",
+    "needsDecision": true,
+    "lastMessage": {
+      "id": "reply",
+      "role": "assistant",
+      "at": "2026-10-14T20:12:02.406Z",
+      "text": "reply:hello:previous=0",
+      "runId": "cae63a6e-046b-47db-85dc-195c0a3c2b43",
+      "verification": "transport-only"
+    }
+  },
+  "messages": [
+    {
+      "id": "32eadb34-28d0-4a0e-bad8-147100c84cce",
+      "role": "user",
+      "at": "2026-10-14T20:12:01.617Z",
+      "text": "hello",
+      "runId": "cae63a6e-046b-47db-85dc-195c0a3c2b43",
+      "verification": null
+    },
+    {
+      "id": "reply",
+      "role": "assistant",
+      "at": "2026-10-14T20:12:02.406Z",
+      "text": "reply:hello:previous=0",
+      "runId": "cae63a6e-046b-47db-85dc-195c0a3c2b43",
+      "verification": "transport-only"
+    }
+  ],
+  "runs": [
+    {
+      "id": "cae63a6e-046b-47db-85dc-195c0a3c2b43",
+      "state": "completed",
+      "createdAt": "2026-10-14T20:12:01.617Z",
+      "startedAt": "2026-10-14T20:12:01.680Z",
+      "endedAt": "2026-10-14T20:12:02.406Z",
+      "verification": "transport-only",
+      "error": null
+    }
+  ]
+}

@@ -28,6 +28,7 @@
 #     govern log SLUG [JOB] [--tail N] [--grep RE]
 #     govern prompts [PROCESS]  |  ask SLUG STEP [--file F]... [--var K=V]... [--image PNG]... [--effort E] [--model M]
 #     govern usage [SLUG...] [--since DATE]  |  ctx  |  desk  |  tune  |  publish SLUG
+#     govern artifact add SLUG FILE [--name N] [--title T] [--caption C]  |  artifact list SLUG
 #     govern remote pair [--as PERSON] [--minutes N] [--url URL] [--tls-cert F] [--no-qr]  |  remote devices  |  remote revoke DEVICE
 #     govern remote serve [--host H] [--port 5002] [--tls-cert F --tls-key F]
 #     govern caps [PROFILE]  |  caps --check PROFILE
@@ -109,7 +110,10 @@
 #     --process P             new: the process the lane follows (govern process list)
 #     --kind K                new, task send, task reply: new: the lane's kind (long|short|ops, or one the process names);
 #                             task: the message kind (TASK, the default for send; ACK, REVIEW, HANDOFF, BLOCKED…)
-#     --title T               conversation create, new: the lane's title (default: its slug)
+#     --title T               conversation create, new, artifact add: conversation create: the conversation's title; new: the
+#                             lane's title (default: its slug); artifact add: the artifact's title shown to the reviewer
+#     --name N                artifact add: the artifact's name in the lane (default: the file's base name)
+#     --caption C             artifact add: a caption shown with the artifact
 #     --lang L                new: the lane's language, en (default) or pt-BR
 #     --parent SLUG           new: the lane this one comes from (shown in its brief)
 #     --engine E              work, done: claude or codex (default: claude inside a Claude Code session, else codex)

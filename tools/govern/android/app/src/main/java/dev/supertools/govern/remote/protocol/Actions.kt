@@ -6,7 +6,7 @@ import java.time.Instant
 import java.time.temporal.ChronoUnit
 import java.util.Base64
 
-// The signed actions of govern-remote/1. The body is encoded once, and those exact bytes are both signed and sent, so the
+// The signed actions of govern-remote/2. The body is encoded once, and those exact bytes are both signed and sent, so the
 // server verifies what the person confirmed, with no canonicalisation on either side.
 
 @Serializable

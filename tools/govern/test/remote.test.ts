@@ -164,6 +164,9 @@ test("a signed approval records the owner's words with the device as their sourc
     assert.equal(r.status, 200, await r.clone().text());
     const j = await r.json() as any;
     assert.equal(j.lane.gates.find((g: any) => g.name === "final").approved, true);
+    assert.equal(j.lane.gates.find((g: any) => g.name === "final").approvedBy, "owner");
+    assert.equal(j.lane.gates.find((g: any) => g.name === "final").quote, "final cut looks right, approved");
+    assert.equal(j.lane.decisions[0].device, phone.id);
     const approval = stateOf(e).approvals.final!;
     assert.equal(approval.quote, "final cut looks right, approved");
     assert.equal(approval.by, "owner");
@@ -366,4 +369,182 @@ test("the server's desk and lane match the app's contract fixtures (android/app/
     for (const [what, v] of Object.entries({ working: d.lanes[0].working, lastNote: d.lanes[0].lastNote, lastJob: d.lanes[0].lastJob, unreadable: d.unreadable[0],
       tokens: d.telemetry.tokens[0], dispatcher: d.telemetry.dispatcher, inbox: d.telemetry.inbox[0], gates: d.lanes[0].gates[0] })) assert.ok(v, `${what} is empty`);
   });
+});
+
+test("v2 reads expose checks, sessions, jobs, artifact versions and digest-bound reviews", async () => {
+  const e = setup();
+  const cfg = join(e.root, "govern.config.json");
+  write(cfg, JSON.stringify({ ...JSON.parse(readFileSync(cfg, "utf8")), conversationAdapters: { echo: { argv: [process.execPath, join(import.meta.dirname, "fake-conversation.ts"), "echo"] } } }));
+  const run = (args: string[]) => { const r = govern(e, args); assert.equal(r.code, 0, r.err + r.out); return r; };
+  run(["conversation", "create", "chat", "--adapter", "echo", "--lane", "r1", "--title", "Review"]);
+  run(["conversation", "send", "chat", "--message", "hello"]);
+  run(["conversation", "run", "chat", "--once"]);
+  run(["cmd", "r1", "test", "--", "printf", "first\nsecond\n"]);
+  run(["run", "r1", "test"]);
+  const p = stateOf(e); p.checks = { draft: "test", ship: "test" };
+  write(join(e.projects, "r1", "govern.json"), JSON.stringify(p));
+  const source = write(join(e.root, "proof.txt"), "old");
+  run(["artifact", "add", "r1", source]);
+  const led = join(e.projects, "r1", "govern", "ledger.jsonl");
+  const old = jsonl(led).find(x => x.kind === "artifact").sha256;
+  write(source, "new evidence"); run(["artifact", "add", "r1", source, "--title", "Proof", "--caption", "Latest"]);
+  await serving(e, async (base) => {
+    const { appendLedger } = await import("../lib/project.ts");
+    const artifacts = await import("../lib/artifacts.ts");
+    const sha256 = artifacts.view("r1", "proof.txt").sha256;
+    for (const [sha, person] of [[old, "old-person"], [sha256, "owner"]]) appendLedger("r1", { kind: "artifact-reviewed", artifact: { name: "proof.txt", sha256: sha }, by: person, device: "d-review" });
+    appendLedger("r1", { kind: "check", stage: "draft", name: "test", ok: false, exit: 1, job: null });
+    appendLedger("r1", { kind: "check", stage: "draft", name: "test", ok: true, exit: 0, job: null });
+    appendLedger("r1", { kind: "changes-requested", gate: "final", by: "owner", quote: "revise this", device: "d-review", artifact: { name: "proof.txt", sha256 } });
+    const phone = await pairPhone(base);
+    const get = (path: string) => fetch(base + path, { headers: auth(phone) });
+    const desk = await (await get("/v1/desk")).json() as any;
+    assert.equal(desk.protocol, "govern-remote/2");
+    assert.deepEqual(desk.viewer, { person: "owner", device: phone.id, lanes: null });
+    assert.equal(desk.host, (await import("node:os")).hostname());
+    const { registry } = await import("../lib/caps.ts");
+    assert.deepEqual(desk.engines, [...registry().profiles.values()].filter(p => ["claude", "codex", "grok"].includes(p.engine)).map(p => p.name).sort());
+    assert.deepEqual(desk.lanes[0].checkSummary, { passed: 1, failed: 0, total: 2 });
+    const s = desk.sessions[0];
+    assert.equal(s.id, "chat"); assert.equal(s.title, "Review"); assert.equal(s.engine, "echo"); assert.equal(s.lane, "r1");
+    assert.equal(s.state, "idle"); assert.equal(s.needsDecision, true);
+    assert.equal(s.lastMessage.role, "assistant"); assert.equal(s.lastMessage.verification, "transport-only"); assert.ok(s.updatedAt);
+    const lane = await (await get("/v1/lane?slug=r1")).json() as any;
+    assert.equal(lane.checks.length, 1); assert.equal(lane.checks[0].ok, true); assert.equal(lane.checks[0].exit, 0);
+    assert.equal(lane.checks[0].stage, "draft"); assert.equal(lane.checks[0].name, "test"); assert.equal(lane.checks[0].job, null); assert.ok(lane.checks[0].at);
+    assert.deepEqual(lane.sessions, desk.sessions);
+    assert.equal(lane.artifacts[0].version, 2); assert.equal(lane.artifacts[0].title, "Proof"); assert.equal(lane.artifacts[0].caption, "Latest");
+    assert.equal(lane.artifacts[0].reviews.length, 1); assert.equal(lane.artifacts[0].reviews[0].person, "owner");
+    assert.equal(lane.decisions[0].kind, "changes"); assert.equal(lane.decisions[0].quote, "revise this"); assert.equal(lane.decisions[0].artifact.sha256, sha256);
+    assert.equal(lane.gates[0].approvedBy, null); assert.equal(lane.gates[0].quote, null); assert.equal(lane.gates[0].artifact, null);
+    const detail = await (await get("/v1/session?id=chat&messages=1")).json() as any;
+    assert.equal(detail.messages.length, 1); assert.equal(detail.runs.length, 1); assert.equal(detail.runs[0].state, "completed");
+    assert.equal(detail.runs[0].verification, "transport-only"); assert.equal(detail.runs[0].error, null);
+    const fixtures = join(import.meta.dirname, "../android/app/src/test/resources/fixtures");
+    assert.deepEqual(shapeDiff(detail, JSON.parse(readFileSync(join(fixtures, "session.json"), "utf8"))), []);
+    const j = lane.jobs[0]; assert.equal(j.status, "ok"); assert.equal(j.exit, 0); assert.equal(j.progress, null); assert.equal(typeof j.seconds, "number");
+    const job = await (await get(`/v1/job?lane=r1&id=${j.id}&lines=1`)).json() as any;
+    assert.deepEqual(shapeDiff(job, JSON.parse(readFileSync(join(fixtures, "job.json"), "utf8"))), []);
+    assert.deepEqual(job.argv, ["printf", "first\nsecond\n"]); assert.deepEqual(job.log, ["second"]); assert.deepEqual(job.job, j);
+    const download = await get("/v1/artifact?lane=r1&name=proof.txt");
+    assert.equal(download.status, 200); assert.equal(download.headers.get("govern-artifact-sha256"), sha256); assert.equal(await download.text(), "new evidence");
+    for (const name of ["../x", "a/b"]) assert.equal((await get(`/v1/artifact?lane=r1&name=${encodeURIComponent(name)}`)).status, 400);
+    const { symlinkSync, truncateSync } = await import("node:fs");
+    symlinkSync(source, join(e.projects, "r1", "artifacts", "link"));
+    assert.equal((await get("/v1/artifact?lane=r1&name=link")).status, 400);
+    assert.equal((await get("/v1/artifact?lane=r1&name=missing")).status, 404);
+    truncateSync(join(e.projects, "r1", "artifacts", "proof.txt"), 32 * 1024 * 1024 + 1);
+    assert.equal((await get("/v1/artifact?lane=r1&name=proof.txt")).status, 413);
+    assert.equal((await get("/v1/session?id=missing")).status, 404);
+    for (const n of ["0", "1001", "-1", "1.5", "abc", ""]) assert.equal((await get(`/v1/job?lane=r1&id=${j.id}&lines=${n}`)).status, 400);
+    for (const n of ["0", "101", "-1", "1.5"]) assert.equal((await get(`/v1/session?id=chat&messages=${n}`)).status, 400);
+    assert.equal((await get("/v1/job?lane=r1&id=missing")).status, 404);
+    const other = await pairPhone(base, "alice");
+    const second = await (await fetch(base + "/v1/desk", { headers: auth(other) })).json() as any;
+    assert.equal(second.viewer.person, "alice"); assert.equal(second.viewer.device, other.id);
+  }, { streamIntervalMs: 60_000 });
+});
+
+test("v2 projections count latest checks and preserve session state, clipping and run nullability", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: Date.parse("2026-10-14T12:00:00Z") });
+  const e = makeEnv("read-projections"), previous = process.env.GOVERN_REPO;
+  process.env.GOVERN_REPO = e.root;
+  try {
+    const { create, save, appendLedger } = await import("../lib/project.ts");
+    const sessions = await import("../lib/conversation.ts");
+    const views = await import("../lib/remote-view.ts");
+    write(join(e.root, "PALS-Notes/processes/release.json"), JSON.stringify(PROCESS));
+    const cfg = join(e.root, "govern.config.json");
+    write(cfg, JSON.stringify({ ...JSON.parse(readFileSync(cfg, "utf8")), conversationAdapters: { echo: { argv: [process.execPath, join(import.meta.dirname, "fake-conversation.ts"), "echo"] } } }));
+    const p = create("r1", { process: "release", title: "Release one" });
+    p.checks = { draft: "test", ship: "test" }; save(p);
+    appendLedger("r1", { kind: "check", stage: "draft", name: "old", ok: true, exit: 0, job: "old-job" });
+    appendLedger("r1", { kind: "check", stage: "draft", name: "test", ok: false, exit: 1, job: "new-job" });
+    assert.deepEqual(views.laneSummary(p).checkSummary, { passed: 0, failed: 1, total: 2 });
+    sessions.create("chat", { adapter: "echo", lane: "r1" });
+    assert.equal(views.sessionDetail("chat").session.lastMessage, null);
+    sessions.send("chat", "u".repeat(5000));
+    let detail = views.sessionDetail("chat");
+    assert.equal(detail.session.state, "queued"); assert.equal(detail.session.needsDecision, true);
+    assert.equal(detail.session.lastMessage!.text.length, 400); assert.equal(detail.messages[0]!.text.length, 4000);
+    assert.equal(detail.messages[0]!.verification, null);
+    assert.deepEqual([detail.runs[0]!.startedAt, detail.runs[0]!.endedAt, detail.runs[0]!.error, detail.runs[0]!.verification], [null, null, null, null]);
+    const claimed = sessions.claim("chat")!;
+    assert.equal(views.sessionSummary(claimed.session).state, "running");
+    sessions.update("chat", claimed.run.id, (s, r) => {
+      r.state = "completed"; r.endedAt = "2026-10-14T12:01:00.000Z"; r.verification = "checked";
+      s.messages.push({ id: "reply", role: "assistant", content: "a".repeat(5000), at: r.endedAt, runId: r.id });
+      s.events.push({ seq: s.events.length + 1, at: "2026-10-14T12:02:00.000Z", type: "run.completed", runId: r.id });
+    });
+    detail = views.sessionDetail("chat", 1);
+    assert.equal(detail.session.state, "idle"); assert.equal(detail.session.updatedAt, "2026-10-14T12:02:00.000Z");
+    assert.equal(detail.messages.length, 1); assert.equal(detail.messages[0]!.verification, "checked");
+    const stored = sessions.read("chat");
+    for (const state of ["failed", "interrupted"] as const) {
+      const copy = structuredClone(stored); copy.runs[0]!.state = state;
+      assert.equal(views.sessionSummary(copy).state, "failed");
+      copy.closedAt = "2026-10-14T12:03:00.000Z";
+      assert.equal(views.sessionSummary(copy).state, "closed");
+    }
+    p.finished = "2026-10-14T12:03:00.000Z"; save(p);
+    assert.equal(views.sessionSummary(stored).needsDecision, false);
+    const lane = views.laneDetail(p);
+    assert.equal(lane.checks.length, 2); assert.equal(lane.sessions.length, 1);
+    assert.deepEqual(lane.jobs, []); assert.deepEqual(lane.artifacts, []); assert.deepEqual(lane.decisions, []);
+  } finally { if (previous === undefined) delete process.env.GOVERN_REPO; else process.env.GOVERN_REPO = previous; }
+});
+
+test("v2 request handler streams artifact bytes and rejects invalid read parameters", async () => {
+  const e = makeEnv("read-handler"), previous = process.env.GOVERN_REPO;
+  process.env.GOVERN_REPO = e.root;
+  try {
+    const { create, save } = await import("../lib/project.ts");
+    const { pair } = await import("../lib/remote.ts");
+    const { PassThrough, Writable } = await import("node:stream");
+    const { symlinkSync, truncateSync } = await import("node:fs");
+    const artifacts = await import("../lib/artifacts.ts");
+    const jobs = await import("../lib/jobs.ts");
+    const sessions = await import("../lib/conversation.ts");
+    write(join(e.root, "PALS-Notes/processes/release.json"), JSON.stringify(PROCESS));
+    const p = create("r1", { process: "release" });
+    p.commands.test = ["printf", "first\nsecond\n"]; save(p);
+    const job = jobs.start(p, "test", [], false);
+    sessions.create("chat", { profile: "codex-read", lane: "r1" });
+    const source = write(join(e.root, "source.txt"), "evidence"), a = artifacts.add("r1", source, { name: "proof.txt" });
+    const { code } = createPairing("owner", 10), phone = pair(code, "reader", keyPair().publicKey);
+    const server = remoteServer();
+    // Exercise the actual request handler without a listener; the socket tests above cover HTTP transport.
+    const get = (url: string, token = phone.token): Promise<{ status: number; headers: Record<string, string | number>; body: Buffer }> => new Promise((resolve, reject) => {
+      let status = 0; let headers: Record<string, string | number> = {}; const chunks: Buffer[] = [];
+      const response = Object.assign(new Writable({ write(chunk, _encoding, next) { chunks.push(Buffer.from(chunk)); next(); } }), {
+        headersSent: false,
+        writeHead(code: number, values: Record<string, string | number>) { status = code; headers = values; this.headersSent = true; },
+      });
+      response.on("finish", () => resolve({ status, headers, body: Buffer.concat(chunks) })); response.on("error", reject);
+      server.emit("request", Object.assign(new PassThrough(), { method: "GET", url, headers: { authorization: `Bearer ${token}` } }), response);
+    });
+    assert.equal((await get("/v1/artifact?lane=r1&name=proof.txt", "wrong")).status, 401);
+    const download = await get("/v1/artifact?lane=r1&name=proof.txt");
+    assert.equal(download.status, 200); assert.equal(download.body.toString(), "evidence");
+    assert.equal(download.headers["Govern-Artifact-Sha256"], a.sha256); assert.equal(download.headers["Content-Length"], 8);
+    assert.equal(download.headers["Content-Disposition"], 'attachment; filename="proof.txt"'); assert.equal(download.headers["Content-Type"], "text/plain");
+    for (const name of ["../x", "a/b"]) assert.equal((await get(`/v1/artifact?lane=r1&name=${encodeURIComponent(name)}`)).status, 400);
+    symlinkSync(source, artifacts.path("r1", "link"));
+    assert.equal((await get("/v1/artifact?lane=r1&name=link")).status, 400);
+    assert.equal((await get("/v1/artifact?lane=r1&name=missing")).status, 404);
+    const session = await get("/v1/session?id=chat"); assert.equal(session.status, 200); assert.equal(JSON.parse(session.body.toString()).session.state, "idle");
+    assert.equal((await get("/v1/session?id=missing")).status, 404);
+    for (const n of ["0", "101", "1.5", ""]) assert.equal((await get(`/v1/session?id=chat&messages=${n}`)).status, 400);
+    const j = await get(`/v1/job?lane=r1&id=${job.id}&lines=1`); assert.equal(j.status, 200); assert.deepEqual(JSON.parse(j.body.toString()).log, ["second"]);
+    for (const n of ["0", "1001", "-1", "1.5", "abc", ""]) assert.equal((await get(`/v1/job?lane=r1&id=${job.id}&lines=${n}`)).status, 400);
+    assert.equal((await get("/v1/job?lane=r1&id=missing")).status, 404);
+    assert.equal((await get("/v1/job?lane=missing&id=job")).status, 404);
+    const d = JSON.parse((await get("/v1/desk")).body.toString());
+    assert.deepEqual(d.viewer, { person: "owner", device: phone.device.id, lanes: null });
+    const other = pair(createPairing("alice", 10).code, "other", keyPair().publicKey);
+    const d2 = JSON.parse((await get("/v1/desk", other.token)).body.toString());
+    assert.deepEqual(d2.viewer, { person: "alice", device: other.device.id, lanes: null });
+    truncateSync(artifacts.path("r1", "proof.txt"), artifacts.MAX_BYTES + 1);
+    assert.equal((await get("/v1/artifact?lane=r1&name=proof.txt")).status, 413);
+  } finally { if (previous === undefined) delete process.env.GOVERN_REPO; else process.env.GOVERN_REPO = previous; }
 });

@@ -1,8 +1,42 @@
 {
-  "protocol": "govern-remote/1",
-  "at": "2026-10-14T12:00:00.000Z",
+  "sessions": [
+    {
+      "id": "chat",
+      "title": "Review",
+      "lane": "r1",
+      "engine": "echo",
+      "state": "idle",
+      "updatedAt": "2026-10-14T20:12:02.406Z",
+      "needsDecision": false,
+      "lastMessage": {
+        "id": "reply",
+        "role": "assistant",
+        "at": "2026-10-14T20:12:02.406Z",
+        "text": "reply:hello:previous=0",
+        "runId": "cae63a6e-046b-47db-85dc-195c0a3c2b43",
+        "verification": "transport-only"
+      }
+    }
+  ],
+  "engines": [
+    "claude-read",
+    "claude-write",
+    "codex-read",
+    "codex-write",
+    "grok-read",
+    "grok-write",
+    "researcher"
+  ],
+  "host": "asus-tuf",
+  "protocol": "govern-remote/2",
+  "at": "2026-10-14T20:12:02.840Z",
   "lanes": [
     {
+      "checkSummary": {
+        "passed": 1,
+        "failed": 0,
+        "total": 1
+      },
       "slug": "r1",
       "title": "Release one",
       "process": "release",
@@ -10,27 +44,112 @@
       "stage": "draft",
       "stageIndex": 0,
       "stageCount": 2,
-      "active": ["draft"],
+      "active": [
+        "draft"
+      ],
       "state": "open",
       "blockedBy": [],
       "gates": [
-        { "name": "final", "stage": "draft", "owner": "owner", "policy": false, "approved": true, "approvedAt": "2026-10-14T11:59:00.000Z", "needs": [] },
-        { "name": "publish", "stage": "ship", "owner": "owner", "policy": false, "approved": false, "approvedAt": null, "needs": ["final"] }
+        {
+          "name": "final",
+          "stage": "draft",
+          "owner": "owner",
+          "policy": false,
+          "approved": true,
+          "approvedAt": "2026-10-14T20:12:02.604Z",
+          "needs": [],
+          "approvedBy": "owner",
+          "quote": "looks right",
+          "artifact": {
+            "name": "proof.txt",
+            "sha256": "ee8250fb76e094b34b471f13a73dbbe51d1ae142e9df59d7c0d31ec20f0a0a8e"
+          }
+        },
+        {
+          "name": "publish",
+          "stage": "ship",
+          "owner": "owner",
+          "policy": false,
+          "approved": false,
+          "approvedAt": null,
+          "needs": [
+            "final"
+          ],
+          "approvedBy": null,
+          "quote": null,
+          "artifact": null
+        }
       ],
       "openAlerts": 1,
-      "working": { "engine": "codex", "since": "2026-10-14T11:00:00.000Z" },
-      "lastNote": { "at": "2026-10-14T11:59:00.000Z", "text": "owner approved final: \"looks right\"" },
-      "lastJob": { "name": "test", "status": "ok", "at": "2026-10-14T11:30:00.000Z" }
+      "working": {
+        "engine": "codex",
+        "since": "2026-10-14T20:12:02.611Z"
+      },
+      "lastNote": null,
+      "lastJob": {
+        "name": "test",
+        "status": "ok",
+        "at": "2026-10-14T20:12:01.497Z"
+      }
     }
   ],
-  "unreadable": [{ "slug": "broken", "error": "broken/govern.json: not JSON" }],
+  "unreadable": [
+    {
+      "slug": "broken",
+      "error": "/home/admin/src/super-tools/_tmp/wt/field-server-read/_tmp/fixture-workspace-v3/projects/broken/govern.json: not JSON (Expected property name or '}' in JSON at position 1 (line 1 column 2))"
+    }
+  ],
   "telemetry": {
     "day": "2026-10-14",
-    "tokens": [{ "lane": "r1", "calls": 2, "input": 41000, "output": 900, "usd": 0.12 }],
-    "machines": [{ "lane": "r1", "time": "1h 02m on gpu", "money": "USD 1.20" }],
-    "queue": { "runners": [{ "runner": "codex", "waiting": 1, "running": 0 }], "failed": 0, "unverified": 0 },
-    "dispatcher": { "running": true, "pid": 4242, "started": "2026-10-14T08:00:00.000Z", "interval": 30 },
-    "inbox": [{ "id": "m-1", "kind": "REVIEW", "from": "codex", "project": "r1", "summary": "review ready", "created": "2026-10-14T11:00:00.000Z" }],
-    "allowances": ["model-usd  queue:claude  USD/day  used 1.20  reserved 0  left 8.80"]
+    "tokens": [
+      {
+        "lane": "r1",
+        "calls": 1,
+        "input": 41000,
+        "output": 900,
+        "usd": 0.12
+      }
+    ],
+    "machines": [
+      {
+        "lane": "r1",
+        "time": "local 0s",
+        "money": null
+      }
+    ],
+    "queue": {
+      "runners": [
+        {
+          "runner": "codex",
+          "waiting": 0,
+          "running": 0
+        },
+        {
+          "runner": "claude",
+          "waiting": 0,
+          "running": 0
+        },
+        {
+          "runner": "grok",
+          "waiting": 0,
+          "running": 0
+        }
+      ],
+      "failed": 0,
+      "unverified": 0
+    },
+    "dispatcher": {
+      "running": false,
+      "pid": 4242,
+      "started": "2026-10-14T08:00:00.000Z",
+      "interval": 30
+    },
+    "inbox": [],
+    "allowances": []
+  },
+  "viewer": {
+    "person": "owner",
+    "device": "d-fixture",
+    "lanes": null
   }
 }

@@ -1,7 +1,7 @@
 package dev.supertools.govern.remote.protocol
 
 // A reader of text/event-stream (WHATWG HTML, "Server-sent events"): lines are fed in order, and an event is dispatched at
-// each blank line. Only `event` and `data` are used by govern-remote/1; comments (lines starting with ':') are heartbeats.
+// each blank line. Only `event` and `data` are used by govern-remote/2; comments (lines starting with ':') are heartbeats.
 
 data class SseEvent(val event: String, val data: String)
 
