@@ -23,6 +23,7 @@ import { ask, readPrompt, promptFiles } from "./lib/codex.ts";
 import { report, currentCtx, CTX_WARN } from "./lib/usage.ts";
 import * as queue from "./lib/queue.ts";
 import { tag, verdict } from "./lib/replycheck.ts";
+import * as jev from "./lib/decide.ts";
 import { desk } from "./lib/desk.ts";
 import { listLines, showLines, place } from "./lib/resources.ts";
 import * as reaping from "./lib/reap.ts";
@@ -638,6 +639,7 @@ function cmdTask(a: Args): void {
       access: t.access, ...(estimateUsd !== undefined ? { estimateUsd } : {}),
     });
     out(`queued ${m.id} (${m.kind} to ${m.to}${m.profile && (m.profile !== `${m.to}-read` || opt(a, "profile")) && m.profile !== m.to ? `, profile ${m.profile}` : ""})`);
+    jev.shadowTask(m);
     return wakeNote(m);
   }
   if (sub === "list") {
@@ -902,6 +904,26 @@ export const COMMANDS: readonly Cmd[] = [
     run: (a) => { const since = opt(a, "since"); out(report(a._.length > 1 ? a._.slice(1).map(checkSlug) : undefined, since ? Date.parse(since) : undefined)); } },
   { name: "ctx", section: 4, footer: false, lines: [["", "this Claude Code session's context size now"]],
     run: () => { const x = currentCtx(); out(x ? `context now ${kTok(x.ctx)} per call (limit ${kTok(CTX_WARN)})${x.ctx > CTX_WARN ? ` ⚠ over: ${CTX_ADVICE}` : ""}` : "not in a Claude Code session (no CLAUDE_CODE_SESSION_ID) or no transcript yet"); } },
+
+  { name: "decide", section: 4, noSub: "govern decide ask|report",
+    subs: {
+      ask: { flags: { value: ["questions", "state", "state-file", "purpose"], bool: ["json"] },
+        lines: [["--questions <file.json> (--state \"<text>\" | --state-file <file>) [--purpose <name>] [--json]",
+          "ask Jev (TypeSafe System One: probabilities, no text) typed questions about a state; recorded in the queue's decisions.jsonl\n" +
+          "(choice: {key: description}, score: [levels…], noul: yes/no; key TYPESAFE_API_KEY or the config's decide.envFile)"]],
+        run: (a) => {
+          const text = opt(a, "state"), file = opt(a, "state-file");
+          if ((text === undefined) === (file === undefined)) fail("give the state with --state or --state-file (one of them)");
+          const state = text ?? readFileSync(file!, "utf8");
+          if (!state.trim()) fail("the state is empty");
+          const qs = jev.loadQuestions(opt(a, "questions") ?? fail("--questions <file.json> is required"));
+          const d = jev.decide(state, qs, { purpose: opt(a, "purpose") ?? "ask" });
+          out(flag(a, "json") ? JSON.stringify(d, null, 2) : jev.show(d));
+        } },
+      report: { lines: [["", "how well Jev's recorded answers predicted outcomes: per yes/no question Brier and ECE against the task's\n" +
+        "first-try result in the queue ledger, per score question ok rate, cost and time in five buckets (decide.shadow: true\n" +
+        "in the workspace config asks about every TASK sent)"]], run: () => out(jev.report()) },
+    } },
 
   { name: "help", section: 5, footer: false, lines: [["[<command>]", "this text, or one command's lines (also: govern <command> --help)"]],
     run: (a) => out(a._[1] ? commandHelp(a._[1]) : HELP) },
