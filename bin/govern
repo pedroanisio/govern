@@ -66,6 +66,16 @@
 #     Each entry names the commands that take the flag; `govern help COMMAND` shows one command's lines.
 #     -h, --help              every command: after a command (`govern advance --help`), that command's lines, the same as
 #                             `govern help advance`; as the first word (`govern --help`, `-h`), this manpage
+#     --pin                   new: freeze the process definition even without a declared revision
+#     --map JSON              process migrate: old stage names mapped to the new revision
+#     --data JSON             process migrate, event: migration: converted fields (null removes); event: payload fields
+#     --id ID                 event: stable delivery id used for deduplication
+#     --correlation JSON      event: typed value matching the waiting stage
+#     --generation N          event: activation generation, required when the event contract declares it
+#     --port N                event-listen: loopback webhook port (default 5001)
+#     --advance               tick: progress ready event, subprocess and retry stages through normal gates
+#     --ack ID                alerts: acknowledge an alert without approving a business decision
+#     --action NAME           recover: retry an investigated failure or confirm compensation with compensated
 #     --nested                init: make a workspace inside another workspace (refused otherwise)
 #     --process P             new: the process the lane follows (govern process list)
 #     --kind K                new, task send, task reply: new: the lane's kind (long|short|ops, or one the process names);
@@ -75,7 +85,7 @@
 #     --parent SLUG           new: the lane this one comes from (shown in its brief)
 #     --engine E              work, done: claude or codex (default: claude inside a Claude Code session, else codex)
 #     --open                  work: launch a fresh interactive claude or codex session for this lane
-#     --quote Q               approve, reject, human, allow, check: the decision owner's own words (in a Claude session,
+#     --quote Q               approve, reject, human, allow, process migrate, check, recover: the decision owner's own words (in a Claude session,
 #                             from a message the person typed; a Codex or Grok session is refused); allow: it must contain N;
 #                             human: the person's instruction to claim, delegate or complete
 #     --by NAME               approve, reject, allow: the decision owner, required when the gate or allowance names one other
@@ -89,7 +99,7 @@
 #     --set X                 data, check: data: a JSON object of case fields merged into the lane (changed data invalidates
 #                             policy votes and active human task completion); check: set the lane's own exit check for
 #                             --stage (ledgered; a swap is flagged)
-#     --stage S               check, advance: check: the stage --set applies to, or the active stage to check; advance: the
+#     --stage S               check, advance, recover: check: the stage --set applies to, or the active stage to check; advance: the
 #                             active stage to move on from (a lane with parallel stages)
 #     --accept                check: the owner accepts that stage's flagged check changes (with --quote)
 #     --note T                advance, task close: advance: the evidence that a stage with no check is done (also recorded
@@ -136,8 +146,8 @@
 #     --hook                  task inbox: the UserPromptSubmit hook form, silent when empty
 #     --max N                 task dispatch: run at most N messages
 #     --only E                task dispatch: only messages for codex or claude
-#     --loop                  task dispatch: keep dispatching every --interval seconds
-#     --interval S            task dispatch, task install-service: seconds between rounds (default 30)
+#     --loop                  tick, task dispatch: keep dispatching every --interval seconds
+#     --interval S            tick, task dispatch, task install-service: seconds between rounds (default 30)
 #     --reap-every S          task dispatch, task install-service: list each resource's tagged instances every S seconds
 #                             into state for the desk (off by default; never stops a machine)
 #     A value flag takes the next word even when it starts with --, unless that word is a govern flag;
@@ -163,6 +173,7 @@
 #     · GOVERN_CAPS_CHECK_MODEL (haiku, caps --check) · GOVERN_GROK_CHECK_MODEL (the profile's model, caps --check)
 #     · GOVERN_QUEUE_GROK_MODEL (grok's default) · GOVERN_GROK_MAX_TURNS (25; grok has no dollar cap)
 #     · GOVERN_QUEUE_TIMEOUT_SEC (900, one dispatched run).
+#     Webhooks: GOVERN_WEBHOOK_TOKEN (event-listen bearer token; at least 16 characters, configured securely).
 #     Test and diagnostic: GOVERN_NOW (the allowances clock) · GOVERN_PROC=ps (read the process table with ps).
 #     Set for what govern runs: GOVERN_JOB_ID, GOVERN_JOB_DIR (every job; slice and up read GOVERN_JOB_DIR to find the
 #     job they run in) · GOVERN_TAG, GOVERN_LANE, GOVERN_RESOURCE, GOVERN_COUNT, GOVERN_ID (a resource's up, down and
