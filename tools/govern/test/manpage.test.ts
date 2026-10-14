@@ -82,12 +82,23 @@ function sources(dir = GOVERN_DIR): string[] {
   return out;
 }
 
-/** The environment variables a source text reads or sets: every GOVERN_* name that is not a constant's name, and every
- *  `process.env.X`, `process.env["X"]` and `env.X`. Names read through a variable (`env[k]`) are added by the caller. */
-function envNames(text: string): Set<string> {
-  const consts = new Set([...text.matchAll(/\bconst\s+(GOVERN_[A-Z0-9_]+)\s*=/g)].map((m) => m[1]));
+/** The GOVERN_* and GROK_* names a source text declares as constants: names, not environment variables. */
+function constNames(text: string): Set<string> {
+  return new Set([...text.matchAll(/\bconst\s+((?:GOVERN|GROK)_[A-Z0-9_]+)\s*=/g)].map((m) => m[1]!));
+}
+
+/** The environment variables a source text reads or sets: every GOVERN_* and GROK_* name that is not a constant's name
+ *  (`consts`, by default those the text declares; one imported from another file needs the caller's), and every
+ *  `process.env.X`, `process.env["X"]` and `env.X`. A templated name is a family, `*` standing for each interpolation
+ *  (`GROK_${v}_${k}_ENABLED` is GROK_*_*_ENABLED); one that ends in an interpolation (`GOVERN_${w}`) names no family and is
+ *  left out. Names read through a variable (`env[k]`) are added by the caller. */
+function envNames(text: string, consts: ReadonlySet<string> = constNames(text)): Set<string> {
   const names = new Set<string>();
-  for (const m of text.matchAll(/\bGOVERN_[A-Z0-9_]*[A-Z0-9]\b/g)) if (!consts.has(m[0])) names.add(m[0]);
+  for (const m of text.matchAll(/\b(?:GOVERN|GROK)_[A-Z0-9_]*[A-Z0-9]\b(?!\$\{)/g)) if (!consts.has(m[0])) names.add(m[0]);
+  for (const m of text.matchAll(/\b(?:GOVERN|GROK)_(?:[A-Z0-9_]|\$\{[^}]*\})+/g)) {
+    const family = m[0].replace(/\$\{[^}]*\}/g, "*");
+    if (family.includes("*") && !family.endsWith("*")) names.add(family);
+  }
   for (const re of [/\bprocess\.env\.([A-Z_][A-Z0-9_]*)/g, /\bprocess\.env\[\s*["']([A-Z_][A-Z0-9_]*)["']\s*\]/g, /(?<![\w.])env\.([A-Z][A-Z0-9_]*)\b/g])
     for (const m of text.matchAll(re)) if (m[1]) names.add(m[1]);
   return names;
@@ -97,9 +108,13 @@ function envNames(text: string): Set<string> {
  *  (any capitalised word with an underscore) that the code neither reads nor sets. */
 function envProblems(man: string, code: ReadonlySet<string>): string[] {
   const text = section(man, "ENVIRONMENT").join("\n"), problems: string[] = [];
-  for (const n of [...code].sort()) if (!new RegExp(`(?<![\\w])${n}(?![\\w])`).test(text)) problems.push(`ENVIRONMENT lacks ${n}`);
+  // A family is listed by one member or by alternations, GROK_(CLAUDE|CURSOR)_(AGENTS|HOOKS)_ENABLED.
+  const pattern = (n: string, part: string) => n.split("*").map((s) => s.replace(/[^\w]/g, "\\$&")).join(part);
+  const families = [...code].filter((n) => n.includes("*")).map((n) => new RegExp(`^${pattern(n, "[A-Z0-9]+")}$`));
+  for (const n of [...code].sort())
+    if (!new RegExp(`(?<![\\w])${pattern(n, "(?:[A-Z0-9]+|\\([A-Z0-9|]+\\))")}(?![\\w])`).test(text)) problems.push(`ENVIRONMENT lacks ${n}`);
   for (const n of new Set(text.match(/\b[A-Z][A-Z0-9]*_[A-Z0-9_]*[A-Z0-9]\b/g) ?? []))
-    if (!code.has(n)) problems.push(`ENVIRONMENT lists ${n}, which the code neither reads nor sets`);
+    if (!code.has(n) && !families.some((f) => f.test(n))) problems.push(`ENVIRONMENT lists ${n}, which the code neither reads nor sets`);
   return problems;
 }
 
@@ -142,8 +157,11 @@ test("drift: MANPAGE OPTIONS has one entry per flag the command table declares, 
 
 test("drift: MANPAGE ENVIRONMENT names every variable the code reads or sets, and no other", () => {
   const code = new Set<string>([...CLAUDE_MARKERS, ...CODEX_MARKERS, COMPACT_WINDOW_VAR]);
-  for (const f of sources()) for (const n of envNames(readFileSync(f, "utf8"))) code.add(n);
-  for (const n of ["GOVERN_REPO", "GOVERN_JOB_DIR", "CLAUDE_CODE_SESSION_ID", "PATH"]) assert.ok(code.has(n), `the scan finds ${n}`);
+  const texts = sources().map((f) => readFileSync(f, "utf8")), consts = constNames(texts.join("\n"));
+  for (const t of texts) for (const n of envNames(t, consts)) code.add(n);
+  for (const n of ["GOVERN_REPO", "GOVERN_JOB_DIR", "CLAUDE_CODE_SESSION_ID", "PATH", "GROK_MEMORY", "GROK_CONFIG_PATH", "GROK_*_*_ENABLED"])
+    assert.ok(code.has(n), `the scan finds ${n}`);
+  assert.ok(!code.has("GROK_MARKERS"), "a constant imported from another file is not a variable");
   assert.deepEqual(envProblems(MAN, code), []);
 });
 
@@ -177,6 +195,15 @@ test("the MANPAGE checks catch each kind of drift in a synthetic manpage", () =>
 
   assert.deepEqual([...envNames("const GOVERN_DIR = 1; process.env.GOVERN_A; process.env[\"B_C\"]; o.env.D; env.CLAUDE_X; x.GOVERN_E_F")].sort(),
     ["B_C", "CLAUDE_X", "GOVERN_A", "GOVERN_E_F"], "constants named GOVERN_* are not variables; o.env.D is not this process's");
+  const grok = "export const GROK_MARKERS = [\"GROK_AGENT\"]; GROK_PARTIAL; ({ GROK_HOME: h, GROK_MEMORY: \"0\" }); delete env[\"GROK_CONFIG\"];" +
+    " env[`GROK_${v}_${k}_ENABLED`] = \"0\"; process.env[`GOVERN_${e.toUpperCase()}_BIN`]; `read $GOVERN_${w.toUpperCase()}`";
+  assert.deepEqual([...envNames(grok, constNames(`${grok} const GROK_PARTIAL = 1;`))].sort(),
+    ["GOVERN_*_BIN", "GROK_*_*_ENABLED", "GROK_AGENT", "GROK_CONFIG", "GROK_HOME", "GROK_MEMORY"],
+    "GROK_* names count like GOVERN_*; a constant declared in another file is not a variable; a templated name is a family, and one that ends in its template names none");
+  const family = new Set(["GOVERN_REPO", "GROK_*_*_ENABLED"]);
+  assert.deepEqual(envProblems(man(good, "    GOVERN_REPO · GROK_(CLAUDE|CURSOR)_(AGENTS|HOOKS)_ENABLED"), family), []);
+  assert.deepEqual(envProblems(man(good, "    GOVERN_REPO · GROK_CLAUDE_AGENTS_ENABLED"), family), [], "a member of the family is not a stray name");
+  assert.deepEqual(envProblems(man(good), family), ["ENVIRONMENT lacks GROK_*_*_ENABLED"]);
   assert.deepEqual(envProblems(man(good), new Set(["GOVERN_REPO"])), []);
   assert.deepEqual(envProblems(man(good), new Set(["GOVERN_REPO", "GOVERN_REPO_X"])), ["ENVIRONMENT lacks GOVERN_REPO_X"]);
   assert.deepEqual(envProblems(man(good, "    GOVERN_REPO · GOVERN_GONE"), new Set(["GOVERN_REPO"])),
