@@ -22,6 +22,8 @@ export interface Job {
   resource?: string; price?: Price; /** --override-resource moved it off the command's own resource, which this names. */ overrode?: string; lock?: { dir: string; id: string; max: number; label: string };
   /** A recipe job (lib/slice.ts): its machines are booked by `down`, never again on this job's line. */
   slice?: { recipe: string; machines: number };
+  /** How long (ms) a stop waits for the job to exit on SIGTERM before SIGKILL; a recipe job needs the time to bring its machines down. */
+  grace?: number;
 }
 export interface JobState extends Job {
   status: "running" | "ok" | "failed" | "lost" | "timeout" | "killed"; exit?: number; seconds?: number;
@@ -35,6 +37,9 @@ export type KillOutcome = "terminated" | "killed" | "already-exited" | "not-owne
 export const DEFAULT_TIMEOUT = 30 * 60;
 /** After SIGTERM, how long a job's process group gets to exit before SIGKILL. */
 export const KILL_GRACE_MS = 3000;
+/** The seconds one stop command of a recipe job's `down` may take; a stopped recipe job gets this for each of its machines, and a minute more, to bring them down. */
+export const SLICE_STOP_SECONDS = 120;
+export const sliceGraceMs = (machines: number) => (SLICE_STOP_SECONDS * machines + 60) * 1000;
 const POLL_MS = 100;
 
 // Absolute: a job directory is also the mark in its processes' environment, compared as text.
@@ -118,7 +123,7 @@ export function start(p: Project, name: string, extra: string[], bg: boolean, on
   const max = res && slots(res);
   const lock = res && max !== undefined ? { dir: lockDir(res.name), id: `${p.slug.replaceAll("/", "~")}~${id}`, max, label: `${p.slug} ${id}` } : undefined;
   const job: Job = { id, slug: p.slug, name, argv, cwd, start: nowIso(), bg, ...(bg ? {} : { timeout: limit }), ...(cap !== undefined ? { cap } : {}),
-    ...(res ? { resource: res.name, price: res.price } : {}), ...(overrode ? { overrode } : {}), ...(lock ? { lock } : {}), ...(slice ? { slice } : {}) };
+    ...(res ? { resource: res.name, price: res.price } : {}), ...(overrode ? { overrode } : {}), ...(lock ? { lock } : {}), ...(slice ? { slice, grace: sliceGraceMs(slice.machines) } : {}) };
   writeJson(f, job);
   const me = procOf(process.pid);
   let ticket: number | undefined;
@@ -175,7 +180,7 @@ export function start(p: Project, name: string, extra: string[], bg: boolean, on
     if (!members(job, dir).size) writeJson(f, { ...readJson<Job>(f), end: nowIso() });
   } else if (readJson<Job>(f).stopped) {
     // A govern kill is stopping it: give that kill its grace, then stop whatever it left.
-    for (const end = Date.now() + KILL_GRACE_MS + 1000; state(p.slug, id).status === "running" && Date.now() < end;) sleepSync(POLL_MS);
+    for (const end = Date.now() + (job.grace ?? KILL_GRACE_MS) + 1000; state(p.slug, id).status === "running" && Date.now() < end;) sleepSync(POLL_MS);
     if (state(p.slug, id).status === "running") stop(job, dir);
   }
   if (lock) locks.release(lock.dir, lock.id);
@@ -221,18 +226,33 @@ function lastSign(slug: string, id: string): number | undefined {
   return t.length ? Math.max(...t) : undefined;
 }
 /** A recipe job's end: the pieces and machines it ran with (from its slice.json) and the tag whose `down` entries hold the
- *  machine time and money. The job line carries neither, so nothing is counted twice; the allowance is settled with what
- *  those `down` entries booked. */
+ *  machine time and money. The job line carries neither, so nothing is counted twice. The allowance is settled with what
+ *  those `down` entries booked only when the end was clean: the runner finished (phase "ended"), every machine it started
+ *  was brought down and the time was booked. Any other end (a failing down, a killed runner, a job that was lost) leaves
+ *  machines that may still run and time nobody booked, so it is charged at least what was reserved, or more where
+ *  elapsed time x machines is larger. A `down` that comes later books its own lines and settles nothing: the allowance
+ *  is settled once. */
 function recordSliceEnd(st: JobState, id: string, seconds: number | undefined): true {
   const dir = jobDir(st.slug, id);
-  const sl = existsSync(join(dir, "slice.json")) ? readJson<{ tag?: string; total?: number; done?: number; failed?: number }>(join(dir, "slice.json")) : {};
-  appendLedger(st.slug, { kind: "job", id, name: st.name, bg: st.bg, status: st.status, exit: st.exit, ...(seconds !== undefined ? { seconds } : {}), ...(st.resource ? { resource: st.resource } : {}),
-    recipe: st.slice!.recipe, machines: st.slice!.machines, ...(sl.tag ? { tag: sl.tag } : {}), piecesTotal: sl.total ?? 0, piecesDone: sl.done ?? 0, piecesFailed: sl.failed ?? 0 });
+  const sl = existsSync(join(dir, "slice.json")) ? readJson<{ tag?: string; phase?: string; downFailed?: string[]; total?: number; done?: number; failed?: number }>(join(dir, "slice.json")) : {};
   const booked = sl.tag ? readJsonl(ledgerFile(st.slug)).filter((e) => e.kind === "down" && e.tag === sl.tag && typeof e.machineSeconds === "number") : [];
+  const clean = sl.phase === "ended" && !sl.downFailed && (!sl.tag || booked.length > 0);
+  appendLedger(st.slug, { kind: "job", id, name: st.name, bg: st.bg, status: st.status, exit: st.exit, ...(seconds !== undefined ? { seconds } : {}), ...(st.resource ? { resource: st.resource } : {}),
+    recipe: st.slice!.recipe, machines: st.slice!.machines, ...(sl.tag ? { tag: sl.tag } : {}), piecesTotal: sl.total ?? 0, piecesDone: sl.done ?? 0, piecesFailed: sl.failed ?? 0, ...(clean ? {} : { unclean: true }) });
   const secs = booked.reduce((n, e) => n + e.machineSeconds, 0);
+  const price = st.price ?? { basis: "free" as const };
   const cur = booked.find((e) => typeof e.cost === "number" && typeof e.currency === "string")?.currency as string | undefined;
   const cost = booked.reduce((n, e) => n + (typeof e.cost === "number" ? e.cost : 0), 0);
-  allowances.settle(`job:${st.slug}:${id}`, { hours: secs / 3600, ...(cur ? { money: { amount: cost, currency: cur } } : {}) });
+  if (clean) {
+    // A clean end with a time-priced resource and no booked line (nothing came up) used no money either.
+    const money = cur ? { amount: cost, currency: cur } : costOf({ price }, 0);
+    allowances.settle(`job:${st.slug}:${id}`, { hours: secs / 3600, ...(money ? { money } : {}) });
+    return true;
+  }
+  const elapsed = seconds === undefined ? undefined : seconds * st.slice!.machines;
+  const hours = elapsed === undefined ? undefined : Math.max(elapsed, secs) / 3600;
+  const spent = elapsed === undefined ? undefined : costOf({ price }, Math.max(elapsed, secs));
+  allowances.settleAtLeast(`job:${st.slug}:${id}`, { ...(hours !== undefined ? { hours } : {}), ...(spent ? { money: spent } : {}) }, "unclean end");
   return true;
 }
 
@@ -342,10 +362,20 @@ function selfAndAncestors(snap: Snapshot): Set<number> {
   for (let pid: number | undefined = process.pid; pid && !out.has(pid); pid = snap.live.get(pid)?.ppid) out.add(pid);
   return out;
 }
+/** The runner of a recipe job (it writes its pid to <job>/runner.pid), when that is still one of the job's live processes. */
+function runnerOf(job: Job, dir: string, m: Map<number, string>): number | undefined {
+  if (!job.slice) return undefined;
+  try {
+    const pid = Number(readFileSync(join(dir, "runner.pid"), "utf8").trim());
+    return Number.isInteger(pid) && m.has(pid) ? pid : undefined;
+  } catch { return undefined; }
+}
 /** Stop a job: SIGTERM to each of its members, the same to every member that appears during the grace, then SIGKILL to
  *  whatever is left, until nothing is (up to a second more). Each pid is signalled on its own, never a whole group: a
- *  background job's group can hold the govern that is stopping it. This govern and its ancestors are left out. */
-export function stop(job: Job, dir: string, graceMs = KILL_GRACE_MS): "terminated" | "killed" {
+ *  background job's group can hold the govern that is stopping it. This govern and its ancestors are left out.
+ *  A recipe job's SIGTERM goes to its runner alone, and nothing new is signalled while the runner lives: the runner stops
+ *  its pieces and runs `down`, whose stop commands are among the job's processes and must not be cut short. Its grace is the job's own (`grace`). */
+export function stop(job: Job, dir: string, graceMs = job.grace ?? KILL_GRACE_MS): "terminated" | "killed" {
   const first = snapshot(), mine = selfAndAncestors(first);
   const targets = (snap: Snapshot, known?: Map<number, string>) => {
     const m = members(job, dir, snap, known);
@@ -353,12 +383,18 @@ export function stop(job: Job, dir: string, graceMs = KILL_GRACE_MS): "terminate
     return m;
   };
   let m = targets(first);
-  for (const p of m.keys()) signal(p, "SIGTERM");
+  const runner = runnerOf(job, dir, m);
+  const termed = new Set<number>();
+  const term = (now: Map<number, string>) => {
+    // While the runner lives, only it is asked to stop; once it is gone, whatever it left is.
+    const only = runner !== undefined && now.has(runner);
+    for (const p of only ? [runner] : now.keys()) if (!termed.has(p)) { termed.add(p); signal(p, "SIGTERM"); }
+  };
+  term(m);
   for (const end = Date.now() + graceMs; m.size && Date.now() < end;) {
     sleepSync(POLL_MS);
-    const now = targets(snapshot(), m);
-    for (const p of now.keys()) if (!m.has(p)) signal(p, "SIGTERM");
-    m = now;
+    m = targets(snapshot(), m);
+    term(m);
   }
   if (!m.size) return "terminated";
   for (const end = Date.now() + 1000; m.size && Date.now() < end; m = targets(snapshot(), m)) {

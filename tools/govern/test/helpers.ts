@@ -33,8 +33,8 @@ export function tempDir(name: string): string {
 
 /** A throwaway repo: PALS-Notes/projects, packages, a WORKFLOW.md with the stage table, empty transcript dirs, and a
  *  HOME (with XDG dirs) of its own, so nothing reads or writes the developer's ~/.claude, ~/.codex or ~/.config. */
-export function makeEnv(): Env {
-  const root = tempDir("test");
+export function makeEnv(name = "test"): Env {
+  const root = tempDir(name);
   const projects = join(root, "PALS-Notes", "projects");
   mkdirSync(projects, { recursive: true });
   mkdirSync(join(root, "PALS-Notes", "packages"), { recursive: true });

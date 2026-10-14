@@ -103,16 +103,20 @@ function whose(laneOpt: string | undefined): { lane?: string; job?: string } {
   return { ...(lane ? { lane: load(lane).slug } : {}), ...(j?.id && lane === j.slug ? { job: j.id } : {}) };
 }
 
-/** Run the resource's start command under a fresh tag; the record is written before it runs, so a crash or a timeout
+/** Run the resource's start command under a fresh tag (refused above the resource's maxMachines); the record is written before it runs, so a crash or a timeout
  *  leaves a tag that reap can find the instances by. `problem` is set when the start cannot be trusted. */
-export function up(resource: string, o: { lane?: string; count: number; timeout: number }): { rec: Instances; problem?: string } {
+export function up(resource: string, o: { lane?: string; count: number; timeout: number; onTag?: (tag: string) => void }): { rec: Instances; problem?: string } {
   const res = resourceNamed(resource);
+  const most = res.allowance?.maxMachines;
+  if (most !== undefined && o.count > most) fail(`refused: ${res.name} allows at most ${most} machines (allowance maxMachines), ${o.count} asked for`, 1);
   const start = res.commands?.start ?? fail(`${res.name} has no start command (govern.config.json: resources[].commands.start)`);
   const { lane, job } = whose(o.lane);
   if (lane && !mayUse(res, lane)) fail(`${res.name} is dedicated to ${res.to}; ${lane} is not it`);
   const tag = newTag(lane, job);
   let rec: Instances = { tag, resource: res.name, startedAt: nowIso(), status: "starting", ids: [], count: o.count, price: res.price, timeout: Math.ceil(o.timeout), ...(lane ? { lane } : {}), ...(job ? { job } : {}) };
   save(rec);
+  // Handed out before start runs: a caller whose own code fails after this still knows the tag, so it can run down.
+  o.onTag?.(tag);
   const ran = run(start, { tag, count: String(o.count), resource: res.name, ...(lane ? { lane } : {}) }, o.timeout);
   const { ids, bad } = parseIds(ran.out);
   let problem: string | undefined;

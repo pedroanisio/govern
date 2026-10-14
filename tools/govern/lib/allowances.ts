@@ -231,6 +231,10 @@ function finish(id: string, actual: (r: Reservation) => number | undefined, note
 /** The end of `id`: release the unused part of each reservation and record what was used. A unit with no actual is
  *  charged as reserved and noted "unpriced". */
 export const settle = (id: string, actual: Actual, note?: string): void => finish(id, (r) => pick(r, actual), note);
+/** The end of `id` when nobody can say what it really used (its machines may still run): each unit is charged at least what
+ *  was reserved, and more where the actual, as far as it is known, is larger. */
+export const settleAtLeast = (id: string, actual: Actual, note?: string): void =>
+  finish(id, (r) => { const v = pick(r, actual); return v === undefined ? undefined : Math.max(v, r.amount); }, note);
 /** Give `id` back without using it (it never ran). */
 export const release = (id: string): void => finish(id, () => 0, "released");
 

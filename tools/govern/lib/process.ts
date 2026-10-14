@@ -58,14 +58,23 @@ const SLICE_VARS = ["pieces", "out", "tag", "piece", "id"];
 const STEP_VARS: Record<string, string[]> = { prepare: ["pieces", "out"], split: ["pieces", "out", "tag"], piece: SLICE_VARS, join: ["pieces", "out", "tag"], verify: ["pieces", "out", "tag"] };
 const ARGV = arr(str, { nonEmpty: true });
 const RECIPE_SHAPE = obj({ resource: name, machines: posInt, split: ARGV, piece: ARGV, join: ARGV, verify: ARGV }, { prepare: ARGV, pieceTimeout: posInt, timeout: posInt, attempts: posInt });
+/** Placeholders govern itself expands in any command, beside the recipe's own. */
+const GOVERN_VARS = ["repo", "dir", "python"];
+const SHELLS = new Set(["sh", "bash", "dash", "zsh", "ash", "ksh"]);
 const RECIPE: Shape<Recipe> = (v, p) => {
   const r = RECIPE_SHAPE(v, p) as Recipe;
   for (const [step, allowed] of Object.entries(STEP_VARS)) {
-    (r[step as "split"] ?? []).forEach((a, i) => {
+    const argv = r[step as "split"] ?? [];
+    const script = SHELLS.has((argv[0] ?? "").split("/").pop() ?? "") && argv[1] === "-c" ? 2 : -1;
+    argv.forEach((a, i) => {
       for (const m of a.matchAll(/\{(\w+)\}/g)) {
         const w = m[1]!;
-        if (SLICE_VARS.includes(w) && !allowed.includes(w))
-          reject(`${keyPath(p, step)}[${i}]`, `{${w}} is not available in the ${step} step (it has: ${allowed.map((x) => `{${x}}`).join(" ")})`);
+        const at = `${keyPath(p, step)}[${i}]`;
+        if (!SLICE_VARS.includes(w) && !GOVERN_VARS.includes(w)) reject(at, `unknown placeholder {${w}} (a recipe step has: ${[...SLICE_VARS, ...GOVERN_VARS].map((x) => `{${x}}`).join(" ")} and {paths.NAME})`);
+        if (!allowed.includes(w) && SLICE_VARS.includes(w))
+          reject(at, `{${w}} is not available in the ${step} step (it has: ${allowed.map((x) => `{${x}}`).join(" ")})`);
+        if (i === script && SLICE_VARS.includes(w))
+          reject(at, `{${w}} inside an sh -c script would be parsed by the shell (a path with a space or a quote breaks it): read $GOVERN_${w.toUpperCase()} instead, which every step has in its environment`);
       }
     });
   }
