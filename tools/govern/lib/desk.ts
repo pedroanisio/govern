@@ -6,6 +6,7 @@ import { readJsonl, kTok, clip } from "./util.ts";
 import { ledgerFile, stagesOf, laneState, laneSlugs, laneRows } from "./project.ts";
 import { processOf } from "./process.ts";
 import * as queue from "./queue.ts";
+import { tag } from "./replycheck.ts";
 import { registry, readCheck, checkState, profileHash } from "./caps.ts";
 import { tuningState } from "./tune.ts";
 import { machineSummary, machineEntries } from "./resources.ts";
@@ -48,12 +49,14 @@ export function desk(): { text: string; failed: number; lanes: number } {
   const msgs = queue.all();
   const inbox = msgs.filter((x) => x.state === "open" && x.m.to === "owner");
   L.push("", `YOUR INBOX (${inbox.length})${inbox.length ? "  · read: govern task show <id>" : ""}`);
-  for (const { m } of inbox.slice(-10)) L.push(`  ${m.id} ${m.kind.padEnd(8)} from ${m.from} [${m.project}] ${clip(m.summary, 80)}`);
+  for (const { m } of inbox.slice(-10)) L.push(`  ${m.id} ${m.kind.padEnd(8)} from ${m.from} [${m.project}] ${clip(m.summary, 80)}${m.verification ? ` ${tag(m.verification)}` : ""}`);
   // ---- queue
   const count = (state: string, to?: string) => msgs.filter((x) => x.state === state && (!to || x.m.to === to)).length;
+  const bad = msgs.filter((x) => x.m.verification?.state === "unverified" && x.state !== "done").length;
   L.push("", tuningState());
   const perRunner = queue.plainRunners().map((r) => `${r}: ${count("open", r)} waiting, ${count("claimed", r)} running`);
   L.push("", `QUEUE  ${perRunner.join(" · ")} · failed: ${count("failed")} · ${dispatcherState()}`);
+  if (bad) L.push(`unverified replies: ${bad}  · their content is kept but no check passed: govern task show <id>`);
   // ---- profiles with work queued or a check on record
   const reg = registry();
   const byProfile = [...reg.profiles.values()].map((p) => {

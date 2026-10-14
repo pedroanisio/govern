@@ -11,6 +11,7 @@ import { fileURLToPath } from "node:url";
 import { fail, stamp, nowIso, clip } from "./util.ts";
 import { repo, projectsDir, queueDir } from "./workspace.ts";
 import { parseEvents, execArgs, validate, type Usage } from "./codex.ts";
+import { type CheckDef, configChecks, declared, verify, type Verification } from "./replycheck.ts";
 import { registry, getProfile, writes, guardProblem, checkProblem, profileHash, claudeArgs, codexSpec, LEGACY_PROFILES, type Profile, type Registry } from "./caps.ts";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -30,6 +31,8 @@ export interface QueueConfig {
   /** Dispatched runs one thread may use before it goes to the owner instead (default 4): a stop for agent ping-pong. */
   maxRuns?: number;
   runners?: Record<string, RunnerDef>;
+  /** Content checks on replies by reply kind (lib/replycheck.ts); a profile's own `check` wins over these. */
+  checks?: Record<string, CheckDef>;
 }
 export function config(): QueueConfig {
   const f = join(QUEUE(), "config.json");
@@ -63,6 +66,8 @@ export interface Message {
   routed?: boolean;
   /** id of the message this one is a copy of (govern task forward) */
   forwardedFrom?: string;
+  /** On a reply the dispatcher filed: whether a content check ran on it and passed (lib/replycheck.ts). Absent on a message no check was asked of. */
+  verification?: Verification;
   result?: { profile?: string; profileHash?: string; closedBy?: string; note?: string; agent: string; ok: boolean; usage?: Usage & { costUsd?: number }; turns?: number; seconds: number; reply?: string; error?: string };
 }
 
@@ -300,6 +305,8 @@ function threadRuns(m: Message): number {
 export function dispatch(o: { max?: number; only?: string; timeoutSec?: number } = {}): string[] {
   const lines: string[] = [];
   const cfg = config();
+  // A bad checks declaration stops the dispatcher before any message is claimed or any paid session runs.
+  const fromConfig = configChecks(join(QUEUE(), "config.json"), cfg.checks, REPLY_KINDS);
   const names = runners();
   const maxRuns = cfg.maxRuns ?? 4;
   const todo = all().filter((x) => x.state === "open" && names.includes(x.m.to) && (!o.only || x.m.to === o.only))
@@ -339,15 +346,17 @@ export function dispatch(o: { max?: number; only?: string; timeoutSec?: number }
     const seconds = Math.round((Date.now() - t0) / 1000);
     const ok = !("error" in reply);
     m.result = { agent: m.to, ok, ...(sealed ? { profile: sealed.name, profileHash: profileHash(reg, sealed) } : {}), usage: r.usage, turns: r.turns, seconds, ...(ok ? {} : { error: (reply as any).error }) };
+    // The check runs before the reply is filed, so it never reaches its reader without the mark.
+    const verification = ok ? verify(declared((reply as any).kind, sealed?.check, fromConfig), { id: m.id, text: (reply as any).body, dir: cwd, logDir: join(QUEUE(), "replychecks") }) : undefined;
     const answer = ok
-      ? send({ project: m.project, task: m.task, kind: (reply as any).kind, from: m.to, to: m.from, summary: (reply as any).summary, body: (reply as any).body, files: [], replyTo: m.id, access: "read-only" })
+      ? send({ project: m.project, task: m.task, kind: (reply as any).kind, from: m.to, to: m.from, summary: (reply as any).summary, body: (reply as any).body, files: [], replyTo: m.id, access: "read-only", ...(verification ? { verification } : {}) })
       : send({ project: m.project, task: m.task, kind: "BLOCKED", from: "dispatcher", to: m.from, summary: `${m.to} reply failed verification`, body: `${(reply as any).error}\nwhole reply: ${keepRaw(m, r.text)}\nRaw reply (unverified, not an answer):\n${clip(String(r.text ?? ""), 4000)}`, files: [], replyTo: m.id, access: "read-only" });
     m.result.reply = answer.id;
     save(m, "claimed");
     move(m, "claimed", ok ? "done" : "failed");
-    appendFileSync(join(QUEUE(), "ledger.jsonl"), JSON.stringify({ t: nowIso(), id: m.id, project: m.project, task: m.task, agent: m.to, ok, seconds, turns: r.turns, usage: r.usage, ...(sealed ? { profile: sealed.name, profileHash: profileHash(reg, sealed) } : {}) }) + "\n");
+    appendFileSync(join(QUEUE(), "ledger.jsonl"), JSON.stringify({ t: nowIso(), id: m.id, project: m.project, task: m.task, agent: m.to, ok, seconds, turns: r.turns, usage: r.usage, ...(verification ? { verification: verification.state } : {}), ...(sealed ? { profile: sealed.name, profileHash: profileHash(reg, sealed) } : {}) }) + "\n");
     const u = r.usage;
-    lines.push(`${m.id} → ${m.to}: ${ok ? (reply as any).kind : "FAILED"} in ${seconds}s${u ? `, ${Math.round(u.input / 1000)}k in (${u.input ? Math.round((u.cached / u.input) * 100) : 0}% cached), ${u.output} out${u.costUsd != null ? `, $${u.costUsd.toFixed(3)}` : ""}` : ""} · reply ${answer.id}`);
+    lines.push(`${m.id} → ${m.to}: ${ok ? (reply as any).kind : "FAILED"} in ${seconds}s${u ? `, ${Math.round(u.input / 1000)}k in (${u.input ? Math.round((u.cached / u.input) * 100) : 0}% cached), ${u.output} out${u.costUsd != null ? `, $${u.costUsd.toFixed(3)}` : ""}` : ""} · reply ${answer.id}${verification ? ` · ${verification.state}${verification.state === "unverified" ? `: ${clip(verification.reason ?? "", 80)}` : ""}` : ""}`);
   }
   return lines;
 }

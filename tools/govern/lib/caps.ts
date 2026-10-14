@@ -11,6 +11,7 @@ import { obj, arr, str, literal, check, reject, parseFile } from "./shape.ts";
 import { load } from "./project.ts";
 import { projectsDir, capabilitiesDir } from "./workspace.ts";
 import { processOf } from "./process.ts";
+import { CHECK, type CheckDef } from "./replycheck.ts";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const BUILTIN = resolve(HERE, "..", "capabilities");
@@ -42,6 +43,8 @@ export interface Profile {
   mcpConfig?: string;
   /** "required" (default): the dispatcher refuses the profile until a self-test of its current definition passes. */
   selfTest: "required" | "optional";
+  /** The check run against this profile's queue replies (lib/replycheck.ts); it does not change what the profile may do, so it is not in the self-test hash. */
+  check?: CheckDef;
   file: string;
 }
 /** The four profiles the fixed access levels (--to claude|codex, with or without --write) became. */
@@ -63,7 +66,7 @@ const CAP = obj(
   { name: ident, description: str, call: str, claude: obj({ allow: arr(str) }, { permissionMode: literal("acceptEdits") }), effect: literal(...EFFECTS) },
   { codex: CODEX, resource: str, cost: str, secrets: arr(secretName), gate: ident, probe: PROBE });
 const PROFILE = obj({ name: ident, engine: literal("claude", "codex"), capabilities: arr(ident, { nonEmpty: true }) },
-  { description: str, model: str, mcpConfig: str, selfTest: literal("required", "optional") });
+  { description: str, model: str, mcpConfig: str, selfTest: literal("required", "optional"), check: CHECK });
 const FILE = obj({ version: literal(1) }, { capabilities: arr(CAP), profiles: arr(PROFILE) });
 
 export const extraDir = capabilitiesDir;
@@ -236,6 +239,7 @@ export function showText(reg: Registry, queueDir: string, p: Profile): string {
   L.push(`classes: ${classesOf(reg, p).join(", ")}`);
   const secrets = [...new Set(caps.flatMap((c) => c.secrets))];
   L.push(`secrets: ${secrets.length ? `${secrets.join(", ")} (names only)` : "(none)"}`);
+  L.push(`reply check: ${p.check ? p.check.argv.join(" ") : "(none: the reply kind decides; govern task send --help)"}`);
   L.push(`check: ${st}${rec && rec !== "unreadable" ? ` (${rec.at}, ${rec.model})` : ""}`);
   return L.join("\n");
 }

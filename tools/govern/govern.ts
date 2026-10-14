@@ -15,6 +15,7 @@ import * as jobs from "./lib/jobs.ts";
 import { ask, readPrompt, promptDirs } from "./lib/codex.ts";
 import { report, currentCtx, CTX_WARN } from "./lib/usage.ts";
 import * as queue from "./lib/queue.ts";
+import { tag, verdict } from "./lib/replycheck.ts";
 import { desk } from "./lib/desk.ts";
 import { listLines, showLines } from "./lib/resources.ts";
 import { registry, getProfile, listText, showText } from "./lib/caps.ts";
@@ -426,9 +427,10 @@ function wakeNote(m: queue.Message): void {
   if (!queue.runners().includes(m.to) && m.to !== "owner")
     out(`sessions are not woken by the queue: also tell ${m.to} "govern task show ${m.id}" (SendMessage)`);
 }
+/** `rowLine` shows the reply mark after the summary. */
 const rowLine = ({ state, m }: { state: string; m: queue.Message }) => {
   const u = m.result?.usage;
-  return `${m.id} ${state.padEnd(7)} ${m.kind.padEnd(8)} ${m.from}→${m.to} [${m.project}/${m.task}] ${clip(m.summary, 70)}${u ? ` · ${kTok(u.input)} in, ${kTok(u.output)} out, ${m.result!.seconds}s` : ""}`;
+  return `${m.id} ${state.padEnd(7)} ${m.kind.padEnd(8)} ${m.from}→${m.to} [${m.project}/${m.task}] ${clip(m.summary, 70)}${m.verification ? ` ${tag(m.verification)}` : ""}${u ? ` · ${kTok(u.input)} in, ${kTok(u.output)} out, ${m.result!.seconds}s` : ""}`;
 };
 
 function cmdInbox(a: Args): void {
@@ -476,7 +478,7 @@ function cmdTask(a: Args): void {
   }
   if (sub === "show") {
     const hit = queue.find(a._[2] ?? "") ?? fail(`no message ${a._[2]}`);
-    for (const m of queue.thread(hit!.m)) out(`--- ${m.id} [${m.kind}] ${m.from}→${m.to} ${m.created}${m.profile ? `\nprofile: ${m.profile}${m.lane ? ` · lane ${m.lane}` : ""}` : ""}\n${m.summary}\n${m.body}${m.files.length ? `\nfiles: ${m.files.join(", ")}` : ""}${m.result ? `\nresult: ${JSON.stringify(m.result)}` : ""}`);
+    for (const m of queue.thread(hit!.m)) out(`--- ${m.id} [${m.kind}] ${m.from}→${m.to} ${m.created}${m.profile ? `\nprofile: ${m.profile}${m.lane ? ` · lane ${m.lane}` : ""}` : ""}\n${m.summary}\n${m.body}${m.files.length ? `\nfiles: ${m.files.join(", ")}` : ""}${m.verification ? `\n${verdict(m.verification)}` : ""}${m.result ? `\nresult: ${JSON.stringify(m.result)}` : ""}`);
     return;
   }
   if (sub === "inbox") return cmdInbox(a);
@@ -673,8 +675,8 @@ export const COMMANDS: readonly Cmd[] = [
       send: { flags: { value: ["to", "project", "task", "kind", "summary", "body", "body-file", "reply-to", "from", "profile", "lane"], multi: ["file"], bool: ["write"] },
         lines: [["--to auto|codex|claude|owner|<session> --project P --task T --kind TASK --summary S (--body B | --body-file F)\n" +
           "[--file REPO-RELATIVE-PATH]… [--reply-to ID] [--write | --profile P] [--lane SLUG] [--from NAME]", "--to must be a runner, a profile, owner or a LIVE session name;\n--profile P (govern caps) seals the run to P's capabilities; --lane names the lane whose gate authorises a spend, publish or push profile"]], run: cmdTask },
-      list: { flags: { value: ["to", "state", "project"] }, lines: [["[--to X] [--state open|claimed|done|failed] [--project P]", "the queue's messages"]], run: cmdTask },
-      show: { lines: [["<id>", "a message and its thread"]], run: cmdTask },
+      list: { flags: { value: ["to", "state", "project"] }, lines: [["[--to X] [--state open|claimed|done|failed] [--project P]", "the queue's messages; a dispatcher reply ends with [checked], [unverified] or [shape only] (content check, declared per profile, in queue config.json checks, or built in for REVIEW)"]], run: cmdTask },
+      show: { lines: [["<id>", "a message and its thread; a dispatcher reply also shows its check (checked, UNVERIFIED with the reason, or shape only)"]], run: cmdTask },
       inbox: { flags: { value: ["as"], bool: ["all", "hook"] },
         lines: [["[--as NAME] [--all] [--hook]", "open messages for NAME (default: GOVERN_AS, else this session);\n--hook is silent when empty"]], run: cmdTask },
       close: { flags: { value: ["as", "note"] }, lines: [["<id> [--as NAME] [--note T]", "close a message addressed to NAME"]], run: cmdTask },
