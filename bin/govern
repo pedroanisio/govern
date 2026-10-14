@@ -140,11 +140,16 @@
 #     read instead of the resources or allowances key).
 #     Sessions: GOVERN_AS (session name) · GOVERN_SESSIONS_DIR (~/.claude/sessions) · GOVERN_CLAUDE_PROJECTS
 #     (~/.claude/projects) · GOVERN_CODEX_SESSIONS (~/.codex/sessions) · GOVERN_CLAUDE_SETTINGS (~/.claude/settings.json,
-#     read and written by tune).
-#     Programs: GOVERN_CODEX_BIN (codex) · GOVERN_CLAUDE_BIN (claude) · GOVERN_PYTHON (python3; fills {python}).
+#     read and written by tune) · GOVERN_GROK_SESSIONS (else the sessions of govern's grok home and of the user's)
+#     · GOVERN_GROK_HOME (govern's private grok home; default $XDG_STATE_HOME, else ~/.local/state, /govern/grok-home)
+#     · GROK_HOME (the user's grok home, where the login is read from; default ~/.grok).
+#     Programs: GOVERN_CODEX_BIN (codex) · GOVERN_CLAUDE_BIN (claude) · GOVERN_GROK_BIN (grok) · GOVERN_PYTHON (python3;
+#     fills {python}).
 #     Limits and models: GOVERN_CTX_WARN (150000) · GOVERN_TARGET_CTX (150000, tune) · GOVERN_MAX_INLINE (60000, ask)
 #     · GOVERN_QUEUE_MAX_INLINE (40000) · GOVERN_QUEUE_CLAUDE_MODEL (sonnet) · GOVERN_QUEUE_CODEX_EFFORT (medium)
-#     · GOVERN_CAPS_CHECK_MODEL (haiku, caps --check).
+#     · GOVERN_CAPS_CHECK_MODEL (haiku, caps --check) · GOVERN_GROK_CHECK_MODEL (the profile's model, caps --check)
+#     · GOVERN_QUEUE_GROK_MODEL (grok's default) · GOVERN_GROK_MAX_TURNS (25; grok has no dollar cap)
+#     · GOVERN_QUEUE_TIMEOUT_SEC (900, one dispatched run).
 #     Test and diagnostic: GOVERN_NOW (the allowances clock) · GOVERN_PROC=ps (read the process table with ps).
 #     Set for what govern runs: GOVERN_JOB_ID, GOVERN_JOB_DIR (every job; slice and up read GOVERN_JOB_DIR to find the
 #     job they run in) · GOVERN_TAG, GOVERN_LANE, GOVERN_RESOURCE, GOVERN_COUNT, GOVERN_ID (a resource's up, down and
@@ -154,7 +159,8 @@
 #     Read from Claude Code and Codex: CLAUDE_CODE_SESSION_ID (the session work, done, ctx and approve act for)
 #     · CLAUDE_CODE_AUTO_COMPACT_WINDOW (the compact window; tune reads and sets it in the Claude settings file) · CLAUDECODE, CLAUDE_CODE_ENTRYPOINT
 #     (mark a Claude session) · CODEX_THREAD_ID, CODEX_SESSION_ID, CODEX_SANDBOX, CODEX_SANDBOX_NETWORK_DISABLED (mark a
-#     Codex session, whose approve and allow are refused).
+#     Codex session, whose approve and allow are refused) · GROK_AGENT, GROK_SESSION_ID (mark a grok session, whose
+#     approve is refused; a grok process among the callers refuses it too).
 # EXAMPLES
 #     govern work a-millionth-apart/shorts script
 #     govern run golden-pixel fb gates sheets --bg && govern wait golden-pixel
@@ -164,7 +170,7 @@
 #     govern advance --help                # advance's usage and flags
 #     govern advance ops/govern            # runs the test check; moves to review only when it passes
 # KEYWORDS
-#     video workflow codex claude tokens usage orchestration pals-notes youtube
+#     video workflow codex claude grok tokens usage orchestration pals-notes youtube
 # SEE ALSO
 #     st-man - tools/govern/SKILL.md (govern manual) - tools/govern/processes/video/MANUAL.md (govern manual video)
 #     - tools/govern/PURPOSE.md
