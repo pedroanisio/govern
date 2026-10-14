@@ -65,7 +65,8 @@ Android enforces from API 28. Two deployments satisfy both sides:
    `https://<machine>.<tailnet>.ts.net` with a publicly trusted certificate. The phone joins the tailnet; nothing is
    exposed to the internet and no certificate is managed by hand.
 2. **TLS with a pinned self-signed certificate.** `govern remote serve --host 0.0.0.0 --tls-cert cert.pem --tls-key key.pem`
-   serves HTTPS directly. `govern remote pair --tls-cert cert.pem` puts the certificate's SHA-256 into the pairing link,
+   serves HTTPS directly. `govern remote pair --url https://<host>:5002 --tls-cert cert.pem` puts the certificate's
+   SHA-256 into the pairing link,
    and the app then accepts exactly that certificate and no other, ignoring the system trust store. A pin is what makes a
    self-signed certificate safe: without it, any certificate a user was tricked into installing would be trusted.
 
