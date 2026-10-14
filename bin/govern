@@ -236,9 +236,10 @@
 #     list commands) · GOVERN_PIECES, GOVERN_OUT, GOVERN_TAG, GOVERN_PIECE, GOVERN_ID (a slice recipe's steps)
 #     · GOVERN_REPLY_FILE (a reply check). task install-service writes PATH, GOVERN_REPO and GOVERN_QUEUE into
 #     the unit, and GOVERN_STATE and GOVERN_PROJECTS when they are set; a queued run drops CLAUDECODE and the other
-#     CLAUDE_CODE_ variables. A sealed grok run (a queued one, or a conversation worker on grok) gets GROK_HOME
-#     (govern's private grok home), GROK_MEMORY=0 and GROK_(CLAUDE|CURSOR)_(AGENTS|HOOKS|MCPS|RULES|SKILLS)_ENABLED=0, and
-#     loses GROK_CONFIG, GROK_CONFIG_PATH, GROK_AGENT and GROK_SESSION_ID.
+#     CLAUDE_CODE_ variables. A sealed grok run (a queued one, or a conversation worker on grok) gets HOME (a private
+#     empty folder), GROK_HOME (govern's private grok home), GROK_MEMORY=0 and
+#     GROK_(CLAUDE|CURSOR)_(AGENTS|HOOKS|MCPS|RULES|SKILLS)_ENABLED=0, and loses GROK_CONFIG, GROK_CONFIG_PATH, GROK_AGENT
+#     and GROK_SESSION_ID. ps (GOVERN_PROC=ps) runs with LC_ALL=C and TZ=UTC so its start times parse the same everywhere.
 #     Read from Claude Code and Codex: CLAUDE_CODE_SESSION_ID (the session work, done, ctx and approve act for)
 #     · CLAUDE_CODE_AUTO_COMPACT_WINDOW (the compact window; tune reads and sets it in the Claude settings file) · CLAUDECODE, CLAUDE_CODE_ENTRYPOINT
 #     (mark a Claude session) · CODEX_THREAD_ID, CODEX_SESSION_ID, CODEX_SANDBOX, CODEX_SANDBOX_NETWORK_DISABLED (mark a

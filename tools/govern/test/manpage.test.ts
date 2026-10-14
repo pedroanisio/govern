@@ -89,7 +89,9 @@ function constNames(text: string): Set<string> {
 
 /** The environment variables a source text reads or sets: every GOVERN_* and GROK_* name that is not a constant's name
  *  (`consts`, by default those the text declares; one imported from another file needs the caller's), and every
- *  `process.env.X`, `process.env["X"]` and `env.X`. A templated name is a family, `*` standing for each interpolation
+ *  `process.env.X`, `process.env["X"]` and `env.X`; the keys of an object that copies the environment
+ *  (`{ ...process.env, X: v }`, `{ ...childEnv(), X: v }`); and the names a loop over a literal list deletes
+ *  (`for (const k of ["X"]) delete e[k]`). A templated name is a family, `*` standing for each interpolation
  *  (`GROK_${v}_${k}_ENABLED` is GROK_*_*_ENABLED); one that ends in an interpolation (`GOVERN_${w}`) names no family and is
  *  left out. Names read through a variable (`env[k]`) are added by the caller. */
 function envNames(text: string, consts: ReadonlySet<string> = constNames(text)): Set<string> {
@@ -99,8 +101,13 @@ function envNames(text: string, consts: ReadonlySet<string> = constNames(text)):
     const family = m[0].replace(/\$\{[^}]*\}/g, "*");
     if (family.includes("*") && !family.endsWith("*")) names.add(family);
   }
+  const strings = (list: string) => [...list.matchAll(/["']([A-Z][A-Z0-9_]*)["']/g)].map((m) => m[1]!);
   for (const re of [/\bprocess\.env\.([A-Z_][A-Z0-9_]*)/g, /\bprocess\.env\[\s*["']([A-Z_][A-Z0-9_]*)["']\s*\]/g, /(?<![\w.])env\.([A-Z][A-Z0-9_]*)\b/g])
     for (const m of text.matchAll(re)) if (m[1]) names.add(m[1]);
+  for (const m of text.matchAll(/\{\s*\.\.\.(?:process\.env|childEnv\(\))\s*,([^{}]*)\}/g))
+    for (const k of m[1]!.matchAll(/(?:^|,)\s*([A-Z][A-Z0-9_]*)\s*:/g)) names.add(k[1]!);
+  for (const m of text.matchAll(/for\s*\(\s*const\s+(\w+)\s+of\s+\[([^\]]*)\]\s*\)\s*delete\s+[\w.]+\[\1\]/g))
+    for (const n of strings(m[2]!)) names.add(n);
   return names;
 }
 
@@ -204,6 +211,10 @@ test("the MANPAGE checks catch each kind of drift in a synthetic manpage", () =>
   assert.deepEqual(envProblems(man(good, "    GOVERN_REPO · GROK_(CLAUDE|CURSOR)_(AGENTS|HOOKS)_ENABLED"), family), []);
   assert.deepEqual(envProblems(man(good, "    GOVERN_REPO · GROK_CLAUDE_AGENTS_ENABLED"), family), [], "a member of the family is not a stray name");
   assert.deepEqual(envProblems(man(good), family), ["ENVIRONMENT lacks GROK_*_*_ENABLED"]);
+  assert.deepEqual([...envNames("const e = { ...childEnv(), HOME: h, GROK_MEMORY: \"0\" }; const o = { ...x, KEY: 1 };" +
+    " for (const k of [\"GROK_CONFIG\", \"X_Y\"]) delete e[k];")].sort(),
+    ["GROK_CONFIG", "GROK_MEMORY", "HOME", "X_Y"],
+    "keys set in a copy of the environment and names deleted from it are found");
   assert.deepEqual(envProblems(man(good), new Set(["GOVERN_REPO"])), []);
   assert.deepEqual(envProblems(man(good), new Set(["GOVERN_REPO", "GOVERN_REPO_X"])), ["ENVIRONMENT lacks GOVERN_REPO_X"]);
   assert.deepEqual(envProblems(man(good, "    GOVERN_REPO · GOVERN_GONE"), new Set(["GOVERN_REPO"])),
