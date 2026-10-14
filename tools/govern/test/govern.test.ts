@@ -106,10 +106,11 @@ test("run in the foreground prints a summary and returns the command's exit code
 
 test("run --bg returns at once; wait blocks without a model and returns the job's exit", () => {
   const { e, slug } = video();
-  govern(e, ["cmd", slug, "slow", "--", "sh", "-c", "sleep 1; echo finished; exit 3"]);
+  // The job outlasts a loaded machine's node start-up by a wide margin, so "did not wait" is measured against the job's own length.
+  govern(e, ["cmd", slug, "slow", "--", "sh", "-c", "sleep 4; echo finished; exit 3"]);
   const t0 = Date.now();
   const r = govern(e, ["run", slug, "slow", "--bg"]);
-  assert.ok(Date.now() - t0 < 900, "run --bg should not wait");
+  assert.ok(Date.now() - t0 < 3500, "run --bg should not wait for the job");
   assert.match(r.out, /started in the background/);
   const w = govern(e, ["wait", slug, "last", "--timeout", "1"]);
   assert.ok(w.code === 124 || w.code === 3);
