@@ -49,7 +49,8 @@ links and certificate pinning. `EndToEndTest` starts the real `govern remote ser
    govern remote pair --url https://<machine>.<tailnet>.ts.net
    ```
 
-3. In the app, paste the `govern-remote://pair?…` link it prints (or type the address and the code) and tap **Pair**.
+3. Scan the QR code it draws with the phone's camera: the app opens with the form filled in. Check the server address,
+   then tap **Pair**. Without a camera, paste the `govern-remote://pair?…` link it prints, or type the address and the code.
    The phone must have a screen lock.
 
 `govern remote devices` lists paired phones; `govern remote revoke <id>` cuts one off at once. For a self-signed

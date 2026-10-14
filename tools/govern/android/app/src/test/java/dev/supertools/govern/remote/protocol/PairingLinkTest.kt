@@ -3,6 +3,7 @@ package dev.supertools.govern.remote.protocol
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertThrows
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class PairingLinkTest {
@@ -23,6 +24,16 @@ class PairingLinkTest {
         assertThrows(IllegalArgumentException::class.java) { PairingLinks.parse("govern-remote://pair?url=https%3A%2F%2Fh") }
         assertThrows(IllegalArgumentException::class.java) { PairingLinks.parse("govern-remote://pair?url=ftp%3A%2F%2Fh&code=y") }
         assertThrows(IllegalArgumentException::class.java) { PairingLinks.parse("govern-remote://pair?url=https%3A%2F%2Fh&code=y&pin=abc") }
+    }
+
+    @Test
+    fun aScannedLinkFillsTheFormAndNeverPairsOnItsOwn() {
+        val link = "govern-remote://pair?url=http%3A%2F%2F127.0.0.1%3A5002&code=ABCD-EFGH-JKMN"
+        assertEquals(LinkOffer.Fill(PairingLink("http://127.0.0.1:5002", "ABCD-EFGH-JKMN", null)), PairingLinks.offer(link, pairedWith = null))
+        val paired = PairingLinks.offer(link, pairedWith = "https://h.ts.net")
+        assertTrue(paired is LinkOffer.Refused && "already paired with https://h.ts.net" in paired.reason)
+        for (bad in listOf("govern-remote://pair?code=y", "govern-remote://pair?url=ftp%3A%2F%2Fh&code=y", "govern-remote://other?url=https%3A%2F%2Fh&code=y", ""))
+            assertTrue(bad, PairingLinks.offer(bad, pairedWith = null) is LinkOffer.Refused)
     }
 
     @Test

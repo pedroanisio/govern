@@ -6,6 +6,13 @@ import java.net.URLDecoder
 /** What `govern remote pair --url` prints: govern-remote://pair?url=…&code=…[&pin=…]. */
 data class PairingLink(val url: String, val code: String, val pin: String?)
 
+/** What a pairing link opened from outside the app (a scanned QR code) does: it fills the pairing form, which the person
+ *  still reads and submits; it never pairs on its own. Refused while this device is paired, and when it does not parse. */
+sealed interface LinkOffer {
+    data class Fill(val link: PairingLink) : LinkOffer
+    data class Refused(val reason: String) : LinkOffer
+}
+
 object PairingLinks {
     private val PIN = Regex("^[0-9a-f]{64}$")
 
@@ -25,6 +32,10 @@ object PairingLinks {
         require(PIN.matches(p)) { "a certificate pin is 64 hex digits (the SHA-256 that govern remote serve prints)" }
         return p
     }
+
+    fun offer(link: String, pairedWith: String?): LinkOffer =
+        if (pairedWith != null) LinkOffer.Refused("already paired with $pairedWith: unpair it (Device, then Unpair) before pairing again")
+        else try { LinkOffer.Fill(parse(link)) } catch (e: IllegalArgumentException) { LinkOffer.Refused("not a usable pairing link: ${e.message}") }
 
     fun parse(link: String): PairingLink {
         val uri = try { URI(link.trim()) } catch (e: Exception) { throw IllegalArgumentException("not a pairing link") }

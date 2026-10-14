@@ -10,6 +10,7 @@ import type { Server } from "node:http";
 import { makeEnv, govern, write, jsonl, asSession, type Env } from "./helpers.ts";
 import { remoteServer, createPairing, revoke, PAIR_ATTEMPTS, MAX_STREAMS } from "../lib/remote.ts";
 import { PROTOCOL } from "../lib/remote-view.ts";
+import { encode, render } from "../lib/qr.ts";
 import type { Project } from "../lib/project.ts";
 
 const PROCESS = {
@@ -295,6 +296,21 @@ test("streams are bounded in number", async () => {
     assert.equal((await fetch(`${base}/v1/stream`, { headers: auth(phone) })).status, 429);
     for (const r of open) await r.body?.cancel();
   });
+});
+
+test("govern remote pair --url draws the pairing link as a QR code for the phone's camera; --no-qr leaves it out", () => {
+  const e = setup();
+  const r = govern(e, ["remote", "pair", "--url", "http://127.0.0.1:5002"]);
+  assert.equal(r.code, 0, r.err);
+  const link = /pairing link[^:]*: (govern-remote:\/\/pair\?\S+)/.exec(r.out)?.[1];
+  assert.ok(link, r.out);
+  assert.ok(r.out.includes(render(encode(link), { colour: false })), "the QR code of the printed link, undecorated off a terminal");
+  assert.match(r.out, /scan it with the phone's camera/);
+  const bare = govern(e, ["remote", "pair", "--url", "http://127.0.0.1:5002", "--no-qr"]);
+  assert.equal(bare.code, 0, bare.err);
+  assert.match(bare.out, /govern-remote:\/\/pair\?/);
+  assert.doesNotMatch(bare.out, /[▀▄█]/u);
+  assert.doesNotMatch(govern(e, ["remote", "pair"]).out, /[▀▄█]/u, "no link without --url, so no code");
 });
 
 test("govern remote pair needs the owner's terminal; serve refuses a public host without TLS", () => {
