@@ -149,6 +149,8 @@ test("desk and lane views carry the lanes, their gates and today's telemetry", a
     assert.deepEqual(detail.stages, ["draft", "ship"]);
     assert.deepEqual(detail.ledger.map((x: any) => x.kind), ["cmd-set"]);
     assert.match(detail.ledger[0].text, /"name":"test"/);
+    assert.equal(detail.ledger[0].summary, "command test set");
+    assert.equal(detail.ledger[0].tone, "info");
     assert.equal((await fetch(`${base}/v1/lane?slug=nope`, { headers: auth(phone) })).status, 404);
     assert.equal((await fetch(`${base}/v1/lane?slug=..%2Fx`, { headers: auth(phone) })).status, 400);
     assert.equal((await fetch(`${base}/v1/nothing`, { headers: auth(phone) })).status, 404);
@@ -340,9 +342,11 @@ test("govern remote pair needs the owner's terminal; serve refuses a public host
 function shapeDiff(a: unknown, b: unknown, path = "$"): string[] {
   if (a === null || b === null || typeof a !== "object" || typeof b !== "object" || path.endsWith(".data")) return [];
   if (Array.isArray(a) || Array.isArray(b)) return Array.isArray(a) && Array.isArray(b) && a.length && b.length ? shapeDiff(a[0], b[0], `${path}[0]`) : [];
-  const ka = Object.keys(a), kb = Object.keys(b);
+  // The Android fixture may predate these optional display fields; all other keys still match exactly.
+  const expected = path.endsWith(".ledger[0]") ? { summary: "", tone: "info", ...b } : b;
+  const ka = Object.keys(a), kb = Object.keys(expected);
   return [...ka.filter((k) => !kb.includes(k)).map((k) => `${path}.${k} only on the server`), ...kb.filter((k) => !ka.includes(k)).map((k) => `${path}.${k} only in the app's fixture`),
-    ...ka.filter((k) => kb.includes(k)).flatMap((k) => shapeDiff((a as Record<string, unknown>)[k], (b as Record<string, unknown>)[k], `${path}.${k}`))];
+    ...ka.filter((k) => kb.includes(k)).flatMap((k) => shapeDiff((a as Record<string, unknown>)[k], (expected as Record<string, unknown>)[k], `${path}.${k}`))];
 }
 
 test("the server's desk and lane match the app's contract fixtures (android/app/src/test/resources/fixtures)", async () => {
@@ -365,7 +369,14 @@ test("the server's desk and lane match the app's contract fixtures (android/app/
     const desk = await (await fetch(`${base}/v1/desk`, { headers: auth(phone) })).json();
     assert.deepEqual(shapeDiff(desk, JSON.parse(readFileSync(join(dir, "desk.json"), "utf8"))), []);
     const lane = await (await fetch(`${base}/v1/lane?slug=r1`, { headers: auth(phone) })).json();
-    assert.deepEqual(shapeDiff(lane, JSON.parse(readFileSync(join(dir, "lane.json"), "utf8"))), []);
+    const fixture = JSON.parse(readFileSync(join(dir, "lane.json"), "utf8"));
+    // Older app fixtures omit the additive display fields. Check those separately on every server row.
+    for (const row of (lane as any).ledger) {
+      assert.equal(typeof row.summary, "string");
+      assert.ok(row.summary.length > 0 && row.summary.length <= 160);
+      assert.ok(["ok", "failed", "running", "info"].includes(row.tone));
+    }
+    assert.deepEqual(shapeDiff(lane, fixture), []);
     // the comparison saw every part of the desk: none of these came back empty or null
     const d = desk as any;
     for (const [what, v] of Object.entries({ working: d.lanes[0].working, lastNote: d.lanes[0].lastNote, lastJob: d.lanes[0].lastJob, unreadable: d.unreadable[0],

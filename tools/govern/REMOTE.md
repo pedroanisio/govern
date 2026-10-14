@@ -169,8 +169,8 @@ authenticated by OS account mapping, which a phone does not have; they stay at t
 
 ## Wire reference
 
-Every response is JSON with `Cache-Control: no-store`, except the stream and raw artifact downloads. Field sets are closed: the app rejects
-unknown fields, so adding a field is a new protocol version. The types are in
+Every response is JSON with `Cache-Control: no-store`, except the stream and raw artifact downloads. Field sets are closed except for the additive ledger display fields described below; clients must accept
+those optional fields. Other field additions require a new protocol version. The types are in
 [lib/remote-view.ts](lib/remote-view.ts) on the server and
 [Model.kt](android/app/src/main/java/dev/supertools/govern/remote/protocol/Model.kt) in the app, and both are tested
 against the same fixtures in [android/app/src/test/resources/fixtures/](android/app/src/test/resources/fixtures/).
@@ -189,6 +189,15 @@ against the same fixtures in [android/app/src/test/resources/fixtures/](android/
 | `GET /v1/artifact?lane=S&name=N` | bearer | plain artifact name | raw bytes, streamed; maximum 32 MiB |
 | `POST /v1/actions` | bearer + `Govern-Signature` | signed action body (below) | `ActionResult`: `{ok: true, lane: LaneDetail|null, session: SessionDetail|null}` |
 | `GET /v1/stream` | bearer | — | `text/event-stream`: `event: desk` with a `Desk`; `event: error` with `{error}`; `: ping` every 15 s |
+
+Each `LedgerView` in `LaneDetail.ledger` has `t`, `kind`, `text`, `summary`, and `tone`.
+`text` remains the compact JSON payload clipped to 240 characters for compatibility.
+`summary` is a human-readable single line, clipped to 160 characters, built from the full entry.
+`tone` is one of `ok` (success), `failed` (failure or requested changes), `running` (active or queued work),
+and `info` (informational). For job outcomes, failure takes precedence over success, then running.
+This server always sends `summary` and `tone`; clients must treat both as optional when reading older
+servers and accept them when present. Unknown entry kinds use up to three scalar fields in their summary.
+Artifact publication summaries include `vN` only when the ledger entry supplies a version.
 
 `Govern-Signature` is the base64 DER ECDSA-SHA256 signature of the body. An `ack` body is
 `{action: "ack", lane, alert, nonce, at}`.

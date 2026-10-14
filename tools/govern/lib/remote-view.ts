@@ -47,7 +47,7 @@ export interface LaneSummary {
 }
 export interface LaneError { slug: string; error: string }
 export interface AlertView { id: string; stage: string; kind: string; at: string; message: string; acknowledgedAt: string | null }
-export interface LedgerView { t: string; kind: string; text: string }
+export interface LedgerView { t: string; kind: string; text: string; summary: string; tone: "ok" | "failed" | "running" | "info" }
 export interface LaneDetail extends LaneSummary {
   checks: CheckView[]; jobs: JobView[]; artifacts: ArtifactView[]; sessions: SessionSummary[]; decisions: DecisionView[];
   stages: string[]; exit: string | null; check: string | null; finished: string | null;
@@ -92,10 +92,86 @@ export function laneSummary(p: Project): LaneSummary {
   };
 }
 
+/** Human ledger lines use the complete entry; failed outcomes take precedence over success and running. */
+export function ledgerSummary(e: Record<string, unknown>): Pick<LedgerView, "summary" | "tone"> {
+  const text = (v: unknown): string => typeof v === "string" ? v.replace(/\s+/g, " ").trim() : "";
+  const s = (key: string) => text(e[key]);
+  const number = (key: string) => typeof e[key] === "number" && Number.isFinite(e[key]) ? String(e[key]) : "";
+  const list = (v: unknown) => Array.isArray(v) ? v.map(text).filter(Boolean).join(", ") : text(v);
+  const part = (value: string) => value ? ` · ${value}` : "";
+  const stage = part(s("stage")), by = s("by") || s("person"), author = part(by ? `by ${by}` : "");
+  const status = s("status") || s("state");
+  const outcome = (): LedgerView["tone"] => ["failed", "killed", "timeout", "interrupted"].includes(status) || (number("exit") !== "" && e.exit !== 0) || e.ok === false ? "failed"
+    : ["ok", "done", "completed"].includes(status) || e.exit === 0 || e.ok === true ? "ok"
+    : ["started", "running", "queued"].includes(status) ? "running" : "info";
+  const result = e.ok === true ? "passed" : e.ok === false ? "failed" : "recorded";
+  const details = (number("exit") !== "" ? part(`exit ${number("exit")}`) : "") + (number("seconds") !== "" ? part(`${number("seconds")} s`) : "")
+    + (s("resource") !== "local" ? part(s("resource")) : "");
+  const quote = s("quote") ? `: "${clip(s("quote"), 60)}"` : "";
+  const artifact = e.artifact && typeof e.artifact === "object" ? text((e.artifact as Record<string, unknown>).name) : "";
+  type Line = [string, LedgerView["tone"]];
+  const cases: Record<string, () => Line> = {
+    job: () => [`${s("name")} ${status}${details}`, outcome()],
+    check: () => [`check ${s("name")} ${result}${e.ok === false && number("exit") !== "" ? ` (exit ${number("exit")})` : ""}${stage}`, outcome()],
+    advance: () => [`advanced ${s("from")} → ${list(e.to)}${part(s("authority") ? `by ${s("authority")}` : "")}`, "ok"],
+    "cmd-set": () => [`command ${s("name")} set`, "info"],
+    "cmd-rm": () => [`command ${s("name")} removed`, "info"],
+    command: () => [`command ${s("name")} ${status}${details}`, outcome()],
+    approve: () => [`${by} approved ${s("gate")}`, "ok"],
+    reject: () => [`${by} rejected ${s("gate")}${quote}`, "failed"],
+    "changes-requested": () => [`${by} requested changes on ${s("gate")}${quote}`, "failed"],
+    note: () => [s("text"), "info"],
+    work: () => [`${s("engine")} working on ${s("stage")}`, "running"],
+    done: () => [`${s("engine")} finished working`, "ok"],
+    artifact: () => [`artifact ${s("name")}${number("version") ? ` v${number("version")}` : ""} published`, "ok"],
+    "artifact-reviewed": () => [`${s("person") || by} reviewed ${s("name") || artifact}`, "ok"],
+    alert: () => [`alert ${s("message") || s("id")}${stage}`, "info"],
+    "alert-ack": () => [`alert ${s("id")} acknowledged${author}`, "ok"],
+    kill: () => [`job ${s("job")} stop: ${s("outcome")}`, s("outcome") === "already-exited" ? "info" : "failed"],
+    timer: () => [`timer ${s("timer")}${stage}${part(s("scheduledAt"))}`, "info"],
+    ask: () => [`ask ${s("prompt")} ${result}`, outcome()],
+    instruct: () => [`${by} instructed ${s("session")}${part(s("mode"))}`, "info"],
+    session: () => [`session ${s("session")}${part(s("engine"))}`, outcome()],
+    "session-opened": () => [`session ${s("session")} opened${part(s("engine"))}${author}`, "ok"],
+    conversation: () => [`conversation ${s("conversation")} ${status}${part(s("engine"))}`, outcome()],
+    recover: () => [`recovery ${s("action")}${stage}`, "info"],
+    "retry-scheduled": () => [`retry ${number("attempt")} scheduled${stage}${part(s("at"))}`, "running"],
+    "foreach-start": () => [`foreach started ${s("child")}${stage}`, "running"],
+    "foreach-sync": () => [`foreach synced ${number("count")} items${stage}`, "ok"],
+    "subprocess-start": () => [`subprocess started ${s("child")}${stage}`, "running"],
+    "subprocess-sync": () => [`subprocess synced ${s("child")}${stage}`, "ok"],
+    "exception-route": () => [`exception ${s("from")} → ${list(e.to)}${part(s("reason"))}`, "failed"],
+    compensate: () => [`compensation ${s("command")} ${result}${stage}`, outcome()],
+    "process-pin": () => [`process pinned to revision ${number("revision")}`, "info"],
+    "process-migrate": () => [`process migrated ${number("from")} → ${number("to")}`, "ok"],
+    data: () => [`data updated: ${list(e.fields)}`, "info"],
+    "human-claim": () => [`${by} claimed ${s("stage")}`, "info"],
+    "human-delegate": () => [`${by} delegated ${s("stage")} to ${s("to")}`, "info"],
+    "human-complete": () => [`${by} completed ${s("stage")}`, "ok"],
+    "check-accept": () => [`check change accepted${stage}${author}`, "ok"],
+    "check-set": () => [`check set to ${s("to") || "none"}${stage}`, "info"],
+    dep: () => [`dependencies set: ${list(e.after) || "none"}`, "info"],
+    "recover-source": () => ["recovery source recorded", "info"],
+    "migration-source": () => ["migration source recorded", "info"],
+    "stop-block": () => [`stop blocked by check ${s("check")}${stage}`, "failed"],
+    event: () => [`event ${s("name")} received${stage}`, "info"],
+    up: () => [`resource ${s("resource")} started${part(s("tag"))}`, outcome()],
+    down: () => [`resource ${s("resource")} stopped${part(s("tag"))}`, "ok"],
+    reap: () => [`resource ${s("resource")} reaped${part(s("tag"))}`, "ok"],
+  };
+  const kind = s("kind") || "entry";
+  const scalar = (v: unknown) => typeof v === "string" ? text(v).replace(/[{}"']/g, "")
+    : typeof v === "boolean" || (typeof v === "number" && Number.isFinite(v)) ? String(v) : "";
+  const fallback = (): Line => [scalar(kind) + (Object.entries(e).filter(([k, v]) => !["kind", "t", "slug"].includes(k) && scalar(v) !== "")
+    .slice(0, 3).map(([k, v], i) => `${i ? " · " : " "}${scalar(k)} ${scalar(v)}`).join("")), "info"];
+  const [summary, tone] = Object.hasOwn(cases, kind) ? cases[kind]!() : fallback();
+  return { summary: clip(text(summary) || scalar(kind) || "entry", 160), tone };
+}
+
 /** A ledger entry as one line: its kind and time, the rest as compact JSON (quotes and sources kept short). */
 function ledgerView(e: Record<string, unknown>): LedgerView {
   const { t, kind, slug: _, ...rest } = e;
-  return { t: String(t), kind: String(kind), text: clip(JSON.stringify(rest), 240) };
+  return { t: String(t), kind: String(kind), text: clip(JSON.stringify(rest), 240), ...ledgerSummary(e) };
 }
 
 export function laneDetail(p: Project, o: { notes?: number; ledger?: number } = {}): LaneDetail {
