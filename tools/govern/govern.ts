@@ -17,7 +17,7 @@ import { report, currentCtx, CTX_WARN } from "./lib/usage.ts";
 import * as queue from "./lib/queue.ts";
 import { tag, verdict } from "./lib/replycheck.ts";
 import { desk } from "./lib/desk.ts";
-import { listLines, showLines } from "./lib/resources.ts";
+import { listLines, showLines, place } from "./lib/resources.ts";
 import * as reaping from "./lib/reap.ts";
 import * as allowances from "./lib/allowances.ts";
 import { registry, getProfile, listText, showText } from "./lib/caps.ts";
@@ -328,6 +328,7 @@ function cmdCmd(a: Args): void {
   const argv = a._.slice(3);
   if (!argv.length) fail(`give the argv after --: govern cmd ${p.slug} ${name} -- {python} build.py --preview`);
   const timeout = secondsOpt(a, "timeout"), resource = opt(a, "resource");
+  if (resource !== undefined) place(p.slug, resource, undefined);
   const from = p.commands[name] ?? null;
   const to: string[] | Command = timeout === undefined && resource === undefined ? argv : { argv, ...(timeout !== undefined ? { timeout } : {}), ...(resource !== undefined ? { resource } : {}) };
   if (from && sameCommand(from, to)) return out(`${p.slug}: ${name} is already ${commandLine(to)} — nothing changed`);
@@ -351,7 +352,7 @@ function cmdRun(a: Args): void {
   const p = load(a._[1]);
   const name = a._[2];
   if (!name) fail(`govern run ${p.slug} <command> (have: ${Object.keys(p.commands).join(", ") || "none"})`);
-  const st = jobs.start(p, name, a._.slice(3), flag(a, "bg"), opt(a, "on"), amountOpt(a, "estimate"));
+  const st = jobs.start(p, name, a._.slice(3), flag(a, "bg"), opt(a, "on"), amountOpt(a, "estimate"), flag(a, "override-resource"));
   if (st.queued) return out(`job ${st.id} queued on ${st.queued.resource} (${st.queued.ahead} ahead) · wait with: govern wait ${p.slug} ${st.id}`);
   if (st.status === "running") return out(`job ${st.id} started in the background · wait with: govern wait ${p.slug} ${st.id}`);
   out(jobs.summary(p, st));
@@ -640,7 +641,7 @@ export const COMMANDS: readonly Cmd[] = [
   { name: "done", section: 0, flags: { value: ["engine"] }, lines: [["<slug> [--engine claude|codex]", "end the current work segment"]],
     run: (a) => { const p = load(a._[1]); appendLedger(p.slug, { kind: "done", engine: engineOf(a), session: process.env.CLAUDE_CODE_SESSION_ID }); out(`${p.slug}: segment closed`); } },
   { name: "cmd", section: 0, flags: { value: ["timeout", "rm", "resource"] },
-    lines: [["<slug> [<name> [--timeout S] [--resource R] -- <argv…>] | --rm <name>", "list or set the lane's commands (S: foreground limit, default 1800; R: the resource it runs on, so\nrun needs no --on; ledgered; redefining or removing a stage's check command is flagged)"]],
+    lines: [["<slug> [<name> [--timeout S] [--resource R] -- <argv…>] | --rm <name>", "list or set the lane's commands (S: foreground limit, default 1800; R: the resource it runs on (checked now), so\nrun needs no --on; ledgered; redefining or removing a stage's check command is flagged)"]],
     run: cmdCmd },
   { name: "file", section: 0, lines: [["<slug> <name> <path-or-glob>", "name a file (a glob means its newest match)"]], run: cmdFile },
 
@@ -659,8 +660,8 @@ export const COMMANDS: readonly Cmd[] = [
   { name: "hook", section: 1, footer: false, noSub: "govern hook stop",
     subs: { stop: { lines: [["", "Claude Code Stop hook: keeps a session on its lane until the stage's check passes (3 tries)"]], run: cmdHook } } },
 
-  { name: "run", section: 2, flags: { bool: ["bg"], value: ["on", "estimate"] },
-    lines: [["<slug> <command> [--bg] [--on <resource>] [--estimate HOURS] [-- extra args]", "foreground prints a summary; --bg returns a job id; --on runs it on a declared resource (a shared one\nis locked: the job waits its turn, a --bg job shows \"queued on <resource>\"). On a resource with an\nallowance (govern allow) the job reserves HOURS (else the command's --timeout, else 1800 s; a --bg job\nneeds one of them) and is refused if that does not fit"]], run: cmdRun },
+  { name: "run", section: 2, flags: { bool: ["bg", "override-resource"], value: ["on", "estimate"] },
+    lines: [["<slug> <command> [--bg] [--on <resource> [--override-resource]] [--estimate HOURS] [-- extra args]", "foreground prints a summary; --bg returns a job id; --on runs it on a declared resource (every resource is locked unless\nit says lock: false: the job waits its turn, a --bg job shows \"queued on <resource>\"); a command with its own resource refuses a\ndifferent --on unless --override-resource (recorded in the job). On a resource with an allowance (govern allow) the job\nreserves HOURS (else the command's --timeout, else 1800 s; a --bg job needs one of them) and is refused if that does not fit"]], run: cmdRun },
   { name: "wait", section: 2, flags: { value: ["timeout"] },
     lines: [["<slug> [<job>|last] [--timeout 540]", "block until it ends; exit code = the job's (124 = still running)"]], run: cmdWait },
   { name: "jobs", section: 2, lines: [["<slug>", "the lane's latest jobs: status, exit code, seconds, resource (or queued on it)"]],

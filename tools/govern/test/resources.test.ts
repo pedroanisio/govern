@@ -1,11 +1,11 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
-import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { spawn, spawnSync } from "node:child_process";
+import { existsSync, readdirSync, readFileSync, statSync, writeFileSync, mkdirSync, utimesSync } from "node:fs";
 import { join } from "node:path";
 import { makeEnv, govern, jsonl, write, tempDir, present, setConfig, type Env } from "./helpers.ts";
 import { sleepSync } from "../lib/util.ts";
-import { parseResources, costOf, machineLines, type Resource } from "../lib/resources.ts";
+import { parseResources, costOf, machineLines, slots, type Resource } from "../lib/resources.ts";
 import * as locks from "../lib/locks.ts";
 
 const R = (extra: Record<string, unknown> = {}) => ({ name: "lab-vm", kind: "vm", sharing: "shared", ...extra });
@@ -175,8 +175,6 @@ test("a lane command may name its resource, which makes --on implied; a job with
   const ends = ledger(e).filter((x) => x.kind === "job");
   assert.deepEqual(ends.map((x) => x.resource), ["lab-vm", "local"]);
   assert.equal(govern(e, ["resources", "lab-vm"]).out.includes("holder: none"), true, "the lock is released when the job ends");
-  const bad = govern(e, ["cmd", slug, "x", "--resource", "nope", "--", "echo"]);
-  assert.equal(bad.code, 0, "a name is checked when the job runs, as the registry may change");
 });
 
 test("govern resources lists the registry and shows one with its holder and the queue behind it", () => {
@@ -275,4 +273,202 @@ test("the registry can come from a file named in govern.config.json or GOVERN_RE
   assert.match(govern(e, ["resources"]).err, /missing\.json/);
   setConfig(e, { resources: [R({ sharing: "x" })] });
   assert.match(govern(e, ["resources"]).err, /govern\.config\.json: \$\.resources\[0\]\.sharing|govern\.config\.json: .*sharing/);
+});
+
+test("a dedicated resource is locked to one job unless it says lock: false; the second job on it waits", () => {
+  const all = parse([
+    { name: "d1", kind: "vm", sharing: "dedicated", to: "lane" },
+    { name: "d3", kind: "vm", sharing: "dedicated", to: "lane", allowance: { text: "x", maxJobs: 3 } },
+    { name: "d0", kind: "vm", sharing: "dedicated", to: "lane", lock: false },
+  ]);
+  assert.equal(slots(all["d1"]!), 1);
+  assert.equal(slots(all["d3"]!), 3);
+  assert.equal(slots(all["d0"]!), undefined);
+  rejects([{ name: "d", kind: "vm", sharing: "dedicated", to: "l", lock: false, allowance: { text: "x", maxJobs: 2 } }], /\[0\]\.lock: .*maxJobs/);
+  rejects([{ name: "d", kind: "vm", sharing: "dedicated", to: "l", lock: true }], /\[0\]\.lock/);
+  const { e, slug } = withResources([{ name: "bench", kind: "vm", sharing: "dedicated", to: "lane" }]);
+  const gate = join(e.root, "gate");
+  try {
+    govern(e, ["cmd", slug, "hold", "--resource", "bench", "--"].concat(HOLD(gate)));
+    assert.match(govern(e, ["run", slug, "hold", "--bg"]).out, /started in the background/);
+    assert.match(govern(e, ["run", slug, "hold", "--bg"]).out, /queued on bench \(1 ahead\)/);
+    write(gate, "go");
+    for (const id of jobIds(e)) assert.equal(govern(e, ["wait", slug, id, "--timeout", "30"]).code, 0);
+  } finally { killGroup(e); }
+});
+
+/** A guard file as an owner token would write it: a holder that is gone and a guard that is old. */
+const plantStale = (dir: string, nonce: string) => {
+  mkdirSync(dir, { recursive: true });
+  const m = join(dir, "mutex");
+  writeFileSync(m, JSON.stringify({ pid: 2 ** 22 + 1, start: "1", nonce }) + "\n");
+  const old = new Date(Date.now() - 60_000);
+  utimesSync(m, old, old);
+  return m;
+};
+
+test("locks: a breaker removes a guard only while it still carries the stale token it saw; a holder releases only its own", () => {
+  const dir = join(tempDir("locks"), "r");
+  const m = plantStale(dir, "stale-1");
+  const seen = locks.readMutex(m);
+  assert.ok(seen && seen.includes("stale-1"));
+  // another breaker got there first and a live holder took the guard with its own token
+  writeFileSync(m, JSON.stringify({ pid: process.pid, nonce: "fresh" }) + "\n");
+  assert.equal(locks.breakStale(m, seen), false, "a fresh guard is not the stale one");
+  assert.ok(readFileSync(m, "utf8").includes("fresh"), "the live holder's guard is untouched");
+  assert.equal(locks.breakStale(m, readFileSync(m, "utf8")), true, "the token it saw is still there: removed");
+  assert.equal(existsSync(m), false);
+  assert.equal(locks.breakStale(m, seen), false, "already gone");
+  // a holder whose guard was replaced does not remove the new one on release
+  assert.equal(locks.releaseMutex(m, "mine"), false);
+  writeFileSync(m, JSON.stringify({ pid: process.pid, nonce: "theirs" }) + "\n");
+  assert.equal(locks.releaseMutex(m, "mine"), false);
+  assert.ok(existsSync(m));
+});
+
+test("locks: many processes over one stale guard all get through, each with its own ticket", () => {
+  const dir = join(tempDir("locks"), "r");
+  plantStale(dir, "stale-2");
+  const script = `import * as l from ${JSON.stringify(new URL("../lib/locks.ts", import.meta.url).href)};
+    const [dir, id] = process.argv.slice(1);
+    l.enqueue(dir, { id, label: id, pid: process.ppid, ...l.identity(process.ppid) });`;
+  // the event loop is blocked while sleepSync waits, so the children are started and awaited by one sh
+  const run = (id: string) => `${[process.execPath, "--disable-warning=ExperimentalWarning", "--input-type=module", "-e", script, dir, id].map((x) => `'${x.replaceAll("'", "'\\''")}'`).join(" ")} & pids="$pids $!"`;
+  const sh = ["a", "b", "c", "d", "e", "f"].map(run).join("; ") + '; rc=0; for p in $pids; do wait $p || rc=1; done; exit $rc';
+  const r = spawnSync("sh", ["-c", sh], { encoding: "utf8", timeout: 60000 });
+  assert.equal(r.status, 0, r.stderr);
+  const q = readdirSync(join(dir, "queue")).sort();
+  assert.equal(q.length, 6);
+  assert.equal(new Set(q.map((f) => f.slice(0, 12))).size, 6, "no two took the same ticket");
+  assert.equal(readFileSync(join(dir, "seq"), "utf8").trim(), "6");
+});
+
+test("locks: the ticket counter is replaced by rename, not truncated in place", () => {
+  const dir = join(tempDir("locks"), "r");
+  const me = (id: string) => ({ id, label: id, pid: process.pid });
+  locks.enqueue(dir, me("a"));
+  const before = statSync(join(dir, "seq")).ino;
+  locks.enqueue(dir, me("b"));
+  assert.notEqual(statSync(join(dir, "seq")).ino, before);
+  assert.equal(readFileSync(join(dir, "seq"), "utf8").trim(), "2");
+  assert.deepEqual(readdirSync(dir).filter((f) => f.includes("tmp")), []);
+});
+
+test("locks: a waiter swept from the line comes back at its own ticket, ahead of those who queued after it", () => {
+  const dir = join(tempDir("locks"), "r");
+  const sleeper = spawn("sleep", ["30"], { stdio: "ignore" });
+  const gone = { id: "early", label: "early", pid: sleeper.pid!, ...(locks.identity(sleeper.pid!) ?? {}) };
+  const ticket = locks.enqueue(dir, gone);
+  assert.equal(ticket, 1);
+  assert.equal(locks.enqueue(dir, { id: "late", label: "late", pid: process.pid }), 2);
+  sleeper.kill("SIGKILL");
+  until(() => locks.inspect(dir).queue.length === 1);
+  assert.equal(locks.tryAcquire(dir, "late", 1), true, "the sweep dropped early's ticket; late takes the slot");
+  locks.release(dir, "late");
+  locks.enqueue(dir, { id: "third", label: "third", pid: process.pid });
+  // early's real process (still alive) asks again with the ticket it held
+  assert.equal(locks.enqueue(dir, { id: "early", label: "early", pid: process.pid }, ticket), 1);
+  assert.deepEqual(locks.inspect(dir).queue.map((x) => x.id), ["early", "third"]);
+});
+
+test("govern cmd --resource is checked when the command is set: an unknown or not-allowed resource is refused and nothing is saved", () => {
+  const { e, slug } = withResources([R(), { name: "theirs", kind: "vm", sharing: "dedicated", to: "other-lane" }]);
+  const nope = govern(e, ["cmd", slug, "x", "--resource", "nope", "--", "echo"]);
+  assert.equal(nope.code, 2);
+  assert.match(nope.err, /no resource "nope" \(have: lab-vm, theirs\)/);
+  const no = govern(e, ["cmd", slug, "x", "--resource", "theirs", "--", "echo"]);
+  assert.equal(no.code, 2);
+  assert.match(no.err, /theirs is dedicated to other-lane; lane is not it/);
+  assert.equal(govern(e, ["cmd", slug]).out.trim(), "", "no command was saved");
+  assert.equal(govern(e, ["cmd", slug, "x", "--resource", "lab-vm", "--", "echo"]).code, 0);
+});
+
+test("--on does not override a command's own resource unless --override-resource says so; the job record keeps the override", () => {
+  const { e, slug } = withResources([R(), R({ name: "other" })]);
+  assert.equal(govern(e, ["cmd", slug, "hi", "--resource", "lab-vm", "--", "echo", "hi"]).code, 0);
+  const no = govern(e, ["run", slug, "hi", "--on", "other"]);
+  assert.equal(no.code, 2);
+  assert.match(no.err, /hi runs on lab-vm; --on other would move it \(add --override-resource to do that\)/);
+  assert.deepEqual(existsSync(join(e.projects, slug, "govern", "jobs")) ? jobIds(e) : [], [], "nothing started");
+  assert.equal(govern(e, ["run", slug, "hi", "--on", "lab-vm"]).code, 0, "naming the same resource is no override");
+  assert.equal(jobJson(e, jobIds(e)[0]!).overrode, undefined);
+  const ok = govern(e, ["run", slug, "hi", "--on", "other", "--override-resource"]);
+  assert.equal(ok.code, 0, ok.err);
+  const j = jobJson(e, jobIds(e)[1]!);
+  assert.equal(j.resource, "other");
+  assert.equal(j.overrode, "lab-vm");
+  // a command with no resource of its own takes --on freely
+  govern(e, ["cmd", slug, "plain", "--", "echo", "p"]);
+  assert.equal(govern(e, ["run", slug, "plain", "--on", "other"]).code, 0);
+});
+
+/** Writes a finished-or-lost background job by hand, with every time set explicitly (no clock involved). */
+function craftJob(e: Env, id: string, o: { start: string; acquired?: string; exit?: { code: number; at: string }; log?: string; resource?: string }): string {
+  const dir = join(e.projects, "lane", "govern", "jobs", id);
+  mkdirSync(dir, { recursive: true });
+  write(join(dir, "job.json"), JSON.stringify({ id, slug: "lane", name: "hold", argv: ["true"], cwd: e.root, start: o.start, bg: true,
+    ...(o.resource ? { resource: o.resource, price: { basis: "per-second", currency: "USD", amount: 0.01 } } : {}) }));
+  const at = (f: string, iso: string) => { const t = new Date(iso); utimesSync(join(dir, f), t, t); };
+  if (o.acquired) { write(join(dir, "acquired"), o.acquired + "\n"); at("acquired", o.acquired); }
+  if (o.log) { write(join(dir, "log"), "x\n"); at("log", o.log); }
+  if (o.exit) { write(join(dir, "exit"), `${o.exit.code}\n`); at("exit", o.exit.at); }
+  return id;
+}
+const T0 = "2026-01-01T00:00:00.000Z", at = (s: number) => new Date(Date.parse(T0) + s * 1000).toISOString();
+const endOf = (e: Env) => present(ledger(e).filter((x) => x.kind === "job").at(-1), "the end entry");
+
+test("the time a job waited in line is not machine time: seconds count from the slot, not from the start", () => {
+  const { e } = withResources([R({ price: { basis: "per-second", currency: "USD", amount: 0.01 } })]);
+  craftJob(e, "j1", { start: T0, acquired: at(40), exit: { code: 0, at: at(100) }, resource: "lab-vm" });
+  assert.equal(govern(e, ["wait", "lane", "j1", "--timeout", "10"]).code, 0);
+  const end = endOf(e);
+  assert.equal(end.seconds, 100);
+  assert.equal(end.machineSeconds, 60);
+  assert.equal(end.cost, 0.6);
+  assert.equal(end.estimated, undefined, "a job that ended has measured seconds");
+});
+
+test("a lost job's machine seconds stop at its last sign of life and are marked estimated; with none they are unknown", () => {
+  const { e } = withResources([R({ price: { basis: "per-second", currency: "USD", amount: 0.01 } })]);
+  craftJob(e, "j1", { start: T0, acquired: at(10), log: at(30), resource: "lab-vm" });
+  govern(e, ["wait", "lane", "j1", "--timeout", "10"]);
+  const a = endOf(e);
+  assert.equal(a.status, "lost");
+  assert.equal(a.seconds, 30, "the newest mtime of the job's log and slot file, not now");
+  assert.equal(a.machineSeconds, 20);
+  assert.equal(a.cost, 0.2);
+  assert.equal(a.estimated, "last sign of life");
+  // a lost job on no resource that left no sign at all: unknown, not now minus start
+  craftJob(e, "j2", { start: T0 });
+  govern(e, ["wait", "lane", "j2", "--timeout", "10"]);
+  const b = endOf(e);
+  assert.equal(b.id, "j2");
+  assert.equal(b.estimated, "unknown");
+  assert.equal(b.machineSeconds, undefined);
+  assert.equal(b.seconds, undefined);
+  assert.equal(machineLines([a, b]).join("\n").includes("local"), false, "an unknown time adds no seconds");
+});
+
+test("a background job waiting on a lock has no slot file and an empty log until the holder lets go, then runs and releases", () => {
+  const { e, slug } = withResources([R()]);
+  const gate = join(e.root, "gate");
+  try {
+    govern(e, ["cmd", slug, "hold", "--resource", "lab-vm", "--"].concat(HOLD(gate)));
+    govern(e, ["run", slug, "hold", "--bg"]);
+    const second = govern(e, ["run", slug, "hold", "--bg"]);
+    assert.match(second.out, /queued on lab-vm \(1 ahead\)/);
+    const [ida, idb] = jobIds(e);
+    const dirOf = (id: string) => join(e.projects, slug, "govern", "jobs", id);
+    until(() => existsSync(join(dirOf(ida!), "acquired")));
+    sleepSync(500);
+    assert.equal(existsSync(join(dirOf(idb!), "acquired")), false, "still waiting: no slot");
+    assert.equal(readFileSync(join(dirOf(idb!), "log"), "utf8"), "");
+    assert.equal(existsSync(join(dirOf(idb!), "exit")), false);
+    write(gate, "go");
+    assert.equal(govern(e, ["wait", slug, idb!, "--timeout", "30"]).code, 0);
+    assert.equal(existsSync(join(dirOf(idb!), "acquired")), true);
+    const end = ledger(e).filter((x) => x.kind === "job" && x.id === idb && x.status === "ok").at(0);
+    assert.ok(end && end.machineSeconds as number <= (end.seconds as number));
+    assert.match(govern(e, ["resources", "lab-vm"]).out, /holder: none/);
+  } finally { killGroup(e); }
 });

@@ -2,9 +2,12 @@
 // <dir>/queue (numbered in the order they came), and both name the process they belong to by pid and start time, so a
 // holder that died without releasing (SIGKILL, power cut) is noticed and its slot reclaimed by the next caller.
 // Node has no flock: one directory, made with mkdir (atomic), guards each change instead, and a guard left by a dead
-// caller is broken once it is older than a few seconds (a change takes milliseconds).
-import { mkdirSync, readdirSync, readFileSync, writeFileSync, unlinkSync, statSync, renameSync, rmSync, existsSync } from "node:fs";
-import { join } from "node:path";
+// caller is broken once it is older than a few seconds (a change takes milliseconds) or its owner is gone. The guard is a
+// file holding its owner's token (pid, start time, random nonce): a breaker removes only the token it judged stale, and a
+// holder releases only its own.
+import { mkdirSync, readdirSync, readFileSync, writeFileSync, unlinkSync, statSync, renameSync, rmSync, existsSync, linkSync } from "node:fs";
+import { randomBytes } from "node:crypto";
+import { join, basename } from "node:path";
 import { procOf, exited, sleepSync, nowIso } from "./util.ts";
 
 /** Who asks for or holds a slot: `id` is unique across lanes, `label` is what people read, pid and start name the process. */
@@ -26,25 +29,58 @@ export function live(e: { pid: number; start?: string }): boolean {
   return !!s && !exited(s) && (e.start === undefined || s.start === e.start);
 }
 
-/** Run `f` holding the mkdir guard of `dir` (other callers wait, up to 30 s). */
+/** The text of the guard file, or undefined when there is none; "" for one that cannot be read as a file (an older
+ *  govern made a directory). It is the owner token: {pid, start, nonce}. */
+export function readMutex(m: string): string | undefined {
+  try { return readFileSync(m, "utf8"); } catch (e) { return (e as NodeJS.ErrnoException).code === "ENOENT" ? undefined : ""; }
+}
+/** Remove the guard `m` only if it still holds exactly `seen` (the token a breaker judged stale). The guard is renamed
+ *  away and its token read again there: if it is not `seen`, a live holder's guard was caught, and it is linked back. */
+export function breakStale(m: string, seen: string): boolean {
+  if (readMutex(m) !== seen) return false;
+  const gone = `${m}.stale-${randomBytes(6).toString("hex")}`;
+  try { renameSync(m, gone); } catch { return false; }
+  const moved = readMutex(gone);
+  if (moved !== seen) { try { linkSync(gone, m); } catch { /* a newer guard took its place */ } }
+  rmSync(gone, { recursive: true, force: true });
+  return moved === seen;
+}
+/** Remove the guard `m` if it carries `nonce`: a holder gives back its own guard, never one that replaced it. */
+export function releaseMutex(m: string, nonce: string): boolean {
+  const raw = readMutex(m);
+  if (!raw) return false;
+  try { if ((JSON.parse(raw) as { nonce?: string }).nonce !== nonce) return false; } catch { return false; }
+  rmSync(m, { force: true });
+  return true;
+}
+/** A guard is stale when it is older than a few seconds (a change takes milliseconds) or its holder no longer runs. */
+function staleGuard(m: string, raw: string): boolean {
+  try { if (Date.now() - statSync(m).mtimeMs > STALE_MUTEX_MS) return true; } catch { return false; }
+  try {
+    const t = JSON.parse(raw) as { pid?: number; start?: string };
+    if (typeof t.pid !== "number") return false;
+    const s = procOf(t.pid);
+    return !s || exited(s) || (t.start !== undefined && s.start !== t.start);
+  } catch { return false; }
+}
+
+/** Run `f` holding the guard of `dir` (other callers wait, up to 30 s). */
 export function withMutex<T>(dir: string, f: () => T): T {
   mkdirSync(dir, { recursive: true });
   const m = join(dir, "mutex");
-  for (const end = Date.now() + MUTEX_WAIT_MS; ; sleepSync(10)) {
-    try { mkdirSync(m); break; } catch (e) {
-      if ((e as NodeJS.ErrnoException).code !== "EEXIST") throw e;
+  const me = procOf(process.pid), nonce = randomBytes(8).toString("hex");
+  const tmp = `${m}.own-${nonce}`;
+  writeFileSync(tmp, JSON.stringify({ pid: process.pid, ...(me ? { start: me.start } : {}), nonce }) + "\n");
+  try {
+    for (const end = Date.now() + MUTEX_WAIT_MS; ; sleepSync(10)) {
+      // a hard link is atomic and arrives with the token in it: no guard exists without its owner's name
+      try { linkSync(tmp, m); break; } catch (e) { if ((e as NodeJS.ErrnoException).code !== "EEXIST") throw e; }
+      const seen = readMutex(m);
+      if (seen !== undefined && staleGuard(m, seen)) breakStale(m, seen);
+      if (Date.now() > end) throw new Error(`lock ${dir}: the guard did not free up in ${MUTEX_WAIT_MS / 1000}s`);
     }
-    try {
-      if (Date.now() - statSync(m).mtimeMs > STALE_MUTEX_MS) {
-        // renamed away, not removed in place: of two callers breaking the same dead guard, one rename wins
-        const gone = `${m}.stale-${process.pid}-${Date.now()}`;
-        renameSync(m, gone);
-        rmSync(gone, { recursive: true, force: true });
-      }
-    } catch { /* another caller broke it first */ }
-    if (Date.now() > end) throw new Error(`lock ${dir}: the guard did not free up in ${MUTEX_WAIT_MS / 1000}s`);
-  }
-  try { return f(); } finally { rmSync(m, { recursive: true, force: true }); }
+  } finally { rmSync(tmp, { force: true }); }
+  try { return f(); } finally { releaseMutex(m, nonce); }
 }
 
 const sub = (dir: string, name: string) => join(dir, name);
@@ -56,7 +92,9 @@ function read(dir: string, name: string): { path: string; e: Entry }[] {
   });
 }
 const drop = (path: string) => { try { unlinkSync(path); } catch { /* already gone */ } };
-const put = (path: string, e: Entry) => { mkdirSync(join(path, ".."), { recursive: true }); writeFileSync(`${path}.tmp-${process.pid}`, JSON.stringify(e) + "\n"); renameSync(`${path}.tmp-${process.pid}`, path); };
+/** Write `text` to `path` by writing a temp file and renaming it over: a reader never sees a half-written file. */
+const putText = (path: string, text: string) => { mkdirSync(join(path, ".."), { recursive: true }); writeFileSync(`${path}.tmp-${process.pid}`, text); renameSync(`${path}.tmp-${process.pid}`, path); };
+const put = (path: string, e: Entry) => putText(path, JSON.stringify(e) + "\n");
 
 /** The holders and the line, with every entry of a dead process (and a ticket of one that already holds) removed. Under the guard. */
 function sweep(dir: string): { held: { path: string; e: Entry }[]; line: { path: string; e: Entry }[] } {
@@ -66,15 +104,21 @@ function sweep(dir: string): { held: { path: string; e: Entry }[]; line: { path:
   return { held, line };
 }
 
-/** Take a place in line (a no-op for one already in line or holding). */
-export function enqueue(dir: string, who: Who): void {
-  withMutex(dir, () => {
+/** Take a place in line (a no-op for one already in line or holding) and return its ticket: the number it holds in line,
+ *  or undefined for one that holds a slot. `ticket` asks for a place held before (a waiter swept while its process was
+ *  between owners comes back where it stood, not at the back). */
+export function enqueue(dir: string, who: Who, ticket?: number): number | undefined {
+  return withMutex(dir, () => {
     const { held, line } = sweep(dir);
-    if ([...held, ...line].some((x) => x.e.id === who.id)) return;
+    if (held.some((x) => x.e.id === who.id)) return undefined;
+    const have = line.find((x) => x.e.id === who.id);
+    if (have) return Number(basename(have.path).slice(0, 12));
     const seqFile = join(dir, "seq");
-    const n = (existsSync(seqFile) ? Number(readFileSync(seqFile, "utf8")) || 0 : 0) + 1;
-    writeFileSync(seqFile, String(n));
+    const last = existsSync(seqFile) ? Number(readFileSync(seqFile, "utf8")) || 0 : 0;
+    const n = ticket ?? last + 1;
+    if (n > last) putText(seqFile, String(n));
     put(join(sub(dir, "queue"), `${String(n).padStart(12, "0")}-${file(who.id)}`), { ...who, at: nowIso() });
+    return n;
   });
 }
 

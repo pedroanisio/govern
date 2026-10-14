@@ -17,7 +17,7 @@ export interface Job {
   timeout?: number; stopped?: "timeout" | "killed"; end?: string;
   /** The resource it runs on and its price then (a later change to the registry does not reprice it); lock: the slot it
    *  takes (its job directory's `acquired` file says when it got it). */
-  resource?: string; price?: Price; lock?: { dir: string; id: string; max: number; label: string };
+  resource?: string; price?: Price; /** --override-resource moved it off the command's own resource, which this names. */ overrode?: string; lock?: { dir: string; id: string; max: number; label: string };
 }
 export interface JobState extends Job {
   status: "running" | "ok" | "failed" | "lost" | "timeout" | "killed"; exit?: number; seconds?: number;
@@ -87,11 +87,14 @@ export function settleDead(j: { slug: string; id: string }): boolean {
 
 /** Run a command; on = the resource named with --on (else the command's own, else the job runs locally). A shared
  *  resource's slot is taken first: a foreground job waits for it here, a --bg job's sh waits (lib/lockwait.ts).
- *  estimate: the hours to reserve against an allowance (see reserveFor). */
-export function start(p: Project, name: string, extra: string[], bg: boolean, on?: string, estimate?: number): JobState {
+ *  estimate: the hours to reserve against an allowance (see reserveFor); override: allow --on to move a command off its own resource. */
+export function start(p: Project, name: string, extra: string[], bg: boolean, on?: string, estimate?: number, override = false): JobState {
   const base = p.commands[name];
   if (!base) fail(`${p.slug}: no command "${name}" (have: ${Object.keys(p.commands).join(", ") || "none"}; add with govern cmd ${p.slug} ${name} -- <argv>)`);
-  const res = place(p.slug, Array.isArray(base) ? undefined : base.resource, on);
+  const own = Array.isArray(base) ? undefined : base.resource;
+  if (on !== undefined && own !== undefined && on !== own && !override) fail(`${name} runs on ${own}; --on ${on} would move it (add --override-resource to do that)`);
+  const res = place(p.slug, own, on);
+  const overrode = on !== undefined && own !== undefined && on !== own ? own : undefined;
   const argv = expand(p, [...argvOf(base), ...extra]);
   const id = claim(p.slug, name);
   const dir = jobDir(p.slug, id);
@@ -103,12 +106,13 @@ export function start(p: Project, name: string, extra: string[], bg: boolean, on
   const max = res && slots(res);
   const lock = res && max !== undefined ? { dir: lockDir(res.name), id: `${p.slug.replaceAll("/", "~")}~${id}`, max, label: `${p.slug} ${id}` } : undefined;
   const job: Job = { id, slug: p.slug, name, argv, cwd, start: nowIso(), bg, ...(bg ? {} : { timeout }),
-    ...(res ? { resource: res.name, price: res.price } : {}), ...(lock ? { lock } : {}) };
+    ...(res ? { resource: res.name, price: res.price } : {}), ...(overrode ? { overrode } : {}), ...(lock ? { lock } : {}) };
   writeJson(f, job);
   const me = procOf(process.pid);
+  let ticket: number | undefined;
   if (lock) {
     // In line before anything runs, as this govern (a foreground job's wait is here), then handed to the job's sh.
-    locks.enqueue(lock.dir, { id: lock.id, label: lock.label, pid: process.pid, ...(me ? { start: me.start } : {}) });
+    ticket = locks.enqueue(lock.dir, { id: lock.id, label: lock.label, pid: process.pid, ...(me ? { start: me.start } : {}) });
     if (!bg) {
       writeJson(f, { ...job, pid: process.pid, ...(me ? { procStart: me.start } : {}) });
       while (!locks.tryAcquire(lock.dir, lock.id, lock.max)) sleepSync(POLL_MS);
@@ -120,7 +124,7 @@ export function start(p: Project, name: string, extra: string[], bg: boolean, on
   const logF = shq(join(dir, "log"));
   const lockCmd = (verb: string, ...rest: string[]) => [process.execPath, "--disable-warning=ExperimentalWarning", LOCKWAIT, verb, ...rest].map(shq).join(" ");
   const script = lock && bg
-    ? `${lockCmd("wait", lock.dir, lock.id, String(lock.max), dir, lock.label)} > ${logF} 2>&1; rc=$?; ` +
+    ? `${lockCmd("wait", lock.dir, lock.id, String(lock.max), dir, String(ticket ?? ""), lock.label)} > ${logF} 2>&1; rc=$?; ` +
       `if [ $rc -eq 0 ]; then ${argv.map(shq).join(" ")} >> ${logF} 2>&1; rc=$?; ${lockCmd("release", lock.dir, lock.id)} >> ${logF} 2>&1; fi; ${exitIt}`
     : `${argv.map(shq).join(" ")} > ${logF} 2>&1; rc=$?; ${exitIt}`;
   // A foreground job is spawned, not spawnSync'd, and then waited on synchronously: spawnSync gives no pid while the child
@@ -172,22 +176,38 @@ export function recordEnd(slug: string, id: string): boolean {
     if ((e as NodeJS.ErrnoException).code === "EEXIST") return false;
     throw e;
   }
-  const seconds = st.seconds ?? Math.round((Date.now() - Date.parse(st.start)) / 1000);
+  // A lost job has no end time: its seconds stop at the last sign of life (newest mtime of its log or slot file), marked
+  // estimated, and are unknown when it left none. Now minus start would bill the time since it died.
+  const lost = st.status === "lost" ? lastSign(slug, id) : undefined;
+  const seconds = st.status === "lost" ? lost === undefined ? undefined : Math.max(0, Math.round((lost - Date.parse(st.start)) / 1000))
+    : st.seconds ?? Math.round((Date.now() - Date.parse(st.start)) / 1000);
+  const estimated = st.status === "lost" ? seconds === undefined && !(st.resource && !got(st)) ? "unknown" : "last sign of life" : undefined;
   const machine = machineOf(st, seconds);
-  appendLedger(slug, { kind: "job", id, name: st.name, bg: st.bg, status: st.status, exit: st.exit, seconds, ...machine });
-  const used = typeof machine["machineSeconds"] === "number" ? machine["machineSeconds"] : 0;
-  allowances.settle(`job:${slug}:${id}`, { hours: used / 3600, ...(typeof machine["cost"] === "number" && typeof machine["currency"] === "string" ? { money: { amount: machine["cost"], currency: machine["currency"] } } : {}) });
+  appendLedger(slug, { kind: "job", id, name: st.name, bg: st.bg, status: st.status, exit: st.exit, ...(seconds !== undefined ? { seconds } : {}), ...machine, ...(estimated ? { estimated } : {}) });
+  // Unknown machine time is charged as reserved (settle's rule for a unit with no actual), never as nothing.
+  const used = typeof machine["machineSeconds"] === "number" ? machine["machineSeconds"] : undefined;
+  allowances.settle(`job:${slug}:${id}`, { ...(used !== undefined ? { hours: used / 3600 } : {}), ...(typeof machine["cost"] === "number" && typeof machine["currency"] === "string" ? { money: { amount: machine["cost"], currency: machine["currency"] } } : {}) });
   return true;
+}
+
+/** When the job got its slot (ms), from its `acquired` file. */
+function got(st: Job): number | undefined {
+  try { const t = Date.parse(readFileSync(acquiredFile(st.slug, st.id), "utf8").trim()); return Number.isNaN(t) ? undefined : t; } catch { return undefined; }
+}
+/** The newest mtime (ms) of the files a running job writes (its log and its slot file): its last sign of life. */
+function lastSign(slug: string, id: string): number | undefined {
+  const t = ["log", "acquired"].flatMap((f) => { try { return [statSync(join(jobDir(slug, id), f)).mtimeMs]; } catch { return []; } });
+  return t.length ? Math.max(...t) : undefined;
 }
 
 /** Where the job ran and for how long: its resource ("local" when none), the seconds it held it (the wall seconds less
  *  any wait in line; none for a job that never got its slot), and, for a priced resource, the basis, and the money when
  *  that is time-based. */
-function machineOf(st: JobState, seconds: number): Record<string, unknown> {
-  if (!st.resource) return { resource: "local", machineSeconds: seconds };
-  let got: number | undefined;
-  try { got = Date.parse(readFileSync(acquiredFile(st.slug, st.id), "utf8").trim()); } catch { got = undefined; }
-  const machineSeconds = got === undefined ? 0 : Math.max(0, seconds - Math.round((got - Date.parse(st.start)) / 1000));
+function machineOf(st: JobState, seconds: number | undefined): Record<string, unknown> {
+  if (!st.resource) return seconds === undefined ? { resource: "local" } : { resource: "local", machineSeconds: seconds };
+  const at = got(st);
+  if (at !== undefined && seconds === undefined) return { resource: st.resource };
+  const machineSeconds = at === undefined ? 0 : Math.max(0, (seconds ?? 0) - Math.round((at - Date.parse(st.start)) / 1000));
   const price = st.price ?? { basis: "free" as const };
   const cost = costOf({ price }, machineSeconds);
   return { resource: st.resource, machineSeconds, basis: price.basis, ...(cost ? { cost: cost.amount, currency: cost.currency } : {}) };

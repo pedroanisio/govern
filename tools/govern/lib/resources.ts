@@ -19,6 +19,8 @@ export interface Resource {
   sharing: "shared" | "dedicated";
   /** A dedicated resource's lane (or a folder of lanes: `ops` takes `ops/engine`). */
   to?: string;
+  /** false: no lock at all (said outright; left out, a resource has one slot, or `allowance.maxJobs`). */
+  lock?: false;
   price: Price;
   allowance?: { text: string; maxJobs?: number; maxMachines?: number };
   /** Argv lists: govern stores and shows them, and runs none of them. */
@@ -26,6 +28,7 @@ export interface Resource {
 }
 
 export const nonNegative: Shape<number> = (v, p) => (typeof v === "number" && Number.isFinite(v) && v >= 0 ? v : reject(p, `must be a number, 0 or more (got ${JSON.stringify(v)})`));
+const NO_LOCK: Shape<false> = (v, p) => (v === false ? false : reject(p, `must be false (leave it out for the default of one slot)`));
 const ARGV = arr(str, { nonEmpty: true });
 export const NAME_CHARS: Shape<string> = (v, p) => {
   const s = name(v, p);
@@ -45,7 +48,7 @@ export const PRICE: Shape<Price> = (v, at) => {
 };
 const RESOURCE_RAW = obj(
   { name: NAME_CHARS, kind: name, sharing: literal("shared", "dedicated") },
-  { to: name, price: PRICE, allowance: obj({ text: str }, { maxJobs: posInt, maxMachines: posInt }),
+  { to: name, lock: NO_LOCK, price: PRICE, allowance: obj({ text: str }, { maxJobs: posInt, maxMachines: posInt }),
     commands: obj({}, { start: ARGV, stop: ARGV, list: ARGV }) },
 );
 export const RESOURCES: Shape<Record<string, Resource>> = (v, at) => {
@@ -55,6 +58,7 @@ export const RESOURCES: Shape<Record<string, Resource>> = (v, at) => {
     if (out[r.name]) reject(`${p}.name`, `resource "${r.name}" is already defined`);
     if (r.sharing === "dedicated" && r.to === undefined) reject(`${p}.to`, "a dedicated resource must say who it is dedicated to");
     if (r.sharing === "shared" && r.to !== undefined) reject(`${p}.to`, "only a dedicated resource names who it is dedicated to");
+    if (r.lock === false && r.allowance?.maxJobs !== undefined) reject(`${p}.lock`, "false cannot go with allowance.maxJobs (a limit needs the lock)");
     out[r.name] = { ...r, price: r.price ?? { basis: "free" } };
   });
   return out;
@@ -92,8 +96,8 @@ export function resourceNamed(n: string): Resource {
 export const stateDir = (): string => stateFolder();
 export const lockDir = (resource: string) => join(stateDir(), "locks", resource);
 
-/** The slots of a resource: a shared one has maxJobs (default 1); a dedicated one is not locked unless it sets maxJobs. */
-export const slots = (r: Resource): number | undefined => r.allowance?.maxJobs ?? (r.sharing === "shared" ? 1 : undefined);
+/** The slots of a resource: allowance.maxJobs, else 1, shared or dedicated; none (not locked) only where it says `"lock": false`. */
+export const slots = (r: Resource): number | undefined => (r.lock === false ? undefined : r.allowance?.maxJobs ?? 1);
 
 /** Whether lane `slug` may use `r`: any shared resource, or the dedicated one's lane (or a lane in its folder). */
 export const mayUse = (r: Resource, slug: string): boolean => r.to === undefined || slug === r.to || slug.startsWith(`${r.to}/`);
@@ -171,7 +175,7 @@ export function showLines(n: string): string[] {
     `price: ${priceLong(r.price)}${r.price.basis === "per-month" ? " (machine seconds only: not time-priced)" : ""}`];
   if (r.allowance) L.push(`allowance: ${r.allowance.text}${r.allowance.maxMachines ? ` (max ${plural(r.allowance.maxMachines, "machine")})` : ""}`);
   for (const c of ["start", "stop", "list"] as const) if (r.commands?.[c]) L.push(`${c}: ${r.commands[c]!.join(" ")}`);
-  if (cap === undefined) return [...L, "lock: none (a dedicated resource is not shared)"];
+  if (cap === undefined) return [...L, "lock: none (declared \"lock\": false)"];
   const { holders, queue } = locks.inspect(lockDir(r.name));
   const who = (e: locks.Entry) => `${e.label} (pid ${e.pid}, since ${e.at})`;
   if (!holders.length) L.push("holder: none");
