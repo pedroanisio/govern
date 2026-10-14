@@ -1,13 +1,15 @@
 // govern remote: the HTTP API a paired device (the Android app in android/) uses to read the lanes and telemetry and to
 // act as the owner. The protocol is specified in REMOTE.md. Reads need the device's bearer token; an action (approving a
 // gate, acknowledging an alert) also needs the request body signed by the device's own P-256 key, which never leaves the
-// device. A device is paired only with a one-time code that the owner creates at their own terminal.
+// device. Pairing needs a one-time code or a comparison confirmed at the owner's own terminal.
 import { createServer as createHttp, type IncomingMessage, type ServerResponse, type Server } from "node:http";
+import { hostname } from "node:os";
+import * as pairing from "./remote-pair.ts";
 import { createServer as createHttps } from "node:https";
 import { createHash, createPublicKey, randomBytes, randomInt, timingSafeEqual, verify, X509Certificate, type KeyObject } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync, appendFileSync, createReadStream, closeSync, fstatSync } from "node:fs";
 import { join } from "node:path";
-import { check, obj, str, name, literal, type Shape, reject } from "./shape.ts";
+import { check, obj, str, name, literal, arr, type Shape, reject } from "./shape.ts";
 import { GovernError, fail, nowIso } from "./util.ts";
 import { stateDir } from "./workspace.ts";
 import { withLaneLock } from "./lane-lock.ts";
@@ -33,7 +35,7 @@ const parsed = <T>(what: string, raw: unknown, shape: Shape<T>): T => {
 /** A lane slug from a request: a bad one is a malformed request. */
 const slugOf = (s: string | undefined): string => { try { return checkSlug(s); } catch (e) { throw e instanceof GovernError ? new BadRequest(e.message) : e; } };
 
-export interface Device { id: string; name: string; person: string; publicKey: string; tokenSha256: string; pairedAt: string; revokedAt?: string; lanes?: string[] }
+export interface Device { id: string; name: string; person: string; publicKey: string; tokenSha256: string; pairedAt: string; lanes?: string[]; revokedAt?: string }
 interface Pairing { codeSha256: string; person: string; expires: string; attempts: number }
 
 /** Wrong codes a pairing survives: the next wrong one deletes it, so a code cannot be guessed by trying. */
@@ -51,19 +53,19 @@ const sha = (s: string | Buffer) => createHash("sha256").update(s).digest("hex")
 const audit = (entry: Record<string, unknown>) => { ensureDir(); appendFileSync(file("audit.jsonl"), JSON.stringify({ t: nowIso(), ...entry }) + "\n", { mode: 0o600 }); };
 
 function ensureDir(): void { mkdirSync(dir(), { recursive: true, mode: 0o700 }); }
-function readState<T>(n: string, empty: T): T {
+export function readState<T>(n: string, empty: T): T {
   const f = file(n);
   if (!existsSync(f)) return empty;
   try { return JSON.parse(readFileSync(f, "utf8")) as T; } catch (e) { return fail(`${f} is not valid JSON (${(e as Error).message})`, 1); }
 }
-function writeState(n: string, v: unknown): void {
+export function writeState(n: string, v: unknown): void {
   ensureDir();
   const f = file(n), tmp = `${f}.tmp-${process.pid}`;
   writeFileSync(tmp, JSON.stringify(v, null, 2) + "\n", { mode: 0o600 });
   renameSync(tmp, f);
 }
 /** One change to the remote state at a time: the server and the CLI both change it. */
-const locked = <T>(f: () => T): T => { ensureDir(); return withLaneLock(join(dir(), "lock"), f); };
+export const locked = <T>(f: () => T): T => { ensureDir(); return withLaneLock(join(dir(), "lock"), f); };
 
 export const devices = (): Device[] => readState<{ devices: Device[] }>("devices.json", { devices: [] }).devices;
 
@@ -103,13 +105,40 @@ export function pair(code: string, deviceName: string, publicKey: string): { dev
       audit({ kind: "pair-refused", attempts });
       throw new Forbidden(attempts >= PAIR_ATTEMPTS ? "wrong pairing code; the code is now void: run govern remote pair again" : "wrong pairing code");
     }
-    const token = randomBytes(32).toString("base64url");
-    const device: Device = { id: `d-${randomBytes(6).toString("hex")}`, name: deviceName, person: pg.person, publicKey, tokenSha256: sha(token), pairedAt: nowIso() };
-    writeState("devices.json", { devices: [...devices(), device] });
+    const paired = createDevice(deviceName, publicKey, pg.person);
     writeState("pairing.json", null);
-    audit({ kind: "paired", device: device.id, name: deviceName, person: device.person });
-    return { device, token };
+    return paired;
   });
+}
+
+/** Creates a device under the caller's remote lock; both pairing flows use this path. */
+export function createDevice(deviceName: string, publicKey: string, person: string, lanes?: string[], now = Date.now()): { device: Device; token: string } {
+  const token = randomBytes(32).toString("base64url");
+  const device: Device = { id: `d-${randomBytes(6).toString("hex")}`, name: deviceName, person, publicKey,
+    tokenSha256: sha(token), pairedAt: new Date(now).toISOString(), ...(lanes === undefined ? {} : { lanes }) };
+  writeState("devices.json", { devices: [...devices(), device] });
+  audit({ kind: "paired", device: device.id, name: deviceName, person, ...(lanes === undefined ? {} : { lanes }) });
+  return { device, token };
+}
+
+/** Revokes devices whose token was never delivered, under the caller's remote lock: no unusable device stays paired. */
+export function revokeUndelivered(ids: readonly string[], now: number): void {
+  const all = devices(), gone = all.filter((d) => ids.includes(d.id) && !d.revokedAt);
+  if (!gone.length) return;
+  for (const d of gone) d.revokedAt = new Date(now).toISOString();
+  writeState("devices.json", { devices: all });
+  for (const d of gone) audit({ kind: "revoked", device: d.id, reason: "pairing token never delivered" });
+}
+
+export const inScope = (device: Device, slug: string | null): boolean => device.lanes === undefined || (slug !== null && device.lanes.includes(slug));
+
+/** Filter only after the shared cache, including optional session summaries supplied by the read views. */
+export function scoped<T extends Omit<Desk, "viewer" | "sessions"> & { sessions?: { lane: string | null }[] }>(desk: T, device: Device): T {
+  if (device.lanes === undefined) return desk;
+  return { ...desk, lanes: desk.lanes.filter((x) => inScope(device, x.slug)), unreadable: desk.unreadable.filter((x) => inScope(device, x.slug)),
+    ...(desk.sessions ? { sessions: desk.sessions.filter((x) => inScope(device, x.lane)) } : {}),
+    telemetry: { ...desk.telemetry, tokens: desk.telemetry.tokens.filter((x) => inScope(device, x.lane)),
+      machines: desk.telemetry.machines.filter((x) => inScope(device, x.lane)), inbox: desk.telemetry.inbox.filter((x) => inScope(device, x.project)) } };
 }
 
 export function revoke(id: string): Device {
@@ -163,6 +192,7 @@ export function verifyAction(device: Device, body: Buffer, signature: string | u
 /** Carries out a verified action as the device's person, under the lane's transaction. */
 export function perform(device: Device, a: Action, body: Buffer, signature: string): void {
   const slug = slugOf(a.lane);
+  if (!inScope(device, slug)) throw new Forbidden(`lane ${slug} is outside this device's scope`);
   if (!existsSync(stateFile(slug))) throw new NotFound(`no lane ${slug}`);
   transaction(slug, () => {
     const p = load(slug);
@@ -188,7 +218,7 @@ export function perform(device: Device, a: Action, body: Buffer, signature: stri
 
 // ---------------------------------------------------------------- the server
 
-export interface ServeOptions { tls?: { cert: string; key: string }; streamIntervalMs?: number; streamMaxMs?: number; pingMs?: number }
+export interface ServeOptions { now?: () => number; tls?: { cert: string; key: string }; streamIntervalMs?: number; streamMaxMs?: number; pingMs?: number }
 
 /** The SHA-256 fingerprint of a PEM certificate, as the app pins it (hex, colon-free, lower case). */
 export const certPin = (pem: string): string => new X509Certificate(pem).fingerprint256.replace(/:/g, "").toLowerCase();
@@ -196,6 +226,7 @@ export const certPin = (pem: string): string => new X509Certificate(pem).fingerp
 const PAIR_REQ = obj({ code: str, name: (v, at) => (typeof v === "string" && v.trim().length >= 1 && v.length <= 80 ? v.trim() : reject(at, "must be 1..80 characters")), publicKey: str });
 
 export function remoteServer(o: ServeOptions = {}): Server {
+  const now = o.now ?? Date.now, pin = o.tls ? certPin(o.tls.cert) : null;
   const interval = o.streamIntervalMs ?? 3000, maxMs = o.streamMaxMs ?? 3_600_000, pingMs = o.pingMs ?? 15_000;
   let streams = 0;
   let cache: { at: number; desk: Omit<Desk, "viewer"> } | undefined;
@@ -215,7 +246,7 @@ export function remoteServer(o: ServeOptions = {}): Server {
     const bearer = /^Bearer (\S+)$/.exec(req.headers.authorization ?? "")?.[1];
     const device = bearer ? deviceOfToken(bearer) : undefined;
     const fault = (e: unknown) => {
-      const status = e instanceof BadRequest ? 400 : e instanceof Forbidden ? 403 : e instanceof NotFound ? 404 : e instanceof TooLarge ? 413 : e instanceof GovernError ? 409 : 500;
+      const status = e instanceof pairing.TooMany ? 429 : e instanceof BadRequest ? 400 : e instanceof Forbidden ? 403 : e instanceof NotFound ? 404 : e instanceof TooLarge ? 413 : e instanceof GovernError ? 409 : 500;
       return reply(status, { error: status === 500 ? "internal error" : (e as Error).message });
     };
     const body = (then: (b: Buffer) => void) => {
@@ -231,11 +262,27 @@ export function remoteServer(o: ServeOptions = {}): Server {
       try { raw = JSON.parse(b.toString("utf8")); } catch { return reply(400, { error: "invalid JSON" }); }
       const r = parsed("pairing request", raw, PAIR_REQ);
       const { device: d, token } = pair(r.code, r.name, r.publicKey);
-      reply(200, { protocol: PROTOCOL, deviceId: d.id, person: d.person, token });
+      reply(200, { protocol: PROTOCOL, deviceId: d.id, person: d.person, token, host: hostname() });
     });
+    if (route === "POST /v1/pair/request" || route === "POST /v1/pair/cancel") return body((b) => {
+      let raw: unknown;
+      try { raw = JSON.parse(b.toString("utf8")); } catch { return reply(400, { error: "invalid JSON" }); }
+      if (route === "POST /v1/pair/request") {
+        const r = parsed("pairing request", raw, obj({ name: str, publicKey: str }, { lanes: arr(str) }));
+        return reply(201, pairing.requestPairing(r, { now, pin }));
+      }
+      const r = parsed("pairing cancellation", raw, obj({ id: str, secret: str }));
+      reply(200, pairing.cancelPairing(r.id, r.secret, now));
+    });
+    if (route === "GET /v1/pair/request") {
+      try {
+        const secret = req.headers["govern-pair-secret"];
+        return reply(200, pairing.pollPairing(url.searchParams.get("id") ?? "", typeof secret === "string" ? secret : "", now));
+      } catch (e) { return fault(e); }
+    }
     if (!device) { req.resume(); return reply(401, { error: "unauthorized: pair this device with govern remote pair" }); }
     try {
-      const personalDesk = (): Desk => ({ ...desk(), viewer: { person: device.person, device: device.id, lanes: device.lanes ?? null } });
+      const personalDesk = (): Desk => ({ ...scoped(desk(), device), viewer: { person: device.person, device: device.id, lanes: device.lanes ?? null } });
       const count = (key: string, fallback: number, max: number): number => {
         const raw = url.searchParams.get(key);
         if (raw === null) return fallback;
@@ -269,12 +316,13 @@ export function remoteServer(o: ServeOptions = {}): Server {
       }
       if (route === "GET /v1/lane") {
         const slug = slugOf(url.searchParams.get("slug") ?? undefined);
+        if (!inScope(device, slug)) throw new Forbidden(`lane ${slug} is outside this device's scope`);
         if (!existsSync(stateFile(slug))) return reply(404, { error: `no lane ${slug}` });
         return reply(200, laneDetail(load(slug)));
       }
       if (route === "POST /v1/actions") return body((b) => {
         const sig = req.headers["govern-signature"];
-        const a = verifyAction(device, b, typeof sig === "string" ? sig : undefined);
+        const a = verifyAction(device, b, typeof sig === "string" ? sig : undefined, now());
         perform(device, a, b, sig as string);
         cache = undefined;
         reply(200, { ok: true, lane: laneDetail(load(checkSlug(a.lane))) });

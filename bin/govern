@@ -30,6 +30,8 @@
 #     govern usage [SLUG...] [--since DATE]  |  ctx  |  desk  |  tune  |  publish SLUG
 #     govern artifact add SLUG FILE [--name N] [--title T] [--caption C]  |  artifact list SLUG
 #     govern remote pair [--as PERSON] [--minutes N] [--url URL] [--tls-cert F] [--no-qr]  |  remote devices  |  remote revoke DEVICE
+#     govern remote link [--url URL] [--tls-cert F] [--lane S] [--no-qr]  |  remote requests  |  remote refuse ID
+#     govern remote confirm ID --code NNNNNN [--lane S]... [--all] [--person P]
 #     govern remote serve [--host H] [--port 5002] [--tls-cert F --tls-key F]
 #     govern caps [PROFILE]  |  caps --check PROFILE
 #     govern decide ask --questions F (--state S | --state-file F) [--purpose P] [--json]  |  decide report
@@ -96,13 +98,15 @@
 #     --port N                event-listen, remote serve: event-listen: loopback webhook port (default 5001); remote serve:
 #                             the API port (default 5002)
 #     --host H                remote serve: the address to listen on (default 127.0.0.1); another needs TLS
-#     --tls-cert F            remote pair, remote serve: the server's PEM certificate; pair: its pin goes into the pairing
-#                             link; serve: serve HTTPS (with --tls-key)
+#     --tls-cert F            remote pair, remote link, remote serve: the server's PEM certificate; pair, link: its pin goes
+#                             into the printed link; serve: serve HTTPS (with --tls-key)
 #     --tls-key F             remote serve: the PEM private key of --tls-cert
 #     --minutes N             remote pair: how long the pairing code is valid (1..60, default 10)
-#     --url URL               remote pair: the server's address as the phone reaches it, printed as a pairing link
-#                             and drawn as a QR code the phone's camera opens in the app
-#     --no-qr                 remote pair: print the pairing link without its QR code
+#     --url URL               remote pair, remote link: the server's address as the phone reaches it, printed as a link
+#                             and drawn as a QR code the phone's camera opens in the app (link: default http://127.0.0.1:5002)
+#     --no-qr                 remote pair, remote link: print the link without its QR code
+#     --code NNNNNN           remote confirm: the 6-digit code the phone shows; a wrong code refuses the request for good
+#     --person P              remote confirm: the person the device acts for (default owner)
 #     --advance               tick: progress ready event, subprocess and retry stages through normal gates
 #     --ack ID                alerts: acknowledge an alert without approving a business decision
 #     --action NAME           conversation recover, recover: retry an investigated failure or confirm compensation with compensated
@@ -143,8 +147,9 @@
 #     --override-resource     run: let --on move a command off its own resource (recorded in the job)
 #     --estimate HOURS        run, slice: the time reserved on the resource's allowance; the job is stopped at it
 #     --machines N            slice: how many machines the recipe starts (refused above the resource's maxMachines)
-#     --lane SLUG             conversation create, up, task send: up: the lane the machines are booked to (default: the job it runs inside);
-#                             task send: the lane whose gate authorises a spend, publish or push profile
+#     --lane SLUG             conversation create, up, task send, remote confirm, remote link: up: the lane the machines are
+#                             booked to (default: the job it runs inside); task send: the lane whose gate authorises a spend,
+#                             publish or push profile; remote confirm (repeatable), remote link: a lane the device may reach
 #     --count N               up: how many instances to start (default 1)
 #     --forget                down: book the machine time without running stop, for a machine that is already gone
 #     --yes                   reap: run stop on the instances found and ledger the reap (default: list only)
@@ -180,7 +185,8 @@
 #     --as NAME               human-inbox, human, task inbox, task close, task forward, task reply, remote pair: who you are;
 #                             human, human-inbox: a process person, refused unless this OS account is mapped to it; task:
 #                             default GOVERN_AS, else this session; remote pair: the person the device approves as (owner)
-#     --all                   task inbox: messages in every state, not only open ones
+#     --all                   task inbox, remote confirm: task inbox: messages in every state, not only open ones; remote
+#                             confirm: grant the device every lane
 #     --hook                  task inbox: the UserPromptSubmit hook form, silent when empty
 #     --max N                 task dispatch: run at most N messages
 #     --only E                task dispatch: only messages for codex or claude

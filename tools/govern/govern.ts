@@ -37,6 +37,7 @@ import { tune, chooseRunner } from "./lib/tune.ts";
 import { verifyQuote, origin, GROK_MARKERS } from "./lib/approval.ts";
 import * as remote from "./lib/remote.ts";
 import * as artifacts from "./lib/artifacts.ts";
+import * as remotePair from "./lib/remote-pair.ts";
 import { checkRecipient, requireAs, resolveAs } from "./lib/sessions.ts";
 import { installSkill, skillDrift, sha256File } from "./lib/skill.ts";
 import { writeFileSync, existsSync, unlinkSync } from "node:fs";
@@ -716,8 +717,35 @@ const unitWord = (v: string, cmd = false) => {
 /** The text of the user service: every Environment= and the ExecStart binary quoted, and the state folders of this shell passed on. */
 function cmdRemote(a: Args): void {
   const sub = a._[1];
+  if (["pair", "requests", "confirm", "refuse", "link"].includes(sub ?? "") && origin().kind !== "terminal")
+    fail("pair a device from the owner's own terminal, not from an agent session: a paired device approves gates", 1);
+  if (sub === "requests") {
+    out(remotePair.requests().map((r) => `${r.id}  ${r.code}  ${r.name}  lanes: ${r.lanes?.join(", ") ?? "all"}  expires ${r.expires}`).join("\n") || "(no open pairing requests)");
+    return;
+  }
+  if (sub === "confirm") {
+    const lanes = many(a, "lane");
+    const d = remotePair.confirmPairing(a._[2] ?? fail("govern remote confirm <id> --code NNNNNN"), opt(a, "code") ?? fail("--code is required"),
+      { person: opt(a, "person"), lanes: lanes.length ? lanes : undefined, all: flag(a, "all") });
+    out(`${d.id} (${d.name}) paired as ${d.person}; lanes: ${d.lanes?.join(", ") ?? "all"}`);
+    return;
+  }
+  if (sub === "refuse") {
+    const id = a._[2] ?? fail("govern remote refuse <id>");
+    remotePair.refusePairing(id); out(`${id} refused`); return;
+  }
+  if (sub === "link") {
+    const url = opt(a, "url") ?? "http://127.0.0.1:5002", cert = opt(a, "tls-cert"), lane = opt(a, "lane");
+    if (!/^https?:\/\/[^\s]+$/.test(url)) fail("--url must be the server's http(s) address, as the phone reaches it");
+    const q = new URLSearchParams({ url });
+    if (cert) q.set("pin", remote.certPin(readFileSync(cert, "utf8")));
+    if (lane) q.set("lane", checkSlug(lane));
+    const link = `govern-remote://pair?${q}`;
+    out(`pairing link (request pairing from the phone): ${link}`);
+    if (!flag(a, "no-qr")) out(qr.render(qr.encode(link), { colour: process.stdout.isTTY === true }));
+    return;
+  }
   if (sub === "pair") {
-    if (origin().kind !== "terminal") fail("pair a device from the owner's own terminal, not from an agent session: a paired device approves gates", 1);
     const minutes = Number(opt(a, "minutes") ?? 10);
     const { code, expires } = remote.createPairing(opt(a, "as") ?? "owner", minutes);
     const url = opt(a, "url"), cert = opt(a, "tls-cert");
@@ -735,7 +763,7 @@ function cmdRemote(a: Args): void {
   }
   if (sub === "devices") {
     const all = remote.devices();
-    out(all.map((d) => `${d.id}  ${d.name.padEnd(24)} ${d.person.padEnd(10)} paired ${d.pairedAt.slice(0, 16)}${d.revokedAt ? `  REVOKED ${d.revokedAt.slice(0, 16)}` : ""}`).join("\n") || "(no paired devices: govern remote pair)");
+    out(all.map((d) => `${d.id}  ${d.name.padEnd(24)} ${d.person.padEnd(10)} lanes: ${d.lanes?.join(", ") ?? "all"} paired ${d.pairedAt.slice(0, 16)}${d.revokedAt ? `  REVOKED ${d.revokedAt.slice(0, 16)}` : ""}`).join("\n") || "(no paired devices: govern remote pair)");
     return;
   }
   if (sub === "revoke") {
@@ -1034,11 +1062,17 @@ export const COMMANDS: readonly Cmd[] = [
       list: { lines: [["<slug>", "list artifacts with current digests and reviews"]],
         run: (a) => { const slug = checkSlug(a._[2]); load(slug); out(JSON.stringify(artifacts.list(slug), null, 2)); } },
     } },
-  { name: "remote", section: 7, noSub: "govern remote pair|devices|revoke|serve (the protocol: tools/govern/REMOTE.md)",
+  { name: "remote", section: 7, noSub: "govern remote pair|requests|confirm|refuse|link|devices|revoke|serve (the protocol: tools/govern/REMOTE.md)",
     subs: {
       pair: { flags: { value: ["as", "minutes", "url", "tls-cert"], bool: ["no-qr"] },
         lines: [["[--as PERSON] [--minutes 10] [--url URL] [--tls-cert F] [--no-qr]", "a one-time code that pairs one phone (govern-remote app) as PERSON (default owner); only from the\nowner's own terminal. --url and --tls-cert add the server and its certificate pin to the printed pairing link,\nalso drawn as a QR code the phone's camera opens in the app (--no-qr: the link only)"]], run: cmdRemote },
-      devices: { lines: [["", "the paired devices: id, name, person, when paired, revoked"]], run: cmdRemote },
+      requests: { lines: [["", "open phone pairing requests with comparison code, name, lanes and expiry; owner's terminal only"]], run: cmdRemote },
+      confirm: { flags: { value: ["code", "person"], multi: ["lane"], bool: ["all"] },
+        lines: [["<id> --code NNNNNN [--lane S]... [--all] [--person P]", "compare the phone's code and pair it; defaults to requested lanes and owner; --all grants every lane"]], run: cmdRemote },
+      refuse: { lines: [["<id>", "refuse a phone's pairing request; owner's terminal only"]], run: cmdRemote },
+      link: { flags: { value: ["url", "tls-cert", "lane"], bool: ["no-qr"] },
+        lines: [["[--url URL] [--tls-cert F] [--lane S] [--no-qr]", "print a QR and link for phone-initiated pairing (default http://127.0.0.1:5002); owner's terminal only"]], run: cmdRemote },
+      devices: { lines: [["", "the paired devices: id, name, person, lanes, when paired, revoked"]], run: cmdRemote },
       revoke: { lines: [["<device-id>", "the device's token and key stop working at once (its open stream ends too)"]], run: cmdRemote },
       serve: { flags: { value: ["host", "port", "tls-cert", "tls-key"] },
         lines: [["[--host 127.0.0.1] [--port 5002] [--tls-cert F --tls-key F]", "serve the remote API to paired devices; a host other than loopback needs TLS\n(or keep loopback and publish it with tailscale serve)"]], run: cmdRemote },

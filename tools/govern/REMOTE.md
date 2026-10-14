@@ -75,9 +75,46 @@ emulator reaches the host's loopback server as `http://10.0.2.2:5002`; both stay
 
 ## Identity: pairing a device
 
-A device is paired once, with a one-time code that the owner creates at their own terminal. `govern remote pair` refuses
-to run inside an agent session (Claude Code, Codex or Grok, detected as `govern approve` detects them), because a paired
-device approves gates and an agent must not be able to pair one for itself.
+A device is paired once, either by requesting confirmation from the host or with a one-time code the owner creates.
+`govern remote pair`, `requests`, `confirm`, `refuse` and `link` refuse agent sessions (Claude Code, Codex or Grok,
+detected as `govern approve` detects them), because a paired device approves gates.
+
+For phone-initiated pairing, `govern remote link --url URL [--tls-cert F] [--lane S]` prints a QR and a
+`govern-remote://pair?url=…[&pin=…][&lane=S]` link. Without `--url`, it uses `http://127.0.0.1:5002`.
+A link without `code` selects request pairing; the existing `code=` link selects the original flow. The phone sends its
+name, P-256 public key and optional lanes to `POST /v1/pair/request`. The reply contains a random request id, a random
+32-byte base64url secret, the host name, and an expiry five minutes later. Only the secret's SHA-256 is stored.
+At most five requests may await confirmation or token delivery; another request returns 429.
+
+The phone and terminal independently compute a six-digit comparison code:
+
+```text
+hash = sha256("govern-pair/2\n" + id + "\n" + publicKey + "\n" + (certPin ?? ""))
+code = (uint32_big_endian(hash[0..3]) % 1000000), padded to six digits
+```
+
+The pin is the certificate fingerprint when the server serves TLS directly; otherwise it is empty.
+`govern remote requests` prints open ids, codes, names, requested lanes and expiry. After comparing the digits with the
+phone, the owner runs `govern remote confirm ID --code NNNNNN [--lane S]... [--all] [--person P]`.
+The default person is `owner`; scope defaults to the requested lanes, or every lane when none were requested.
+Repeated `--lane` replaces that scope; `--all` grants every lane and cannot be combined with `--lane`.
+A wrong code permanently refuses the request. `govern remote refuse ID` also refuses it.
+
+Polls use `GET /v1/pair/request?id=ID` with `Govern-Pair-Secret`; cancellation uses `POST /v1/pair/cancel {id, secret}`.
+Both compare the secret hash in constant time. The states are `waiting`, `confirmed`, `refused`, `expired`, and
+`cancelled`. Cancellation accepts waiting requests (and is idempotent for cancelled requests); other terminal states
+return 409. A confirmed token is delivered by the first authenticated poll only; subsequent polls return `token: null`.
+The token is generated at confirmation and held AES-256-GCM sealed until delivery. An undelivered confirmation expires
+at the request's original deadline: its sealed token is deleted and the device made at confirmation is revoked (audit
+`revoked`, reason "pairing token never delivered"). Expiry is applied on the next pairing operation.
+The library and HTTP server accept an injected clock for deterministic expiry tests.
+
+`Device.lanes` is absent for every lane; an array restricts access to those slugs, and an empty array grants no lanes.
+Desk and stream responses filter lanes, unreadable entries, session summaries when present, token and machine rows by
+lane, and inbox entries by project. The shared desk cache stays unfiltered. Lane reads and actions outside the scope
+return 403. `govern remote devices` shows each device's scope.
+
+The original code flow remains available:
 
 The code is 12 characters from a 30-letter alphabet without look-alike letters (about 59 bits), valid for 10 minutes by
 default (1 to 60), single-use, and void after 5 wrong tries. Only its SHA-256 is stored. Guessing it is therefore
@@ -97,8 +134,8 @@ confirm with a strong biometric or the screen lock. P-256 is the curve every And
 minimum API 30; Ed25519 would need API 33. The phone sends the public key as base64 DER SubjectPublicKeyInfo (RFC 5480),
 which Android exports and Node's `crypto.createPublicKey` reads directly.
 
-The server answers with a device id and a 256-bit bearer token (RFC 6750). It stores the token's SHA-256, never the
-token; the phone stores the token sealed by an AES-GCM key in its own Keystore, and excludes it from backups.
+The server answers with a device id, host name and a 256-bit bearer token (RFC 6750). The device record stores only
+the token's SHA-256; request pairing temporarily stores the sealed token as described above; the phone stores the token sealed by an AES-GCM key in its own Keystore, and excludes it from backups.
 `govern remote revoke <device>` stops the token at once and ends the device's open stream.
 
 ## Approval integrity: signed actions
@@ -141,7 +178,10 @@ against the same fixtures in [android/app/src/test/resources/fixtures/](android/
 | Method and path | Auth | Request | Response |
 |---|---|---|---|
 | `GET /v1/health` | none | — | `{protocol, at}` |
-| `POST /v1/pair` | pairing code | `{code, name, publicKey}` | `{protocol, deviceId, person, token}` |
+| `POST /v1/pair` | pairing code | `{code, name, publicKey}` | `{protocol, deviceId, person, token, host}` |
+| `POST /v1/pair/request` | none | `{name, publicKey, lanes?: string[]}` | 201 `{protocol, id, secret, expires, host}` |
+| `GET /v1/pair/request?id=ID` | `Govern-Pair-Secret` | — | `{protocol, state, expires, person: string|null, deviceId: string|null, token: string|null, lanes: string[]|null, host}` |
+| `POST /v1/pair/cancel` | request secret | `{id, secret}` | `{protocol, state: "cancelled"}` |
 | `GET /v1/desk` | bearer | — | `Desk`: `{protocol, at, lanes: LaneSummary[], unreadable: {slug, error}[], telemetry, sessions, engines, viewer, host}` |
 | `GET /v1/lane?slug=S` | bearer | — | `LaneDetail`: a summary plus stages, exit, check, data, human tasks, alerts, last 20 notes, last 30 ledger lines, checks, last 10 jobs, artifacts, sessions and decisions |
 | `GET /v1/session?id=ID&messages=N` | bearer | `messages` defaults to 20, range 1..100 | `{protocol, session: SessionSummary, messages: MessageView[], runs: RunView[]}`; last N messages and last 5 runs |
@@ -156,7 +196,7 @@ against the same fixtures in [android/app/src/test/resources/fixtures/](android/
 Errors are `{error}` with a status that says who must act: 400 for a malformed request, 401 for a missing, unknown or
 revoked token, 403 when the request does not prove itself (signature, clock, nonce or pairing code), 404 for an unknown
 lane, session, job, artifact or route, 409 when the lane's state refuses the action (a gate that needs another first, a gate owned by someone
-else, an alert already acknowledged), 413 for a body over 64 KiB or an artifact over 32 MiB, and 429 above 8 open streams. A stream ends after one
+else, an alert already acknowledged), 413 for a body over 64 KiB or an artifact over 32 MiB, and 429 above 8 open streams or 5 open pairing requests. A stream ends after one
 hour; the app reconnects.
 
 ### Read types
@@ -232,8 +272,9 @@ govern remote revoke d-4f1c2a9b7e30                         # the token and key 
 ```
 
 The server keeps its state in `govern-state/remote/` (mode 700): `devices.json` (public keys and token hashes),
-`pairing.json` (the open code's hash), `nonces.json`, and `audit.jsonl`, a log of pairings, refusals, revocations and
-actions.
+`pairing.json` (the open code's hash), `requests.json` (request state, secret hashes, pin and pending sealed tokens),
+`pair-key.json` (the AES-GCM sealing key), `nonces.json`, and `audit.jsonl`, a log of code pairing refusals, device
+pairings, revocations and actions. State files are mode 600 and changes share the remote `lock/` transaction lock.
 
 Read views also consume lane `govern/ledger.jsonl`, `govern/jobs/<id>/job.json`, `log`, `exit`, and slice `slice.json`,
 plus `govern-state/conversations/<id>/session.json`. Artifact bytes live beside `govern.json` in `artifacts/`;
