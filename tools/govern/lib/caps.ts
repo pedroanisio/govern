@@ -158,11 +158,12 @@ export function claudeSpec(reg: Registry, p: Profile): ClaudeSpec {
   return { allow: [...new Set(cs.flatMap((c) => c.claude.allow))], acceptEdits: cs.some((c) => c.claude.permissionMode === "acceptEdits") };
 }
 /** The Claude argv of a sealed session: only the profile's tools, no user, project or local settings, only its MCP config.
+ *  maxBudgetUsd: the model dollars reserved for the run (an allowance), passed as `--max-budget-usd` so the run cannot outspend it.
  *  `--setting-sources ""` is the SDK's way to say "no sources"; the CLI help does not state that an empty value is valid. */
-export function claudeArgs(reg: Registry, p: Profile, model: string): string[] {
+export function claudeArgs(reg: Registry, p: Profile, model: string, maxBudgetUsd?: number): string[] {
   const s = claudeSpec(reg, p);
   const tools = claudeTools(s);
-  return ["-p", "--output-format", "json", "--model", model, ...(s.acceptEdits ? ["--permission-mode", "acceptEdits"] : []),
+  return ["-p", "--output-format", "json", "--model", model, ...(maxBudgetUsd !== undefined ? ["--max-budget-usd", String(maxBudgetUsd)] : []), ...(s.acceptEdits ? ["--permission-mode", "acceptEdits"] : []),
     "--allowedTools", ...s.allow, "--tools", ...tools, "--disallowedTools", ...CLAUDE_BUILTIN.filter((t) => !tools.includes(t)),
     "--setting-sources", "", "--strict-mcp-config", ...(p.mcpConfig ? ["--mcp-config", p.mcpConfig] : [])];
 }

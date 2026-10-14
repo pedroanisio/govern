@@ -134,10 +134,10 @@ test("a reservation whose holder died is swept on the next attempt: the job is s
   assert.equal(al.status(b).reserved, 0, "a dead holder's reservation is not counted");
   assert.equal(al.reserve(list, { lane: "film" }, { id: "job:x", label: "job", ...USD(1), holder: gone, job: { slug: "film", id: "j1" } }), undefined);
   const seen: string[] = [];
-  assert.equal(al.reserve(list, { lane: "film" }, { id: "task:new", label: "new", ...USD(9) }, (j) => { seen.push(`${j.slug}/${j.id}`); return false; }), undefined);
+  assert.equal(al.reserve(list, { lane: "film" }, { id: "task:new", label: "new", ...USD(1) }, (j) => { seen.push(`${j.slug}/${j.id}`); return false; }), undefined);
   assert.deepEqual(seen, ["film/j1"]);
-  assert.deepEqual(spent(d).map((r) => [r.id, r.actual]), [["task:dead", 0], ["job:x", 0]]);
-  assert.match(String(spent(d)[0].note), /holder died/);
+  assert.deepEqual(spent(d).map((r) => [r.id, r.actual]), [["task:dead", 8], ["job:x", 1]], "a dead holder is charged as reserved, never as nothing");
+  assert.match(String(spent(d)[0].note), /holder died, charged as reserved/);
   assert.equal(readdirSync(join(d, "allowances", "budget", "reserved")).length, 1, "only the new reservation is left");
 });
 
@@ -235,11 +235,11 @@ test("with no timeout and no --estimate a foreground job reserves the default li
 test("within the allowance nobody is asked, and a granted extra lets a refused job through", () => {
   const { e } = machineLane({ limit: 0.25 });
   assert.equal(govern(e, ["run", "lane", "quick"]).code, 1);
-  assert.equal(govern(e, ["allow", "hours", "--extra", "0.25", "--quote", "ok, a quarter hour more"]).code, 0);
+  assert.equal(govern(e, ["allow", "hours", "--extra", "0.25", "--quote", "ok, 0.25 hours more"]).code, 0);
   assert.equal(govern(e, ["run", "lane", "quick"]).code, 0);
 });
 
-test("a money allowance prices the estimate with the resource's rate, in its currency; another currency is not metered", () => {
+test("a money allowance prices the estimate with the resource's rate, in its currency", () => {
   const { e, state: st } = lane([{ name: "cash", consumer: "lane:lane", unit: "money", currency: "USD", limit: 1 }], { resources: [LAB] });
   setCmd(e, "quick", "--resource", "lab", "--", "true");
   const r = govern(e, ["run", "lane", "quick", "--estimate", "0.5"]);
@@ -249,9 +249,17 @@ test("a money allowance prices the estimate with the resource's rate, in its cur
   const row = present(spent(st, "cash")[0], "spent row");
   assert.equal(row.reserved, 0.75);
   assert.ok(row.actual < 0.01);
-  const eur = lane([{ name: "cash", consumer: "lane:lane", unit: "money", currency: "EUR", limit: 0.01 }], { resources: [LAB] });
+});
+
+test("a money allowance in another currency than the resource's price refuses the job, naming both currencies: it never runs unmetered", () => {
+  const eur = lane([{ name: "cash", consumer: "lane:lane", unit: "money", currency: "EUR", limit: 100 }], { resources: [LAB] });
   setCmd(eur.e, "quick", "--resource", "lab", "--", "true");
-  assert.equal(govern(eur.e, ["run", "lane", "quick"]).code, 0);
+  const r = govern(eur.e, ["run", "lane", "quick"]);
+  assert.equal(r.code, 1);
+  assert.match(r.err, /allowance "cash" is in EUR.*resource lab is priced in USD/);
+  assert.equal(jobIds(eur.e).length, 0);
+  setCmd(eur.e, "local", "--", "true");
+  assert.equal(govern(eur.e, ["run", "lane", "local"]).code, 0, "a local job stays unmetered by design");
 });
 
 test("a local job (no resource) is not metered", () => {
@@ -349,4 +357,152 @@ test("govern desk and govern usage show each allowance: used, reserved, left", (
   assert.match(govern(e, ["desk"]).out, /ALLOWANCES/);
   assert.match(govern(e, ["desk"]).out, want);
   assert.match(govern(e, ["usage"]).out, want);
+});
+
+// ---------------------------------------------------------------- review fixes: grants
+
+test("a grant's quote must contain the granted amount as a number token, compared numerically", () => {
+  for (const [amount, quote, ok] of [[10, "10", true], [10, "$10", true], [10, "ok, 10 hours", true], [10, "10.0", true], [10, "10.", true], [0.25, "a 0.25 more", true],
+    [10, "100", false], [10, "1.0", false], [10, "ok go ahead", false], [10, "version 2.10 of it", false], [10, "x10", true], [5, "give 15", false]] as const)
+    assert.equal(al.quoteNamesAmount(quote, amount), ok, `${amount} in ${JSON.stringify(quote)}`);
+});
+
+test("govern allow refuses a quote without the amount and a quote already used for this allowance and period", () => {
+  const { e, state: st } = lane([A({ consumer: "lane:lane", period: "day" })]);
+  let r = govern(e, ["allow", "budget", "--extra", "10", "--quote", "ok go ahead"]);
+  assert.equal(r.code, 1);
+  assert.match(r.err, /quote must contain the amount 10/);
+  assert.equal(extras(st).length, 0);
+  assert.equal(govern(e, ["allow", "budget", "--extra", "10", "--quote", "yes, 10 more"]).code, 0);
+  r = govern(e, ["allow", "budget", "--extra", "10", "--quote", "yes, 10 more"]);
+  assert.equal(r.code, 1);
+  assert.match(r.err, /already used for allowance budget/);
+  assert.equal(extras(st).length, 1, "the repeated grant added nothing");
+  assert.equal(govern(e, ["allow", "budget", "--extra", "10", "--quote", "  YES, 10 more "]).code, 1, "same words, other spacing and case, is the same quote");
+});
+
+test("a quote used on one day may be used again on the next day's period", () => {
+  state("2026-10-14T10:00:00Z");
+  const b = first(parse([A({ period: "day" })]));
+  const src = { kind: "terminal" as const, user: "u" };
+  al.grant(b, 3, "3 more", src, "owner");
+  assert.throws(() => al.grant(b, 3, "3 more", src, "owner"), /already used/);
+  process.env.GOVERN_NOW = "2026-10-15T10:00:00Z";
+  al.grant(b, 3, "3 more", src, "owner");
+  assert.equal(al.status(b).extra, 3);
+});
+
+// ---------------------------------------------------------------- review fixes: reservations cap the work
+
+const NOW_FAST = ["--estimate", "0.0005"]; // 1.8 s
+test("a foreground job on a metered resource is stopped at its reserved estimate, and what it really took is recorded", () => {
+  const { e, state: st } = machineLane({});
+  setCmd(e, "slow", "--resource", "lab", "--", "sleep", "60");
+  const r = govern(e, ["run", "lane", "slow", ...NOW_FAST]);
+  assert.equal(r.code, 1);
+  assert.match(r.out + r.err, /stopped at its reserved estimate \(1.8s\)/);
+  const row = present(spent(st, "hours")[0], "spent row");
+  assert.ok(row.actual < 0.01 && row.actual <= row.reserved + 0.002, `charged ${row.actual} of ${row.reserved}`);
+  assert.equal(ledger(e).filter((x) => x.kind === "job" && x.status === "timeout").length, 1);
+});
+
+test("a --bg job on a metered resource is stopped at its reserved estimate too, with a line in its log", () => {
+  const { e, state: st } = machineLane({});
+  setCmd(e, "slow", "--resource", "lab", "--", "sleep", "60");
+  try {
+    assert.equal(govern(e, ["run", "lane", "slow", "--bg", ...NOW_FAST]).code, 0);
+    until(() => ledger(e).some((x) => x.kind === "job" && x.status !== "started") || (govern(e, ["jobs", "lane"]).out.includes("timeout")), 20000);
+    const w = govern(e, ["wait", "lane", "--timeout", "20"]);
+    assert.match(w.out + w.err, /timed out|timeout|reserved estimate/);
+    const id = present(jobIds(e)[0], "job id");
+    assert.match(readFileSync(join(e.projects, "lane", "govern", "jobs", id, "log"), "utf8"), /stopped at its reserved estimate \(1.8s\)/);
+    assert.equal(jobJson(e, id).stopped, "timeout");
+    const row = present(spent(st, "hours")[0], "spent row");
+    assert.ok(row.actual < 0.01, `charged ${row.actual}`);
+  } finally { killGroup(e); }
+});
+
+test("a command's timeout shorter than the estimate still wins", () => {
+  const { e } = machineLane({});
+  setCmd(e, "short", "--resource", "lab", "--timeout", "1", "--", "sleep", "60");
+  const r = govern(e, ["run", "lane", "short", "--estimate", "0.2"]);
+  assert.equal(r.code, 1);
+  assert.match(r.out + r.err, /timed out after 1s/);
+});
+
+test("a model-usd task reserves at least the allowance's taskEstimate: an explicit estimate cannot go below the floor", () => {
+  state();
+  const list = parse([A({ taskEstimate: 0.5 })]), b = first(list);
+  assert.equal(al.reserve(list, { lane: "film" }, { id: "t", label: "t", usd: 0.01 }), undefined);
+  assert.equal(al.status(b).reserved, 0.5);
+  assert.equal(al.reserve(list, { lane: "film" }, { id: "u", label: "u", usd: 2 }), undefined);
+  assert.equal(al.status(b).reserved, 2.5, "a higher estimate is kept");
+  assert.equal(al.reservedUsd("t"), 0.5);
+});
+
+test("a sealed claude run with a model-usd reservation is given --max-budget-usd of the reserved amount", () => {
+  const { e } = queued([A({ consumer: "profile:claude-read", limit: 5, taskEstimate: 0.5 })]);
+  assert.equal(govern(e, [...SEND, "--estimate-usd", "0.2"]).code, 0);
+  assert.equal(govern(e, ["task", "dispatch"]).code, 0);
+  const argv: string[] = JSON.parse(readFileSync(join(e.root, "claude.log"), "utf8").trim().split("\n")[0]!).argv;
+  assert.equal(argv[argv.indexOf("--max-budget-usd") + 1], "0.5", "the floor, not the lowball estimate");
+});
+
+test("a task nobody meters runs with no budget flag", () => {
+  const { e } = queued([A({ consumer: "profile:someone-else" })]);
+  govern(e, SEND);
+  govern(e, ["task", "dispatch"]);
+  assert.ok(!readFileSync(join(e.root, "claude.log"), "utf8").includes("--max-budget-usd"));
+});
+
+// ---------------------------------------------------------------- review fixes: bad amounts
+
+test("reserve refuses a negative or non-finite amount and writes nothing; settle reads one as unknown and charges the reservation", () => {
+  const d = state();
+  const list = parse([A()]), b = first(list);
+  for (const usd of [-1, NaN, Infinity]) {
+    const no = al.reserve(list, { lane: "film" }, { id: `bad${usd}`, label: "bad", usd });
+    assert.equal(no?.kind, "invalid");
+    assert.match(no?.text ?? "", /not a valid amount/);
+  }
+  assert.equal(existsSync(join(d, "allowances", "budget", "reserved")) ? readdirSync(join(d, "allowances", "budget", "reserved")).length : 0, 0);
+  assert.equal(al.status(b).reserved, 0);
+  for (const bad of [-3, NaN, Infinity]) {
+    al.reserve(list, { lane: "film" }, { id: "ok", label: "ok", usd: 3 });
+    al.settle("ok", { usd: bad });
+  }
+  assert.deepEqual(spent(d).map((r) => [r.actual, r.note]), [[3, "unpriced"], [3, "unpriced"], [3, "unpriced"]]);
+});
+
+test("a negative estimate in a message file is held at dispatch, not reserved", () => {
+  const { e, state: st } = queued([A({ consumer: "profile:claude-read" })]);
+  assert.equal(govern(e, [...SEND, "--estimate-usd", "0.4"]).code, 0);
+  const dir = join(e.root, "queue", "open");
+  const f = join(dir, readdirSync(dir).filter((x) => x.endsWith(".json"))[0]!);
+  write(f, readFileSync(f, "utf8").replace(/"estimateUsd":\s*0\.4/, '"estimateUsd": -5'));
+  assert.match(govern(e, ["task", "dispatch"]).out, /held: .*not a valid amount/);
+  assert.equal(existsSync(join(st, "allowances", "budget", "reserved")) ? readdirSync(join(st, "allowances", "budget", "reserved")).length : 0, 0);
+});
+
+// ---------------------------------------------------------------- review fixes: crash paths
+
+test("dispatch puts the message back to open when the reservation itself fails, and rethrows", () => {
+  const { e } = queued([A({ consumer: "profile:claude-read" })]);
+  assert.equal(govern(e, [...SEND, "--estimate-usd", "0.4"]).code, 0);
+  const blocker = write(join(e.root, "state-is-a-file"), "x");
+  const r = govern(e, ["task", "dispatch"], { GOVERN_STATE: blocker });
+  assert.notEqual(r.code, 0);
+  assert.match(govern(e, ["task", "list"]).out, /open\s+TASK/);
+  assert.equal(readdirSync(join(e.root, "queue", "claimed")).length, 0, "nothing stays claimed");
+});
+
+// ---------------------------------------------------------------- review fixes: visibility on a bad config
+
+test("govern desk and govern usage print a config error in place of the allowance lines and otherwise work", () => {
+  const { e } = lane([{ name: "x", consumer: "nonsense", unit: "money", limit: 1 }]);
+  for (const cmd of ["desk", "usage"]) {
+    const r = govern(e, [cmd]);
+    assert.equal(r.code, 0, `${cmd}: ${r.err}`);
+    assert.match(r.out, /allowances: config error — .*consumer/, cmd);
+  }
 });

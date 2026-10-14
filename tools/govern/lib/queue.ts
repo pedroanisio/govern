@@ -261,12 +261,12 @@ function childEnv(): NodeJS.ProcessEnv {
 
 export interface RunOut { text?: string; usage?: Usage & { costUsd?: number }; turns?: number; error?: string }
 
-export interface SealedOpts { model?: string; lastMessage: string; schema?: string }
+export interface SealedOpts { model?: string; lastMessage: string; schema?: string; /** Claude only: the reserved model dollars, a hard cap on the run. */ maxBudgetUsd?: number }
 /** One headless session sealed to a profile: Claude gets only its tools, no settings sources and only its MCP config; Codex gets its
  *  sandbox, -c settings and add-dirs. The prompt goes on stdin. Shared by the dispatcher and the grant self-test. */
 export function runSealed(reg: Registry, prof: Profile, cwd: string, p: string, timeoutSec: number, o: SealedOpts): RunOut {
   if (prof.engine === "claude") {
-    const args = claudeArgs(reg, prof, o.model ?? prof.model ?? process.env.GOVERN_QUEUE_CLAUDE_MODEL ?? "sonnet");
+    const args = claudeArgs(reg, prof, o.model ?? prof.model ?? process.env.GOVERN_QUEUE_CLAUDE_MODEL ?? "sonnet", o.maxBudgetUsd);
     const r = spawnSync(process.env.GOVERN_CLAUDE_BIN ?? "claude", args, { cwd, input: p, encoding: "utf8", timeout: timeoutSec * 1000, maxBuffer: 64 << 20, env: childEnv() });
     const res = claudeResult(r.stdout, r.status, r.stderr, r.error);
     return res.error ? { ...res, error: `claude: ${res.error}` } : res;
@@ -370,8 +370,11 @@ export function dispatch(o: { max?: number; only?: string; timeoutSec?: number }
     const folder = join(projectsDir(), m.project);
     if (sealed && writes(reg, sealed) && !existsSync(folder)) { lines.push(refuse(sealed.name, `profile ${sealed.name} may change files, and the project folder ${folder} does not exist`)); continue; }
     const taskId = `task:${m.id}`;
-    const held = allowances.reserve(limits, { ...(laneOf(m) ? { lane: laneOf(m)! } : {}), ...(prof ? { profile: prof } : {}) },
-      { id: taskId, label: `task ${m.id}`, ...(m.estimateUsd !== undefined ? { usd: m.estimateUsd } : {}) }, jobs.settleDead);
+    let held: allowances.Refusal | undefined;
+    try {
+      held = allowances.reserve(limits, { ...(laneOf(m) ? { lane: laneOf(m)! } : {}), ...(prof ? { profile: prof } : {}) },
+        { id: taskId, label: `task ${m.id}`, ...(m.estimateUsd !== undefined ? { usd: m.estimateUsd } : {}) }, jobs.settleDead);
+    } catch (e) { move(m, "claimed", "open"); throw e; } // never left claimed: nobody would run it
     if (held) {
       move(m, "claimed", "open");
       lines.push(`${m.id} → ${m.to}: held: ${held.text.replaceAll("\n", " · ")}`);
@@ -382,9 +385,10 @@ export function dispatch(o: { max?: number; only?: string; timeoutSec?: number }
     const def = cfg.runners?.[m.to];
     const cwd = existsSync(folder) ? folder : repo();
     let r: RunOut;
+    const cap = allowances.reservedUsd(taskId); // the reservation is a cap, not a hint
     try {
       r = sealed
-        ? runSealed(reg, sealed, cwd, prompt(m), o.timeoutSec ?? 900, { lastMessage: join(QUEUE(), "claimed", `${m.id}.reply.txt`), schema: REPLY_SCHEMA })
+        ? runSealed(reg, sealed, cwd, prompt(m), o.timeoutSec ?? 900, { lastMessage: join(QUEUE(), "claimed", `${m.id}.reply.txt`), schema: REPLY_SCHEMA, ...(cap !== undefined ? { maxBudgetUsd: cap } : {}) })
         : runConfigured(def as RunnerDef, m, prompt(m), o.timeoutSec ?? 900);
     } catch (e) { allowances.release(taskId); throw e; }
     allowances.settle(taskId, usdOf(r, sealed?.model));

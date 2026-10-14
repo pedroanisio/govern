@@ -304,7 +304,7 @@ export function report(slugs: string[] | undefined, since?: number): string {
     L.push(...mach, "");
   }
   if (!L.length) L.push("no govern work segments or asks recorded yet");
-  const allow = allowances.lines();
+  const allow = allowances.shown();
   if (allow.length) L.push("## allowances (used, reserved, left)", ...allow.map((l) => `  ${l}`), "");
   const base = baseline(); // the chat baseline the workspace measured, if its config gives one
   if (base) L.push(`baseline (chat way): median context per call ${kTok(base.mainMedianCtx)} main session, ${kTok(base.subagentMedianCtx)} subagent — ${base.source}`);

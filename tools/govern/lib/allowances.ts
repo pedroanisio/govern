@@ -112,7 +112,7 @@ export interface Request {
   /** The process that holds the reservation (default: this one). */
   holder?: Holder; job?: JobRef;
 }
-export interface Refusal { kind: "over" | "no-estimate"; text: string; owner: string }
+export interface Refusal { kind: "over" | "no-estimate" | "invalid"; text: string; owner: string }
 
 const matches = (a: Allowance, k: { lane?: string; profile?: string }): boolean =>
   a.consumer.kind === "profile" ? k.profile === a.consumer.name : k.lane !== undefined && (k.lane === a.consumer.name || k.lane.startsWith(`${a.consumer.name}/`));
@@ -128,8 +128,15 @@ function amountFor(a: Allowance, req: Request): number | null | undefined {
     if (a.unit === "machine-hours") return req.hours;
     return a.unit === "money" && req.money && req.money.currency === a.currency ? req.money.amount : undefined;
   }
-  return a.unit === "model-usd" ? (req.usd ?? a.taskEstimate ?? null) : undefined;
+  // A task's estimate cannot go below the allowance's taskEstimate: a lowball estimate would bypass the limit.
+  return a.unit === "model-usd" ? (req.usd === undefined ? a.taskEstimate ?? null : Math.max(req.usd, a.taskEstimate ?? 0)) : undefined;
 }
+const validAmount = (n: number): boolean => Number.isFinite(n) && n >= 0;
+/** Whether a request's amount (hours, USD, money) is an amount at all: never negative, never NaN or Infinity. */
+const invalid = (a: Allowance, req: Request): Refusal | undefined => {
+  const raw = req.hours !== undefined ? (a.unit === "machine-hours" ? req.hours : req.money?.amount) : req.usd;
+  return raw !== undefined && !validAmount(raw) ? { kind: "invalid", owner: a.owner, text: `${req.label} asked ${String(raw)} of allowance "${a.name}": not a valid amount (it must be a finite number, 0 or more)` } : undefined;
+};
 
 /** Reserve `req` against every allowance that applies to the lane/profile in `keys`, all or nothing. Undefined: reserved
  *  (or nothing applies). A refusal says what was asked, what is left and who decides. Reservations of dead holders are
@@ -140,6 +147,8 @@ export function reserve(list: Record<string, Allowance>, keys: { lane?: string; 
   sweepDead(mine, onDead);
   return guarded(() => {
     for (const a of mine) {
+      const bad = invalid(a, req);
+      if (bad) return bad;
       const want = amountFor(a, req);
       if (want === null) return { kind: "no-estimate" as const, owner: a.owner, text: `${req.label} has no estimate for allowance "${a.name}": give one with --estimate-usd, or set taskEstimate on the allowance` };
       const s = status(a);
@@ -166,15 +175,16 @@ function refusal(a: Allowance, label: string, want: number, s: ReturnType<typeof
       `to allow it: govern allow ${a.name} --extra ${more} --quote "<${a.owner === "owner" ? "owner's" : `${a.owner}'s`} own words>"${by}` };
 }
 
-/** Close the reservations of dead holders: one with no job is released (actual 0); one with a job is first offered to
- *  `onDead`, which may settle it (it calls settle) or say the job still runs. The callback runs outside the guard. */
+/** Close the reservations of dead holders: one with no job is charged as reserved (what it used is unknown); one with a
+ *  job is first offered to `onDead`, which may settle it (it calls settle) or say the job still runs; one it did not
+ *  settle is charged as reserved too. The callback runs outside the guard. */
 function sweepDead(list: Allowance[], onDead?: (job: JobRef) => boolean): void {
   const jobs: { name: string; r: Reservation }[] = [];
   guarded(() => {
     for (const a of list) for (const x of reservations(a.name)) {
       if (locks.live(x.r.holder)) continue;
       if (x.r.job && onDead) jobs.push({ name: a.name, r: x.r });
-      else if (!x.r.job) closeOne(a, x, 0, "holder died");
+      else if (!x.r.job) closeOne(a, x, x.r.amount, DIED);
     }
   });
   const keep = new Map<string, boolean>();
@@ -187,11 +197,13 @@ function sweepDead(list: Allowance[], onDead?: (job: JobRef) => boolean): void {
       if (keep.get(`${j.r.job!.slug}/${j.r.job!.id}`)) continue;
       const a = list.find((x) => x.name === j.name);
       const x = reservations(j.name).find((y) => y.r.id === j.r.id);
-      if (a && x && !locks.live(x.r.holder)) closeOne(a, x, 0, "holder died");
+      if (a && x && !locks.live(x.r.holder)) closeOne(a, x, x.r.amount, DIED);
     }
   });
 }
 
+const DIED = "holder died, charged as reserved";
+// A crash between the append and the drop leaves the reservation, which the next sweep charges again: that errs high.
 function closeOne(a: { name: string }, x: { path: string; r: Reservation }, actual: number, note?: string): void {
   append(join(dirOf(a.name), "spent.jsonl"), { id: x.r.id, label: x.r.label, at: nowIso(), period: x.r.period, reserved: x.r.amount, actual, ...(note ? { note } : {}) } satisfies Spent);
   drop(x.path);
@@ -210,7 +222,8 @@ function finish(id: string, actual: (r: Reservation) => number | undefined, note
   if (!held(id).length) return;
   guarded(() => {
     for (const { name, x } of held(id)) {
-      const got = actual(x.r);
+      const raw = actual(x.r);
+      const got = raw !== undefined && validAmount(raw) ? raw : undefined;
       closeOne({ name }, x, got ?? x.r.amount, got === undefined ? "unpriced" : note);
     }
   });
@@ -220,6 +233,12 @@ function finish(id: string, actual: (r: Reservation) => number | undefined, note
 export const settle = (id: string, actual: Actual, note?: string): void => finish(id, (r) => pick(r, actual), note);
 /** Give `id` back without using it (it never ran). */
 export const release = (id: string): void => finish(id, () => 0, "released");
+
+/** The most a request `id` may use of model dollars: its smallest model-usd reservation (undefined: none is reserved). */
+export const reservedUsd = (id: string): number | undefined => {
+  const mine = held(id).filter((h) => h.x.r.unit === "model-usd").map((h) => h.x.r.amount);
+  return mine.length ? Math.min(...mine) : undefined;
+};
 
 /** Hand the reservations of `id` to another process: the one that runs the job. */
 export function adopt(id: string, to: Holder): void {
@@ -233,12 +252,31 @@ export function adopt(id: string, to: Holder): void {
   });
 }
 
-/** Record an approved extra for the current period of `a`: the person's words, who decided and where they came from. */
+/** Whether `quote` holds `amount` as a number token ("10", "$10", "10.0"; not "100" or "1.0"), compared numerically. */
+export const quoteNamesAmount = (quote: string, amount: number): boolean =>
+  (quote.match(/\d+(?:\.\d+)?/g) ?? []).some((t) => Math.abs(Number(t) - amount) < 1e-9);
+const sameQuote = (a: string, b: string): boolean => a.trim().replace(/\s+/g, " ").toLowerCase() === b.trim().replace(/\s+/g, " ").toLowerCase();
+
+/** Record an approved extra for the current period of `a`: the person's words, who decided and where they came from.
+ *  The words must name the amount, and one quote grants once per allowance and period (an old "ok go ahead" is no grant). */
 export function grant(a: Allowance, amount: number, quote: string, source: Source, by: string): void {
-  guarded(() => append(join(dirOf(a.name), "extras.jsonl"), { at: nowIso(), period: periodKey(a), amount, quote, by, source } satisfies Extra));
+  if (!quoteNamesAmount(quote, amount)) fail(`the quote must contain the amount ${amount} as a number (e.g. "${amount}" or "${amount} ${unitOf(a)}"): words that do not name it cannot grant it`, 1);
+  guarded(() => {
+    if (readRows<Extra>(join(dirOf(a.name), "extras.jsonl")).some((x) => x.period === periodKey(a) && sameQuote(x.quote, quote)))
+      fail(`this quote was already used for allowance ${a.name} in this period: one quote grants once; ask ${by} for new words`, 1);
+    append(join(dirOf(a.name), "extras.jsonl"), { at: nowIso(), period: periodKey(a), amount, quote, by, source } satisfies Extra);
+  });
 }
 
 // ---------------------------------------------------------------- display
+
+/** The money allowance of `lane` whose currency is not `currency` (a job on a resource priced in `currency` cannot be metered by it). */
+export const currencyClash = (list: Record<string, Allowance>, lane: string, currency: string): Allowance | undefined =>
+  Object.values(list).find((a) => matches(a, { lane }) && a.unit === "money" && a.currency !== currency);
+/** `lines`, or one "allowances: config error" line when the declaration is wrong: desk and usage show it and go on. */
+export function shown(): string[] {
+  try { return lines(); } catch (e) { return [`allowances: config error — ${e instanceof Error ? e.message : String(e)}`]; }
+}
 
 /** "USD", "machine-hours" or the currency: the unit as people read it after a number. */
 export const unitName = unitOf;

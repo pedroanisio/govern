@@ -1,6 +1,6 @@
 // Jobs: run a project command in the foreground or detached, wait on it without a model in the loop, stop it by identity.
 import { spawn } from "node:child_process";
-import { existsSync, readFileSync, readdirSync, openSync, closeSync, statSync, readSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { existsSync, appendFileSync, readFileSync, readdirSync, openSync, closeSync, statSync, readSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { fail, readJson, writeJson, stamp, nowIso, sleepSync, shq, changedSince, clip, procOf, procTable, procSource, exited, type ProcStat } from "./util.ts";
 import { fileURLToPath } from "node:url";
@@ -15,6 +15,8 @@ import * as allowances from "./allowances.ts";
 export interface Job {
   id: string; slug: string; name: string; argv: string[]; cwd: string; start: string; pid?: number; pgid?: number; procStart?: string; bg: boolean;
   timeout?: number; stopped?: "timeout" | "killed"; end?: string;
+  /** Seconds its allowance reservation caps it at, when that is what bounds it: a stop then reads "stopped at its reserved estimate". */
+  cap?: number;
   /** The resource it runs on and its price then (a later change to the registry does not reprice it); lock: the slot it
    *  takes (its job directory's `acquired` file says when it got it). */
   resource?: string; price?: Price; /** --override-resource moved it off the command's own resource, which this names. */ overrode?: string; lock?: { dir: string; id: string; max: number; label: string };
@@ -63,19 +65,23 @@ export function queuedOf(job: Job): JobState["queued"] {
 
 /** Reserve the job's estimate against the lane's allowances (machine-hours, or money in the resource's currency), or
  *  refuse: the estimate is `estimate` hours, else the command's timeout, else (foreground only) the default limit. A job
- *  on no resource is not metered. A refusal removes the claimed job directory and stops with exit 1. */
-function reserveFor(p: Project, name: string, id: string, res: Resource | undefined, timeout: number | undefined, bg: boolean, estimate: number | undefined): string | undefined {
+ *  on no resource is not metered. A lane's money allowance in another currency than the resource's price refuses the job
+ *  (it could not be metered, and must not run unmetered). A refusal removes the claimed job directory and stops with
+ *  exit 1. Returns the reservation and its seconds: the reservation caps the job (see start). */
+function reserveFor(p: Project, name: string, id: string, res: Resource | undefined, timeout: number | undefined, bg: boolean, estimate: number | undefined): { rid: string; seconds: number } | undefined {
   const list = allowances.allowances();
   const currency = res?.price.basis === "per-second" || res?.price.basis === "per-hour" ? res.price.currency : undefined;
-  if (!res || !allowances.meters(list, p.slug, currency)) return undefined;
   const refuse = (why: string): never => { rmSync(jobDir(p.slug, id), { recursive: true, force: true }); return fail(why, 1); };
+  const clash = currency !== undefined ? allowances.currencyClash(list, p.slug, currency) : undefined;
+  if (clash) refuse(`${p.slug}/${name}: allowance "${clash.name}" is in ${clash.currency} but resource ${res!.name} is priced in ${currency}: the job cannot be metered, so it is not run (use an allowance in ${currency}, or a resource priced in ${clash.currency})`);
+  if (!res || !allowances.meters(list, p.slug, currency)) return undefined;
   const seconds = estimate !== undefined ? estimate * 3600 : timeout ?? (bg ? undefined : DEFAULT_TIMEOUT);
   if (seconds === undefined) refuse(`${p.slug}/${name}: no declared duration to reserve against an allowance: pass --estimate HOURS, or give the command a --timeout`);
   const hours = seconds! / 3600, money = costOf(res, seconds!);
   const rid = `job:${p.slug}:${id}`;
   const no = allowances.reserve(list, { lane: p.slug }, { id: rid, label: `${p.slug}/${name} on ${res.name}`, hours, ...(money ? { money } : {}), job: { slug: p.slug, id } }, settleDead);
   if (no) refuse(`refused: ${no.text}`);
-  return rid;
+  return { rid, seconds: seconds! };
 }
 
 /** For the allowance sweep: finish a job whose holder died from its own record (ledger entry, settled reservation); true while it still runs. */
@@ -102,10 +108,14 @@ export function start(p: Project, name: string, extra: string[], bg: boolean, on
   const cwd = projectDir(p.slug);
   const declaredTimeout = Array.isArray(base) ? undefined : base.timeout;
   const timeout = declaredTimeout ?? DEFAULT_TIMEOUT;
-  const reservation = reserveFor(p, name, id, res, declaredTimeout, bg, estimate);
+  const reserved = reserveFor(p, name, id, res, declaredTimeout, bg, estimate);
+  const reservation = reserved?.rid;
+  // A reservation is a cap: a job may not outrun the time it reserved, or a low estimate would slip past the limit.
+  const cap = reserved && (bg || reserved.seconds < timeout) ? reserved.seconds : undefined;
+  const limit = cap !== undefined && !bg ? cap : timeout;
   const max = res && slots(res);
   const lock = res && max !== undefined ? { dir: lockDir(res.name), id: `${p.slug.replaceAll("/", "~")}~${id}`, max, label: `${p.slug} ${id}` } : undefined;
-  const job: Job = { id, slug: p.slug, name, argv, cwd, start: nowIso(), bg, ...(bg ? {} : { timeout }),
+  const job: Job = { id, slug: p.slug, name, argv, cwd, start: nowIso(), bg, ...(bg ? {} : { timeout: limit }), ...(cap !== undefined ? { cap } : {}),
     ...(res ? { resource: res.name, price: res.price } : {}), ...(overrode ? { overrode } : {}), ...(lock ? { lock } : {}) };
   writeJson(f, job);
   const me = procOf(process.pid);
@@ -123,10 +133,14 @@ export function start(p: Project, name: string, extra: string[], bg: boolean, on
   const exitIt = `echo $rc > ${shq(exitF)}.tmp && mv -f ${shq(exitF)}.tmp ${shq(exitF)}`;
   const logF = shq(join(dir, "log"));
   const lockCmd = (verb: string, ...rest: string[]) => [process.execPath, "--disable-warning=ExperimentalWarning", LOCKWAIT, verb, ...rest].map(shq).join(" ");
+  // A --bg job's cap is kept by a watcher that starts with the command and is killed when it ends (lib/lockwait.ts, cap).
+  const run = (redirect: string) => bg && cap !== undefined
+    ? `${lockCmd("cap", dir, String(cap))} >> ${logF} 2>&1 & w=$!; ${argv.map(shq).join(" ")} ${redirect} ${logF} 2>&1; rc=$?; kill $w 2>/dev/null`
+    : `${argv.map(shq).join(" ")} ${redirect} ${logF} 2>&1; rc=$?`;
   const script = lock && bg
     ? `${lockCmd("wait", lock.dir, lock.id, String(lock.max), dir, String(ticket ?? ""), lock.label)} > ${logF} 2>&1; rc=$?; ` +
-      `if [ $rc -eq 0 ]; then ${argv.map(shq).join(" ")} >> ${logF} 2>&1; rc=$?; ${lockCmd("release", lock.dir, lock.id)} >> ${logF} 2>&1; fi; ${exitIt}`
-    : `${argv.map(shq).join(" ")} > ${logF} 2>&1; rc=$?; ${exitIt}`;
+      `if [ $rc -eq 0 ]; then ${run(">>")}; ${lockCmd("release", lock.dir, lock.id)} >> ${logF} 2>&1; fi; ${exitIt}`
+    : `${run(">")}; ${exitIt}`;
   // A foreground job is spawned, not spawnSync'd, and then waited on synchronously: spawnSync gives no pid while the child
   // runs, so neither a timeout nor govern kill could find it. It is not detached: it stays in govern's process group, so a
   // terminal's Ctrl-C (or anything else that signals the caller's group) stops it with govern. Its timeout stops its tree.
@@ -149,11 +163,12 @@ export function start(p: Project, name: string, extra: string[], bg: boolean, on
   }
   // Waits on the job's own process only: whether someone marked the job stopped is not whether it has stopped.
   const running = () => !readExit(dir) && alive(job);
-  for (const end = Date.now() + timeout * 1000; running() && Date.now() < end;) sleepSync(POLL_MS);
+  for (const end = Date.now() + limit * 1000; running() && Date.now() < end;) sleepSync(POLL_MS);
   if (running()) {
     // Marked before the signal, as kill does; a kill already under way keeps its reason.
     const cur = readJson<Job>(f);
     writeJson(f, { ...cur, stopped: cur.stopped ?? "timeout" });
+    if (cap !== undefined) noteCap(dir, cap);
     stop(job, dir);
     if (!members(job, dir).size) writeJson(f, { ...readJson<Job>(f), end: nowIso() });
   } else if (readJson<Job>(f).stopped) {
@@ -165,6 +180,9 @@ export function start(p: Project, name: string, extra: string[], bg: boolean, on
   recordEnd(p.slug, id);
   return state(p.slug, id);
 }
+
+/** Say in the job's log that its reservation stopped it. */
+export const noteCap = (dir: string, cap: number): void => appendFileSync(join(dir, "log"), `govern: stopped at its reserved estimate (${cap}s)\n`);
 
 /** Write the job's one end entry to the ledger, once it has ended: the first of its waiting govern, `govern wait` and
  *  `govern kill` to get here claims it (an exclusive create of <job>/ledgered), and every later call is a no-op. Returns
@@ -309,7 +327,7 @@ function selfAndAncestors(snap: Snapshot): Set<number> {
 /** Stop a job: SIGTERM to each of its members, the same to every member that appears during the grace, then SIGKILL to
  *  whatever is left, until nothing is (up to a second more). Each pid is signalled on its own, never a whole group: a
  *  background job's group can hold the govern that is stopping it. This govern and its ancestors are left out. */
-function stop(job: Job, dir: string, graceMs = KILL_GRACE_MS): "terminated" | "killed" {
+export function stop(job: Job, dir: string, graceMs = KILL_GRACE_MS): "terminated" | "killed" {
   const first = snapshot(), mine = selfAndAncestors(first);
   const targets = (snap: Snapshot, known?: Map<number, string>) => {
     const m = members(job, dir, snap, known);
@@ -400,7 +418,8 @@ export function kill(slug: string, ref?: string): { id: string; outcome: KillOut
 
 /** How a finished job ended, for check and status lines: "exit 1", "timed out after 60s", "killed". */
 export const ending = (st: JobState): string =>
-  st.status === "timeout" ? `timed out after ${st.timeout ?? DEFAULT_TIMEOUT}s` : st.status === "killed" ? "killed by govern kill"
+  st.status === "timeout" && st.cap !== undefined ? `stopped at its reserved estimate (${st.cap}s)`
+    : st.status === "timeout" ? `timed out after ${st.timeout ?? DEFAULT_TIMEOUT}s` : st.status === "killed" ? "killed by govern kill"
     : st.exit != null ? `exit ${st.exit}` : "no exit code";
 
 /** Last n meaningful log lines: progress-bar carriage returns collapsed, long lines clipped. */
