@@ -6,7 +6,7 @@
 import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync, mkdirSync, writeFileSync, globSync } from "node:fs";
 import { join, dirname, resolve } from "node:path";
-import { fail, stamp, sha256 } from "./util.ts";
+import { fail, stamp, sha256, GovernError } from "./util.ts";
 import { emptyRecord } from "./shape.ts";
 import { type Project, projectDir, governDir, appendLedger, brief } from "./project.ts";
 import { repo, promptsDir } from "./workspace.ts";
@@ -130,8 +130,52 @@ export function render(pf: PromptFile, p: Project, files: string[], vars: Record
 
 // ---------------------------------------------------------------- verification
 
-/** A small JSON-schema subset: type, required, properties, items, enum, minItems, maxItems, maxLength, minLength. */
+/** A schema validate() cannot enforce: an unsupported keyword or a malformed value. Thrown, never turned into a reply
+ *  error, because the fault is in the schema govern ships or loads, not in the model's reply. */
+export class SchemaError extends GovernError {}
+
+// The JSON-schema subset validate() enforces. Every keyword here is checked against the value; any other keyword in a
+// schema is a SchemaError, because a keyword that is silently ignored is a check that cannot fail.
+const ENFORCED = ["type", "enum", "required", "properties", "additionalProperties", "items", "minItems", "maxItems", "minLength", "maxLength"];
+// Annotations: they carry no constraint, so allowing them weakens nothing.
+const ANNOTATIONS = ["$schema", "$comment", "title", "description"];
+const TYPES = ["object", "array", "string", "number", "integer", "boolean", "null"];
+const isObj = (x: unknown): x is Record<string, unknown> => typeof x === "object" && x !== null && !Array.isArray(x);
+const isCount = (x: unknown) => Number.isInteger(x) && (x as number) >= 0;
+const key = (path: string, k: string) => (/^[A-Za-z_$][\w$]*$/.test(k) && k !== "__proto__" ? `${path}.${k}` : `${path}[${JSON.stringify(k)}]`);
+
+/** Check that `schema` uses only keywords validate() enforces, each with a well-formed value, at every depth (inside
+ *  properties, items and additionalProperties), whether or not a value would reach that branch. Throws SchemaError. */
+export function checkSchema(schema: unknown, at = "#"): void {
+  const bad = (why: string): never => { throw new SchemaError(`schema ${at}: ${why}`); };
+  if (!isObj(schema)) bad(`expected a schema object, got ${JSON.stringify(schema)}`);
+  const s = schema as Record<string, unknown>;
+  for (const k of Object.keys(s))
+    if (!ENFORCED.includes(k) && !ANNOTATIONS.includes(k)) bad(`unsupported keyword ${JSON.stringify(k)} (validate() enforces only ${ENFORCED.join(", ")})`);
+  if ("type" in s && !TYPES.includes(s.type as string)) bad(`type must be one of ${TYPES.join(", ")}, got ${JSON.stringify(s.type)}`);
+  if ("enum" in s && !Array.isArray(s.enum)) bad("enum must be an array");
+  if ("required" in s && !(Array.isArray(s.required) && s.required.every((r) => typeof r === "string"))) bad("required must be an array of strings");
+  for (const k of ["minItems", "maxItems", "minLength", "maxLength"]) if (k in s && !isCount(s[k])) bad(`${k} must be a whole number >= 0, got ${JSON.stringify(s[k])}`);
+  if ("properties" in s) {
+    if (!isObj(s.properties)) bad("properties must be an object of schemas");
+    for (const [k, sub] of Object.entries(s.properties as object)) checkSchema(sub, `${at}/properties/${k}`);
+  }
+  if ("items" in s) checkSchema(s.items, `${at}/items`); // a tuple (array) form is not a schema object: refused
+  if ("additionalProperties" in s && typeof s.additionalProperties !== "boolean") checkSchema(s.additionalProperties, `${at}/additionalProperties`);
+}
+
+/**
+ * Check a parsed reply against a JSON schema and return every violation as "path: problem" (empty when it conforms).
+ * Enforced: type, enum, required, properties, additionalProperties (false, true or a schema), items, minItems,
+ * maxItems, minLength, maxLength. The schema is checked first (checkSchema), so a keyword outside that subset throws
+ * SchemaError instead of being ignored. Only own fields count: an inherited name such as "constructor" is not present.
+ */
 export function validate(schema: any, v: any, path = "$"): string[] {
+  checkSchema(schema);
+  return conform(schema, v, path);
+}
+
+function conform(schema: any, v: any, path: string): string[] {
   const errs: string[] = [];
   const t = Array.isArray(v) ? "array" : v === null ? "null" : typeof v === "number" && Number.isInteger(v) ? "integer" : typeof v;
   if (schema.type) {
@@ -146,11 +190,16 @@ export function validate(schema: any, v: any, path = "$"): string[] {
   if (Array.isArray(v)) {
     if (schema.minItems != null && v.length < schema.minItems) errs.push(`${path}: fewer than ${schema.minItems} items`);
     if (schema.maxItems != null && v.length > schema.maxItems) errs.push(`${path}: more than ${schema.maxItems} items`);
-    if (schema.items) v.forEach((x, i) => errs.push(...validate(schema.items, x, `${path}[${i}]`)));
+    if (schema.items) v.forEach((x, i) => errs.push(...conform(schema.items, x, `${path}[${i}]`)));
   }
   if (t === "object") {
-    for (const k of schema.required ?? []) if (!(k in v)) errs.push(`${path}.${k}: missing`);
-    for (const [k, s] of Object.entries(schema.properties ?? {})) if (k in v) errs.push(...validate(s, v[k], `${path}.${k}`));
+    const props: Record<string, any> = schema.properties ?? {};
+    for (const k of schema.required ?? []) if (!Object.hasOwn(v, k)) errs.push(`${key(path, k)}: missing`);
+    for (const k of Object.keys(v)) {
+      if (Object.hasOwn(props, k)) errs.push(...conform(props[k], v[k], key(path, k)));
+      else if (schema.additionalProperties === false) errs.push(`${key(path, k)}: unknown field (allowed: ${Object.keys(props).join(", ") || "none"})`);
+      else if (isObj(schema.additionalProperties)) errs.push(...conform(schema.additionalProperties, v[k], key(path, k)));
+    }
   }
   return errs;
 }
@@ -187,6 +236,7 @@ export function ask(p: Project, name: string, o: { files?: string[]; vars?: Reco
   const houseRules = rulesFile ? loadRules(rulesFile) : undefined;
   const schemaBytes = schemaPath ? readFileSync(schemaPath) : undefined;
   const schema = schemaBytes ? JSON.parse(schemaBytes.toString("utf8")) : undefined;
+  if (schema) checkSchema(schema); // before any model call: a schema validate() cannot enforce must not cost one
   const outDir = join(governDir(p.slug), "ask");
   mkdirSync(outDir, { recursive: true });
   const id = `${stamp()}-${name}`;
