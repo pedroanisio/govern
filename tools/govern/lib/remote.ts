@@ -439,8 +439,11 @@ export function remoteServer(o: ServeOptions = {}): Server {
         const push = () => {
           if (!deviceOfToken(bearer!)) { res.end(); return; } // revoked while streaming
           try {
-            const text = JSON.stringify(personalDesk());
-            if (text !== last) { last = text; res.write(`event: desk\ndata: ${text}\n\n`); }
+            const d = personalDesk();
+            // `at` is stamped on every computation; a desk is new only when something besides it changed.
+            const { at: _, ...content } = d;
+            const key = JSON.stringify(content);
+            if (key !== last) { last = key; res.write(`event: desk\ndata: ${JSON.stringify(d)}\n\n`); }
           } catch (e) { res.write(`event: error\ndata: ${JSON.stringify({ error: e instanceof GovernError ? e.message : "desk unreadable" })}\n\n`); }
         };
         push();

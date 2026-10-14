@@ -369,6 +369,20 @@ test("the stream sends the desk, then a new desk when a lane changes, and ends w
   });
 });
 
+test("the stream sends no new desk while nothing changed, though every desk carries a fresh timestamp", async () => {
+  const e = setup();
+  await serving(e, async (base) => {
+    const phone = await pairPhone(base);
+    // ten 50ms intervals: each recomputes the desk, and only its `at` differs
+    let first = 0;
+    const got = await events(base, phone.token, (ev) => {
+      if (ev.length === 1 && !first) first = Date.now();
+      return ev.length >= 2 || (first > 0 && Date.now() - first >= 500);
+    });
+    assert.equal(got.length, 1, `a desk with only a new timestamp was sent: ${got.map((x) => x.data.slice(0, 80)).join(" | ")}`);
+  });
+});
+
 test("streams are bounded in number", async () => {
   const e = setup();
   await serving(e, async (base) => {
