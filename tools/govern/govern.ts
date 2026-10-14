@@ -19,6 +19,7 @@ import { tag, verdict } from "./lib/replycheck.ts";
 import { desk } from "./lib/desk.ts";
 import { listLines, showLines, place } from "./lib/resources.ts";
 import * as reaping from "./lib/reap.ts";
+import * as slicing from "./lib/slice.ts";
 import * as allowances from "./lib/allowances.ts";
 import { registry, getProfile, listText, showText, failing } from "./lib/caps.ts";
 import { checkProfile } from "./lib/capcheck.ts";
@@ -359,6 +360,19 @@ function cmdRun(a: Args): void {
   process.exitCode = st.exit ?? 1;
 }
 
+/** `govern slice <lane> <recipe>`: a recipe job (split, pieces on machines, join, verify, machines always down). */
+function cmdSlice(a: Args): void {
+  const p = load(a._[1]);
+  const recipe = a._[2] ?? fail(`govern slice ${p.slug} <recipe> [--machines N] [--estimate HOURS] [--bg]`);
+  const m = opt(a, "machines");
+  const machines = m === undefined ? undefined : /^[1-9]\d*$/.test(m) ? Number(m) : fail(`--machines must be a positive whole number: ${JSON.stringify(m)}`);
+  const st = slicing.start(p.slug, recipe, { ...(machines !== undefined ? { machines } : {}), ...(amountOpt(a, "estimate") !== undefined ? { estimate: amountOpt(a, "estimate")! } : {}), bg: flag(a, "bg") });
+  if (st.queued) return out(`job ${st.id} queued on ${st.queued.resource} (${st.queued.ahead} ahead) · wait with: govern wait ${p.slug} ${st.id}`);
+  if (st.status === "running") return out(`job ${st.id} started in the background · wait with: govern wait ${p.slug} ${st.id}`);
+  out(jobs.summary(p, st));
+  process.exitCode = st.exit ?? 1;
+}
+
 function cmdWait(a: Args): void {
   const p = load(a._[1]);
   const id = jobs.find(p.slug, a._[2]);
@@ -679,6 +693,8 @@ export const COMMANDS: readonly Cmd[] = [
 
   { name: "run", section: 2, flags: { bool: ["bg", "override-resource"], value: ["on", "estimate"] },
     lines: [["<slug> <command> [--bg] [--on <resource> [--override-resource]] [--estimate HOURS] [-- extra args]", "foreground prints a summary; --bg returns a job id; --on runs it on a declared resource (every resource is locked unless\nit says lock: false: the job waits its turn, a --bg job shows \"queued on <resource>\"); a command with its own resource refuses a\ndifferent --on unless --override-resource (recorded in the job). On a resource with an allowance (govern allow) the job\nreserves HOURS (else the command's --timeout, else 1800 s; a --bg job needs one of them) and is refused if that does not fit;\nthe reservation also caps the job: it is stopped at its reserved estimate (--bg too)"]], run: cmdRun },
+  { name: "slice", section: 2, flags: { bool: ["bg"], value: ["machines", "estimate"] },
+    lines: [["<slug> <recipe> [--machines N] [--estimate HOURS] [--bg]", "run a recipe declared in the lane's process as one job: start the machines under a tag, split the work into\npieces, one worker per machine runs them (failed pieces retried), then join and verify; the machines are\nalways brought down. Reserves machines x HOURS on the resource's allowance first; refused above maxMachines"]], run: cmdSlice },
   { name: "wait", section: 2, flags: { value: ["timeout"] },
     lines: [["<slug> [<job>|last] [--timeout 540]", "block until it ends; exit code = the job's (124 = still running)"]], run: cmdWait },
   { name: "jobs", section: 2, lines: [["<slug>", "the lane's latest jobs: status, exit code, seconds, resource (or queued on it)"]],

@@ -5,7 +5,8 @@ import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { fail } from "./util.ts";
-import { obj, arr, str, name, literal, record, check, reject } from "./shape.ts";
+import { obj, arr, str, name, literal, record, posInt, check, reject, keyPath, type Shape } from "./shape.ts";
+import { NAME_CHARS } from "./resources.ts";
 import { processesDir } from "./workspace.ts";
 import type { Project } from "./project.ts";
 
@@ -19,6 +20,14 @@ export interface GateDef { name: string; stage?: string; needs?: string[]; messa
 /** What a new lane of the process starts with: commands and named files, each group optionally only when a file already
  *  exists in the lane's folder (`ifFile`). A command's argv may use {repo}, {dir}, {python} and {paths.NAME}. */
 export interface SetupGroup { ifFile?: string; commands?: Record<string, string[]>; files?: Record<string, string> }
+/** A recipe job (`govern slice`): machines of `resource` started under one tag, a `split` that names the pieces, a
+ *  `piece` run once per piece on the machine that claims it, then `join` and `verify`. Every step is an argv list.
+ *  Placeholders beyond govern's own ({repo} {dir} {python} {paths.NAME}): {pieces} (the job's pieces folder), {out}
+ *  (the job's out folder), {tag} (after up), {piece} and {id} (the machine id), the last two in `piece` only. */
+export interface Recipe {
+  resource: string; machines: number; prepare?: string[]; split: string[]; piece: string[]; join: string[]; verify: string[];
+  pieceTimeout?: number; timeout?: number; attempts?: number;
+}
 export interface Process {
   version: 1;
   name: string;
@@ -35,6 +44,7 @@ export interface Process {
   /** The process's prompts (`govern ask`): a folder relative to the process file; each prompt's schema and rules are beside it. */
   prompts?: string;
   setup?: SetupGroup[];
+  recipes?: Record<string, Recipe>;
   /** The folder of the process file (not a key of it): what manual and prompts are relative to. */
   dir: string;
 }
@@ -43,9 +53,32 @@ export const extraDir = (): string | undefined => processesDir();
 
 const STAGE = obj({ name }, { exit: str, check: name, requires: literal("check") });
 const GATE = obj({ name }, { stage: name, needs: arr(name), message: str, owner: name });
+/** The recipe placeholders each step may use: a name here in a step that cannot have it is refused, not left as text. */
+const SLICE_VARS = ["pieces", "out", "tag", "piece", "id"];
+const STEP_VARS: Record<string, string[]> = { prepare: ["pieces", "out"], split: ["pieces", "out", "tag"], piece: SLICE_VARS, join: ["pieces", "out", "tag"], verify: ["pieces", "out", "tag"] };
+const ARGV = arr(str, { nonEmpty: true });
+const RECIPE_SHAPE = obj({ resource: name, machines: posInt, split: ARGV, piece: ARGV, join: ARGV, verify: ARGV }, { prepare: ARGV, pieceTimeout: posInt, timeout: posInt, attempts: posInt });
+const RECIPE: Shape<Recipe> = (v, p) => {
+  const r = RECIPE_SHAPE(v, p) as Recipe;
+  for (const [step, allowed] of Object.entries(STEP_VARS)) {
+    (r[step as "split"] ?? []).forEach((a, i) => {
+      for (const m of a.matchAll(/\{(\w+)\}/g)) {
+        const w = m[1]!;
+        if (SLICE_VARS.includes(w) && !allowed.includes(w))
+          reject(`${keyPath(p, step)}[${i}]`, `{${w}} is not available in the ${step} step (it has: ${allowed.map((x) => `{${x}}`).join(" ")})`);
+      }
+    });
+  }
+  return r;
+};
+const RECIPES: Shape<Record<string, Recipe>> = (v, p) => {
+  const m = record(RECIPE)(v, p);
+  for (const k of Object.keys(m)) NAME_CHARS(k, keyPath(p, k));
+  return m;
+};
 const PROCESS = obj({ version: literal(1), name, stages: arr(STAGE, { nonEmpty: true }) },
   { description: str, kinds: arr(name, { nonEmpty: true }), exitFrom: literal("workflow"), gates: arr(GATE), manual: str, prompts: str,
-    setup: arr(obj({}, { ifFile: str, commands: record(arr(str)), files: record(str) })) });
+    setup: arr(obj({}, { ifFile: str, commands: record(arr(str)), files: record(str) })), recipes: RECIPES });
 
 /** Names unique within a list: the second one is refused at its path. */
 function unique(items: { name: string }[], what: string, at: string): void {

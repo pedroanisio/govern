@@ -2,10 +2,10 @@
 import { spawn } from "node:child_process";
 import { existsSync, appendFileSync, readFileSync, readdirSync, openSync, closeSync, statSync, readSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { fail, readJson, writeJson, stamp, nowIso, sleepSync, shq, changedSince, clip, procOf, procTable, procSource, exited, type ProcStat } from "./util.ts";
+import { fail, readJson, readJsonl, writeJson, stamp, nowIso, sleepSync, shq, changedSince, clip, procOf, procTable, procSource, exited, type ProcStat } from "./util.ts";
 import { fileURLToPath } from "node:url";
-import { type Project, projectDir, governDir, appendLedger, argvOf } from "./project.ts";
-import { repo, expandPlaceholders } from "./workspace.ts";
+import { type Project, projectDir, governDir, appendLedger, argvOf, ledgerFile } from "./project.ts";
+import { repo, expandPlaceholders, pathNamed } from "./workspace.ts";
 import { place, lockDir, slots, costOf, type Price, type Resource } from "./resources.ts";
 import * as locks from "./locks.ts";
 import * as allowances from "./allowances.ts";
@@ -20,6 +20,8 @@ export interface Job {
   /** The resource it runs on and its price then (a later change to the registry does not reprice it); lock: the slot it
    *  takes (its job directory's `acquired` file says when it got it). */
   resource?: string; price?: Price; /** --override-resource moved it off the command's own resource, which this names. */ overrode?: string; lock?: { dir: string; id: string; max: number; label: string };
+  /** A recipe job (lib/slice.ts): its machines are booked by `down`, never again on this job's line. */
+  slice?: { recipe: string; machines: number };
 }
 export interface JobState extends Job {
   status: "running" | "ok" | "failed" | "lost" | "timeout" | "killed"; exit?: number; seconds?: number;
@@ -65,19 +67,19 @@ export function queuedOf(job: Job): JobState["queued"] {
 
 /** Reserve the job's estimate against the lane's allowances (machine-hours, or money in the resource's currency), or
  *  refuse: the estimate is `estimate` hours, else the command's timeout, else (foreground only) the default limit. A job
- *  on no resource is not metered. A lane's money allowance in another currency than the resource's price refuses the job
+ *  on no resource is not metered. A recipe job reserves for all its machines (machines x seconds). A lane's money allowance in another currency than the resource's price refuses the job
  *  (it could not be metered, and must not run unmetered). A refusal removes the claimed job directory and stops with
  *  exit 1. Returns the reservation and its seconds: the reservation caps the job (see start). */
-function reserveFor(p: Project, name: string, id: string, res: Resource | undefined, timeout: number | undefined, bg: boolean, estimate: number | undefined): { rid: string; seconds: number } | undefined {
+function reserveFor(p: Project, name: string, id: string, res: Resource | undefined, timeout: number | undefined, bg: boolean, estimate: number | undefined, machines?: number): { rid: string; seconds: number } | undefined {
   const list = allowances.allowances();
   const currency = res?.price.basis === "per-second" || res?.price.basis === "per-hour" ? res.price.currency : undefined;
   const refuse = (why: string): never => { rmSync(jobDir(p.slug, id), { recursive: true, force: true }); return fail(why, 1); };
   const clash = currency !== undefined ? allowances.currencyClash(list, p.slug, currency) : undefined;
   if (clash) refuse(`${p.slug}/${name}: allowance "${clash.name}" is in ${clash.currency} but resource ${res!.name} is priced in ${currency}: the job cannot be metered, so it is not run (use an allowance in ${currency}, or a resource priced in ${clash.currency})`);
   if (!res || !allowances.meters(list, p.slug, currency)) return undefined;
-  const seconds = estimate !== undefined ? estimate * 3600 : timeout ?? (bg ? undefined : DEFAULT_TIMEOUT);
-  if (seconds === undefined) refuse(`${p.slug}/${name}: no declared duration to reserve against an allowance: pass --estimate HOURS, or give the command a --timeout`);
-  const hours = seconds! / 3600, money = costOf(res, seconds!);
+  const seconds = estimate !== undefined ? estimate * 3600 : timeout ?? (bg || machines !== undefined ? undefined : DEFAULT_TIMEOUT);
+  if (seconds === undefined) refuse(`${p.slug}/${name}: no declared duration to reserve against an allowance: pass --estimate HOURS, or give the command a --timeout (a recipe: its timeout)`);
+  const n = machines ?? 1, hours = seconds! / 3600 * n, money = costOf(res, seconds! * n);
   const rid = `job:${p.slug}:${id}`;
   const no = allowances.reserve(list, { lane: p.slug }, { id: rid, label: `${p.slug}/${name} on ${res.name}`, hours, ...(money ? { money } : {}), job: { slug: p.slug, id } }, settleDead);
   if (no) refuse(`refused: ${no.text}`);
@@ -93,8 +95,8 @@ export function settleDead(j: { slug: string; id: string }): boolean {
 
 /** Run a command; on = the resource named with --on (else the command's own, else the job runs locally). A shared
  *  resource's slot is taken first: a foreground job waits for it here, a --bg job's sh waits (lib/lockwait.ts).
- *  estimate: the hours to reserve against an allowance (see reserveFor); override: allow --on to move a command off its own resource. */
-export function start(p: Project, name: string, extra: string[], bg: boolean, on?: string, estimate?: number, override = false): JobState {
+ *  estimate: the hours to reserve against an allowance (see reserveFor); override: allow --on to move a command off its own resource; slice: a recipe job reserves for all its machines. */
+export function start(p: Project, name: string, extra: string[], bg: boolean, on?: string, estimate?: number, override = false, slice?: Job["slice"]): JobState {
   const base = p.commands[name];
   if (!base) fail(`${p.slug}: no command "${name}" (have: ${Object.keys(p.commands).join(", ") || "none"}; add with govern cmd ${p.slug} ${name} -- <argv>)`);
   const own = Array.isArray(base) ? undefined : base.resource;
@@ -108,7 +110,7 @@ export function start(p: Project, name: string, extra: string[], bg: boolean, on
   const cwd = projectDir(p.slug);
   const declaredTimeout = Array.isArray(base) ? undefined : base.timeout;
   const timeout = declaredTimeout ?? DEFAULT_TIMEOUT;
-  const reserved = reserveFor(p, name, id, res, declaredTimeout, bg, estimate);
+  const reserved = reserveFor(p, name, id, res, declaredTimeout, bg, estimate, slice?.machines);
   const reservation = reserved?.rid;
   // A reservation is a cap: a job may not outrun the time it reserved, or a low estimate would slip past the limit.
   const cap = reserved && (bg || reserved.seconds < timeout) ? reserved.seconds : undefined;
@@ -116,7 +118,7 @@ export function start(p: Project, name: string, extra: string[], bg: boolean, on
   const max = res && slots(res);
   const lock = res && max !== undefined ? { dir: lockDir(res.name), id: `${p.slug.replaceAll("/", "~")}~${id}`, max, label: `${p.slug} ${id}` } : undefined;
   const job: Job = { id, slug: p.slug, name, argv, cwd, start: nowIso(), bg, ...(bg ? {} : { timeout: limit }), ...(cap !== undefined ? { cap } : {}),
-    ...(res ? { resource: res.name, price: res.price } : {}), ...(overrode ? { overrode } : {}), ...(lock ? { lock } : {}) };
+    ...(res ? { resource: res.name, price: res.price } : {}), ...(overrode ? { overrode } : {}), ...(lock ? { lock } : {}), ...(slice ? { slice } : {}) };
   writeJson(f, job);
   const me = procOf(process.pid);
   let ticket: number | undefined;
@@ -200,6 +202,7 @@ export function recordEnd(slug: string, id: string): boolean {
   const seconds = st.status === "lost" ? lost === undefined ? undefined : Math.max(0, Math.round((lost - Date.parse(st.start)) / 1000))
     : st.seconds ?? Math.round((Date.now() - Date.parse(st.start)) / 1000);
   const estimated = st.status === "lost" ? seconds === undefined && !(st.resource && !got(st)) ? "unknown" : "last sign of life" : undefined;
+  if (st.slice) return recordSliceEnd(st, id, seconds);
   const machine = machineOf(st, seconds);
   appendLedger(slug, { kind: "job", id, name: st.name, bg: st.bg, status: st.status, exit: st.exit, ...(seconds !== undefined ? { seconds } : {}), ...machine, ...(estimated ? { estimated } : {}) });
   // Unknown machine time is charged as reserved (settle's rule for a unit with no actual), never as nothing.
@@ -216,6 +219,21 @@ function got(st: Job): number | undefined {
 function lastSign(slug: string, id: string): number | undefined {
   const t = ["log", "acquired"].flatMap((f) => { try { return [statSync(join(jobDir(slug, id), f)).mtimeMs]; } catch { return []; } });
   return t.length ? Math.max(...t) : undefined;
+}
+/** A recipe job's end: the pieces and machines it ran with (from its slice.json) and the tag whose `down` entries hold the
+ *  machine time and money. The job line carries neither, so nothing is counted twice; the allowance is settled with what
+ *  those `down` entries booked. */
+function recordSliceEnd(st: JobState, id: string, seconds: number | undefined): true {
+  const dir = jobDir(st.slug, id);
+  const sl = existsSync(join(dir, "slice.json")) ? readJson<{ tag?: string; total?: number; done?: number; failed?: number }>(join(dir, "slice.json")) : {};
+  appendLedger(st.slug, { kind: "job", id, name: st.name, bg: st.bg, status: st.status, exit: st.exit, ...(seconds !== undefined ? { seconds } : {}), ...(st.resource ? { resource: st.resource } : {}),
+    recipe: st.slice!.recipe, machines: st.slice!.machines, ...(sl.tag ? { tag: sl.tag } : {}), piecesTotal: sl.total ?? 0, piecesDone: sl.done ?? 0, piecesFailed: sl.failed ?? 0 });
+  const booked = sl.tag ? readJsonl(ledgerFile(st.slug)).filter((e) => e.kind === "down" && e.tag === sl.tag && typeof e.machineSeconds === "number") : [];
+  const secs = booked.reduce((n, e) => n + e.machineSeconds, 0);
+  const cur = booked.find((e) => typeof e.cost === "number" && typeof e.currency === "string")?.currency as string | undefined;
+  const cost = booked.reduce((n, e) => n + (typeof e.cost === "number" ? e.cost : 0), 0);
+  allowances.settle(`job:${st.slug}:${id}`, { hours: secs / 3600, ...(cur ? { money: { amount: cost, currency: cur } } : {}) });
+  return true;
 }
 
 /** Where the job ran and for how long: its resource ("local" when none), the seconds it held it (the wall seconds less

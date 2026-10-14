@@ -12,6 +12,7 @@ import { tuningState } from "./tune.ts";
 import * as allowances from "./allowances.ts";
 import { machineSummary, machineEntries, stateDir } from "./resources.ts";
 import { deskLines } from "./reap.ts";
+import { deskLines as sliceLines } from "./slice.ts";
 
 const ago = (iso: string) => {
   const m = Math.round((Date.now() - Date.parse(iso)) / 60000);
@@ -90,6 +91,7 @@ export function desk(): { text: string; failed: number; lanes: number } {
   const bare = machineSummary(machineEntries(join(stateDir(), "ledger.jsonl")).filter((e) => String(e["t"]).startsWith(day)));
   if (bare) rows2.push(`  ${"(no lane)".padEnd(40)} ${bare.time}${bare.money ? `  ${bare.money}` : ""}`);
   L.push(...(rows2.length ? rows2 : ["  (none)"]));
+  try { L.push(...sliceLines(slugs)); } catch (e) { L.push(`  slices unreadable: ${(e as Error).message}`); }
   try { L.push(...deskLines()); } catch (e) { L.push(`  instance scan unreadable: ${(e as Error).message}`); }
   const allow = allowances.shown();
   if (allow.length) L.push("", "ALLOWANCES (used, reserved, left; raise one with govern allow)", ...allow.map((l) => `  ${l}`));
