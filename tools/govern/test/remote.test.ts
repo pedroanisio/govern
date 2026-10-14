@@ -403,7 +403,7 @@ test("v2 reads expose checks, sessions, jobs, artifact versions and digest-bound
     assert.deepEqual(desk.viewer, { person: "owner", device: phone.id, lanes: null });
     assert.equal(desk.host, (await import("node:os")).hostname());
     const { registry } = await import("../lib/caps.ts");
-    assert.deepEqual(desk.engines, [...registry().profiles.values()].filter(p => ["claude", "codex", "grok"].includes(p.engine)).map(p => p.name).sort());
+    assert.deepEqual(desk.engines, [...new Set([...registry().profiles.values()].filter(p => ["claude", "codex", "grok"].includes(p.engine)).map(p => p.name).concat("echo"))].sort());
     assert.deepEqual(desk.lanes[0].checkSummary, { passed: 1, failed: 0, total: 2 });
     const s = desk.sessions[0];
     assert.equal(s.id, "chat"); assert.equal(s.title, "Review"); assert.equal(s.engine, "echo"); assert.equal(s.lane, "r1");
@@ -579,4 +579,220 @@ test("a lane-scoped device reads no session, job or artifact of another lane, an
       assert.match((await r.json() as { error: string }).error, /outside this device's scope/, path);
     }
   }, { streamIntervalMs: 60_000 });
+});
+
+test("signed FIELD actions review evidence, request changes, instruct and open fake sessions", async () => {
+  const e = setup(), cfg = join(e.root, "govern.config.json");
+  write(cfg, JSON.stringify({ ...JSON.parse(readFileSync(cfg, "utf8")), conversationAdapters: { echo: { argv: [process.execPath, join(import.meta.dirname, "fake-conversation.ts"), "echo"] } } }));
+  const run = (args: string[]) => { const r = govern(e, args); assert.equal(r.code, 0, r.err + r.out); };
+  run(["artifact", "add", "r1", write(join(e.root, "proof.txt"), "evidence")]);
+  run(["conversation", "create", "older", "--adapter", "echo", "--lane", "r1"]);
+  run(["conversation", "create", "chat", "--adapter", "echo", "--lane", "r1"]);
+  run(["conversation", "create", "closed-newest", "--adapter", "echo", "--lane", "r1"]);
+  run(["conversation", "close", "closed-newest"]);
+  await serving(e, async (base) => {
+    const phone = await pairPhone(base);
+    const send = async (fields: Record<string, unknown>, status = 200) => {
+      const r = await act(base, phone, action(phone, fields)), data = await r.json() as any;
+      assert.equal(r.status, status, JSON.stringify(data)); return data;
+    };
+    const lane = await (await fetch(base + "/v1/lane?slug=r1", { headers: auth(phone) })).json() as any;
+    const artifact = { name: "proof.txt", sha256: lane.artifacts[0].sha256 };
+    const { inspect } = await import("../lib/conversation.ts");
+    const settled = async (id: string) => {
+      for (let i = 0; i < 600; i++) {
+        const s = inspect(id);
+        if (s.runs.length && s.runs.every(r => r.state === "completed")) return s;
+        await new Promise(r => setTimeout(r, 25));
+      }
+      assert.fail(`background runs did not complete: ${JSON.stringify(inspect(id).runs)}`);
+    };
+    const review = await send({ action: "reviewed", lane: "r1", artifact });
+    assert.equal(review.ok, true); assert.equal(review.session, null);
+    assert.equal(review.lane.artifacts[0].reviews[0].device, phone.id);
+    const twice = await send({ action: "reviewed", lane: "r1", artifact });
+    assert.equal(twice.lane.artifacts[0].reviews.length, 1);
+    const changed = await send({ action: "changes", lane: "r1", gate: "final", quote: "adjust the heading", artifact });
+    assert.equal(changed.session, null); assert.equal(changed.lane.gates[0].approved, false);
+    assert.deepEqual(changed.lane.decisions[0].artifact, artifact);
+    assert.equal(changed.lane.notes.at(-1).text, "changes requested on final by owner: adjust the heading");
+    assert.equal((await settled("chat")).messages[0]!.content, changed.lane.notes.at(-1).text);
+    assert.equal(inspect("older").messages.length, 0);
+    assert.equal(inspect("closed-newest").messages.length, 0);
+    for (const mode of ["queue", "interrupt"]) {
+      const instructed = await send({ action: "instruct", session: "chat", text: "  continue  ", mode });
+      assert.equal(instructed.lane.slug, "r1"); assert.equal(instructed.session.session.id, "chat");
+      await settled("chat");
+    }
+    const desk = await (await fetch(base + "/v1/desk", { headers: auth(phone) })).json() as any;
+    assert.ok(desk.engines.includes("echo"));
+    const opened = await send({ action: "session", lane: "r1", engine: "echo", title: "Review", text: "hello" });
+    assert.match(opened.session.session.id, /^r1-[a-f0-9]{6}$/);
+    assert.equal(opened.lane.slug, "r1"); await settled(opened.session.session.id);
+    const fixtures = JSON.parse(readFileSync(join(import.meta.dirname, "../android/app/src/test/resources/fixtures/action-results.json"), "utf8"));
+    assert.deepEqual(shapeDiff(opened, fixtures[1]), []);
+    run(["conversation", "create", "loose", "--adapter", "echo"]);
+    const loose = await send({ action: "instruct", session: "loose", text: "hello", mode: "queue" });
+    assert.equal(loose.lane, null); assert.equal(loose.session.session.id, "loose");
+    assert.deepEqual(shapeDiff(loose, fixtures[2]), []); await settled("loose");
+    const approved = await send({ action: "approve", lane: "r1", gate: "final", quote: "I approve these bytes", artifact });
+    assert.deepEqual(approved.lane.gates[0].artifact, artifact);
+    assert.equal(approved.lane.decisions[0].device, phone.id);
+    assert.equal(approved.session, null);
+    const ledger = jsonl(join(e.projects, "r1", "govern", "ledger.jsonl"));
+    for (const kind of ["artifact-reviewed", "changes-requested", "instruct", "session-opened", "approve"]) assert.ok(ledger.some(x => x.kind === kind && x.device === phone.id), kind);
+    const audit = jsonl(join(e.root, "PALS-Notes", "govern-state", "remote", "audit.jsonl"));
+    for (const kind of ["reviewed", "changes", "instruct", "session", "approve"]) assert.ok(audit.some(x => x.kind === kind), kind);
+  });
+});
+
+test("FIELD action refusals preserve scope, gates, digests, bounds and nonce protection", async () => {
+  const e = setup(), cfg = join(e.root, "govern.config.json");
+  write(cfg, JSON.stringify({ ...JSON.parse(readFileSync(cfg, "utf8")), conversationAdapters: { echo: { argv: [process.execPath, join(import.meta.dirname, "fake-conversation.ts"), "echo"] } } }));
+  const run = (args: string[]) => { const r = govern(e, args); assert.equal(r.code, 0, r.err + r.out); };
+  run(["artifact", "add", "r1", write(join(e.root, "proof.txt"), "evidence")]);
+  run(["conversation", "create", "closed", "--adapter", "echo", "--lane", "r1"]);
+  run(["conversation", "close", "closed"]);
+  run(["conversation", "create", "loose", "--adapter", "echo"]);
+  await serving(e, async (base) => {
+    const phone = await pairPhone(base);
+    const refuse = async (fields: Record<string, unknown>, status: number, pattern?: RegExp) => {
+      const r = await act(base, phone, action(phone, fields)), j = await r.json() as any;
+      assert.equal(r.status, status, JSON.stringify(j)); if (pattern) assert.match(j.error, pattern);
+    };
+    for (const kind of [undefined, "unknown", "constructor", "__proto__"]) await refuse({ action: kind }, 400, /approve, ack, changes, reviewed, instruct, session/);
+    const lane = await (await fetch(base + "/v1/lane?slug=r1", { headers: auth(phone) })).json() as any;
+    const artifact = { name: "proof.txt", sha256: lane.artifacts[0].sha256 };
+    for (const kind of ["approve", "changes", "reviewed"]) {
+      const fields = { action: kind, lane: "r1", ...(kind === "reviewed" ? {} : { gate: "final", quote: "my words" }) };
+      await refuse({ ...fields, artifact: { ...artifact, name: "missing" } }, 404);
+      await refuse({ ...fields, artifact: { ...artifact, sha256: "0".repeat(64) } }, 409, /the artifact changed since you reviewed it/);
+      await refuse({ ...fields, artifact: null }, 400);
+    }
+    await refuse({ action: "changes", lane: "r1", gate: "board", quote: "change it" }, 409);
+    await refuse({ action: "changes", lane: "r1", gate: "missing", quote: "change it" }, 409);
+    await refuse({ action: "instruct", session: "missing", text: "hi", mode: "queue" }, 404);
+    await refuse({ action: "instruct", session: "closed", text: "hi", mode: "queue" }, 409);
+    for (const text of [" ", "x".repeat(8001)]) {
+      await refuse({ action: "instruct", session: "loose", text, mode: "queue" }, 400);
+      await refuse({ action: "session", lane: "r1", engine: "echo", title: "title", text }, 400);
+    }
+    for (const title of [" ", "x".repeat(121)]) await refuse({ action: "session", lane: "r1", engine: "echo", title, text: "hi" }, 400);
+    await refuse({ action: "instruct", session: "loose", text: "hi", mode: "bad" }, 400);
+    await refuse({ action: "session", lane: "r1", engine: "unknown", title: "title", text: "hi" }, 400);
+    const approval = action(phone, { action: "approve", lane: "r1", gate: "final", quote: "approved", artifact });
+    assert.equal((await act(base, phone, approval)).status, 200);
+    assert.equal((await act(base, phone, approval)).status, 403);
+    await refuse({ action: "changes", lane: "r1", gate: "final", quote: "change it" }, 409);
+    const { readState, writeState } = await import("../lib/remote.ts");
+    const all = readState<{ devices: { id: string; lanes?: string[] }[] }>("devices.json", { devices: [] });
+    all.devices.find(d => d.id === phone.id)!.lanes = ["other"]; writeState("devices.json", all);
+    for (const action of ["approve", "changes", "reviewed", "session", "ack"]) {
+      const extra = action === "ack" ? { alert: "missing" } : action === "session" ? { engine: "echo", title: "title", text: "hi" } : action === "reviewed" ? { artifact } : { gate: "final", quote: "my words" };
+      for (const lane of ["r1", "missing"]) await refuse({ action, lane, ...extra }, 403);
+    }
+    for (const session of ["closed", "loose"]) await refuse({ action: "instruct", session, text: "hi", mode: "queue" }, 403);
+  });
+});
+
+test("FIELD signed shapes enforce every action's signature, clock, nonce and closed fields without HTTP", async () => {
+  const e = makeEnv("field-shapes"), old = process.env.GOVERN_REPO;
+  process.env.GOVERN_REPO = e.root;
+  try {
+    const { verifyAction, createDevice, locked, BadRequest, Forbidden } = await import("../lib/remote.ts");
+    const kp = keyPair(), { device } = locked(() => createDevice("test", kp.publicKey, "owner"));
+    const now = Date.parse("2026-10-14T12:00:00Z"), at = new Date(now).toISOString();
+    const artifact = { name: "proof.txt", sha256: "a".repeat(64) };
+    const fields = [
+      { action: "approve", lane: "r1", gate: "final", quote: "yes", artifact },
+      { action: "ack", lane: "r1", alert: "a1" },
+      { action: "changes", lane: "r1", gate: "final", quote: "fix it", artifact },
+      { action: "reviewed", lane: "r1", artifact },
+      { action: "instruct", session: "chat", text: "hello", mode: "queue" },
+      { action: "session", lane: "r1", engine: "echo", title: "Title", text: "hello" },
+    ];
+    const signed = (v: unknown) => { const body = Buffer.from(JSON.stringify(v)); return { body, sig: sign("sha256", body, kp.key).toString("base64") }; };
+    let serial = 0;
+    const check = (f: unknown) => { const { body, sig } = signed(f); return verifyAction(device, body, sig, now); };
+    const fresh = (f: object) => ({ ...f, at, nonce: `nonce-${String(++serial).padStart(16, "0")}` });
+    for (const f of fields) {
+      const raw = fresh(f), { body, sig } = signed(raw);
+      assert.throws(() => verifyAction(device, body, undefined, now), Forbidden);
+      assert.throws(() => verifyAction(device, body, "bad", now), Forbidden);
+      assert.throws(() => verifyAction(device, body, sig, now + 300001), Forbidden);
+      assert.deepEqual(verifyAction(device, body, sig, now), raw);
+      assert.throws(() => verifyAction(device, body, sig, now), /nonce reused/);
+      assert.throws(() => check({ ...fresh(f), extra: true }), BadRequest);
+      for (const nonce of ["short", "x".repeat(129), "!".repeat(16)]) assert.throws(() => check({ ...fresh(f), nonce }), BadRequest);
+    }
+    for (const action of [undefined, "unknown", "constructor", "__proto__"]) assert.throws(() => check(fresh({ action })), /approve, ack, changes, reviewed, instruct, session/);
+    for (const action of ["approve", "changes"]) {
+      for (const quote of [" ", "x", "x".repeat(2001)]) assert.throws(() => check(fresh({ action, lane: "r1", gate: "final", quote })), BadRequest);
+      for (const artifact of [null, { name: "../proof", sha256: "a".repeat(64) }, { name: "x", sha256: "invalid" }]) assert.throws(() => check(fresh({ action, lane: "r1", gate: "final", quote: "yes", artifact })), BadRequest);
+    }
+    for (const text of [" ", "x".repeat(8001)]) {
+      assert.throws(() => check(fresh({ ...fields[4], text })), BadRequest);
+      assert.throws(() => check(fresh({ ...fields[5], text })), BadRequest);
+    }
+    for (const title of [" ", "x".repeat(121)]) assert.throws(() => check(fresh({ ...fields[5], title })), BadRequest);
+    assert.throws(() => check(fresh({ ...fields[4], mode: "other" })), BadRequest);
+    assert.equal((check(fresh({ ...fields[4], text: " x ", mode: "interrupt" })) as any).text, "x");
+    check(fresh({ ...fields[5], title: "x".repeat(120), text: "x".repeat(8000) }));
+  } finally { if (old === undefined) delete process.env.GOVERN_REPO; else process.env.GOVERN_REPO = old; }
+});
+
+test("FIELD local actions bind decisions to current artifacts and refuse scope before lane access", async () => {
+  const e = makeEnv("field-local"), old = process.env.GOVERN_REPO;
+  process.env.GOVERN_REPO = e.root;
+  try {
+    write(join(e.root, "PALS-Notes/processes/release.json"), JSON.stringify(PROCESS));
+    const project = await import("../lib/project.ts"), remote = await import("../lib/remote.ts"), artifacts = await import("../lib/artifacts.ts");
+    const cfg = join(e.root, "govern.config.json");
+    write(cfg, JSON.stringify({ ...JSON.parse(readFileSync(cfg, "utf8")), conversationAdapters: { echo: { argv: [process.execPath, join(import.meta.dirname, "fake-conversation.ts"), "echo"] } } }));
+    project.create("r1", { process: "release" });
+    const kp = keyPair(), { device } = remote.locked(() => remote.createDevice("local", kp.publicKey, "owner"));
+    const conversations = await import("../lib/conversation.ts");
+    conversations.create("closed", { adapter: "echo", lane: "r1" }); conversations.close("closed");
+    conversations.create("loose", { adapter: "echo" });
+    const proof = artifacts.add("r1", write(join(e.root, "proof.txt"), "evidence"));
+    const artifact = { name: proof.name, sha256: proof.sha256 };
+    let serial = 0;
+    const act = (fields: object, d = device) => {
+      const body = Buffer.from(JSON.stringify({ ...fields, nonce: `nonce-${String(++serial).padStart(16, "0")}`, at: "2026-10-14T12:00:00Z" }));
+      const sig = sign("sha256", body, kp.key).toString("base64");
+      return remote.perform(d, remote.verifyAction(d, body, sig, Date.parse("2026-10-14T12:00:00Z")), body, sig);
+    };
+    for (const id of ["closed", "loose"]) {
+      const f = join(conversations.directory(id), "session.json"), before = readFileSync(f, "utf8");
+      assert.throws(() => act({ action: "instruct", session: id, text: "hello", mode: "queue" }, { ...device, lanes: [] }), remote.Forbidden);
+      assert.equal(readFileSync(f, "utf8"), before);
+    }
+    assert.throws(() => act({ action: "instruct", session: "missing", text: "hello", mode: "queue" }), remote.NotFound);
+    assert.throws(() => act({ action: "instruct", session: "closed", text: "hello", mode: "queue" }), /closed/);
+    assert.throws(() => act({ action: "session", lane: "r1", engine: "unknown", title: "Title", text: "hello" }), remote.BadRequest);
+    assert.throws(() => act({ action: "reviewed", lane: "missing", artifact }), remote.NotFound);
+    act({ action: "reviewed", lane: "r1", artifact });
+    assert.equal(act({ action: "reviewed", lane: "r1", artifact }).lane!.artifacts[0]!.reviews.length, 1);
+    const changes = act({ action: "changes", lane: "r1", gate: "final", quote: "adjust it", artifact });
+    assert.equal(changes.lane!.gates[0]!.approved, false);
+    assert.equal(changes.lane!.notes.at(-1)!.text, "changes requested on final by owner: adjust it");
+    assert.deepEqual(changes.lane!.decisions[0]!.artifact, artifact);
+    assert.throws(() => act({ action: "changes", lane: "r1", gate: "board", quote: "adjust it" }), /policy/);
+    assert.throws(() => act({ action: "changes", lane: "r1", gate: "absent", quote: "adjust it" }), /gate must be/);
+    const approved = act({ action: "approve", lane: "r1", gate: "final", quote: "I approve", artifact });
+    assert.deepEqual(approved.lane!.gates[0]!.artifact, artifact);
+    assert.equal(approved.lane!.decisions[0]!.device, device.id);
+    assert.throws(() => act({ action: "changes", lane: "r1", gate: "final", quote: "adjust it" }), /already approved/);
+    artifacts.add("r1", write(join(e.root, "proof.txt"), "replacement"));
+    for (const action of ["reviewed", "approve", "changes"]) {
+      const extra = action === "reviewed" ? {} : { gate: "final", quote: "my words" };
+      assert.throws(() => act({ action, lane: "r1", artifact, ...extra }), /the artifact changed since you reviewed it/);
+      assert.throws(() => act({ action, lane: "r1", artifact: { ...artifact, name: "missing" }, ...extra }), remote.NotFound);
+      assert.throws(() => act({ action, lane: "missing", artifact, ...extra }, { ...device, lanes: [] }), remote.Forbidden);
+    }
+    assert.equal(artifacts.view("r1", "proof.txt").reviews.length, 0);
+    const fixtures = JSON.parse(readFileSync(join(import.meta.dirname, "../android/app/src/test/resources/fixtures/action-results.json"), "utf8"));
+    assert.deepEqual(shapeDiff(approved, fixtures[0]), []);
+    assert.equal(approved.session, fixtures[0].session);
+  } finally { if (old === undefined) delete process.env.GOVERN_REPO; else process.env.GOVERN_REPO = old; }
 });

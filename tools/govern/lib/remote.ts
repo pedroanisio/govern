@@ -10,17 +10,18 @@ import { createHash, createPublicKey, randomBytes, randomInt, timingSafeEqual, v
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync, appendFileSync, createReadStream, closeSync, fstatSync } from "node:fs";
 import { join } from "node:path";
 import { check, obj, str, name, literal, arr, type Shape, reject } from "./shape.ts";
-import { GovernError, fail, nowIso } from "./util.ts";
-import { stateDir } from "./workspace.ts";
+import { GovernError, fail, nowIso, readJsonl } from "./util.ts";
+import { stateDir, config } from "./workspace.ts";
 import { withLaneLock } from "./lane-lock.ts";
-import { load, save, appendLedger, stateFile, checkSlug } from "./project.ts";
+import { load, save, appendLedger, ledgerFile, stateFile, checkSlug } from "./project.ts";
 import { processOf } from "./process.ts";
-import { ownerApproval } from "./business.ts";
+import { ownerApproval, gateApproved } from "./business.ts";
 import { transaction } from "./lifecycle.ts";
 import * as artifacts from "./artifacts.ts";
 import * as conversations from "./conversation.ts";
+import * as runtime from "./conversation-runtime.ts";
 import * as jobs from "./jobs.ts";
-import { deskView, laneDetail, sessionDetail, jobDetail, PROTOCOL, type Desk } from "./remote-view.ts";
+import { deskView, laneDetail, sessionDetail, jobDetail, engines, sessions, PROTOCOL, type Desk, type LaneDetail, type SessionDetail } from "./remote-view.ts";
 
 /** Refusals the server maps to a status: a malformed request (400), a signature, clock, nonce or code that does not
  *  prove the request (403), a lane that does not exist (404). Any other GovernError is a state conflict (409). */
@@ -163,9 +164,19 @@ export function deviceOfToken(token: string): Device | undefined {
 const iso: Shape<string> = (v, at) => (typeof v === "string" && !Number.isNaN(Date.parse(v)) && /^\d{4}-\d{2}-\d{2}T/.test(v) ? v : reject(at, "must be an ISO timestamp"));
 const nonce: Shape<string> = (v, at) => (typeof v === "string" && /^[A-Za-z0-9_-]{16,128}$/.test(v) ? v : reject(at, "must be 16..128 characters of A-Z a-z 0-9 _ -"));
 const quote: Shape<string> = (v, at) => (typeof v === "string" && v.trim().length >= 2 && v.length <= 2000 ? v : reject(at, "must be the person's words, 2..2000 characters"));
-const APPROVE = obj({ action: literal("approve"), lane: str, gate: name, quote, nonce, at: iso });
-const ACK = obj({ action: literal("ack"), lane: str, alert: str, nonce, at: iso });
-export type Action = ReturnType<typeof APPROVE> | ReturnType<typeof ACK>;
+const bounded = (max: number): Shape<string> => (v, at) => typeof v === "string" && v.trim().length >= 1 && v.trim().length <= max ? v.trim() : reject(at, `must be 1..${max} characters after trim`);
+const artifact = obj({ name: (v, at) => typeof v === "string" && /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(v) ? v : reject(at, "must be a plain artifact name"),
+  sha256: (v, at) => typeof v === "string" && /^[0-9a-f]{64}$/.test(v) ? v : reject(at, "must be a lowercase SHA-256 digest") });
+const ACTIONS = {
+  approve: obj({ action: literal("approve"), lane: str, gate: name, quote, nonce, at: iso }, { artifact }),
+  ack: obj({ action: literal("ack"), lane: str, alert: str, nonce, at: iso }),
+  changes: obj({ action: literal("changes"), lane: str, gate: name, quote, nonce, at: iso }, { artifact }),
+  reviewed: obj({ action: literal("reviewed"), lane: str, artifact, nonce, at: iso }),
+  instruct: obj({ action: literal("instruct"), session: str, text: bounded(8000), mode: literal("queue", "interrupt"), nonce, at: iso }),
+  session: obj({ action: literal("session"), lane: str, engine: str, title: bounded(120), text: bounded(8000), nonce, at: iso }),
+};
+export type Action = ReturnType<(typeof ACTIONS)[keyof typeof ACTIONS]>;
+export interface ActionResult { ok: true; lane: LaneDetail | null; session: SessionDetail | null }
 
 /** The action in `body`, which `signature` (base64 DER ECDSA-SHA256) must sign with the device's key; the clock and the nonce
  *  must show it was signed for this request and never used before. Every refusal is a GovernError naming the reason. */
@@ -177,7 +188,8 @@ export function verifyAction(device: Device, body: Buffer, signature: string | u
   let raw: unknown;
   try { raw = JSON.parse(body.toString("utf8")); } catch { throw new BadRequest("the signed body is not JSON"); }
   const kind = typeof raw === "object" && raw !== null ? (raw as { action?: unknown }).action : undefined;
-  const a: Action = kind === "ack" ? parsed("action", raw, ACK) : parsed("action", raw, APPROVE);
+  if (typeof kind !== "string" || !Object.hasOwn(ACTIONS, kind)) throw new BadRequest(`action must be one of ${Object.keys(ACTIONS).join(", ")}`);
+  const a = parsed<Action>("action", raw, ACTIONS[kind as keyof typeof ACTIONS]);
   if (Math.abs(Date.parse(a.at) - now) > SKEW_MS) throw new Forbidden(`the action was signed at ${a.at}, more than ${SKEW_MS / 60000} minutes from the server's clock`);
   locked(() => {
     const seen = readState<Record<string, number>>("nonces.json", {});
@@ -190,29 +202,74 @@ export function verifyAction(device: Device, body: Buffer, signature: string | u
 }
 
 /** Carries out a verified action as the device's person, under the lane's transaction. */
-export function perform(device: Device, a: Action, body: Buffer, signature: string): void {
-  const slug = slugOf(a.lane);
-  if (!inScope(device, slug)) throw new Forbidden(`lane ${slug} is outside this device's scope`);
-  if (!existsSync(stateFile(slug))) throw new NotFound(`no lane ${slug}`);
-  transaction(slug, () => {
-    const p = load(slug);
-    if (a.action === "approve") {
+export function perform(device: Device, a: Action, body: Buffer, signature: string): ActionResult {
+  let slug: string | null, session: string | null = null;
+  if (a.action === "instruct") {
+    try { conversations.sessionId(a.session); } catch (e) { throw new BadRequest((e as Error).message); }
+    if (!existsSync(join(conversations.directory(a.session), "session.json"))) throw new NotFound(`no session ${a.session}`);
+    const s = conversations.read(a.session);
+    slug = s.lane ?? null;
+    if (!inScope(device, slug)) throw new Forbidden(`session ${a.session} is outside this device's scope`);
+    if (s.closedAt) fail(`session ${a.session} is closed`);
+    session = a.session;
+  } else {
+    slug = slugOf(a.lane);
+    if (!inScope(device, slug)) throw new Forbidden(`lane ${slug} is outside this device's scope`);
+  }
+  if (slug !== null && !existsSync(stateFile(slug))) throw new NotFound(`no lane ${slug}`);
+  const send = (id: string, text: string, mode: "queue" | "interrupt") => {
+    conversations.send(id, text, { requestId: "remote-" + a.nonce, mode });
+    runtime.background(id);
+  };
+  const apply = () => {
+    if (a.action === "instruct") {
+      send(a.session, a.text, a.mode);
+      if (slug !== null) appendLedger(slug, { kind: "instruct", session: a.session, by: device.person, device: device.id, mode: a.mode, chars: a.text.length });
+      return;
+    }
+    const p = load(slug!);
+    if ("artifact" in a && a.artifact) {
+      const fd = artifacts.open(p.slug, a.artifact.name);
+      try { if (artifacts.digest(fd) !== a.artifact.sha256) fail("the artifact changed since you reviewed it"); } finally { closeSync(fd); }
+    }
+    if (a.action === "approve" || a.action === "changes") {
       const gates = processOf(p).gates;
       const g = gates.find((x) => x.name === a.gate) ?? fail(`gate must be one of ${gates.map((x) => x.name).join(", ") || "(none: this process has no gates)"}`);
       if (g.policy) fail(`${g.name} is decided by an approval policy (quorum of named people): decide it with govern approve at a terminal`);
-      ownerApproval(p, g, device.person, a.quote, () => ({ kind: "device", device: device.id, signedBody: body.toString("utf8"), signature }));
-      save(p);
-      const { by, source } = p.approvals[g.name]!;
-      appendLedger(p.slug, { kind: "approve", gate: g.name, quote: a.quote, by, source });
+      const evidence = a.artifact ? { artifact: a.artifact } : {};
+      if (a.action === "approve") {
+        ownerApproval(p, g, device.person, a.quote, () => ({ kind: "device", device: device.id, signedBody: body.toString("utf8"), signature }));
+        save(p);
+        const { by, source } = p.approvals[g.name]!;
+        appendLedger(p.slug, { kind: "approve", gate: g.name, quote: a.quote, by, source, device: device.id, ...evidence });
+      } else {
+        if (gateApproved(p, g)) fail(`gate ${g.name} is already approved`);
+        const text = `changes requested on ${g.name} by ${device.person}: ${a.quote}`;
+        appendLedger(p.slug, { kind: "changes-requested", gate: g.name, quote: a.quote, by: device.person, device: device.id, ...evidence });
+        p.notes.push({ at: nowIso(), stage: p.stage, text }); save(p);
+        const open = sessions().find(s => s.lane === p.slug && s.state !== "closed");
+        if (open) send(open.id, text, "queue");
+      }
+    } else if (a.action === "reviewed") {
+      if (!readJsonl(ledgerFile(p.slug)).some(e => e.kind === "artifact-reviewed" && e.device === device.id && e.name === a.artifact.name && e.sha256 === a.artifact.sha256))
+        appendLedger(p.slug, { kind: "artifact-reviewed", ...a.artifact, person: device.person, device: device.id });
+    } else if (a.action === "session") {
+      if (!engines().includes(a.engine)) throw new BadRequest(`engine must be one of ${engines().join(", ")}`);
+      const prefix = p.slug.toLowerCase().replace(/[^a-z0-9.-]/g, "-").replace(/^[^a-z0-9]+/, "") || "lane";
+      const id = `${prefix.slice(0, 73)}-${randomBytes(3).toString("hex")}`;
+      conversations.create(id, { lane: p.slug, title: a.title, ...(Object.hasOwn(config().conversationAdapters ?? {}, a.engine) ? { adapter: a.engine } : { profile: a.engine }) });
+      send(id, a.text, "queue"); session = id;
+      appendLedger(p.slug, { kind: "session-opened", session: id, engine: a.engine, by: device.person, device: device.id });
     } else {
       const alert = p.alerts?.find((x) => x.id === a.alert) ?? fail(`no alert ${a.alert} on ${slug}`);
       if (alert.acknowledgedAt) fail(`alert ${a.alert} is already acknowledged`);
-      alert.acknowledgedAt = nowIso();
-      save(p);
+      alert.acknowledgedAt = nowIso(); save(p);
       appendLedger(p.slug, { kind: "alert-ack", id: a.alert, by: device.person, device: device.id });
     }
-  });
-  audit({ kind: a.action, device: device.id, lane: slug, ...(a.action === "approve" ? { gate: a.gate } : { alert: a.alert }) });
+  };
+  if (slug === null) apply(); else transaction(slug, apply);
+  audit({ kind: a.action, device: device.id, lane: slug, ...("gate" in a ? { gate: a.gate } : {}), ...("alert" in a ? { alert: a.alert } : {}), ...(session ? { session } : {}) });
+  return { ok: true, lane: slug === null ? null : laneDetail(load(slug)), session: session === null ? null : sessionDetail(session) };
 }
 
 
@@ -329,9 +386,9 @@ export function remoteServer(o: ServeOptions = {}): Server {
       if (route === "POST /v1/actions") return body((b) => {
         const sig = req.headers["govern-signature"];
         const a = verifyAction(device, b, typeof sig === "string" ? sig : undefined, now());
-        perform(device, a, b, sig as string);
+        const result = perform(device, a, b, sig as string);
         cache = undefined;
-        reply(200, { ok: true, lane: laneDetail(load(checkSlug(a.lane))) });
+        reply(200, result);
       });
       if (route === "GET /v1/stream") {
         if (streams >= MAX_STREAMS) return reply(429, { error: `at most ${MAX_STREAMS} streams` });
