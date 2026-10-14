@@ -4,7 +4,7 @@
 //
 // One-shot Codex steps: prompt template → `codex exec --json --output-schema` → verified JSON.
 import { spawnSync } from "node:child_process";
-import { existsSync, readFileSync, mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, mkdirSync, writeFileSync, globSync } from "node:fs";
 import { join, dirname, resolve } from "node:path";
 import { fail, stamp, sha256 } from "./util.ts";
 import { emptyRecord } from "./shape.ts";
@@ -54,11 +54,21 @@ export function execArgs(o: ExecOpts): string[] {
 // ---------------------------------------------------------------- prompts
 
 export interface PromptFile { name: string; meta: Record<string, string>; body: string; /** The folder the prompt file is in: its `schema:` and `rules:` are relative to it. */ dir: string }
-/** The folders prompts are read from, first match wins: GOVERN_PROMPTS alone when set, else the process's own, then the workspace's. */
+/** The folders prompts are read from, first match wins: GOVERN_PROMPTS alone when set, else the workspace's, then the
+ *  process's own (an owner who customises a prompt must see it used, so the workspace overrides the process). */
 export function promptDirs(processName?: string): string[] {
   if (process.env.GOVERN_PROMPTS) return [process.env.GOVERN_PROMPTS];
   const pr = processName ? getProcess(processName) : undefined;
-  return [pr?.prompts && resolve(pr.dir, pr.prompts), promptsDir()].filter((d): d is string => d !== undefined && existsSync(d));
+  return [promptsDir(), pr?.prompts && resolve(pr.dir, pr.prompts)].filter((d): d is string => d !== undefined && existsSync(d));
+}
+/** The prompts a step name resolves to for a process (or the workspace alone): the winning file of each name, by name. */
+export function promptFiles(processName?: string): { name: string; file: string }[] {
+  const seen = new Map<string, string>();
+  for (const d of promptDirs(processName)) for (const f of globSync("*.md", { cwd: d }).sort()) {
+    const n = f.replace(/\.md$/, "");
+    if (!seen.has(n)) seen.set(n, join(d, f));
+  }
+  return [...seen].map(([name, file]) => ({ name, file })).sort((a, b) => a.name.localeCompare(b.name));
 }
 export function readPrompt(name: string, dirs: string[]): PromptFile {
   if (!/^[a-z0-9-]+$/.test(name)) fail(`bad prompt name: ${name}`);

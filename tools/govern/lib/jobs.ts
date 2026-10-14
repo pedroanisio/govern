@@ -5,7 +5,7 @@ import { join, resolve } from "node:path";
 import { fail, readJson, writeJson, stamp, nowIso, sleepSync, shq, changedSince, clip, procOf, procTable, procSource, exited, type ProcStat } from "./util.ts";
 import { fileURLToPath } from "node:url";
 import { type Project, projectDir, governDir, appendLedger, argvOf } from "./project.ts";
-import { repo, pathNamed } from "./workspace.ts";
+import { repo, expandPlaceholders } from "./workspace.ts";
 import { place, lockDir, slots, costOf, type Price, type Resource } from "./resources.ts";
 import * as locks from "./locks.ts";
 import * as allowances from "./allowances.ts";
@@ -39,8 +39,7 @@ const jobDir = (slug: string, id: string) => join(jobsDir(slug), id);
 
 export function expand(p: Project, argv: string[]): string[] {
   const python = process.env.GOVERN_PYTHON ?? "python3";
-  return argv.map((a) => a.replaceAll("{repo}", repo()).replaceAll("{dir}", projectDir(p.slug)).replaceAll("{python}", python)
-    .replace(/\{paths\.([^{}]+)\}/g, (_, n: string) => pathNamed(n)));
+  return argv.map((a) => expandPlaceholders(a, projectDir(p.slug)).replaceAll("{python}", python));
 }
 
 /** A new job id, its directory created here: mkdir is atomic, so neither a run of the same command in the same second nor a

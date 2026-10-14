@@ -1,9 +1,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdirSync, readFileSync, readdirSync } from "node:fs";
+import { mkdirSync, readFileSync, readdirSync, chmodSync } from "node:fs";
 import { join } from "node:path";
-import { makeEnv, write, reply, jsonl, tempDir, parentEnv, GOVERN, HERE, present } from "./helpers.ts";
+import { makeEnv, write, reply, jsonl, tempDir, parentEnv, govern, GOVERN, HERE, present } from "./helpers.ts";
 
 const NODE = ["--disable-warning=ExperimentalWarning", GOVERN];
 const TOOL = join(HERE, "..");
@@ -161,4 +161,74 @@ test("lib/ and govern.ts name no project, channel or workspace (the CLAUDE.md ba
   const hits = files.flatMap((f) => readFileSync(f, "utf8").split("\n").map((l, i) => ({ f, i: i + 1, l })).filter(({ l }) => re.test(l) && !/PALS's LAW/.test(l)));
   assert.deepEqual(hits.map((h) => `${h.f}:${h.i}: ${h.l.trim()}`), []);
   present(files[0], "govern.ts");
+});
+
+/** The audit workspace with a workspace-wide prompts folder holding its own "findings" (the process has one too) and "memo". */
+function auditWithWorkspacePrompts(): string {
+  const ws = audit();
+  write(join(ws, "govern.config.json"), JSON.stringify({ projects: "lanes", queue: "q", processes: "procs", prompts: "wsp", paths: { checker: "tools/check.sh" } }));
+  write(join(ws, "wsp", "findings.md"), "---\neffort: high\ndescription: workspace findings\n---\nWORKSPACE VERSION for {{title}}; answer as JSON.\n");
+  write(join(ws, "wsp", "memo.md"), "---\ndescription: a memo\n---\nMemo for {{title}}.\n");
+  return ws;
+}
+
+test("a workspace prompt overrides a process prompt of the same name, in ask and in the listing alike", () => {
+  const ws = auditWithWorkspacePrompts();
+  assert.equal(gov(ws, ["new", "inv/q3", "--process", "audit"]).code, 0);
+  const e = makeEnv();
+  const fakeEnv = Object.fromEntries(Object.entries(e.env).filter(([k]) => k.startsWith("FAKE_") || k === "GOVERN_CODEX_BIN"));
+  const a = gov(ws, ["ask", "inv/q3", "findings"], { ...fakeEnv, FAKE_CODEX_SCRIPTS: reply(e, "ok", { findings: [] }) });
+  assert.equal(a.code, 0, a.err + a.out);
+  assert.match(String(jsonl(join(e.root, "stdin.log"))[0]), /WORKSPACE VERSION for inv\/q3/);
+  const list = gov(ws, ["prompts", "audit"]).out;
+  assert.match(list, /^findings\s+\[high\] workspace findings/m);
+  assert.doesNotMatch(list, /\[low\]/);
+  assert.match(list, /wsp\/findings\.md/);
+  assert.match(list, /memo\s/);
+});
+
+test("govern prompts with no process shows, per process, which file wins", () => {
+  const ws = auditWithWorkspacePrompts();
+  const out = gov(ws, ["prompts"]).out;
+  const findings = out.split("\n").filter((l) => /^findings\s/.test(l));
+  assert.equal(findings.length, 1, out); // the audit process's own file loses everywhere, so it is not listed
+  assert.match(findings[0]!, /wsp\/findings\.md/);
+  assert.match(findings[0]!, /audit/); // names the process(es) the file serves
+  assert.match(out, /^hooks\s.*video/m); // a process prompt the workspace does not override still shows its process
+});
+
+test("with no workspace, prompts and caps list the built-in ones instead of failing", () => {
+  const lonely = tempDir("lonely");
+  const p = gov(lonely, ["prompts"]);
+  assert.equal(p.code, 0, p.err);
+  assert.match(p.out, /^hooks\s/m);
+  const c = gov(lonely, ["caps"]);
+  assert.equal(c.code, 0, c.err);
+});
+
+test("{paths.NAME} is expanded in a configured queue runner's argv too", () => {
+  const e = makeEnv();
+  Object.assign(e.env, { GOVERN_QUEUE: join(e.root, "queue") });
+  const bin = write(join(e.root, "echo-agent.sh"), `#!/bin/sh\ncat > /dev/null\necho "$1" > ${join(e.root, "echo-argv.txt")}\nprintf '%s' '{"kind":"ACK","summary":"done by echo","body":"ok"}'\n`);
+  chmodSync(bin, 0o755);
+  write(join(e.root, "queue", "config.json"), JSON.stringify({ runners: { echo: { argv: [bin, "{paths.filmBuild}"], format: "text" } } }));
+  govern(e, ["task", "send", "--to", "echo", "--project", "p", "--task", "t", "--summary", "s"]);
+  const d = govern(e, ["task", "dispatch"]);
+  assert.match(d.out, /→ echo: ACK/, d.out + d.err);
+  assert.equal(readFileSync(join(e.root, "echo-argv.txt"), "utf8").trim(), join(e.root, "film_build.py"));
+});
+
+test("govern new warns on stderr for a {paths.X} its process's commands use and the config lacks, and still creates the lane", () => {
+  const ws = audit();
+  write(join(ws, "procs", "recipe.json"), JSON.stringify({
+    version: 1, name: "recipe", stages: [{ name: "go" }],
+    setup: [{ commands: { build: ["sh", "{paths.checker}"], other: ["sh", "{paths.nothere}", "{paths.alsogone}"] } }],
+  }));
+  const r = gov(ws, ["new", "r1", "--process", "recipe"]);
+  assert.equal(r.code, 0, r.err);
+  assert.match(r.err, /paths\.nothere/);
+  assert.match(r.err, /paths\.alsogone/);
+  assert.doesNotMatch(r.err, /paths\.checker/);
+  assert.match(r.out, /created lanes\/r1\/govern\.json/);
+  assert.doesNotMatch(gov(ws, ["new", "r2", "--process", "audit"]).err, /paths\./);
 });

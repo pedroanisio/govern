@@ -3,7 +3,7 @@ import { existsSync, readFileSync, appendFileSync, mkdirSync, globSync } from "n
 import { join, dirname, resolve, relative } from "node:path";
 import { GovernError, fail, readJson, writeJson, nowIso, latest, plain, clip, readJsonl } from "./util.ts";
 import type { Source } from "./approval.ts";
-import { repo, projectsDir, workflowFile } from "./workspace.ts";
+import { repo, projectsDir, workflowFile, config, CONFIG_FILE } from "./workspace.ts";
 import { getProcess, processOf, processes, processName, manualOf } from "./process.ts";
 import { obj, arr, record, emptyRecord, str, name, posInt, literal, parseFile, reject, keyPath, type Shape } from "./shape.ts";
 
@@ -39,7 +39,7 @@ export interface Project {
   created: string;
   /** Set when `govern advance` moves past the last stage. */
   finished?: string;
-  /** name → argv, or {argv, timeout}; `{repo}`, `{dir}`, `{python}` are expanded. Extra args from `govern run` are appended. */
+  /** name → argv, or {argv, timeout}; `{repo}`, `{dir}`, `{python}` and `{paths.NAME}` (a key of the config's "paths") are expanded. Extra args from `govern run` are appended. */
   commands: Record<string, string[] | Command>;
   /** name → path or glob relative to the project folder; a glob resolves to its newest match. */
   files: Record<string, string>;
@@ -159,12 +159,20 @@ export function create(given: string, o: { kind?: string; process?: string; titl
     for (const [k, argv] of Object.entries(g.commands ?? {})) commands[k] = [...argv];
     for (const [k, pat] of Object.entries(g.files ?? {})) files[k] = pat;
   }
+  warnMissingPaths(commands);
   const p: Project = {
     version: 1, slug, title: o.title ?? slug, kind, process: proc, lang: o.lang ?? "en", ...(o.parent ? { parent: o.parent } : {}),
     stage: getProcess(proc).stages[0].name, created: nowIso(), commands, files, approvals: emptyRecord<Approval>(), notes: [],
   };
   save(p);
   return p;
+}
+
+/** A new lane's commands that use a {paths.NAME} the config lacks: a warning on stderr naming each key (the lane is still made). */
+function warnMissingPaths(commands: Record<string, string[]>): void {
+  const known = config().paths ?? {}, missing = new Set<string>();
+  for (const argv of Object.values(commands)) for (const a of argv) for (const m of a.matchAll(/\{paths\.([^{}]+)\}/g)) if (!Object.hasOwn(known, m[1]!)) missing.add(m[1]!);
+  for (const n of missing) process.stderr.write(`warning: a command of this process uses {paths.${n}}, but ${join(repo(), CONFIG_FILE)} has no paths.${n} (it fails when run)\n`);
 }
 
 export const stagesOf = (p: Pick<Project, "process" | "kind">): string[] => processOf(p).stages.map((s) => s.name);

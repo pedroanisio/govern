@@ -48,7 +48,7 @@ const RESOURCE_RAW = obj(
   { to: name, price: PRICE, allowance: obj({ text: str }, { maxJobs: posInt, maxMachines: posInt }),
     commands: obj({}, { start: ARGV, stop: ARGV, list: ARGV }) },
 );
-const RESOURCES: Shape<Record<string, Resource>> = (v, at) => {
+export const RESOURCES: Shape<Record<string, Resource>> = (v, at) => {
   const out = emptyRecord<Resource>();
   arr(RESOURCE_RAW)(v, at).forEach((r, i) => {
     const p = `${at}[${i}]`;
@@ -89,7 +89,7 @@ export function resourceNamed(n: string): Resource {
 }
 
 /** Where the locks live: GOVERN_STATE, else govern-state beside the lanes' folder. */
-export const stateDir = stateFolder;
+export const stateDir = (): string => stateFolder();
 export const lockDir = (resource: string) => join(stateDir(), "locks", resource);
 
 /** The slots of a resource: a shared one has maxJobs (default 1); a dedicated one is not locked unless it sets maxJobs. */

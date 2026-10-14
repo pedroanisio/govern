@@ -3,7 +3,8 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join, dirname, resolve } from "node:path";
 import { fail } from "./util.ts";
-import { obj, str, posInt, record, parseFile } from "./shape.ts";
+import { obj, str, posInt, record, parseFile, type Shape } from "./shape.ts";
+import { RESOURCES } from "./resources.ts";
 
 export const CONFIG_FILE = "govern.config.json";
 
@@ -24,10 +25,12 @@ export interface WorkspaceConfig {
   /** Where locks and other shared run state live (default: govern-state beside the lanes' folder). */
   state?: string;
 }
+/** A file path, or the list shape lib/resources.ts checks (kept as written: resources() builds the registry). */
+const resourcesShape: Shape<unknown> = (v, p) => (typeof v === "string" ? v : (RESOURCES(v, p), v));
 const CONFIG = obj({}, {
   projects: str, queue: str, processes: str, workflow: str, tuningLog: str, packages: str, prompts: str, paths: record(str),
   baseline: obj({ mainMedianCtx: posInt, subagentMedianCtx: posInt, source: str }),
-  capabilities: str, resources: (v: unknown) => v, allowances: (v: unknown) => v, state: str,
+  capabilities: str, resources: resourcesShape, allowances: (v: unknown) => v, state: str,
 });
 
 /** The nearest folder at or above `dir` that holds a govern.config.json, or undefined. */
@@ -38,7 +41,7 @@ function above(dir: string): string | undefined {
   }
 }
 /** The workspace folder, or undefined when there is none (GOVERN_REPO unset and no config above the cwd). */
-export const findRepo = (): string | undefined => process.env.GOVERN_REPO || above(process.cwd());
+export const findRepo = (): string | undefined => (process.env.GOVERN_REPO ? resolve(process.env.GOVERN_REPO) : above(process.cwd()));
 /** The workspace folder; no workspace is a clear error, never a guess. */
 export const repo = (): string =>
   findRepo() ?? fail(`no ${CONFIG_FILE} at or above ${process.cwd()}: put one in the workspace root, or set GOVERN_REPO to that folder`);
@@ -63,19 +66,24 @@ function required(key: keyof WorkspaceConfig & string, env?: string): string {
   const f = join(repo(), CONFIG_FILE);
   return fail(existsSync(f) ? `${f} has no "${key}"${env ? ` (or set ${env})` : ""}` : `no ${CONFIG_FILE} in ${repo()}: it must set "${key}"${env ? ` (or set ${env})` : ""}`);
 }
-const optional = (key: "processes" | "workflow" | "prompts" | "capabilities" | "state", env: string): string | undefined => process.env[env] || abs(config()[key]);
+/** An optional folder: the env override, else the config's key; undefined when neither, and with no workspace. */
+const optional = (key: "processes" | "workflow" | "prompts" | "capabilities" | "state", env: string): string | undefined =>
+  process.env[env] || (findRepo() ? abs(config()[key]) : undefined);
 
 export const projectsDir = (): string => required("projects", "GOVERN_PROJECTS");
 export const queueDir = (): string => required("queue", "GOVERN_QUEUE");
 export const tuningLogFile = (): string => required("tuningLog", "GOVERN_TUNING_LOG");
 export const packagesDir = (): string => required("packages");
 /** The workspace's own processes folder, or undefined (built-in processes only) when there is none or no workspace. */
-export const processesDir = (): string | undefined => (findRepo() ? optional("processes", "GOVERN_PROCESSES") : process.env.GOVERN_PROCESSES);
+export const processesDir = (): string | undefined => optional("processes", "GOVERN_PROCESSES");
 /** The workspace's workflow document (the video process's exit table), or undefined. */
 export const workflowFile = (): string | undefined => optional("workflow", "GOVERN_WORKFLOW");
 /** The workspace-wide prompts folder (GOVERN_PROMPTS replaces every prompts folder), or undefined. */
 export const promptsDir = (): string | undefined => optional("prompts", "GOVERN_PROMPTS");
 export const baseline = (): Baseline | undefined => config().baseline;
+/** `text` with {repo}, {dir} and {paths.NAME} expanded: the one expansion every command and runner argv goes through. */
+export const expandPlaceholders = (text: string, dir: string): string =>
+  text.replaceAll("{repo}", repo()).replaceAll("{dir}", dir).replace(/\{paths\.([^{}]+)\}/g, (_, n: string) => pathNamed(n));
 /** A named path from the config's "paths", absolute. */
 export function pathNamed(name: string): string {
   const p = config().paths;
@@ -83,8 +91,10 @@ export function pathNamed(name: string): string {
   if (v === undefined) fail(`${join(repo(), CONFIG_FILE)} has no paths.${name} (a command uses {paths.${name}})`);
   return resolve(repo(), v!);
 }
-/** The workspace's capability grants folder: GOVERN_CAPABILITIES, the config's "capabilities", else beside the lanes. */
-export const capabilitiesDir = (): string => optional("capabilities", "GOVERN_CAPABILITIES") ?? join(projectsDir(), "..", "capabilities");
+/** The workspace's capability grants folder: GOVERN_CAPABILITIES, the config's "capabilities", else beside the lanes;
+ *  undefined with no workspace (built-in capabilities only). */
+export const capabilitiesDir = (): string | undefined =>
+  optional("capabilities", "GOVERN_CAPABILITIES") ?? (findRepo() ? join(projectsDir(), "..", "capabilities") : undefined);
 /** Where locks live: GOVERN_STATE, the config's "state", else govern-state beside the lanes' folder. */
 export const stateDir = (): string => optional("state", "GOVERN_STATE") ?? join(dirname(projectsDir()), "govern-state");
 /** A workspace list govern reads elsewhere (lib/resources.ts, lib/allowances.ts check its shape). */

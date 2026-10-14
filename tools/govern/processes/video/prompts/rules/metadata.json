@@ -86,6 +86,7 @@
   },
   {
     "at": "chapters[0].time",
+    "optional": true,
     "equals": "0:00",
     "when": {
       "kind": "long"

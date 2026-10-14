@@ -9,7 +9,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, writeFile
 import { join, resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { fail, stamp, nowIso, clip } from "./util.ts";
-import { repo, projectsDir, queueDir } from "./workspace.ts";
+import { repo, projectsDir, queueDir, expandPlaceholders } from "./workspace.ts";
 import * as allowances from "./allowances.ts";
 import * as jobs from "./jobs.ts";
 import { cost } from "./usage.ts";
@@ -25,7 +25,7 @@ export const REPLY_KINDS = ["ACK", "PROGRESS", "BLOCKED", "HANDOFF", "REVIEW", "
 /** Agents the dispatcher always knows. A workspace adds its own in the queue's config.json (`runners`). */
 export const BUILTIN_RUNNERS = ["codex", "claude"] as const;
 /** A runner named in config.json: any command that reads the prompt on stdin and prints the reply.
- *  `{repo}` and `{dir}` (the project folder) are expanded in argv. format "text": stdout is the reply;
+ *  `{repo}`, `{dir}` (the project folder) and `{paths.NAME}` are expanded in argv. format "text": stdout is the reply;
  *  "json-result": stdout is a `claude -p --output-format json` result. */
 export interface RunnerDef { argv: string[]; format?: "text" | "json-result" }
 export interface QueueConfig {
@@ -288,7 +288,7 @@ function claudeResult(stdout: string | undefined, status: number | null, stderr:
 /** A runner from config.json. Its reply goes through parseReply like every other runner's (PALS's LAW). */
 function runConfigured(def: RunnerDef, m: Message, p: string, timeoutSec: number): RunOut {
   const cwd = existsSync(join(projectsDir(), m.project)) ? join(projectsDir(), m.project) : repo();
-  const argv = def.argv.map((x) => x.replaceAll("{repo}", repo()).replaceAll("{dir}", cwd));
+  const argv = def.argv.map((x) => expandPlaceholders(x, cwd));
   const [bin, ...args] = argv;
   if (bin === undefined) return { error: `runner ${m.to} has an empty argv in ${join(QUEUE(), "config.json")}` };
   const r = spawnSync(bin, args, { cwd, input: p, encoding: "utf8", timeout: timeoutSec * 1000, maxBuffer: 64 << 20, env: childEnv() });

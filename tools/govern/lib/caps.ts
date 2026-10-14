@@ -102,6 +102,7 @@ function readDir(dir: string): { caps: Capability[]; profiles: Profile[] } {
 export function registry(): Registry {
   const caps = new Map<string, Capability>(), profiles = new Map<string, Profile>();
   for (const d of [BUILTIN, extraDir()]) {
+    if (!d) continue;
     const r = readDir(d);
     for (const c of r.caps) caps.set(c.name, c);
     for (const p of r.profiles) profiles.set(p.name, p);

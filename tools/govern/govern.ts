@@ -9,10 +9,10 @@ import { randomUUID } from "node:crypto";
 import { GovernError, fail, parseArgs, opt, flag, many, flagNames, secondsOpt, nowIso, readJsonl, kTok, clip, type Args, type FlagSpec } from "./lib/util.ts";
 import { stagesOf, load, save, create, stageOf, brief, appendLedger, resolveFile, ledgerFile, projectDir, checkSlug, checkOf, pendingCheckChanges, blockedBy, laneState, laneSlugs, laneRows, stateFile, argvOf, commandLine, type Project, type Command } from "./lib/project.ts";
 import { processes, getProcess, processOf, listLine, show, manualOf } from "./lib/process.ts";
-import { repo, projectsDir, packagesDir } from "./lib/workspace.ts";
+import { repo, findRepo, projectsDir, packagesDir } from "./lib/workspace.ts";
 import { emptyRecord, PROTO } from "./lib/shape.ts";
 import * as jobs from "./lib/jobs.ts";
-import { ask, readPrompt, promptDirs } from "./lib/codex.ts";
+import { ask, readPrompt, promptFiles } from "./lib/codex.ts";
 import { report, currentCtx, CTX_WARN } from "./lib/usage.ts";
 import * as queue from "./lib/queue.ts";
 import { tag, verdict } from "./lib/replycheck.ts";
@@ -27,7 +27,7 @@ import { verifyQuote } from "./lib/approval.ts";
 import { checkRecipient, requireAs, resolveAs } from "./lib/sessions.ts";
 import { installSkill, skillDrift, sha256File } from "./lib/skill.ts";
 import { writeFileSync, existsSync, unlinkSync } from "node:fs";
-import { homedir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const SKILL = resolve(HERE, "SKILL.md");
@@ -388,18 +388,23 @@ function cmdAsk(a: Args): void {
   out(JSON.stringify(r.value, null, 1));
 }
 
-/** The prompts of one process (and the workspace's), or of every process when none is named; a name seen first wins. */
+/** The prompts of one process (and the workspace's), or of every process when none is named: each with the file that
+ *  wins (the workspace's over a process's) and the processes that file serves. */
 function cmdPrompts(a: Args): void {
   const named = a._[1];
   if (named) getProcess(named);
-  const dirs = [...new Set((named ? [named] : [...processes().keys(), undefined]).flatMap((n) => promptDirs(n)))];
-  const seen = new Set<string>();
-  for (const d of dirs) for (const f of globSync("*.md", { cwd: d }).sort()) {
-    const name = f.replace(/\.md$/, "");
-    if (seen.has(name)) continue;
-    seen.add(name);
-    const pf = readPrompt(name, [d]);
-    out(`${pf.name.padEnd(14)} ${pf.meta.effort ? `[${pf.meta.effort}] ` : ""}${pf.meta.description ?? ""}`);
+  const scopes = named ? [named] : [...processes().keys(), undefined];
+  const byFile = new Map<string, { name: string; serves: string[] }>();
+  for (const sc of scopes) for (const { name, file } of promptFiles(sc)) {
+    const hit = byFile.get(file) ?? { name, serves: [] };
+    hit.serves.push(sc ?? "workspace");
+    byFile.set(file, hit);
+  }
+  const root = findRepo();
+  const show = (f: string) => (root && f.startsWith(`${root}/`) ? relative(root, f) : f);
+  for (const [file, { name, serves }] of [...byFile].sort((x, y) => x[1].name.localeCompare(y[1].name) || x[0].localeCompare(y[0]))) {
+    const pf = readPrompt(name, [dirname(file)]);
+    out(`${pf.name.padEnd(14)} ${pf.meta.effort ? `[${pf.meta.effort}] ` : ""}${pf.meta.description ?? ""}  (${show(file)}; ${serves.join(", ")})`);
   }
 }
 
@@ -762,7 +767,10 @@ export const COMMANDS: readonly Cmd[] = [
         if (bad.length) process.exitCode = 1;
         return;
       }
-      out(name ? showText(reg, queue.QUEUE(), getProfile(name, reg)) : listText(reg, queue.QUEUE(), queue.shadowing()));
+      // With no workspace there is no queue, hence no self-test records and no runner overrides: list the built-in profiles alone.
+      const ws = findRepo() !== undefined;
+      const qdir = ws ? queue.QUEUE() : join(tmpdir(), "govern-no-queue");
+      out(name ? showText(reg, qdir, getProfile(name, reg)) : listText(reg, qdir, ws ? queue.shadowing() : []));
     } },
 
   { name: "desk", section: 7, lines: [["", "every lane, your inbox, the queue, today's tokens (reads files only)"]], run: () => {
