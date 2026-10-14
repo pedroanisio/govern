@@ -188,11 +188,57 @@ against the same fixtures in [android/app/src/test/resources/fixtures/](android/
 | `GET /v1/session?id=ID&messages=N` | bearer | `messages` defaults to 20, range 1..100 | `{protocol, session: SessionSummary, messages: MessageView[], runs: RunView[]}`; last N messages and last 5 runs |
 | `GET /v1/job?lane=S&id=J&lines=N` | bearer | `lines` defaults to 100, range 1..1000 | `{protocol, lane, job: JobView, argv: string[], log: string[]}`; log tail |
 | `GET /v1/artifact?lane=S&name=N` | bearer | plain artifact name | raw bytes, streamed; maximum 32 MiB |
-| `POST /v1/actions` | bearer + `Govern-Signature` | `approve` or `ack` body (above) | `{ok: true, lane: LaneDetail}` |
+| `POST /v1/actions` | bearer + `Govern-Signature` | signed action body (below) | `ActionResult`: `{ok: true, lane: LaneDetail|null, session: SessionDetail|null}` |
 | `GET /v1/stream` | bearer | — | `text/event-stream`: `event: desk` with a `Desk`; `event: error` with `{error}`; `: ping` every 15 s |
 
 `Govern-Signature` is the base64 DER ECDSA-SHA256 signature of the body. An `ack` body is
 `{action: "ack", lane, alert, nonce, at}`.
+
+### Actions
+
+Every body has `action`, `nonce` and `at`; all actions use the same signature, five-minute skew and nonce replay checks.
+Unknown or missing action returns 400 naming `approve, ack, changes, reviewed, instruct, session`.
+Unknown fields and explicit null for an optional artifact are refused; omit absent artifact fields.
+
+| Action | Additional fields | Effect |
+|---|---|---|
+| `approve` | `lane, gate, quote, artifact?: {name, sha256}` | Approves the gate as the device's person, retaining the signed evidence reference. |
+| `ack` | `lane, alert` | Acknowledges an alert. |
+| `changes` | `lane, gate, quote, artifact?: {name, sha256}` | Requests adjustments, adds a lane note and queues it to the newest updated open lane session, if any. |
+| `reviewed` | `lane, artifact: {name, sha256}` | Records this device's review of the current bytes; repeating device/name/digest with a fresh nonce succeeds without another ledger entry. |
+| `instruct` | `session, text, mode: "queue"|"interrupt"` | Sends a message to an existing open conversation. |
+| `session` | `lane, engine, title, text` | Creates a lane conversation and queues its first message. |
+
+Quotes must have trimmed length at least two and total length at most 2000. Text is trimmed and must be 1..8000
+characters; titles are trimmed and must be 1..120. Artifact names follow the download rule; SHA-256 is 64 lowercase hex
+characters. References are checked against current bytes under the lane transaction: missing artifacts return 404;
+changed digests return 409, "the artifact changed since you reviewed it". Changes require an existing, unapproved,
+non-policy gate (409 otherwise). Approvals retain owner, dependency and policy checks. Unknown sessions return 404,
+closed sessions 409 and unknown engines 400.
+
+An engine from `conversationAdapters` creates with `{adapter}`; otherwise a listed capability profile creates with
+`{profile}`. Adapters take precedence on a name collision. Ids use a normalized lane prefix plus six random hex digits,
+clipped to `^[a-z0-9][a-z0-9.-]{0,79}$`. Messages use `requestId: "remote-" + nonce` and the selected mode (queue for
+changes/session), then start the background worker. Changes send `changes requested on <gate> by <person>: <quote>`.
+
+Scope is checked before lane access. Instruct reads the session's lane without reconciliation, then checks scope before
+any mutation. A session without a lane requires an unscoped device. Scope refusals are 403. The result's lane is the
+affected lane, or null for a lane-less instruction. Its session is populated only for instruct and session.
+
+Approvals still require the person's own words and per-action device confirmation: [PURPOSE.md](PURPOSE.md) reserves
+approvals to the person. Changes, reviewed, instruct and session approve nothing. They let the owner steer work, each
+signed and confirmed on the device in the same way.
+
+The lane ledger records these fields in addition to its timestamp:
+
+- `approve`: `gate, quote, by, source, device, artifact?` (GateView and DecisionView expose the artifact).
+- `changes-requested`: `gate, quote, by, device, artifact?`; the lane also stores `{at, stage, text}` in its notes.
+- `artifact-reviewed`: `name, sha256, person, device`.
+- `instruct`: `session, by, device, mode, chars` (only when the session has a lane).
+- `session-opened`: `session, engine, by, device`.
+
+Every successful action, including a duplicate review with a fresh nonce, is recorded in the remote audit.
+ActionResult fixtures are in `android/app/src/test/resources/fixtures/action-results.json`.
 
 Errors are `{error}` with a status that says who must act: 400 for a malformed request, 401 for a missing, unknown or
 revoked token, 403 when the request does not prove itself (signature, clock, nonce or pairing code), 404 for an unknown
@@ -208,7 +254,7 @@ count the latest ledger check per such stage. Stages without a result contribute
 `GateView` also carries `approvedBy: string|null`, `quote: string|null` and `artifact: ArtifactRef|null`.
 
 The desk's `sessions` are all conversations, newest updated first. `engines` is the sorted list of capability profile
-names whose engines are claude, codex or grok. `host` is the server hostname. `viewer` is
+names whose engines are claude, codex or grok, plus workspace `conversationAdapters` names (deduplicated). `host` is the server hostname. `viewer` is
 `{person: string, device: string, lanes: string[]|null}` from the requesting device; absent device scopes become null.
 The shared desk cache excludes the viewer, which is attached separately for each request and SSE connection.
 
@@ -301,3 +347,6 @@ pairings, revocations and actions. State files are mode 600 and changes share th
 Read views also consume lane `govern/ledger.jsonl`, `govern/jobs/<id>/job.json`, `log`, `exit`, and slice `slice.json`,
 plus `govern-state/conversations/<id>/session.json`. Artifact bytes live beside `govern.json` in `artifacts/`;
 their versions and reviews live in the lane ledger, with no separate artifact metadata index.
+
+Signed actions also update lane `govern.json` notes and `govern/ledger.jsonl`; instruct/session update conversation
+`session.json` through the conversation runtime. No new action state files are introduced.

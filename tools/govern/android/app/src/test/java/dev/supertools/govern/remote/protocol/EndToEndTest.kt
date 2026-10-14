@@ -98,7 +98,7 @@ class EndToEndTest {
 
         val approval = signed(kp, Actions.approve("r1", "final", "approved from the JVM test"))
         val result = client.act(approval)
-        assertTrue(result.lane.gates.single().approved)
+        assertTrue(result.lane!!.gates.single().approved)
         assertEquals(403, assertThrows(ServerException::class.java) { client.act(approval) }.status)
         val other = signed(keyPair(), Actions.approve("r1", "final", "forged"))
         assertEquals(403, assertThrows(ServerException::class.java) { client.act(other) }.status)
@@ -150,6 +150,67 @@ class EndToEndTest {
         assertEquals(8L, download.bytes)
         assertEquals(404, assertThrows(ServerException::class.java) { client.session("missing") }.status)
         assertEquals(400, assertThrows(ServerException::class.java) { client.job("r1", job.job.id, 0) }.status)
+    }
+
+    @Test
+    fun signedFieldActionsReturnLaneAndSession() {
+        val fake = File(governTs.parentFile, "test/fake-conversation.ts")
+        val config = File(root, "govern.config.json")
+        val original = WireJson.parseToJsonElement(config.readText()) as kotlinx.serialization.json.JsonObject
+        config.writeText(kotlinx.serialization.json.JsonObject(original + ("conversationAdapters" to kotlinx.serialization.json.buildJsonObject {
+            put("echo", kotlinx.serialization.json.buildJsonObject {
+                put("argv", kotlinx.serialization.json.JsonArray(listOf(node, fake.path, "echo").map { kotlinx.serialization.json.JsonPrimitive(it) }))
+            })
+        })).toString())
+        val proof = File(root, "proof.txt").apply { writeText("evidence") }
+        govern("artifact", "add", "r1", proof.path)
+        govern("conversation", "create", "chat", "--adapter", "echo", "--lane", "r1")
+        val printed = govern("remote", "pair", "--url", "http://127.0.0.1:$port")
+        val link = PairingLinks.parse(Regex("govern-remote://\\S+").find(printed)!!.value)
+        serve()
+        val kp = keyPair()
+        val pair = GovernClient(Endpoint(link.url, null, null)).pair(link.code, "actions", Base64.getEncoder().encodeToString(kp.public.encoded))
+        val client = GovernClient(Endpoint(link.url, pair.token, null))
+        fun act(body: ByteArray): ActionResult = client.act(signed(kp, body)).also { assertTrue(it.ok) }
+        fun settled(id: String) {
+            val file = File(root, "govern-state/conversations/$id/session.json")
+            repeat(600) {
+                val state = WireJson.parseToJsonElement(file.readText()) as kotlinx.serialization.json.JsonObject
+                val runs = state["runs"] as kotlinx.serialization.json.JsonArray
+                if (runs.isNotEmpty() && runs.all { (it as kotlinx.serialization.json.JsonObject)["state"].toString() == "\"completed\"" }) return
+                Thread.sleep(25)
+            }
+            error("background runs did not complete: ${file.readText()}")
+        }
+        assertTrue(client.desk().engines.contains("echo"))
+        val ref = client.lane("r1").artifacts.single().let { ArtifactRef(it.name, it.sha256) }
+        val reviewed = act(Actions.reviewed("r1", ref))
+        assertEquals(null, reviewed.session)
+        assertEquals(pair.deviceId, reviewed.lane!!.artifacts.single().reviews.single().device)
+        val changes = act(Actions.changes("r1", "final", "adjust the heading", ref))
+        assertFalse(changes.lane!!.gates.single().approved)
+        assertEquals(ref, changes.lane.decisions.first().artifact)
+        assertEquals(null, changes.session)
+        settled("chat")
+        for (mode in listOf("queue", "interrupt")) {
+            val instructed = act(Actions.instruct("chat", "continue", mode))
+            assertEquals("r1", instructed.lane!!.slug)
+            assertEquals("chat", instructed.session!!.session.id)
+            settled("chat")
+        }
+        val opened = act(Actions.session("r1", "echo", "New review", "hello"))
+        assertEquals("r1", opened.lane!!.slug)
+        assertEquals("echo", opened.session!!.session.engine)
+        settled(opened.session.session.id)
+        val approved = act(Actions.approve("r1", "final", "I approve this evidence", ref))
+        assertEquals(null, approved.session)
+        assertTrue(approved.lane!!.gates.single().approved)
+        assertEquals(ref, approved.lane.gates.single().artifact)
+        govern("conversation", "create", "loose", "--adapter", "echo")
+        val loose = act(Actions.instruct("loose", "hello", "queue"))
+        assertEquals(null, loose.lane)
+        assertEquals("loose", loose.session!!.session.id)
+        settled("loose")
     }
 
     @Test

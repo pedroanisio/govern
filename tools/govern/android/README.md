@@ -38,9 +38,6 @@ English is the default language; Brazilian Portuguese follows the device locale.
 keys and format arguments, enforced by `StringsTest`. Server-authored content and protocol error details remain
 in the language sent by the host.
 
-This checkout's wire types remain `govern-remote/1`. Session summaries and phone-initiated comparison-code pairing
-require the protocol lane's `govern-remote/2` types and client endpoints; the shell currently uses code-based pairing.
-
 ## Protocol reads
 
 The protocol layer carries check summaries, session summaries, available engines, the server hostname and the requesting
@@ -52,6 +49,22 @@ use the downloaded bytes only after the call succeeds. These APIs do not require
 
 The strict parser covers desk, lane, session and job fixtures. EndToEndTest exercises the new reads against the real
 server and tests refusal of an incorrect artifact digest.
+
+## Signed action protocol
+
+`Actions` encodes approve (optionally with `ArtifactRef(name, sha256)`), ack, changes, reviewed, instruct and session.
+`changes(lane, gate, quote, artifact?)` requests adjustments; `reviewed(lane, artifact)` records a digest-bound review.
+`instruct(session, text, mode)` accepts queue or interrupt; `session(lane, engine, title, text)` opens a conversation.
+Choose engines from the desk, including configured conversation adapters and supported profiles.
+
+Quotes need 2..2000 characters, text 1..8000 after trim and titles 1..120 after trim. Invalid bounds, modes, artifact
+names or digests throw IllegalArgumentException before signing. Null artifacts are omitted from JSON.
+Sign and send the same bytes after per-action device confirmation. Approve requires the person's own words;
+changes, reviewed, instruct and session approve nothing and require the same confirmation.
+`GovernClient.act` returns `ActionResult(ok, lane: LaneDetail?, session: SessionDetail?)`. Only instruct/session return
+a session; a lane-less instruction returns a null lane. Shared fixtures cover all three combinations. ActionsTest checks
+exact encodings and bounds. EndToEndTest uses the real server and fake echo adapter, polling conversation files until
+background runs complete. These additions are protocol APIs; screens consume them separately.
 
 ## Build
 

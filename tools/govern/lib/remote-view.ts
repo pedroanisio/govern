@@ -5,6 +5,7 @@ import { hostname } from "node:os";
 import * as conversations from "./conversation.ts";
 import * as jobs from "./jobs.ts";
 import * as artifacts from "./artifacts.ts";
+import { config } from "./workspace.ts";
 import { registry } from "./caps.ts";
 import { governDir } from "./project.ts";
 import type { ArtifactRef, ArtifactView } from "./artifacts.ts";
@@ -136,6 +137,8 @@ export function telemetry(slugs: string[], day = new Date().toISOString().slice(
   };
 }
 
+export const engines = (): string[] => [...new Set([...registry().profiles.values()].filter(p => ["claude", "codex", "grok"].includes(p.engine)).map(p => p.name).concat(Object.keys(config().conversationAdapters ?? {})))].sort();
+
 /** Every lane as a summary (a lane that cannot be read is listed under `unreadable` with its error) and today's telemetry. */
 export function deskView(): Omit<Desk, "viewer"> {
   const slugs = laneSlugs(), lanes: LaneSummary[] = [], unreadable: LaneError[] = [];
@@ -145,7 +148,7 @@ export function deskView(): Omit<Desk, "viewer"> {
       unreadable.push({ slug: s, error: e.message });
     }
   }
-  return { sessions: sessions(), engines: [...registry().profiles.values()].filter(p => ["claude", "codex", "grok"].includes(p.engine)).map(p => p.name).sort(), host: hostname(), protocol: PROTOCOL, at: new Date().toISOString(), lanes, unreadable, telemetry: telemetry(slugs) };
+  return { sessions: sessions(), engines: engines(), host: hostname(), protocol: PROTOCOL, at: new Date().toISOString(), lanes, unreadable, telemetry: telemetry(slugs) };
 }
 
 function checkSummary(p: Project, led: Record<string, unknown>[]): CheckSummary {

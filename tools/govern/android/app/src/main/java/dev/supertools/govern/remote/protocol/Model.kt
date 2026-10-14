@@ -186,7 +186,7 @@ data class Desk(
 )
 
 @Serializable
-data class ActionResult(val ok: Boolean, val lane: LaneDetail)
+data class ActionResult(val ok: Boolean, val lane: LaneDetail?, val session: SessionDetail?)
 
 /** Parses `text` as a `T`, or throws ProtocolException naming what was being read. */
 inline fun <reified T> parseWire(what: String, text: String): T =
