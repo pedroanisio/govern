@@ -16,6 +16,8 @@ import { report, currentCtx, CTX_WARN } from "./lib/usage.ts";
 import * as queue from "./lib/queue.ts";
 import { desk } from "./lib/desk.ts";
 import { listLines, showLines } from "./lib/resources.ts";
+import { registry, getProfile, listText, showText } from "./lib/caps.ts";
+import { checkProfile } from "./lib/capcheck.ts";
 import { tune, chooseRunner } from "./lib/tune.ts";
 import { verifyQuote } from "./lib/approval.ts";
 import { checkRecipient, requireAs, resolveAs } from "./lib/sessions.ts";
@@ -431,12 +433,15 @@ function cmdTask(a: Args): void {
     const bodyFile = opt(a, "body-file");
     const body = bodyFile ? readFileSync(bodyFile, "utf8") : opt(a, "body") ?? "";
     const { to, routed } = recipient(opt(a, "to") ?? "");
+    const t = queue.resolveTarget(to, { write: flag(a, "write"), profile: opt(a, "profile") });
+    const lane = opt(a, "lane");
     const m = queue.send({
+      ...(t.profile ? { profile: t.profile } : {}), ...(lane ? { lane } : {}),
       project: opt(a, "project") ?? "", task: opt(a, "task") ?? "", kind: opt(a, "kind") ?? "TASK", from: opt(a, "from") ?? resolveAs() ?? fail("cannot tell who is sending (no parent process is a registered Claude Code session): pass --from NAME"),
       to, ...(routed ? { routed: true } : {}), summary: opt(a, "summary") ?? "", body, files: many(a, "file"), replyTo: opt(a, "reply-to"),
-      access: flag(a, "write") ? "write" : "read-only",
+      access: t.access,
     });
-    out(`queued ${m.id} (${m.kind} to ${m.to})`);
+    out(`queued ${m.id} (${m.kind} to ${m.to}${m.profile && (m.profile !== `${m.to}-read` || opt(a, "profile")) && m.profile !== m.to ? `, profile ${m.profile}` : ""})`);
     return wakeNote(m);
   }
   if (sub === "list") {
@@ -447,7 +452,7 @@ function cmdTask(a: Args): void {
   }
   if (sub === "show") {
     const hit = queue.find(a._[2] ?? "") ?? fail(`no message ${a._[2]}`);
-    for (const m of queue.thread(hit!.m)) out(`--- ${m.id} [${m.kind}] ${m.from}→${m.to} ${m.created}\n${m.summary}\n${m.body}${m.files.length ? `\nfiles: ${m.files.join(", ")}` : ""}${m.result ? `\nresult: ${JSON.stringify(m.result)}` : ""}`);
+    for (const m of queue.thread(hit!.m)) out(`--- ${m.id} [${m.kind}] ${m.from}→${m.to} ${m.created}${m.profile ? `\nprofile: ${m.profile}${m.lane ? ` · lane ${m.lane}` : ""}` : ""}\n${m.summary}\n${m.body}${m.files.length ? `\nfiles: ${m.files.join(", ")}` : ""}${m.result ? `\nresult: ${JSON.stringify(m.result)}` : ""}`);
     return;
   }
   if (sub === "inbox") return cmdInbox(a);
@@ -641,9 +646,9 @@ export const COMMANDS: readonly Cmd[] = [
 
   { name: "task", section: 6, noSub: TASK_SUBS,
     subs: {
-      send: { flags: { value: ["to", "project", "task", "kind", "summary", "body", "body-file", "reply-to", "from"], multi: ["file"], bool: ["write"] },
+      send: { flags: { value: ["to", "project", "task", "kind", "summary", "body", "body-file", "reply-to", "from", "profile", "lane"], multi: ["file"], bool: ["write"] },
         lines: [["--to auto|codex|claude|owner|<session> --project P --task T --kind TASK --summary S (--body B | --body-file F)\n" +
-          "[--file REPO-RELATIVE-PATH]… [--reply-to ID] [--write] [--from NAME]", "--to must be a runner, owner or a LIVE session name"]], run: cmdTask },
+          "[--file REPO-RELATIVE-PATH]… [--reply-to ID] [--write | --profile P] [--lane SLUG] [--from NAME]", "--to must be a runner, a profile, owner or a LIVE session name;\n--profile P (govern caps) seals the run to P's capabilities; --lane names the lane whose gate authorises a spend, publish or push profile"]], run: cmdTask },
       list: { flags: { value: ["to", "state", "project"] }, lines: [["[--to X] [--state open|claimed|done|failed] [--project P]", "the queue's messages"]], run: cmdTask },
       show: { lines: [["<id>", "a message and its thread"]], run: cmdTask },
       inbox: { flags: { value: ["as"], bool: ["all", "hook"] },
@@ -655,6 +660,23 @@ export const COMMANDS: readonly Cmd[] = [
       dispatch: { flags: { value: ["max", "only", "interval"], bool: ["loop"] },
         lines: [["[--max N] [--only codex|claude] [--loop --interval 30]", "run the open messages addressed to runners"]], run: cmdTask },
       "install-service": { flags: { value: ["interval"] }, lines: [["[--interval 30]", "a user systemd service running dispatch --loop"]], run: cmdTask },
+    } },
+
+  { name: "caps", section: 6, flags: { bool: ["check"] },
+    lines: [["", "the capabilities and profiles a queued agent can run under, with each profile's last self-test"],
+      ["<profile>", "its permission patterns, Codex mapping, side-effect classes and secret names"],
+      ["--check <profile>", "self-test the grants: one probe per capability in a sealed session (haiku), recorded with the profile's hash;\nthe dispatcher refuses a profile whose last check failed or predates its definition"]],
+    run: (a) => {
+      const reg = registry(), name = a._[1];
+      if (flag(a, "check")) {
+        const rec = checkProfile(queue.QUEUE(), reg, name ?? fail("govern caps --check <profile>"));
+        for (const r of rec.results) out(`  ${r.capability.padEnd(10)} ${r.status === "invalid" ? "" : `${r.status.padEnd(8)} `}${r.evidence}`.trimEnd());
+        const bad = rec.results.filter((r) => r.status !== "ok" && r.status !== "untested").map((r) => r.capability);
+        out(bad.length ? `${rec.profile}: check FAILED (${bad.join(", ")})` : `${rec.profile}: check passed (${rec.results.length} capabilit${rec.results.length === 1 ? "y" : "ies"})`);
+        if (bad.length) process.exitCode = 1;
+        return;
+      }
+      out(name ? showText(reg, queue.QUEUE(), getProfile(name, reg)) : listText(reg, queue.QUEUE(), queue.shadowing()));
     } },
 
   { name: "desk", section: 7, lines: [["", "every lane, your inbox, the queue, today's tokens (reads files only)"]], run: () => {

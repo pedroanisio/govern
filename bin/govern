@@ -13,9 +13,11 @@
 #     govern log SLUG [JOB] [--tail N] [--grep RE]
 #     govern prompts  |  ask SLUG STEP [--file F]... [--var K=V]... [--image PNG]... [--effort E] [--model M]
 #     govern usage [SLUG...] [--since DATE]  |  ctx  |  desk  |  tune  |  publish SLUG
+#     govern caps [PROFILE]  |  caps --check PROFILE
 #     govern help [COMMAND]  |  COMMAND --help  |  manual  |  install-skill [SKILLS-DIR] [--check]
-#     govern task send --to codex|claude|auto|owner|SESSION --project P --task T --kind K --summary S
-#                      (--body B | --body-file F) [--file PATH]... [--reply-to ID] [--write] [--from NAME]
+#     govern task send --to codex|claude|auto|owner|PROFILE|SESSION --project P --task T --kind K --summary S
+#                      (--body B | --body-file F) [--file PATH]... [--reply-to ID] [--write | --profile P]
+#                      [--lane SLUG] [--from NAME]
 #     govern task list [--to X] [--state S] [--project P]  |  show ID  |  inbox [--as NAME] [--all] [--hook]
 #     govern task close ID [--as NAME] [--note T]  |  forward ID --to NAME [--as NAME]
 #     govern task reply ID --kind K --summary S (--body B | --body-file F) [--as NAME]

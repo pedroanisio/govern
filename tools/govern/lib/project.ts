@@ -9,7 +9,7 @@ import { obj, arr, record, emptyRecord, str, name, posInt, literal, parseFile, r
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 /** Settings a workspace keeps in govern.config.json: where its lanes, queue and processes live (relative to the file). */
-export interface WorkspaceConfig { projects?: string; queue?: string; processes?: string }
+export interface WorkspaceConfig { projects?: string; queue?: string; processes?: string; capabilities?: string }
 /** The nearest folder at or above `dir` that holds govern.config.json or PALS-Notes/projects, or undefined. */
 function workspaceAbove(dir: string): string | undefined {
   for (let d = resolve(dir); ; d = dirname(d)) {
@@ -28,7 +28,7 @@ function readConfig(): WorkspaceConfig {
   if (!existsSync(f)) return {};
   const c = readJson<WorkspaceConfig>(f);
   const abs = (v?: string) => (v ? resolve(REPO, v) : undefined);
-  return { projects: abs(c.projects), queue: abs(c.queue), processes: abs(c.processes) };
+  return { projects: abs(c.projects), queue: abs(c.queue), processes: abs(c.processes), capabilities: abs(c.capabilities) };
 }
 /** The workspace's govern.config.json, paths made absolute; {} when there is none. Environment variables win over it. */
 export const CONFIG = readConfig();

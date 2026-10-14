@@ -6,6 +6,7 @@ import { readJsonl, kTok, clip } from "./util.ts";
 import { ledgerFile, stagesOf, laneState, laneSlugs, laneRows } from "./project.ts";
 import { processOf } from "./process.ts";
 import * as queue from "./queue.ts";
+import { registry, readCheck, checkState, profileHash } from "./caps.ts";
 import { tuningState } from "./tune.ts";
 import { machineSummary, machineEntries } from "./resources.ts";
 
@@ -51,8 +52,16 @@ export function desk(): { text: string; failed: number; lanes: number } {
   // ---- queue
   const count = (state: string, to?: string) => msgs.filter((x) => x.state === state && (!to || x.m.to === to)).length;
   L.push("", tuningState());
-  const perRunner = queue.runners().map((r) => `${r}: ${count("open", r)} waiting, ${count("claimed", r)} running`);
+  const perRunner = queue.plainRunners().map((r) => `${r}: ${count("open", r)} waiting, ${count("claimed", r)} running`);
   L.push("", `QUEUE  ${perRunner.join(" · ")} · failed: ${count("failed")} · ${dispatcherState()}`);
+  // ---- profiles with work queued or a check on record
+  const reg = registry();
+  const byProfile = [...reg.profiles.values()].map((p) => {
+    const n = msgs.filter((x) => x.state === "open" && x.m.profile === p.name).length;
+    const st = checkState(readCheck(queue.QUEUE(), p.name), profileHash(reg, p));
+    return { p, n, st };
+  }).filter((x) => x.n || x.st !== "none");
+  if (byProfile.length) L.push("", `PROFILES  ${byProfile.map(({ p, n, st }) => `${p.name}: ${n} queued${st === "none" ? "" : `, check ${st}`}`).join(" · ")}`);
   // ---- tokens today (queue runs and codex asks; chat sessions: govern usage)
   const byLane = new Map<string, { calls: number; input: number; output: number; usd: number }>();
   const add = (lane: string, u: any, calls = 1) => {

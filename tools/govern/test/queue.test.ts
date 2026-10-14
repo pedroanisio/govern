@@ -72,7 +72,7 @@ test("dispatch runs claude -p with read-only tools, outside this session's env, 
   const call = jsonl(join(e.root, "claude.log"))[0];
   assert.equal(call.nested, false);
   assert.deepEqual(call.argv.slice(0, 5), ["-p", "--output-format", "json", "--model", "sonnet"]);
-  assert.equal(call.argv[call.argv.indexOf("--allowedTools") + 1], "Read,Grep,Glob");
+  assert.deepEqual(call.argv.slice(5), ["--allowedTools", "Read", "Grep", "Glob", "--setting-sources", "", "--strict-mcp-config"], "sealed to the claude-read profile");
 });
 
 test("--write gives the runner write access; replies thread back to the original", () => {

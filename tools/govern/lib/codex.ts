@@ -38,7 +38,7 @@ export function parseEvents(jsonl: string): Events {
   return ev;
 }
 
-export interface ExecOpts { cwd: string; schema?: string; lastMessage: string; model?: string; effort?: string; images?: string[]; sandbox?: string }
+export interface ExecOpts { cwd: string; schema?: string; lastMessage: string; model?: string; effort?: string; images?: string[]; sandbox?: string; config?: string[]; addDirs?: string[] }
 export function execArgs(o: ExecOpts): string[] {
   const a = ["exec"];
   // -i takes several files, so it goes before the other flags and never next to the prompt.
@@ -46,6 +46,8 @@ export function execArgs(o: ExecOpts): string[] {
   a.push("--json", "--skip-git-repo-check", "--ephemeral", "-s", o.sandbox ?? "read-only", "-C", o.cwd, "-o", o.lastMessage);
   if (o.model) a.push("-m", o.model);
   if (o.effort) a.push("-c", `model_reasoning_effort="${o.effort}"`);
+  for (const c of o.config ?? []) a.push("-c", c);
+  for (const d of o.addDirs ?? []) a.push("--add-dir", d);
   if (o.schema) a.push("--output-schema", o.schema);
   return a; // the prompt goes on stdin
 }
