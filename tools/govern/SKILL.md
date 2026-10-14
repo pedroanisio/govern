@@ -144,12 +144,12 @@ It compares these with the chat baseline the workspace's config gives under `bas
 `govern decide ask --questions <file.json> (--state <text> | --state-file <file>) [--purpose P] [--json]` asks Jev (TypeSafe System One, `POST /v1/systemone`) the questions about the state and prints the answers:
 - question types: `choice` (criteria: a key → description map), `score` (criteria: an ordered list of at least 2 levels), `noul` (a probability; criteria optional). Each needs `instructions`.
 - the key is `TYPESAFE_API_KEY`, else the dotenv file named by `decide.envFile` in the workspace config (only that variable is read). It goes to the child process through the environment, never argv, and is redacted from errors.
-- state plus the longest question must fit in 32k tokens; a larger state is refused before anything is sent.
+- state plus the longest question must fit in 32k tokens, estimated high (an ASCII character as half a token, any other character as one); a larger state is refused before anything is sent.
 - every answer or failure is appended to `<queue>/decisions.jsonl` with the state's sha256 and length, never the state text or the key. Usage is recorded per call (about $0.042 per million input tokens).
 
-With `"decide": {"shadow": true}` in the config, every TASK sent with `govern task send` is also asked `kind` (choice), `difficulty` (score) and `success` (noul). Shadow mode only records: it never routes, blocks or delays a send, and a failure is one `govern: decide (shadow): …` line on stderr.
+With `"decide": {"shadow": true}` in the config, every TASK sent with `govern task send` is also asked `kind` (choice), `difficulty` (score) and `success` (noul). The task is clipped to fit (marked `…(clipped: N more characters)`) and TypeSafe gets 5 seconds. Shadow mode only records: it never routes or blocks a send, delays it by at most about 5 seconds, and any failure is one `govern: decide (shadow): …` line on stderr.
 
-`govern decide report` scores the recorded predictions against the ledger: a task succeeded when it ran with `ok` and a verification other than `unverified`. It prints Brier and ECE (10 bins) per noul question and, per score bucket, the count, success rate, money and seconds. Use it to decide whether Jev's answers are worth acting on before anything routes by them.
+`govern decide report` scores the recorded predictions against the ledger: a task succeeded when it ran with `ok` and a verification other than `unverified`. Each task counts once (its latest answer). It prints Brier and ECE (10 bins) per noul question, the count and success rate per choice, and, per score bucket, the count, success rate, money and seconds. Use it to decide whether Jev's answers are worth acting on before anything routes by them.
 
 ## Business processes
 

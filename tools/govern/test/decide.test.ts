@@ -1,10 +1,10 @@
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
 import { spawn, type ChildProcess } from "node:child_process";
-import { readFileSync, readdirSync, statSync } from "node:fs";
+import { mkdirSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { makeEnv, govern, jsonl, write, present, setConfig, tempDir, HERE, type Env } from "./helpers.ts";
-import { QUESTIONS, TASK_QUESTIONS, checkAnswers, calibration } from "../lib/decide.ts";
+import { QUESTIONS, TASK_QUESTIONS, checkAnswers, calibration, fit } from "../lib/decide.ts";
 import { check } from "../lib/shape.ts";
 import { GovernError } from "../lib/util.ts";
 
@@ -146,6 +146,12 @@ test("the key: TYPESAFE_API_KEY, else the dotenv file the config's decide.envFil
   assert.match(govern(e, ["decide", "ask", "--questions", questions(e), "--state", "x"]).err, /nope\.env/);
   setConfig(e, { decide: { envfile: dotenv } });
   assert.match(govern(e, ["decide", "ask", "--questions", questions(e), "--state", "x"]).err, /unknown key "envfile"/);
+  write(join(e.root, "secrets", ".env"), `TYPESAFE_API_KEY='${KEY}-rel'\n`);
+  setConfig(e, { decide: { envFile: "secrets/.env" } });
+  assert.equal(govern(e, ["decide", "ask", "--questions", questions(e), "--state", "x"]).code, 0, "a relative envFile is read from the workspace");
+  assert.equal(jsonl(log).at(-1).authorization, `Bearer ${KEY}-rel`);
+  assert.equal(govern(e, ["decide", "ask", "--questions", questions(e), "--state", "x"], { TYPESAFE_API_KEY: `${KEY}-env` }).code, 0);
+  assert.equal(jsonl(log).at(-1).authorization, `Bearer ${KEY}-env`, "the environment wins over the file");
 });
 
 test("an HTTP error or a malformed reply fails clearly, is recorded, and never echoes the key", async () => {
@@ -208,6 +214,40 @@ test("shadow mode never stops a send: the failure is recorded and named on stder
   assert.match(nokey.err, /TYPESAFE_API_KEY is not set/);
 });
 
+test("shadow mode gives a slow TypeSafe 5 seconds, then lets the send go on", async () => {
+  const { e, replyFile } = await env();
+  setConfig(e, { decide: { shadow: true } });
+  write(replyFile, JSON.stringify({ delayMs: 20000 }));
+  const t0 = Date.now();
+  const r = govern(e, ["task", "send", "--to", "codex", "--project", "film", "--task", "check", "--summary", "s", "--body", "b"]);
+  const took = (Date.now() - t0) / 1000;
+  assert.equal(r.code, 0, r.err);
+  assert.ok(took < 12, `the send took ${took}s`);
+  assert.match(r.err, /decide \(shadow\): could not reach TypeSafe.*timeout/i);
+  assert.match(present(decisions(e)[0], "row").error, /timeout/i);
+});
+
+test("shadow mode survives any failure, not only govern's own (here: decisions.jsonl cannot be written)", async () => {
+  const { e } = await env();
+  setConfig(e, { decide: { shadow: true } });
+  mkdirSync(join(e.root, "PALS-Notes", "queue", "decisions.jsonl"), { recursive: true });
+  const r = govern(e, ["task", "send", "--to", "codex", "--project", "film", "--task", "check", "--summary", "s", "--body", "b"]);
+  assert.equal(r.code, 0, r.err);
+  assert.match(r.out, /queued/);
+  assert.match(r.err, /decide \(shadow\): .*EISDIR/);
+});
+
+test("the length estimate counts non-ASCII text as dearer than ASCII, and a cut never splits a character", () => {
+  const q = TASK_QUESTIONS;
+  const ascii = fit("a".repeat(200000), q), cjk = fit("字".repeat(200000), q);
+  assert.match(ascii, /clipped/);
+  assert.ok(cjk.length < ascii.length / 1.5, `${cjk.length} vs ${ascii.length}`);
+  const emoji = fit("😀".repeat(100000), q);
+  assert.match(emoji, /clipped/);
+  assert.doesNotMatch(emoji, /[\uD800-\uDBFF](?![\uDC00-\uDFFF])/, "no lone high surrogate");
+  assert.equal(fit("short", q), "short");
+});
+
 test("shadow mode clips a long task to fit Jev's limit instead of failing", async () => {
   const { e, log } = await env();
   setConfig(e, { decide: { shadow: true } });
@@ -224,15 +264,17 @@ test("shadow mode clips a long task to fit Jev's limit instead of failing", asyn
 test("decide report scores each noul answer against the task's outcome and buckets score answers", () => {
   const e = makeEnv("decide-report");
   const q = join(e.root, "PALS-Notes", "queue");
-  const row = (ref: string, success: number, difficulty: number) => JSON.stringify({ t: "2026-10-14T10:00:00Z", purpose: "task-send", ref, model: "jev-test-1",
-    answers: { success: { type: "noul", p: success }, difficulty: { type: "score", score: difficulty, confidence: 0.9, level: "x", probabilities: {} } } });
-  write(join(q, "decisions.jsonl"), [row("m1", 0.9, 0.1), row("m2", 0.9, 0.1), row("m3", 0.1, 0.7), row("m4", 0.1, 0.7), row("m5", 0.5, 0.5),
+  const row = (ref: string, success: number, difficulty: number, kind = "edit") => JSON.stringify({ t: "2026-10-14T10:00:00Z", purpose: "task-send", ref, model: "jev-test-1",
+    answers: { success: { type: "noul", p: success }, difficulty: { type: "score", score: difficulty, confidence: 0.9, level: "x", probabilities: {} },
+      kind: { type: "choice", choice: kind, confidence: 1, probabilities: { [kind]: 1 } } } });
+  write(join(q, "decisions.jsonl"), [row("m1", 0.2, 0.9), row("m1", 0.9, 0.1), row("m2", 0.9, 0.1), row("m3", 0.1, 0.7, "review"), row("m4", 0.1, 0.7), row("m5", 0.5, 0.5),
     JSON.stringify({ t: "2026-10-14T10:00:00Z", purpose: "task-send", ref: "m6", error: "could not reach TypeSafe" })].join("\n") + "\n");
   const led = (id: string, ok: boolean, costUsd: number, verification?: string) => JSON.stringify({ t: "2026-10-14T11:00:00Z", id, ok, seconds: 60, usage: { costUsd }, ...(verification ? { verification } : {}) });
   write(join(q, "ledger.jsonl"), [led("m1", true, 1), led("m2", true, 1, "unverified"), led("m3", false, 3), led("m4", true, 3, "checked")].join("\n") + "\n");
   const r = govern(e, ["decide", "report"]);
   assert.equal(r.code, 0, r.err);
-  assert.match(r.out, /6 decisions \(5 answered, 1 failed\); 4 with an outcome, 1 not run yet/);
+  assert.match(r.out, /7 decisions \(6 answered, 1 failed\); 4 tasks with an outcome, 1 not run yet/);
+  assert.match(r.out, /kind \(choice\): edit n 3 ok 67% · review n 1 ok 0%/);
   assert.match(r.out, /success \(noul\): n 4, Brier 0\.410, ECE 0\.400, outcome rate 50%/);
   assert.match(r.out, /difficulty \(score\):/);
   assert.match(r.out, /0\.0–0\.2\s+n 2\s+ok 50%\s+\$1\.00\s+60s/);

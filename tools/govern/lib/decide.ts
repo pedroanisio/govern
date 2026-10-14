@@ -18,10 +18,15 @@ import type { Message } from "./queue.ts";
 const CALL = fileURLToPath(new URL("./typesafeCall.ts", import.meta.url));
 const DEFAULT_URL = "https://api.typesafe.ai";
 const DEFAULT_MODEL = "jev-latest";
-/** Jev's limit on the state plus the longest question, in tokens; estimated as characters / 3 to stay on the safe side. */
+/** Jev's limit on the state plus the longest question, in tokens. Estimated high on purpose: an ASCII character as half a
+ *  token (code and JSON tokenise denser than prose), any other UTF-16 unit as a whole one (CJK, emoji). */
 const MAX_TOKENS = 32000;
-const CHARS_PER_TOKEN = 3;
+const unitCost = (c: number) => (c < 128 ? 0.5 : 1);
+/** `decide ask` waits as long as an answer takes; shadow mode is on a send's path, so it gives up much sooner. */
 const TIMEOUT_MS = 30000;
+const SHADOW_TIMEOUT_MS = 5000;
+/** The only variables the HTTP child gets: what node and fetch need, and the key. */
+const CHILD_ENV = ["PATH", "HOME", "SystemRoot", "NODE_EXTRA_CA_CERTS", "NODE_USE_ENV_PROXY", "HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy", "NO_PROXY", "no_proxy"];
 
 export type Question =
   | { type: "choice"; instructions: string; criteria: Record<string, string> }
@@ -107,12 +112,20 @@ function apiKey(): string | undefined {
   }
   return undefined;
 }
-const tokens = (s: string) => Math.ceil(s.length / CHARS_PER_TOKEN);
+function tokens(s: string): number {
+  let t = 0;
+  for (let i = 0; i < s.length; i++) t += unitCost(s.charCodeAt(i));
+  return Math.ceil(t);
+}
 const longest = (q: Questions) => Math.max(...Object.values(q).map((x) => tokens(JSON.stringify(x))));
-/** `state` cut to fit Jev's limit with these questions, marked where it was cut. */
+/** `state` cut to fit Jev's limit with these questions, marked where it was cut; the cut never splits a surrogate pair. */
 export function fit(state: string, questions: Questions): string {
-  const room = (MAX_TOKENS - longest(questions) - 100) * CHARS_PER_TOKEN;
-  return state.length <= room ? state : `${state.slice(0, room)}\n…(clipped: ${state.length - room} more characters)`;
+  const budget = MAX_TOKENS - longest(questions) - 100;
+  if (tokens(state) <= budget) return state;
+  let t = 0, i = 0;
+  for (; i < state.length && t + unitCost(state.charCodeAt(i)) <= budget; i++) t += unitCost(state.charCodeAt(i));
+  if (i > 0 && /[\uD800-\uDBFF]/.test(state[i - 1]!)) i--;
+  return `${state.slice(0, i)}\n…(clipped: ${state.length - i} more characters)`;
 }
 const decisionsFile = () => join(queueDir(), "decisions.jsonl");
 function note(row: Record<string, unknown>): void {
@@ -122,7 +135,7 @@ function note(row: Record<string, unknown>): void {
 
 /** Ask Jev `questions` about `state`; the answers, or the failure, are recorded under `purpose` (and `ref`, the thing
  *  asked about). A failure is a GovernError, with any copy of the key taken out. */
-export function decide(state: string, questions: Questions, o: { purpose: string; ref?: string }): Decision {
+export function decide(state: string, questions: Questions, o: { purpose: string; ref?: string; timeoutMs?: number }): Decision {
   const base = { purpose: o.purpose, ...(o.ref ? { ref: o.ref } : {}), stateChars: state.length, stateSha256: sha256(state) };
   const started = Date.now();
   let key: string | undefined;
@@ -132,12 +145,17 @@ export function decide(state: string, questions: Questions, o: { purpose: string
     if (tokens(state) + longest(questions) > MAX_TOKENS) fail(`the state and the longest question come to about ${tokens(state) + longest(questions)} tokens: Jev takes at most 32k tokens (shorten the state)`);
     const model = process.env.GOVERN_JEV_MODEL || DEFAULT_MODEL;
     const url = `${(process.env.GOVERN_TYPESAFE_URL || DEFAULT_URL).replace(/\/+$/, "")}/v1/systemone`;
+    const timeoutMs = o.timeoutMs ?? TIMEOUT_MS;
+    const env: NodeJS.ProcessEnv = { TYPESAFE_API_KEY: key };
+    for (const k of CHILD_ENV) if (process.env[k] !== undefined) env[k] = process.env[k];
     const x = spawnSync(process.execPath, ["--disable-warning=ExperimentalWarning", CALL], {
-      input: JSON.stringify({ url, body: { model, state, questions }, timeoutMs: TIMEOUT_MS }), encoding: "utf8",
-      timeout: TIMEOUT_MS + 5000, env: { ...process.env, TYPESAFE_API_KEY: key }, maxBuffer: 16 << 20,
+      input: JSON.stringify({ url, body: { model, state, questions }, timeoutMs }), encoding: "utf8",
+      timeout: timeoutMs + 5000, env, maxBuffer: 16 << 20,
     });
     let res: { status?: number; text?: string; error?: string };
-    try { res = JSON.parse(x.stdout); } catch { fail(`could not reach TypeSafe: the call ended without an answer${x.error ? ` (${x.error.message})` : ""}`); }
+    try { res = JSON.parse(x.stdout); } catch {
+      fail(`could not reach TypeSafe: the call ended without an answer${x.error ? ` (${x.error.message})` : ""}${x.stderr?.trim() ? `: ${clip(x.stderr.trim(), 300)}` : ""}`);
+    }
     if (res.error !== undefined) fail(`could not reach TypeSafe at ${url}: ${res.error}`);
     if (res.status !== 200) fail(`TypeSafe answered ${res.status}: ${clip(res.text ?? "", 300)}`);
     let body: unknown;
@@ -153,14 +171,15 @@ export function decide(state: string, questions: Questions, o: { purpose: string
   }
 }
 
-/** Shadow mode, when the config's decide.shadow is on: ask the task questions about a TASK just sent. Never fails the
- *  send: a failure is recorded and named on stderr. */
+/** Shadow mode, when the config's decide.shadow is on: ask the task questions about a TASK just sent, for at most
+ *  SHADOW_TIMEOUT_MS. Never fails the send, whatever goes wrong: the failure is recorded (when it can be) and named on
+ *  stderr. */
 export function shadowTask(m: Message): void {
-  if (m.kind !== "TASK" || !decideConfig().shadow) return;
-  try { decide(fit(`${m.summary}\n\n${m.body}`, TASK_QUESTIONS), TASK_QUESTIONS, { purpose: "task-send", ref: m.id }); }
-  catch (e) {
-    if (!(e instanceof GovernError)) throw e;
-    process.stderr.write(`govern: decide (shadow): ${e.message}\n`);
+  try {
+    if (m.kind !== "TASK" || !decideConfig().shadow) return;
+    decide(fit(`${m.summary}\n\n${m.body}`, TASK_QUESTIONS), TASK_QUESTIONS, { purpose: "task-send", ref: m.id, timeoutMs: SHADOW_TIMEOUT_MS });
+  } catch (e) {
+    process.stderr.write(`govern: decide (shadow): ${(e as Error).message}\n`);
   }
 }
 
@@ -212,9 +231,12 @@ export function report(): string {
     if (typeof l.id === "string" && !outcome.has(l.id))
       outcome.set(l.id, { y: l.ok === true && l.verification !== "unverified" ? 1 : 0, cost: l.usage?.costUsd, seconds: l.seconds });
   const answered = rows.filter((r) => r.answers);
-  const joined = answered.filter((r) => r.ref && outcome.has(r.ref));
-  const pending = answered.filter((r) => r.purpose === "task-send" && !(r.ref && outcome.has(r.ref))).length;
-  const L = [`${rows.length} decisions (${answered.length} answered, ${rows.length - answered.length} failed); ${joined.length} with an outcome, ${pending} not run yet`];
+  // One answer per task: the latest, so a task asked twice counts once.
+  const latest = new Map<string, any>();
+  for (const r of answered) if (r.ref && outcome.has(r.ref)) latest.set(r.ref, r);
+  const joined = [...latest.values()];
+  const pending = new Set(answered.filter((r) => r.purpose === "task-send" && !(r.ref && outcome.has(r.ref))).map((r) => r.ref)).size;
+  const L = [`${rows.length} decisions (${answered.length} answered, ${rows.length - answered.length} failed); ${joined.length} tasks with an outcome, ${pending} not run yet`];
   const names = [...new Set(joined.flatMap((r) => Object.keys(r.answers)))];
   for (const name of names) {
     const with_ = joined.filter((r) => r.answers[name]);
@@ -222,6 +244,10 @@ export function report(): string {
     if (type === "noul") {
       const c = calibration(with_.map((r) => ({ p: r.answers[name].p, y: outcome.get(r.ref)!.y })));
       L.push(`${name} (noul): n ${c.n}, Brier ${c.brier.toFixed(3)}, ECE ${c.ece.toFixed(3)}, outcome rate ${pct(c.rate)}`);
+    } else if (type === "choice") {
+      const by = new Map<string, number[]>();
+      for (const r of with_) by.set(r.answers[name].choice, [...(by.get(r.answers[name].choice) ?? []), outcome.get(r.ref)!.y]);
+      L.push(`${name} (choice): ${[...by].sort(([a], [b]) => a.localeCompare(b)).map(([c, ys]) => `${c} n ${ys.length} ok ${pct(ys.reduce((s, y) => s + y, 0) / ys.length)}`).join(" · ")}`);
     } else if (type === "score") {
       L.push(`${name} (score):`);
       for (let b = 0; b < 5; b++) {
