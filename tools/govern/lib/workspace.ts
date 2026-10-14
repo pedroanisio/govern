@@ -1,12 +1,20 @@
-// The workspace govern works in: GOVERN_REPO, else the nearest govern.config.json above the cwd; never guessed. Every path
-// a lane, the queue, the processes or the tuning log live at comes from that file (relative to it) or an env override.
-import { existsSync, readFileSync } from "node:fs";
+// The workspace govern works in: GOVERN_REPO, else the nearest folder above the cwd that holds a govern.config.json or a
+// .govern/ folder; never guessed. A govern.config.json gives every path a lane, the queue, the processes or the tuning log
+// live at (relative to it); a .govern/ folder is the convention: each folder defaults inside it, and an optional
+// .govern/config.json (same keys, relative to .govern/) overrides. An env override wins over both.
+import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join, dirname, resolve } from "node:path";
 import { fail } from "./util.ts";
 import { obj, str, posInt, record, parseFile, type Shape } from "./shape.ts";
 import { RESOURCES } from "./resources.ts";
 
 export const CONFIG_FILE = "govern.config.json";
+/** The conventional workspace folder; its parent is the workspace root. */
+export const DOT_DIR = ".govern";
+/** Where each folder lives inside .govern/ when its config.json does not say. */
+const DOT_DEFAULTS = {
+  projects: "projects", queue: "queue", tuningLog: "tuning.jsonl", processes: "processes", state: "state", capabilities: "capabilities",
+} as const;
 
 /** The chat baseline `govern usage` compares against, and where it was measured. */
 export interface Baseline { mainMedianCtx: number; subagentMedianCtx: number; source: string }
@@ -33,10 +41,17 @@ const CONFIG = obj({}, {
   capabilities: str, resources: resourcesShape, allowances: (v: unknown) => v, state: str,
 });
 
-/** The nearest folder at or above `dir` that holds a govern.config.json, or undefined. */
+const isDir = (p: string): boolean => { try { return statSync(p).isDirectory(); } catch { return false; } };
+/** Which marker `dir` holds: "config" (govern.config.json), "dot" (a .govern/ folder) or none; both is refused. */
+function marker(dir: string): "config" | "dot" | undefined {
+  const cfg = existsSync(join(dir, CONFIG_FILE)), dot = isDir(join(dir, DOT_DIR));
+  if (cfg && dot) fail(`${dir} has both ${DOT_DIR}/ and ${CONFIG_FILE}: keep one (move the config's keys to ${DOT_DIR}/config.json, or remove ${DOT_DIR}/)`);
+  return cfg ? "config" : dot ? "dot" : undefined;
+}
+/** The nearest folder at or above `dir` that holds a govern.config.json or a .govern/ folder, or undefined. */
 function above(dir: string): string | undefined {
   for (let d = resolve(dir); ; d = dirname(d)) {
-    if (existsSync(join(d, CONFIG_FILE))) return d;
+    if (marker(d)) return d;
     if (dirname(d) === d) return undefined;
   }
 }
@@ -44,31 +59,55 @@ function above(dir: string): string | undefined {
 export const findRepo = (): string | undefined => (process.env.GOVERN_REPO ? resolve(process.env.GOVERN_REPO) : above(process.cwd()));
 /** The workspace folder; no workspace is a clear error, never a guess. */
 export const repo = (): string =>
-  findRepo() ?? fail(`no ${CONFIG_FILE} at or above ${process.cwd()}: put one in the workspace root, or set GOVERN_REPO to that folder`);
+  findRepo() ?? fail(`no ${CONFIG_FILE} or ${DOT_DIR}/ at or above ${process.cwd()}: run \`govern init\` in the workspace root, or set GOVERN_REPO to that folder`);
+/** True when the workspace follows the .govern/ convention (no govern.config.json). */
+const dotted = (): boolean => marker(repo()) === "dot";
+/** The workspace's config file: govern.config.json, or .govern/config.json (which need not exist). */
+export const configFile = (): string => (dotted() ? join(repo(), DOT_DIR, "config.json") : join(repo(), CONFIG_FILE));
+/** What the config's relative paths resolve against: the root, or .govern/. */
+const base = (): string => dirname(configFile());
+/** The conventional path of `key` inside .govern/, when the workspace follows the convention. */
+const dotDefault = (key: keyof typeof DOT_DEFAULTS): string | undefined => (dotted() ? join(base(), DOT_DEFAULTS[key]) : undefined);
+
+/** Make `dir` a workspace by the convention: .govern/ with its folders and a .gitignore for run state (lanes and their
+ *  ledgers are the record and stay tracked; locks and job logs are not). Refuses a folder that already is one. */
+export function initWorkspace(dir: string, o: { nested?: boolean } = {}): string {
+  const root = resolve(dir);
+  if (marker(root)) fail(`${root} is already a govern workspace`);
+  // A workspace below another shadows it for every command run under it: only on purpose.
+  const outer = dirname(root) === root ? undefined : above(dirname(root));
+  if (outer && !o.nested) fail(`${root} is inside the govern workspace at ${outer}: commands run under it would stop finding that one (pass --nested if that is the point)`);
+  const g = join(root, DOT_DIR);
+  for (const f of ["projects", "queue", "processes"]) mkdirSync(join(g, f), { recursive: true });
+  writeFileSync(join(g, ".gitignore"), "# run state: locks, instances, reservations, job logs\nstate/\nprojects/**/govern/jobs/\n");
+  return g;
+}
 
 const cache = new Map<string, WorkspaceConfig>();
 /** The workspace's govern.config.json, typed and strictly checked; {} when the workspace has none. */
 export function config(): WorkspaceConfig {
-  const r = repo(), f = join(r, CONFIG_FILE);
+  const f = configFile();
   const hit = cache.get(f);
   if (hit) return hit;
   const c: WorkspaceConfig = existsSync(f) ? parseFile(f, readFileSync(f, "utf8"), CONFIG) : {};
   cache.set(f, c);
   return c;
 }
-const abs = (v: string | undefined): string | undefined => (v === undefined ? undefined : resolve(repo(), v));
+const abs = (v: string | undefined): string | undefined => (v === undefined ? undefined : resolve(base(), v));
 /** A path the config must give: the error names the file and the key (an env override, when there is one, is tried first). */
 function required(key: keyof WorkspaceConfig & string, env?: string): string {
   const e = env ? process.env[env] : undefined;
   if (e) return e;
   const v = config()[key];
-  if (typeof v === "string") return resolve(repo(), v);
-  const f = join(repo(), CONFIG_FILE);
+  if (typeof v === "string") return resolve(base(), v);
+  const d = Object.hasOwn(DOT_DEFAULTS, key) ? dotDefault(key as keyof typeof DOT_DEFAULTS) : undefined;
+  if (d) return d;
+  const f = configFile();
   return fail(existsSync(f) ? `${f} has no "${key}"${env ? ` (or set ${env})` : ""}` : `no ${CONFIG_FILE} in ${repo()}: it must set "${key}"${env ? ` (or set ${env})` : ""}`);
 }
 /** An optional folder: the env override, else the config's key; undefined when neither, and with no workspace. */
 const optional = (key: "processes" | "workflow" | "prompts" | "capabilities" | "state", env: string): string | undefined =>
-  process.env[env] || (findRepo() ? abs(config()[key]) : undefined);
+  process.env[env] || (findRepo() ? abs(config()[key]) ?? (Object.hasOwn(DOT_DEFAULTS, key) ? dotDefault(key as keyof typeof DOT_DEFAULTS) : undefined) : undefined);
 
 export const projectsDir = (): string => required("projects", "GOVERN_PROJECTS");
 export const queueDir = (): string => required("queue", "GOVERN_QUEUE");
@@ -88,8 +127,8 @@ export const expandPlaceholders = (text: string, dir: string): string =>
 export function pathNamed(name: string): string {
   const p = config().paths;
   const v = p && Object.hasOwn(p, name) ? p[name] : undefined;
-  if (v === undefined) fail(`${join(repo(), CONFIG_FILE)} has no paths.${name} (a command uses {paths.${name}})`);
-  return resolve(repo(), v!);
+  if (v === undefined) fail(`${configFile()} has no paths.${name} (a command uses {paths.${name}})`);
+  return resolve(base(), v!);
 }
 /** The workspace's capability grants folder: GOVERN_CAPABILITIES, the config's "capabilities", else beside the lanes;
  *  undefined with no workspace (built-in capabilities only). */
@@ -104,5 +143,5 @@ export function declaredSetting(key: DeclaredKey): { file: string; value: unknow
   const r = findRepo();
   if (!r) return undefined;
   const v = config()[key];
-  return v === undefined ? undefined : { file: join(r, CONFIG_FILE), value: v };
+  return v === undefined ? undefined : { file: configFile(), value: v };
 }

@@ -9,7 +9,7 @@ import { randomUUID } from "node:crypto";
 import { GovernError, fail, parseArgs, opt, flag, many, flagNames, secondsOpt, nowIso, readJsonl, kTok, clip, type Args, type FlagSpec } from "./lib/util.ts";
 import { stagesOf, load, save, create, stageOf, brief, appendLedger, resolveFile, ledgerFile, projectDir, checkSlug, checkOf, pendingCheckChanges, blockedBy, laneState, laneSlugs, laneRows, stateFile, argvOf, commandLine, type Project, type Command } from "./lib/project.ts";
 import { processes, getProcess, processOf, listLine, show, manualOf } from "./lib/process.ts";
-import { repo, findRepo, projectsDir, packagesDir } from "./lib/workspace.ts";
+import { repo, findRepo, projectsDir, packagesDir, initWorkspace } from "./lib/workspace.ts";
 import { emptyRecord, PROTO } from "./lib/shape.ts";
 import * as jobs from "./lib/jobs.ts";
 import { ask, readPrompt, promptFiles } from "./lib/codex.ts";
@@ -627,6 +627,9 @@ const REAP_TIMEOUT = 120;
 const TASK_SUBS = "govern task send|list|show|inbox|close|reply|forward|dispatch|install-service (govern help)";
 
 export const COMMANDS: readonly Cmd[] = [
+  { name: "init", section: 0, flags: { bool: ["nested"] },
+    lines: [["[<dir>] [--nested]", "make <dir> (default: here) a workspace by the convention: .govern/ with projects, queue, processes; inside another workspace only with --nested"]],
+    run: (a) => out(`created ${initWorkspace(a._[1] ?? process.cwd(), { nested: flag(a, "nested") })}`) },
   { name: "new", section: 0, footer: false, flags: { value: ["kind", "process", "title", "lang", "parent"] },
     lines: [["<slug> (--process NAME | --kind long|short|ops) [--title T] [--lang en|pt-BR] [--parent <slug>]", "create a lane and print its brief"]],
     run: (a) => {

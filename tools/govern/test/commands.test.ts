@@ -1,9 +1,9 @@
 // The command table: one declaration per command drives dispatch, flag parsing and the help text.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { readFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
-import { makeEnv, govern, jsonl, childEnv, HERE } from "./helpers.ts";
+import { makeEnv, govern, jsonl, childEnv, HERE, tempDir } from "./helpers.ts";
 import { spawnSync } from "node:child_process";
 import { parseArgs, opt, flag, many } from "../lib/util.ts";
 import { COMMANDS, HELP, commandHelp } from "../govern.ts";
@@ -210,4 +210,26 @@ test("parseArgs: strict, typed accessors refuse a flag the spec does not declare
   assert.deepEqual(many(parseArgs([], { multi: ["m"] }, "t"), "m"), []);
   assert.equal(flag(parseArgs(["--b=false"], { bool: ["b"] }, "t"), "b"), false);
   assert.throws(() => parseArgs(["--=x"], {}, "t"), /t: unknown flag --=x \(takes no flags\)/);
+});
+
+test("govern init makes the cwd a .govern/ workspace that the next command finds with no config and no GOVERN_REPO", () => {
+  const dir = tempDir("init-cli");
+  const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith("GOVERN_"))) as NodeJS.ProcessEnv;
+  const run = (args: string[]) => spawnSync(BIN, args, { cwd: dir, env, encoding: "utf8", timeout: 60000 });
+  const first = run(["init"]);
+  assert.equal(first.status, 0, first.stderr);
+  assert.match(first.stdout, /\.govern/);
+  const made = run(["new", "lane", "--process", "dev"]);
+  assert.equal(made.status, 0, made.stderr);
+  assert.ok(existsSync(join(dir, ".govern", "projects", "lane", "govern.json")));
+  const again = run(["init"]);
+  assert.equal(again.status, 2);
+  assert.match(again.stderr, /already a govern workspace/);
+  const sub = join(dir, "deeper");
+  const inner = spawnSync(BIN, ["init", sub], { cwd: dir, env, encoding: "utf8", timeout: 60000 });
+  assert.equal(inner.status, 2);
+  assert.match(inner.stderr, /inside the govern workspace at .*--nested/);
+  const nested = spawnSync(BIN, ["init", sub, "--nested"], { cwd: dir, env, encoding: "utf8", timeout: 60000 });
+  assert.equal(nested.status, 0, nested.stderr);
+  assert.ok(existsSync(join(sub, ".govern", "projects")));
 });

@@ -3,6 +3,7 @@
 # NAME
 #     govern — run lanes of agent work (videos, software, ops, any process) through checked stages, with few tokens
 # SYNOPSIS
+#     govern init [DIR] [--nested]
 #     govern new SLUG (--process NAME | --kind long|short|ops) [--title T] [--lang L] [--parent SLUG]
 #     govern work SLUG STAGE [--engine claude|codex] [--open]  |  brief SLUG  |  status [SLUG]
 #     govern note SLUG TEXT  |  approve SLUG GATE --quote "owner's words"  |  done SLUG [--engine E]
@@ -40,8 +41,12 @@
 #     gate or a pending dependency refuses it, exit 2); going back is always allowed. `dep` refuses a cycle.
 #     `hook stop` is a Claude Code Stop hook: while the session's lane has a failing check it refuses
 #     the stop (exit 2, the check's log as the reason), at most 3 times per work segment.
-#     A govern.config.json in the working directory or above it ({"projects", "queue", "processes"}, relative
-#     to the file) makes any folder a govern workspace, so govern runs any group of agents, itself included.
+#     A .govern/ folder in the working directory or above it makes that folder a govern workspace (`govern init`
+#     creates one; inside another workspace only with --nested): lanes, queue, processes, capabilities, state and
+#     tuning.jsonl live inside it by convention, and an optional .govern/config.json (same keys, relative to .govern/)
+#     overrides any of them. A govern.config.json there instead ({"projects", "queue", "processes"}, relative to the
+#     file) names every path itself; a folder with both is refused. Either way govern runs any group of agents, itself
+#     included.
 #     The task queue carries messages between agents. `task send --to` accepts codex, claude, auto, owner or the
 #     name of a live Claude Code session (~/.claude/sessions); the dispatcher runs codex, claude and the runners named in
 #     QUEUE/config.json ({"name", "maxRuns" (default 4 runs per thread, then BLOCKED to the owner),
@@ -66,7 +71,7 @@
 #     0 ok · 1 a failed check (install-skill --check, a lane status or desk could not read, a failed exit check)
 #     · 2 usage or state error · 3 a Codex reply failed verification · a job's exit code for run/wait · 124 wait timed out
 # ENVIRONMENT
-#     GOVERN_REPO (the workspace; else the nearest govern.config.json above the cwd) · GOVERN_PROJECTS · GOVERN_CODEX_BIN · GOVERN_PYTHON · GOVERN_CTX_WARN (150000)
+#     GOVERN_REPO (the workspace; else the nearest .govern/ or govern.config.json above the cwd) · GOVERN_PROJECTS · GOVERN_CODEX_BIN · GOVERN_PYTHON · GOVERN_CTX_WARN (150000)
 #     GOVERN_CLAUDE_PROJECTS (~/.claude/projects) · GOVERN_CODEX_SESSIONS (~/.codex/sessions)
 #     GOVERN_PROCESSES (workspace processes folder) · GOVERN_QUEUE · GOVERN_WORKFLOW · GOVERN_PROMPTS · GOVERN_TUNING_LOG (each overrides govern.config.json) · GOVERN_SESSIONS_DIR (~/.claude/sessions) · GOVERN_AS (session name)
 # EXAMPLES

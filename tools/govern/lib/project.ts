@@ -3,7 +3,7 @@ import { existsSync, readFileSync, appendFileSync, mkdirSync, globSync } from "n
 import { join, dirname, resolve, relative } from "node:path";
 import { GovernError, fail, readJson, writeJson, nowIso, latest, plain, clip, readJsonl } from "./util.ts";
 import type { Source } from "./approval.ts";
-import { repo, projectsDir, workflowFile, config, CONFIG_FILE } from "./workspace.ts";
+import { repo, projectsDir, workflowFile, config, configFile } from "./workspace.ts";
 import { getProcess, processOf, processes, processName, manualOf } from "./process.ts";
 import { obj, arr, record, emptyRecord, str, name, posInt, literal, parseFile, reject, keyPath, type Shape } from "./shape.ts";
 
@@ -172,7 +172,7 @@ export function create(given: string, o: { kind?: string; process?: string; titl
 function warnMissingPaths(commands: Record<string, string[]>): void {
   const known = config().paths ?? {}, missing = new Set<string>();
   for (const argv of Object.values(commands)) for (const a of argv) for (const m of a.matchAll(/\{paths\.([^{}]+)\}/g)) if (!Object.hasOwn(known, m[1]!)) missing.add(m[1]!);
-  for (const n of missing) process.stderr.write(`warning: a command of this process uses {paths.${n}}, but ${join(repo(), CONFIG_FILE)} has no paths.${n} (it fails when run)\n`);
+  for (const n of missing) process.stderr.write(`warning: a command of this process uses {paths.${n}}, but ${configFile()} has no paths.${n} (it fails when run)\n`);
 }
 
 export const stagesOf = (p: Pick<Project, "process" | "kind">): string[] => processOf(p).stages.map((s) => s.name);
