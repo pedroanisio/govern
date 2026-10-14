@@ -719,7 +719,7 @@ const unitWord = (v: string, cmd = false) => {
   const q = v.replace(/\\/g, "\\\\").replace(/"/g, '\\"').replace(/%/g, "%%");
   return `"${cmd ? q.replaceAll("$", "$$$$") : q}"`;
 };
-/** The text of the user service: every Environment= and the ExecStart binary quoted, and the state folders of this shell passed on. */
+/** `govern remote pair | devices | revoke ID`, or with no subcommand serve the remote API (off loopback only over TLS). */
 function cmdRemote(a: Args): void {
   const sub = a._[1];
   if (["pair", "requests", "confirm", "refuse", "link"].includes(sub ?? "") && origin().kind !== "terminal")
@@ -788,6 +788,7 @@ function cmdRemote(a: Args): void {
   server.listen(port, host, () => out(`govern remote (${remote.devices().filter((d) => !d.revokedAt).length} paired devices) on ${tls ? "https" : "http"}://${host}:${port}${tls ? ` · certificate pin ${remote.certPin(tls.cert)}` : ""}`));
 }
 
+/** The text of the user service: every Environment= and the ExecStart binary quoted, and the state folders of this shell passed on. */
 function serviceUnit(bin: string, interval: string, reapEvery: number | undefined): string {
   const env: [string, string][] = [["PATH", process.env.PATH ?? ""], ["GOVERN_REPO", repo()], ["GOVERN_QUEUE", queue.QUEUE()]];
   for (const k of ["GOVERN_STATE", "GOVERN_PROJECTS"]) if (process.env[k]) env.push([k, process.env[k]!]);
