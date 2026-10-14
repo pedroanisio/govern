@@ -38,7 +38,7 @@ export function guardedPatternProblem(allow: string, effect: Effect): string | u
 }
 /** What Grok Build gets for a capability: `--tools` names (Claude-style names, as grok's headless mode takes them), `--allow` rules
  *  for the tools that need one under the permission mode, and the permission mode (default dontAsk: nothing prompts, an unlisted tool is refused). */
-export interface GrokMap { tools: string[]; allow?: string[]; permissionMode?: "acceptEdits" }
+export interface GrokMap { tools: string[]; allow?: string[]; /** `--deny` rules: they win over every allow. */ deny?: string[]; permissionMode?: "acceptEdits" }
 export interface CodexMap { sandbox?: "read-only" | "workspace-write"; config?: string[]; addDirs?: string[] }
 /** What the self-test asks and what govern checks in the reply; `{nonce}` is replaced by the run's random text. */
 export interface Probe { instruction: string; expect?: string; file?: { path: string; contains: string };
@@ -84,7 +84,7 @@ const secretName = (v: unknown, p: string): string => {
   return v;
 };
 const CODEX = obj({}, { sandbox: literal("read-only", "workspace-write"), config: arr(str), addDirs: arr(str) });
-const GROK = obj({ tools: arr(str, { nonEmpty: true }) }, { allow: arr(str), permissionMode: literal("acceptEdits") });
+const GROK = obj({ tools: arr(str, { nonEmpty: true }) }, { allow: arr(str), deny: arr(str), permissionMode: literal("acceptEdits") });
 const PROBE = obj({ instruction: str }, { expect: str, file: obj({ path: str, contains: str }), expectCmd: arr(str, { nonEmpty: true }) });
 const CAP = obj(
   { name: ident, description: str, call: str, claude: obj({ allow: arr(str) }, { permissionMode: literal("acceptEdits") }), effect: literal(...EFFECTS) },
@@ -189,18 +189,20 @@ export function codexSpec(reg: Registry, p: Profile): CodexSpec {
     config: [...new Set(cs.flatMap((c) => c.config ?? []))], addDirs: [...new Set(cs.flatMap((c) => c.addDirs ?? []))] };
 }
 
-export interface GrokSpec { tools: string[]; allow: string[]; acceptEdits: boolean }
-/** The Grok equivalent: every capability's tools and allow rules, and acceptEdits when any capability asks for it. */
+export interface GrokSpec { tools: string[]; allow: string[]; deny: string[]; acceptEdits: boolean }
+/** Denied in every grok run whatever the profile: MCP tools (a user's or project's MCP servers are an unreviewed capability) and the login file. */
+export const GROK_BASE_DENY = ["MCPTool(*)", "Read(**/auth.json)"];
+/** The Grok equivalent: every capability's tools, allow and deny rules, and acceptEdits when any capability asks for it. The base denies come last. */
 export function grokSpec(reg: Registry, p: Profile): GrokSpec {
   const cs = capsOf(reg, p).map((c) => c.grok!);
-  return { tools: [...new Set(cs.flatMap((c) => c.tools))], allow: [...new Set(cs.flatMap((c) => c.allow ?? []))], acceptEdits: cs.some((c) => c.permissionMode === "acceptEdits") };
+  return { tools: [...new Set(cs.flatMap((c) => c.tools))], allow: [...new Set(cs.flatMap((c) => c.allow ?? []))], deny: [...new Set([...cs.flatMap((c) => c.deny ?? []), ...GROK_BASE_DENY])], acceptEdits: cs.some((c) => c.permissionMode === "acceptEdits") };
 }
 /** The profile-specific part of a sealed grok argv (the dispatcher adds --prompt-file, --output-format, --model and --cwd):
- *  only the profile's tools, a permission mode that never prompts, and one --allow per rule. The environment half of the seal
+ *  only the profile's tools, a permission mode that never prompts, one --allow per rule and one --deny per rule. The environment half of the seal
  *  (private HOME, compat loaders off) is in queue.ts `grokEnv`. */
 export function grokArgs(reg: Registry, p: Profile): string[] {
   const s = grokSpec(reg, p);
-  return ["--tools", s.tools.join(","), "--permission-mode", s.acceptEdits ? "acceptEdits" : "dontAsk", ...s.allow.flatMap((a) => ["--allow", a])];
+  return ["--tools", s.tools.join(","), "--permission-mode", s.acceptEdits ? "acceptEdits" : "dontAsk", ...s.allow.flatMap((a) => ["--allow", a]), ...s.deny.flatMap((d) => ["--deny", d])];
 }
 
 // ---------------------------------------------------------------- identity of a definition
@@ -278,12 +280,12 @@ const codexLine = (reg: Registry, p: Profile): string => {
 };
 
 /** What the grok seal does not close, verified by `grok inspect` and probes (see docs/govern-features.md 3.12). */
-const GROK_PARTIAL = "not fully sealed (project-level config under the cwd, built-in agents and bundled skills still load)";
+const GROK_PARTIAL = "not fully sealed (project-level config under the cwd, built-in agents and bundled skills still load; no dollar cap, only --max-turns)";
 const grokLine = (reg: Registry, p: Profile): string => {
   const missing = capsOf(reg, p).filter((c) => !c.grok).map((c) => c.name);
   if (missing.length) return `not available on grok (${missing.join(", ")})`;
   const s = grokSpec(reg, p);
-  return `--tools ${s.tools.join(",")} · --permission-mode ${s.acceptEdits ? "acceptEdits" : "dontAsk"}${s.allow.length ? ` · ${s.allow.map((a) => `--allow ${a}`).join(" ")}` : ""}`;
+  return `--tools ${s.tools.join(",")} · --permission-mode ${s.acceptEdits ? "acceptEdits" : "dontAsk"}${s.allow.length ? ` · ${s.allow.map((a) => `--allow ${a}`).join(" ")}` : ""} · ${s.deny.map((d) => `--deny ${d}`).join(" ")}`;
 };
 
 export function listText(reg: Registry, queueDir: string, shadowing: string[]): string {
@@ -310,7 +312,7 @@ export function showText(reg: Registry, queueDir: string, p: Profile): string {
   }
   L.push(`claude: --allowedTools ${claudeSpec(reg, p).allow.join(" ")}${claudeSpec(reg, p).acceptEdits ? " · --permission-mode acceptEdits" : ""} · --setting-sources "" · --strict-mcp-config${p.mcpConfig ? ` · --mcp-config ${p.mcpConfig}` : " (no MCP servers)"}`);
   L.push(`codex: ${codexLine(reg, p)}${p.engine === "codex" ? ` · ${NOT_SEALED}` : ""}`);
-  L.push(`grok: ${grokLine(reg, p)}${p.engine === "grok" ? ` · private HOME · GROK_CLAUDE_MCPS_ENABLED=0 GROK_CLAUDE_SKILLS_ENABLED=0 GROK_CLAUDE_HOOKS_ENABLED=0 GROK_MEMORY=0 · ${GROK_PARTIAL}` : ""}`);
+  L.push(`grok: ${grokLine(reg, p)}${p.engine === "grok" ? ` · private HOME and GROK_HOME (login only) · GROK_(CLAUDE|CURSOR)_(AGENTS|HOOKS|MCPS|RULES|SKILLS)_ENABLED=0 GROK_MEMORY=0 · ${GROK_PARTIAL}` : ""}`);
   L.push(`classes: ${classesOf(reg, p).join(", ")}`);
   const secrets = [...new Set(caps.flatMap((c) => c.secrets))];
   L.push(`secrets: ${secrets.length ? `${secrets.join(", ")} (names only)` : "(none)"}`);

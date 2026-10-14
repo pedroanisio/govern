@@ -17,7 +17,7 @@
       "call": "Edit, Write (permission mode acceptEdits)",
       "claude": { "allow": ["Edit", "Write"], "permissionMode": "acceptEdits" },
       "codex": { "sandbox": "workspace-write" },
-      "grok": { "tools": ["Edit", "Write"], "allow": ["Edit", "Write"], "permissionMode": "acceptEdits" },
+      "grok": { "tools": ["Edit", "Write"], "allow": ["Edit(./**)", "Write(./**)"], "deny": ["Edit(**/.grok/**)", "Write(**/.grok/**)", "Edit(**/.mcp.json)", "Write(**/.mcp.json)", "Edit(**/.claude/**)", "Write(**/.claude/**)", "Edit(**/.cursor/**)", "Write(**/.cursor/**)"], "permissionMode": "acceptEdits" },
       "effect": "write",
       "probe": { "instruction": "Create the file written.txt in the current folder containing exactly the contents of probe.txt, then say in evidence what you wrote.", "file": { "path": "written.txt", "contains": "{nonce}" } }
     },

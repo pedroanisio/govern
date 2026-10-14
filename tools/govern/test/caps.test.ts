@@ -430,10 +430,11 @@ test("grok-read and grok-write are built in, listed with the engines each capabi
   assert.match(list, /^  grok-write\s+grok\s+read\+edit\s/m);
   const r = govern(e, ["caps", "grok-write"]).out;
   assert.match(r, /engine: grok/);
-  assert.match(r, /^grok: --tools Read,Grep,Glob,Edit,Write · --permission-mode acceptEdits · --allow Edit --allow Write · private HOME · GROK_CLAUDE_(MCPS|SKILLS|HOOKS)_ENABLED=0/m);
-  assert.match(govern(e, ["caps", "grok-read"]).out, /^grok: --tools Read,Grep,Glob · --permission-mode dontAsk · private HOME/m);
+  assert.match(r, /^grok: --tools Read,Grep,Glob,Edit,Write · --permission-mode acceptEdits · --allow Edit\(\.\/\*\*\) --allow Write\(\.\/\*\*\) · --deny Edit\(\*\*\/\.grok\/\*\*\).* · private HOME and GROK_HOME \(login only\) · GROK_\(CLAUDE\|CURSOR\)_\(AGENTS\|HOOKS\|MCPS\|RULES\|SKILLS\)_ENABLED=0/m);
+  assert.match(r, /no dollar cap/, "grok has no budget flag: the reservation is not a cap");
+  assert.match(govern(e, ["caps", "grok-read"]).out, /^grok: --tools Read,Grep,Glob · --permission-mode dontAsk · --deny MCPTool\(\*\).* · private HOME and GROK_HOME/m);
   assert.match(govern(e, ["caps", "researcher"]).out, /^grok: not available on grok \(web, gh-read\)/m);
-  assert.match(govern(e, ["caps", "grok-read"]).out, /^grok: .*not fully sealed \(project-level config under the cwd, built-in agents and bundled skills still load\)/m);
+  assert.match(govern(e, ["caps", "grok-read"]).out, /^grok: .*not fully sealed \(project-level config under the cwd, built-in agents and bundled skills still load; no dollar cap, only --max-turns\)/m);
 });
 
 test("a grok profile that holds a capability grok cannot honour fails to load with a clear message; grok names are reserved", () => {

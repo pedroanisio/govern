@@ -15,6 +15,7 @@ import { repo, projectsDir, queueDir, expandPlaceholders } from "./workspace.ts"
 import * as allowances from "./allowances.ts";
 import * as jobs from "./jobs.ts";
 import { cost } from "./usage.ts";
+import { prepareGrokHome, syncBackAuth } from "./grokhome.ts";
 import { parseEvents, execArgs, validate, type Usage } from "./codex.ts";
 import { type CheckDef, configChecks, declared, verify, type Verification } from "./replycheck.ts";
 import { registry, getProfile, writes, guardProblem, checkProblem, profileHash, claudeArgs, codexSpec, grokArgs, LEGACY_PROFILES, type Profile, type Registry } from "./caps.ts";
@@ -257,11 +258,12 @@ export function parseReply(text: string | undefined): { kind: string; summary: s
 /** The child must not think it runs inside this Claude Code session. */
 function childEnv(): NodeJS.ProcessEnv {
   const env = { ...process.env };
-  for (const k of Object.keys(env)) if (k === "CLAUDECODE" || k.startsWith("CLAUDE_CODE_") || k === "GROK_AGENT" || k === "GROK_SESSION_ID") delete env[k];
+  for (const k of Object.keys(env)) if (k === "CLAUDECODE" || k.startsWith("CLAUDE_CODE_")) delete env[k];
   return env;
 }
 
-export interface RunOut { text?: string; usage?: Usage & { costUsd?: number }; turns?: number; error?: string }
+/** spendUnknown: the run may have spent model money that no usage figure shows (a timeout, a missing or incomplete usage): it settles as reserved, never as 0. */
+export interface RunOut { text?: string; usage?: Usage & { costUsd?: number }; turns?: number; error?: string; spendUnknown?: boolean }
 
 export interface SealedOpts { model?: string; lastMessage: string; schema?: string; /** Claude only: the reserved model dollars, a hard cap on the run. */ maxBudgetUsd?: number }
 /** One headless session sealed to a profile: Claude gets only its tools, no settings sources and only its MCP config; Codex gets its
@@ -284,23 +286,36 @@ export function runSealed(reg: Registry, prof: Profile, cwd: string, p: string, 
 }
 
 /** The environment half of a grok seal. HOME is a private empty folder, so the user's skills (~/.agents), plugins and Claude settings
- *  permissions are not found; GROK_HOME stays the real one (it holds the login); the Claude-compat MCP, skill and hook loaders and memory
- *  are switched off. Verified with `grok inspect` and probes (docs/govern-features.md 3.12). Not closed: project-level config under the cwd. */
-export function grokEnv(privateHome: string): NodeJS.ProcessEnv {
-  return { ...childEnv(), HOME: privateHome, GROK_HOME: process.env.GROK_HOME ?? join(homedir(), ".grok"),
-    GROK_CLAUDE_MCPS_ENABLED: "0", GROK_CLAUDE_SKILLS_ENABLED: "0", GROK_CLAUDE_HOOKS_ENABLED: "0", GROK_MEMORY: "0" };
+ *  permissions are not found. GROK_HOME is govern's own (lib/grokhome.ts: the login and a minimal config, nothing else), so the user's
+ *  config.toml, plugins and MCP servers are not found either; GROK_CONFIG and GROK_CONFIG_PATH are removed so a parent cannot point
+ *  grok at another config. Every Claude/Cursor compat loader (agents, hooks, MCP servers, rules, skills) and memory are switched off,
+ *  and the markers of a grok or Claude shell are dropped. Verified with `grok inspect` and probes (docs/govern-features.md 3.12).
+ *  Not closed: project-level config under the cwd. */
+export function grokEnv(privateHome: string, home: string): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = { ...childEnv(), HOME: privateHome, GROK_HOME: home, GROK_MEMORY: "0" };
+  for (const k of ["GROK_CONFIG", "GROK_CONFIG_PATH", "GROK_AGENT", "GROK_SESSION_ID"]) delete env[k];
+  for (const v of ["CLAUDE", "CURSOR"]) for (const k of ["AGENTS", "HOOKS", "MCPS", "RULES", "SKILLS"]) env[`GROK_${v}_${k}_ENABLED`] = "0";
+  return env;
 }
 
-/** One sealed `grok --prompt-file` run: the prompt in a temp file, a private HOME, both removed afterwards. */
+/** Most model turns a sealed grok run may take: grok has no dollar cap, so this is the only bound besides the timeout. */
+const grokMaxTurns = (): string => {
+  const n = Number(process.env.GOVERN_GROK_MAX_TURNS);
+  return String(Number.isInteger(n) && n > 0 ? n : 25);
+};
+
+/** One sealed `grok --prompt-file` run: the prompt in a temp file, a private HOME removed afterwards, and govern's private GROK_HOME. */
 function runGrok(reg: Registry, prof: Profile, cwd: string, p: string, timeoutSec: number, o: SealedOpts): RunOut {
   const base = mkdtempSync(join(tmpdir(), "govern-grok-"));
   try {
     const home = join(base, "home"), promptFile = join(base, "prompt.txt");
     mkdirSync(home);
     writeFileSync(promptFile, p);
+    const ghome = prepareGrokHome();
     const model = o.model || prof.model || process.env.GOVERN_QUEUE_GROK_MODEL;
-    const args = ["--prompt-file", promptFile, "--output-format", "json", ...(model ? ["--model", model] : []), ...grokArgs(reg, prof), "--cwd", cwd];
-    const r = spawnSync(process.env.GOVERN_GROK_BIN ?? "grok", args, { cwd, encoding: "utf8", timeout: timeoutSec * 1000, maxBuffer: 64 << 20, env: grokEnv(home) });
+    const args = ["--prompt-file", promptFile, "--output-format", "json", ...(model ? ["--model", model] : []), ...grokArgs(reg, prof), "--max-turns", grokMaxTurns(), "--cwd", cwd];
+    const r = spawnSync(process.env.GOVERN_GROK_BIN ?? "grok", args, { cwd, encoding: "utf8", timeout: timeoutSec * 1000, maxBuffer: 64 << 20, env: grokEnv(home, ghome) });
+    try { syncBackAuth(); } catch { /* the login stays where grok left it */ }
     const res = grokResult(r.stdout, r.status, r.stderr, r.error, timeoutSec);
     return res.error ? { ...res, error: `grok: ${res.error}` } : res;
   } finally { rmSync(base, { recursive: true, force: true }); }
@@ -322,15 +337,23 @@ function runGrok(reg: Registry, prof: Profile, cwd: string, p: string, timeoutSe
  * end_turn (grok reports "cancelled" when a permission prompt is auto-denied headless) is an error; the text still goes
  * through parseReply and the reply check before anyone reads it.
  */
-function grokResult(stdout: string | undefined, status: number | null, stderr: string | undefined, error: Error | undefined, timeoutSec: number): RunOut {
-  if ((error as NodeJS.ErrnoException | undefined)?.code === "ETIMEDOUT") return { error: `timed out after ${timeoutSec}s` };
+export function grokResult(stdout: string | undefined, status: number | null, stderr: string | undefined, error: Error | undefined, timeoutSec: number): RunOut {
+  const code = (error as NodeJS.ErrnoException | undefined)?.code;
+  if (code === "ETIMEDOUT") return { error: `timed out after ${timeoutSec}s`, spendUnknown: true };
+  // grok never started: nothing was spent
+  if (code === "ENOENT" || code === "EACCES") return { error: error!.message };
   let o: any;
-  try { o = JSON.parse(stdout ?? ""); } catch { return { error: `no JSON result (exit ${status}): ${clip(stderr || stdout || "", 300)}` }; }
-  if (o === null || typeof o !== "object") return { error: `no JSON result (exit ${status}): not an object` };
-  const u = o.usage ?? {};
+  try { o = JSON.parse(stdout ?? ""); } catch { return { error: `no JSON result (exit ${status}): ${clip(stderr || stdout || "", 300)}`, spendUnknown: true }; }
+  if (o === null || typeof o !== "object") return { error: `no JSON result (exit ${status}): not an object`, spendUnknown: true };
+  // grok's own error json: {"type":"error","message":...}
+  if (o.type === "error") return { error: typeof o.message === "string" && o.message ? o.message : `exit ${status}`, spendUnknown: true };
+  const u = o.usage;
+  // Usage that is absent, flagged incomplete or with a partial cost is not a measurement: never record it as zeros, and what the run
+  // spent is unknown (settled as reserved).
+  const known = u !== null && typeof u === "object" && o.usage_is_incomplete !== true && o.cost_is_partial !== true;
   // The CLI's input_tokens EXCLUDES cache reads (the session store's include them); the total is the sum, as for claude.
-  const usage = { input: (u.input_tokens ?? 0) + (u.cache_read_input_tokens ?? 0) + (u.cache_creation_input_tokens ?? 0), cached: u.cache_read_input_tokens ?? 0, cacheWrite: u.cache_creation_input_tokens ?? 0, output: u.output_tokens ?? 0, reasoning: u.reasoning_tokens ?? 0, ...(typeof o.total_cost_usd === "number" ? { costUsd: o.total_cost_usd } : {}) };
-  const out: RunOut = { text: typeof o.text === "string" ? o.text : undefined, turns: o.num_turns, usage };
+  const usage = known ? { input: (u.input_tokens ?? 0) + (u.cache_read_input_tokens ?? 0) + (u.cache_creation_input_tokens ?? 0), cached: u.cache_read_input_tokens ?? 0, cacheWrite: u.cache_creation_input_tokens ?? 0, output: u.output_tokens ?? 0, reasoning: u.reasoning_tokens ?? 0, ...(typeof o.total_cost_usd === "number" ? { costUsd: o.total_cost_usd } : {}) } : undefined;
+  const out: RunOut = { text: typeof o.text === "string" ? o.text : undefined, turns: o.num_turns, ...(usage ? { usage } : { spendUnknown: true }) };
   if (error) out.error = error.message;
   else if (status !== 0) out.error = `exit ${status}: ${clip(stderr ?? "", 300)}`;
   else if (o.stopReason !== "end_turn") out.error = `stopped with ${o.stopReason ?? "no stopReason"}${typeof o.text === "string" && o.text ? `: ${clip(o.text, 200)}` : ""}`;
@@ -369,8 +392,9 @@ function threadRuns(m: Message): number {
   return thread(m).filter((x) => x.id !== m.id && x.result?.agent && !x.result.closedBy).length;
 }
 
-/** What a run cost in model dollars: the runner's own figure, else the token price of the model; a run that failed with no usage cost nothing; otherwise unknown (charged as reserved). */
-function usdOf(r: RunOut, model: string | undefined): allowances.Actual {
+/** What a run cost in model dollars: the runner's own figure, else the token price of the model; a run that failed before it started cost nothing; a run flagged spendUnknown or otherwise unknown is charged as reserved. */
+export function usdOf(r: RunOut, model: string | undefined): allowances.Actual {
+  if (r.spendUnknown) return {};
   const u = r.usage;
   if (u?.costUsd != null) return { usd: u.costUsd };
   const priced = u && model ? cost({ model, input: Math.max(0, u.input - u.cached - u.cacheWrite), cacheRead: u.cached, cacheWrite: u.cacheWrite, output: u.output }) : undefined;
@@ -384,6 +408,9 @@ function tellHold(m: Message, h: allowances.Refusal): void {
   if (all().some((x) => x.m.from === "dispatcher" && x.m.kind === "BLOCKED" && x.m.replyTo === m.id && x.m.summary === summary)) return;
   send({ project: m.project, task: m.task, kind: "BLOCKED", from: "dispatcher", to: h.owner, summary, body: `${m.id} (${m.kind} from ${m.from} to ${m.to}) was not run and stays open.\n${h.text}`, files: [], replyTo: m.id, access: "read-only" });
 }
+
+/** How long one dispatched run may take: GOVERN_QUEUE_TIMEOUT_SEC, else 900 s. */
+const dispatchTimeout = (): number => { const n = Number(process.env.GOVERN_QUEUE_TIMEOUT_SEC); return Number.isFinite(n) && n > 0 ? n : 900; };
 
 /** Run every open message addressed to a runner, oldest first, at most `max`. Returns what happened, one line each. */
 export function dispatch(o: { max?: number; only?: string; timeoutSec?: number } = {}): string[] {
@@ -445,8 +472,8 @@ export function dispatch(o: { max?: number; only?: string; timeoutSec?: number }
     const cap = allowances.reservedUsd(taskId); // the reservation is a cap, not a hint
     try {
       r = sealed
-        ? runSealed(reg, sealed, cwd, prompt(m), o.timeoutSec ?? 900, { lastMessage: join(QUEUE(), "claimed", `${m.id}.reply.txt`), schema: REPLY_SCHEMA, ...(cap !== undefined ? { maxBudgetUsd: cap } : {}) })
-        : runConfigured(def as RunnerDef, m, prompt(m), o.timeoutSec ?? 900);
+        ? runSealed(reg, sealed, cwd, prompt(m), o.timeoutSec ?? dispatchTimeout(), { lastMessage: join(QUEUE(), "claimed", `${m.id}.reply.txt`), schema: REPLY_SCHEMA, ...(cap !== undefined ? { maxBudgetUsd: cap } : {}) })
+        : runConfigured(def as RunnerDef, m, prompt(m), o.timeoutSec ?? dispatchTimeout());
     } catch (e) { allowances.release(taskId); throw e; }
     allowances.settle(taskId, usdOf(r, sealed?.model));
     const reply = r.error ? { error: r.error } : parseReply(r.text);
