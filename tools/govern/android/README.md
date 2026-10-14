@@ -7,10 +7,11 @@ alerts from the phone. It speaks `govern-remote/2`, the protocol in [REMOTE.md](
 
 ## What it shows
 
-- **Operation**: the desk overview, lane progress and telemetry for the selected host.
+- **Operation**: sessions across all hosts, online/cache counts, and evidence cards for current-stage gates awaiting the person. The plus button creates a session using a scoped lane and an engine from that host’s desk.
 - **Hosts**: paired hosts with live, cached or offline state, identity, scope and certificate pin; select, pair or forget a host.
-- **Decisions**: unapproved non-policy gates owned by the paired person, across unfinished lanes on all hosts with a live or cached desk.
-- **Activity**: recent ledger entries and notes for the selected host, newest first. Opening this tab fetches lane details when live.
+- **Decisions**: the same current-stage gate cards across hosts. Open a card to inspect the artifact version and SHA, check evidence and job logs, and approve or request changes with your own words.
+- **Activity**: lane decisions, ledger entries and notes for the selected host, newest first. Opening this tab fetches lane details when live.
+- **Session**: stage stepper, artifacts, jobs, last message and its verification label, run state, and queued or interrupting guidance. Logs, artifacts and additional lane actions remain accessible.
 - **A lane**: stages, gates, alerts, human tasks, notes and ledger; Back returns to the previous tab.
 
 An approval needs your own words and a confirmation with a strong biometric or the screen lock. The phone signs the
@@ -33,7 +34,7 @@ are written as JSON under `noBackupFilesDir/cache/<hostId>/`, using a synced tem
 Snapshots load on startup or when opening a lane. A cached banner shows the snapshot timestamp when offline;
 a lane never fetched on this phone cannot be opened offline. Corrupt snapshots report an error.
 
-FIELD follows the system dark/light setting, with rounded cards and monospace codes, pins and ledger text.
+FIELD follows the system dark/light setting. Light mode uses cream, white cards, deep green and lime; dark mode retains the dark palette. Codes, pins and ledger text use monospace.
 English is the default language; Brazilian Portuguese follows the device locale. Both resource sets have matching
 keys and format arguments, enforced by `StringsTest`. Server-authored content and protocol error details remain
 in the language sent by the host.
@@ -45,7 +46,7 @@ viewer, plus lane checks, jobs, artifacts and decisions. `GovernClient.session(i
 by default (1..100). `job(lane, id, lines)` reads the last 100 log lines by default (1..1000).
 `artifact(lane, name, sink)` streams bytes to an OutputStream and returns `ArtifactDownload(bytes, sha256, mediaType)`.
 It leaves the sink open and throws ProtocolException if the computed SHA-256 differs from Govern-Artifact-Sha256;
-use the downloaded bytes only after the call succeeds. These APIs do not require a UI change.
+use the downloaded bytes only after the call succeeds. The session and decision screens consume these reads.
 
 The strict parser covers desk, lane, session and job fixtures. EndToEndTest exercises the new reads against the real
 server and tests refusal of an incorrect artifact digest.
@@ -64,7 +65,7 @@ changes, reviewed, instruct and session approve nothing and require the same con
 `GovernClient.act` returns `ActionResult(ok, lane: LaneDetail?, session: SessionDetail?)`. Only instruct/session return
 a session; a lane-less instruction returns a null lane. Shared fixtures cover all three combinations. ActionsTest checks
 exact encodings and bounds. EndToEndTest uses the real server and fake echo adapter, polling conversation files until
-background runs complete. These additions are protocol APIs; screens consume them separately.
+background runs complete. The screens submit these actions only after device confirmation and display the returned session/run state.
 
 ## Build
 
@@ -122,10 +123,31 @@ and gets 403 for other lanes. `PairResponse` from the original flow also include
 
 `PairingLinks.parse` accepts `govern remote link` links without a `code`, with an optional `lane`; `requestPairing`
 is true for these links. Its `code` is empty so existing form consumers remain compatible. Links with `code=` keep
-the original flow; an explicitly empty code is invalid. These are protocol APIs for the pairing screen; this change
-does not add a phone-initiated pairing screen or automatically send requests when a link opens.
+the original flow; an explicitly empty code is invalid. Opening a link without a code starts the request screen. The phone displays the requested host and scope, a grouped comparison code, and a countdown. Polling stops at the injected-clock deadline or a terminal response; Cancel posts to the cancellation route. Confirmed credentials are sealed in HostStore, then Operation opens. Refusal, expiry and cancellation are displayed. The request secret stays in memory; process death requires a new request after the old one expires.
 
 ## Requirements
 
 Android 11 (API 30) or newer, with a screen lock. The app connects only over HTTPS, except to `localhost`,
 `127.0.0.1` and the emulator's `10.0.2.2` for development (`adb reverse tcp:5002 tcp:5002`).
+
+## Evidence and session interaction
+
+Artifact downloads go through the authenticated client, verify the response SHA and the digest displayed on screen,
+and only then become readable files under `cacheDir/artifacts/<hostId>/<sha256>/<name>`.
+A non-exported FileProvider grants temporary read access to an ACTION_VIEW handler; only the artifact cache is shared.
+Image and video previews use bounded thumbnail decoding. Opening evidence from a decision confirms and signs a
+`reviewed` action before launching the viewer. A review badge comes from the server’s reviews for that digest and person.
+Approve and changes bind the displayed artifact name and SHA to the typed quote. A 409 reloads the lane and asks the
+person to review again. Neither action publishes anything automatically. Gates without artifacts explicitly say so. Session and decision heroes select the most recently modified artifact,
+independent of the server’s alphabetical listing; the artifact list still exposes every file.
+
+Session details are retained in memory while the app runs; offline reopening after process death shows the desk’s last
+message and cached lane evidence, not a fabricated full transcript. Job logs require a live host and show up to 1000
+lines. Stream updates refresh an open session. All instructions, session creation and review actions require the same
+per-use biometric or credential confirmation as approval. Queue is the default instruction mode.
+
+`FieldViewModelsTest` uses the shared lane, session and desk fixtures for current-gate filtering, stage states, evidence,
+review identity, session status precedence, cross-host counts, scope, initials, quote bounds, locale plurals and an
+injected-clock expiry boundary. Decision eligibility also covers live state, busy state, scope, owner and gate
+dependencies. `AppModelContractTest` checks the Application constructor required by Android’s default ViewModel factory
+while retaining clock injection. Device rendering, authentication and external viewer dispatch require Android testing.

@@ -16,26 +16,7 @@ import java.io.File
 import java.time.Instant
 import java.util.UUID
 
-sealed interface Link {
-    data object Connecting : Link
-    data object Live : Link
-    data class Retrying(val seconds: Long, val reason: String) : Link
-    data class Stopped(val reason: String) : Link
-}
-
-data class HostState(val host: Host, val desk: Desk? = null, val link: Link = Link.Connecting, val cachedLanes: Map<String, CachedLane> = emptyMap())
-data class ActivityEntry(val lane: String, val at: String, val kind: String, val text: String)
-
-data class PendingDecision(val host: Host, val lane: LaneSummary, val gate: GateView)
-
-fun pendingDecisions(hosts: List<HostState>): List<PendingDecision> = hosts.flatMap { state ->
-    state.desk?.lanes.orEmpty().filter { it.state != LaneState.FINISHED }.flatMap { lane ->
-        lane.gates.filter { !it.approved && !it.policy && it.owner == state.host.person }
-            .map { PendingDecision(state.host, lane, it) }
-    }
-}
-
-class AppModel(app: Application) : AndroidViewModel(app) {
+class AppModel @JvmOverloads constructor(app: Application, private val clock: java.time.Clock = java.time.Clock.systemUTC()) : AndroidViewModel(app) {
     private val store = HostStore(app)
     private val cache = DeskCache(File(app.noBackupFilesDir, "cache"))
     private val _hosts = MutableStateFlow(store.all().map { HostState(it) })
@@ -85,10 +66,11 @@ class AppModel(app: Application) : AndroidViewModel(app) {
     fun isLive(id: String): Boolean = state(id)?.link == Link.Live
     fun consumeMessage() { _message.value = null }
     fun consumePrefill() { _prefill.value = null }
-    fun beginPairing() { _pairing.value = true; closeLane(); activityJob?.cancel() }
-    fun cancelPairing() { if (!_busy.value) { _pairing.value = false; _prefill.value = null } }
+    fun beginPairing() { closeSession(); _pairing.value = true; closeLane(); activityJob?.cancel() }
+    fun cancelPairing() { if (pairJob?.isActive == true) { cancelRequest(); return }; if (!_busy.value) { _pairing.value = false; _prefill.value = null } }
 
     fun selectHost(id: String) {
+        closeSession()
         store.select(id)
         closeLane()
         selected.value = id
@@ -101,7 +83,8 @@ class AppModel(app: Application) : AndroidViewModel(app) {
             is LinkOffer.Fill -> {
                 _prefill.value = offer.link
                 beginPairing()
-                report(text(R.string.check_host, offer.link.url))
+                if (offer.link.requestPairing) requestPair(offer.link, android.os.Build.MODEL.orEmpty())
+                else report(text(R.string.check_host, offer.link.url))
             }
             is LinkOffer.Refused -> report(offer.reason)
         }
@@ -120,7 +103,11 @@ class AppModel(app: Application) : AndroidViewModel(app) {
                     val link = PairingLinks.parse(address)
                     Triple(link.url, link.code, link.pin)
                 } else Triple(PairingLinks.serverUrl(address), codeField.trim(), pinField.trim().ifEmpty { null }?.let(PairingLinks::pin))
-                require(code.isNotEmpty()) { text(R.string.enter_code) }
+                if (code.isEmpty()) {
+                    _busy.value = false
+                    requestPair(PairingLink(url, "", pin, if (address.startsWith("govern-remote:")) PairingLinks.parse(address).lane else null), deviceName)
+                    return@launch
+                }
                 val previous = _hosts.value.firstOrNull { it.host.baseUrl == url }?.host
                 val id = previous?.id ?: UUID.randomUUID().toString()
                 val alias = previous?.keyAlias ?: "govern-remote-device-$id"
@@ -137,8 +124,8 @@ class AppModel(app: Application) : AndroidViewModel(app) {
                     }
                     val reply = c.pair(code, deviceName.trim().ifEmpty { text(R.string.android_device) }, publicKey)
                     cache.forget(id)
-                    store.save(Host(id, java.net.URI(url).host ?: url, url, reply.deviceId, reply.person, pin, null,
-                        Instant.now().toString(), "", alias), reply.token)
+                    store.save(Host(id, reply.host, url, reply.deviceId, reply.person, pin, null,
+                        clock.instant().toString(), "", alias), reply.token)
                 }
                 saved = true
                 _hosts.update { old -> store.all().map { h -> if (h.id == host.id) HostState(h) else old.firstOrNull { it.host.id == h.id } ?: HostState(h) } }
@@ -168,6 +155,8 @@ class AppModel(app: Application) : AndroidViewModel(app) {
                 streams[id]?.cancelAndJoin()
                 if (selected.value == id) { laneRequest?.cancelAndJoin(); activityJob?.cancelAndJoin() }
                 withContext(Dispatchers.IO) { store.forget(id) }
+                sessionCache.keys.removeAll { it.first == id }
+                closeSession()
                 _hosts.update { it.filterNot { h -> h.host.id == id } }
                 if (selected.value == id) {
                     closeLane(); activityJob?.cancel(); _activity.value = emptyList(); selected.value = store.selected()
@@ -248,7 +237,7 @@ class AppModel(app: Application) : AndroidViewModel(app) {
                 if (isLive(host.id)) {
                     val detail = withContext(Dispatchers.IO) { client(host).lane(slug) }
                     _lane.value = detail
-                    val at = Instant.now().toString()
+                    val at = clock.instant().toString()
                     _laneAt.value = at
                     withContext(Dispatchers.IO) { saveLane(host, detail, at) }
                 } else if (cached == null) report(text(R.string.no_cached_lane))
@@ -268,6 +257,7 @@ class AppModel(app: Application) : AndroidViewModel(app) {
                 fun publish() {
                     if (selected.value != host.id) return
                     val entries = details.flatMap { lane ->
+                        lane.decisions.map { ActivityEntry(lane.slug, it.t, it.kind, "${it.by}: ${it.quote}") } +
                         lane.ledger.map { ActivityEntry(lane.slug, it.t, it.kind, it.text) } +
                             lane.notes.map { ActivityEntry(lane.slug, it.at, "", it.text) }
                     } + state(host.id)?.desk?.lanes.orEmpty().mapNotNull { lane ->
@@ -279,7 +269,7 @@ class AppModel(app: Application) : AndroidViewModel(app) {
                 if (isLive(host.id)) for (lane in state(host.id)?.desk?.lanes.orEmpty()) {
                     ensureActive()
                     val detail = withContext(Dispatchers.IO) { client(host).lane(lane.slug) }
-                    withContext(Dispatchers.IO) { saveLane(host, detail, Instant.now().toString()) }
+                    withContext(Dispatchers.IO) { saveLane(host, detail, clock.instant().toString()) }
                     details.removeAll { it.slug == detail.slug }
                     details.add(detail)
                     publish()
@@ -309,14 +299,218 @@ class AppModel(app: Application) : AndroidViewModel(app) {
                 val result = withContext(Dispatchers.IO) { client(host).act(action) }
                 val detail: LaneDetail? = result.lane
                 if (detail != null) {
-                    val at = Instant.now().toString()
+                    val at = clock.instant().toString()
                     withContext(Dispatchers.IO) { saveLane(host, detail, at) }
                     if (selected.value == host.id && laneSlug == detail.slug) { _lane.value = detail; _laneAt.value = at }
                 }
+                result.session?.let { session ->
+                    if (selected.value == host.id) {
+                        _session.value = session
+                        sessionId = session.session.id
+                        _newSession.value = false
+                        session.session.lane?.let(::openLane)
+                    }
+                }
+                val body = WireJson.parseToJsonElement(action.body.toString(Charsets.UTF_8)) as kotlinx.serialization.json.JsonObject
+                if ((body["action"] as? kotlinx.serialization.json.JsonPrimitive)?.content == "reviewed") {
+                    pendingOpen?.takeIf { it.first.contentEquals(action.body) }?.let { (_, file, mediaType) ->
+                        pendingOpen = null
+                        launchArtifact(file, mediaType)
+                    }
+                }
                 report(done)
             } catch (e: CancellationException) { throw e }
-            catch (e: Exception) { report(describe(e)) }
+            catch (e: Exception) {
+                if (e is ServerException && e.status == 409) {
+                    if (selected.value == host.id) refreshLane()
+                    report(text(R.string.evidence_changed))
+                } else report(describe(e))
+            }
             finally { _busy.value = false }
+        }
+    }
+
+    private val _session = MutableStateFlow<SessionDetail?>(null)
+    val session: StateFlow<SessionDetail?> = _session
+    private var sessionId: String? = null
+    private var sessionRequest: Job? = null
+    private val sessionCache = mutableMapOf<Pair<String, String>, SessionDetail>()
+    private val _newSession = MutableStateFlow(false)
+    val newSession: StateFlow<Boolean> = _newSession
+    private val _log = MutableStateFlow<JobDetail?>(null)
+    val log: StateFlow<JobDetail?> = _log
+    private var logRequest: Job? = null
+    private val _decision = MutableStateFlow<String?>(null)
+    val decision: StateFlow<String?> = _decision
+    private val _artifacts = MutableStateFlow(false)
+    val artifacts: StateFlow<Boolean> = _artifacts
+
+    fun beginSession() { closeSession(); closeLane(); _newSession.value = true }
+    fun closeSession() {
+        sessionRequest?.cancel(); logRequest?.cancel(); sessionId = null; _session.value = null
+        _log.value = null; _decision.value = null; _newSession.value = false; _artifacts.value = false
+    }
+    fun openSession(host: Host, summary: SessionSummary) {
+        if (selected.value != host.id) selectHost(host.id)
+        closeSession(); closeLane(); sessionId = summary.id
+        _session.value = sessionCache[host.id to summary.id] ?: SessionDetail(PROTOCOL_MAJOR, summary, listOfNotNull(summary.lastMessage), emptyList())
+        summary.lane?.let(::openLane)
+        refreshSession()
+    }
+    fun refreshSession() {
+        val host = selectedHost() ?: return
+        val id = sessionId ?: return
+        if (!isLive(host.id)) return
+        sessionRequest?.cancel()
+        sessionRequest = viewModelScope.launch {
+            try {
+                val detail = withContext(Dispatchers.IO) { client(host).session(id) }
+                sessionCache[host.id to id] = detail
+                if (selected.value == host.id && sessionId == id) _session.value = detail
+            } catch (e: CancellationException) { throw e }
+            catch (e: Exception) { report(describe(e)) }
+        }
+    }
+    fun openDecision(gate: String) { _decision.value = gate }
+    fun closeDecision() { _decision.value = null }
+    fun showArtifacts(show: Boolean) { _artifacts.value = show }
+    fun closeLog() { logRequest?.cancel(); _log.value = null }
+    fun openLog(slug: String, id: String) {
+        val host = selectedHost() ?: return
+        if (!isLive(host.id)) { report(text(R.string.live_required)); return }
+        logRequest?.cancel()
+        logRequest = viewModelScope.launch {
+            try { _log.value = withContext(Dispatchers.IO) { client(host).job(slug, id, 1000) } }
+            catch (e: CancellationException) { throw e }
+            catch (e: Exception) { report(describe(e)) }
+        }
+    }
+    fun now(): Instant = clock.instant()
+
+    suspend fun loadDecisionEvidence() {
+        for (decision in pendingDecisions(_hosts.value).distinctBy { it.host.id to it.lane.slug }) {
+            if (!isLive(decision.host.id)) continue
+            try {
+                withContext(Dispatchers.IO) {
+                    val detail = client(decision.host).lane(decision.lane.slug)
+                    saveLane(decision.host, detail, clock.instant().toString())
+                }
+            } catch (e: CancellationException) { throw e }
+            catch (e: Exception) { report(describe(e)) }
+        }
+    }
+
+    private var pendingOpen: Triple<ByteArray, File, String>? = null
+    suspend fun download(host: Host, slug: String, artifact: ArtifactView): File = withContext(Dispatchers.IO) {
+        require(Regex("[A-Za-z0-9][A-Za-z0-9._-]{0,127}").matches(artifact.name))
+        require(Regex("[0-9a-f]{64}").matches(artifact.sha256))
+        val dir = File(getApplication<Application>().cacheDir, "artifacts/${host.id}/${artifact.sha256}")
+        check(dir.isDirectory || dir.mkdirs())
+        val target = File(dir, artifact.name)
+        val temp = File.createTempFile("download-", ".part", dir)
+        try {
+            val got = temp.outputStream().use { client(host).artifact(slug, artifact.name, it) }
+            if (got.sha256 != artifact.sha256) throw ServerException(409, text(R.string.evidence_changed))
+            java.nio.file.Files.move(temp.toPath(), target.toPath(), java.nio.file.StandardCopyOption.REPLACE_EXISTING)
+            target
+        } finally { temp.delete() }
+    }
+    private fun launchArtifact(file: File, mediaType: String) {
+        val app = getApplication<Application>()
+        val uri = androidx.core.content.FileProvider.getUriForFile(app, "${app.packageName}.artifacts", file)
+        val intent = android.content.Intent(android.content.Intent.ACTION_VIEW).setDataAndType(uri, mediaType)
+            .addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION or android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+        app.startActivity(intent)
+    }
+    fun openArtifact(slug: String, artifact: ArtifactView, review: Boolean, confirm: Confirm) {
+        val host = selectedHost() ?: return
+        if (_busy.value || !isLive(host.id)) { report(text(R.string.live_required)); return }
+        _busy.value = true
+        viewModelScope.launch {
+            try {
+                val file = download(host, slug, artifact)
+                if (selected.value != host.id) return@launch
+                if (review) {
+                    val body = Actions.reviewed(slug, ArtifactRef(artifact.name, artifact.sha256))
+                    pendingOpen = Triple(body, file, artifact.mediaType)
+                    confirm(text(R.string.open_file), text(R.string.review_digest, shortDigest(artifact.sha256)), body, text(R.string.reviewed_you))
+                } else launchArtifact(file, artifact.mediaType)
+            } catch (e: CancellationException) { throw e }
+            catch (e: Exception) {
+                if (e is ServerException && e.status == 409) { refreshLane(); report(text(R.string.evidence_changed)) }
+                else report(describe(e))
+            } finally { _busy.value = false }
+        }
+    }
+
+    private val _pairRequest = MutableStateFlow<PairingProgress?>(null)
+    val pairRequest: StateFlow<PairingProgress?> = _pairRequest
+    private var pairJob: Job? = null
+    private var pairCancel = false
+    fun dismissPairRequest() { if (pairJob?.isActive != true) { _pairRequest.value = null; _prefill.value = null } }
+    fun cancelRequest() { pairCancel = true }
+
+    private fun requestPair(link: PairingLink, name: String) {
+        if (pairJob?.isActive == true) return
+        pairCancel = false
+        _busy.value = true
+        pairJob = viewModelScope.launch {
+            val previous = _hosts.value.firstOrNull { it.host.baseUrl == link.url }?.host
+            val id = previous?.id ?: UUID.randomUUID().toString()
+            val alias = previous?.keyAlias ?: "govern-remote-device-$id"
+            var created = false
+            var saved = false
+            try {
+                val c = GovernClient(Endpoint(link.url, null, link.pin))
+                val key = withContext(Dispatchers.IO) {
+                    c.health()
+                    if (DeviceKey.exists(alias)) DeviceKey.publicKeyBase64(alias) else { created = true; DeviceKey.create(alias) }
+                }
+                val request = withContext(Dispatchers.IO) { c.requestPairing(name.ifBlank { text(R.string.android_device) }, key, link.lane?.let(::listOf)) }
+                val countdown = PairCountdown(request.expires, clock)
+                val code = ComparisonCode.of(request.id, key, link.pin).chunked(3).joinToString(" ")
+                _pairRequest.value = PairingProgress(request.host, link.lane?.let(::listOf), code, request.expires, PairState.WAITING)
+                _busy.value = false
+                while (countdown.waiting()) {
+                    if (pairCancel) {
+                        withContext(Dispatchers.IO) { c.cancelPairing(request.id, request.secret) }
+                        _pairRequest.update { it?.copy(state = PairState.CANCELLED) }
+                        return@launch
+                    }
+                    val status = withContext(Dispatchers.IO) { c.pollPairing(request.id, request.secret) }
+                    _pairRequest.update { it?.copy(state = status.state) }
+                    if (status.state == PairState.CONFIRMED) {
+                        val token = requireNotNull(status.token) { text(R.string.pair_token_missing) }
+                        removing.add(id)
+                        streams.remove(id)?.cancelAndJoin()
+                        sessionCache.keys.removeAll { it.first == id }
+                        val host = withContext(Dispatchers.IO) {
+                            cache.forget(id)
+                            store.save(Host(id, status.host, link.url, requireNotNull(status.deviceId), requireNotNull(status.person), link.pin,
+                                status.lanes, clock.instant().toString(), "", alias), token)
+                        }
+                        saved = true
+                        streams.remove(id)?.cancelAndJoin()
+                        _hosts.update { old -> store.all().map { h -> if (h.id == host.id) HostState(h) else old.firstOrNull { it.host.id == h.id } ?: HostState(h) } }
+                        selectHost(host.id); closeLane(); _pairing.value = false; _pairRequest.value = null; _prefill.value = null
+                        removing.remove(id)
+                        start(host)
+                        return@launch
+                    }
+                    if (status.state != PairState.WAITING) return@launch
+                    delay(1000)
+                }
+                _pairRequest.update { it?.copy(state = PairState.EXPIRED) }
+            } catch (e: CancellationException) { throw e }
+            catch (e: Exception) {
+                _pairRequest.update { it?.copy(error = describe(e)) }
+                report(describe(e))
+            } finally {
+                if (created && !saved) withContext(NonCancellable + Dispatchers.IO) { DeviceKey.delete(alias) }
+                removing.remove(id)
+                state(id)?.host?.let(::start)
+                _busy.value = false
+            }
         }
     }
 
@@ -331,3 +525,5 @@ class AppModel(app: Application) : AndroidViewModel(app) {
         else -> e.message ?: text(R.string.request_failed)
     }
 }
+
+data class PairingProgress(val host: String, val lanes: List<String>?, val code: String, val expires: String, val state: PairState, val error: String? = null)
