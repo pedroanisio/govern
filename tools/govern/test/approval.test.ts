@@ -165,6 +165,18 @@ test("an approval from a Codex shell is refused, even under a Claude session", (
   assert.deepEqual(state(e, "film").approvals, {});
 });
 
+test("an approval from a Grok shell is refused, even under a Claude session: grok has no transcript govern can rely on", () => {
+  const e = lane();
+  asSession(e, SID, [typed("approved")]);
+  for (const marker of ["GROK_AGENT", "GROK_SESSION_ID"]) {
+    const r = govern(e, ["approve", "film", "script", "--quote", "approved"], { [marker]: "1" });
+    assert.equal(r.code, 1, marker);
+    assert.match(r.err, /Grok session cannot be verified \(.*is set/);
+    assert.match(r.err, /own terminal or a Claude session/);
+  }
+  assert.deepEqual(state(e, "film").approvals, {});
+});
+
 test("from a plain terminal the approval is recorded as typed by the OS user", () => {
   const e = lane();
   assert.equal(govern(e, ["approve", "film", "script", "--quote", "go"]).code, 0);

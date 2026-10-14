@@ -17,6 +17,9 @@ export type Source =
  *  CODEX_SANDBOX_NETWORK_DISABLED), not observed in a live Codex shell: unverified, so a Claude check does not rely on them alone. */
 export const CODEX_MARKERS = ["CODEX_THREAD_ID", "CODEX_SESSION_ID", "CODEX_SANDBOX_NETWORK_DISABLED", "CODEX_SANDBOX"];
 
+/** Variables a Grok Build shell sets: GROK_AGENT and GROK_SESSION_ID, observed in a live grok 1.0.52 shell (`env` run through its shell tool, 2026-10-14). */
+export const GROK_MARKERS = ["GROK_AGENT", "GROK_SESSION_ID"];
+
 /** Variables Claude Code sets in its shells (seen in a live session, 2026-10-14). Any one of them means "inside a session". */
 export const CLAUDE_MARKERS = ["CLAUDECODE", "CLAUDE_CODE_SESSION_ID", "CLAUDE_CODE_ENTRYPOINT"];
 
@@ -91,6 +94,9 @@ function readLines(file: string): unknown[] {
  *  Codex first: a Codex run started from a Claude session has that session in its parent chain. */
 export function origin(o: { env?: NodeJS.ProcessEnv; dir?: string; chain?: () => number[] } = {}): { kind: "terminal" } | { kind: "session"; sessionId: string } {
   const env = o.env ?? process.env;
+  const grok = GROK_MARKERS.find((k) => env[k]);
+  if (grok) fail(`an approval from a Grok session cannot be verified (${grok} is set, and govern does not read grok's session store as a record of the person's words): ` +
+    "ask the person to approve from their own terminal or a Claude session", 1);
   const codex = CODEX_MARKERS.find((k) => env[k]);
   if (codex) fail(`an approval from a Codex session cannot be verified (${codex} is set, and Codex has no transcript format govern can rely on): ` +
     "ask the person to approve from their own terminal or a Claude session", 1);
