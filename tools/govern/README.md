@@ -43,6 +43,7 @@ carries messages between agents.
 **Workspaces.** A `.govern/` folder in the working directory or above it makes
 that folder a govern workspace. `govern init` creates one.
 
+<!-- readme-example: skip: needs a govern workspace and an ops/govern lane -->
 ```sh
 govern status                                  # list the lanes
 govern new ops/govern --process dev            # start a lane on the dev process

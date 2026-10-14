@@ -72,6 +72,7 @@ background runs complete. The screens submit these actions only after device con
 The app needs a JDK 17 or newer and an Android SDK with platform 35. It sets no `buildToolsVersion`, so the Android
 Gradle plugin (8.7.3) picks the build-tools version it needs. The Gradle wrapper fetches Gradle and the dependencies.
 
+<!-- readme-example: skip: needs a JDK and an Android SDK -->
 ```sh
 export ANDROID_HOME=/path/to/android-sdk      # or: echo "sdk.dir=/path/to/android-sdk" > local.properties
 ./gradlew testDebugUnitTest assembleDebug     # from tools/govern/android; or `make android` at the repository root
@@ -91,6 +92,7 @@ links, comparison-code vectors, closed pairing wire types and certificate pinnin
 
 1. On the machine that holds the workspace, publish the server. With Tailscale:
 
+   <!-- readme-example: skip: starts a long-running server and needs Tailscale -->
    ```sh
    govern remote serve &                  # loopback, port 5002
    tailscale serve --bg 5002              # https://<machine>.<tailnet>.ts.net
@@ -98,6 +100,7 @@ links, comparison-code vectors, closed pairing wire types and certificate pinnin
 
 2. At your own terminal (not inside an agent session), create a pairing code:
 
+   <!-- readme-example: skip: needs a running govern remote server -->
    ```sh
    govern remote pair --url https://<machine>.<tailnet>.ts.net
    ```
