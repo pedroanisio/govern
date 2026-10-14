@@ -109,16 +109,33 @@ export function decideWindow(m: Metrics, cur: number | undefined, lastChangeAt?:
   return { ...base, to: cur, change: false, reason: `median context ${kTok(m.medianCtx)} within target, ${per100.toFixed(1)} automatic compactions per 100 owner turns: keep` };
 }
 
-/** The runner for `--to auto`: cheapest mean input among runners with ≥ 90 % verified replies over their last 30 runs. */
-export function chooseRunner(seq: number): { runner: "codex" | "claude"; reason: string } {
+/** Whether a command resolves: a path that is an executable file, or a name found on PATH. */
+function resolves(bin: string): boolean {
+  const ok = (f: string) => { try { return statSync(f).isFile() && (statSync(f).mode & 0o111) !== 0; } catch { return false; } };
+  return bin.includes("/") ? ok(bin) : (process.env.PATH ?? "").split(":").filter(Boolean).some((d) => ok(join(d, bin)));
+}
+
+type Runner = "codex" | "claude" | "grok";
+/** The runners `--to auto` may pick: codex and claude as before, grok only where its binary resolves (GOVERN_GROK_BIN, else PATH). */
+function candidates(): Runner[] {
+  return ["codex", "claude", ...(resolves(process.env.GOVERN_GROK_BIN ?? "grok") ? (["grok"] as const) : [])];
+}
+
+/** The runner for `--to auto`: cheapest mean input among available runners with ≥ 90 % verified replies over their last 30 runs
+ *  (at least 3 runs). One message in ten goes to another candidate, rotating, so every runner's numbers stay current. */
+export function chooseRunner(seq: number): { runner: Runner; reason: string } {
   const runs = readJsonl(join(queue.QUEUE(), "ledger.jsonl"));
-  const stats = (["codex", "claude"] as const).map((r) => {
+  const stats = candidates().map((r) => {
     const last = runs.filter((e) => e.agent === r).slice(-30);
     return { r, n: last.length, okRate: last.length ? last.filter((e) => e.ok).length / last.length : 0, meanIn: last.length ? last.reduce((a, e) => a + (e.usage?.input ?? 0), 0) / last.length : Infinity };
   });
   const good = stats.filter((s) => s.n >= 3 && s.okRate >= 0.9).sort((a, b) => a.meanIn - b.meanIn);
   const best = good[0]?.r ?? "codex";
-  if (good.length && seq % 10 === 9) { const other = best === "codex" ? "claude" : "codex"; return { runner: other, reason: `exploration (1 in 10) keeps ${other}'s numbers current` }; }
+  if (good.length && seq % 10 === 9) {
+    const others = stats.map((x) => x.r).filter((r) => r !== best);
+    const other = others[Math.floor(seq / 10) % others.length];
+    if (other) return { runner: other, reason: `exploration (1 in 10) keeps ${other}'s numbers current` };
+  }
   const s = stats.find((x) => x.r === best)!;
   return { runner: best, reason: good.length ? `${best}: ${Math.round(s.okRate * 100)}% verified, mean ${kTok(Math.round(s.meanIn))} in over its last ${s.n} runs` : "fewer than 3 verified runs per runner: codex by default" };
 }
