@@ -124,7 +124,8 @@ function cmdWork(a: Args): void {
   if (flag(a, "open")) {
     const session = engine === "codex" ? undefined : randomUUID();
     appendLedger(p.slug, { kind: "work", stage, engine, session, skillSha: sha256File(SKILL) });
-    const first = `Video work session (registered by govern work ${p.slug} ${stage}). Use the govern skill: run \`govern brief ${p.slug}\` first and work from it; do not explore the repository. Then ask me what we change.`;
+    const kind = processOf(p).name, label = kind.charAt(0).toUpperCase() + kind.slice(1);
+    const first = `${label} work session (registered by govern work ${p.slug} ${stage}). Use the govern skill: run \`govern brief ${p.slug}\` first and work from it; do not explore the repository. Then ask me what we change.`;
     const args = engine === "codex" ? ["-C", repo(), first] : ["--session-id", session!, first];
     const bin = process.env[`GOVERN_${engine.toUpperCase()}_BIN`] ?? engine;
     const r = spawnSync(bin, args, { cwd: repo(), stdio: "inherit", env: openEnv(engine) });

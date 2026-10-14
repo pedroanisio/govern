@@ -418,6 +418,24 @@ test("work and done: grok is a third engine, detected from its shell markers, op
   assert.match(govern(e, ["work", slug, "script", "--engine", "gemini"]).err, /--engine must be claude, codex or grok/);
 });
 
+test("work --open: the first prompt names the lane's process, not always video", () => {
+  const { e, slug } = video();
+  assert.equal(govern(e, ["new", "lib", "--process", "dev", "--title", "L"]).code, 0);
+  const argvFile = join(e.root, "codex-open.txt");
+  write(join(e.root, "bin", "codex"), `#!/bin/sh\nprintf '%s\\n' "$@" > "${argvFile}"\nexit 0\n`);
+  spawnSync("chmod", ["755", join(e.root, "bin", "codex")]);
+  const first = (lane: string, stage: string) => {
+    const o = govern(e, ["work", lane, stage, "--engine", "codex", "--open"], { GOVERN_CODEX_BIN: join(e.root, "bin", "codex") });
+    assert.equal(o.code, 0, o.err);
+    return readFileSync(argvFile, "utf8").split("\n").slice(2).join("\n");
+  };
+  const dev = first("lib", "build");
+  assert.match(dev, /^Dev work session \(registered by govern work lib build\)/);
+  assert.doesNotMatch(dev, /video/i);
+  assert.match(dev, /govern brief lib/);
+  assert.match(first(slug, "script"), new RegExp(`^Video work session \\(registered by govern work ${slug} script\\)`));
+});
+
 test("ask: unfilled required placeholders and unknown steps are refused before calling codex", () => {
   const { e, slug } = video();
   assert.match(govern(e, ["ask", slug, "nope"]).err, /no prompt "nope"/);
