@@ -995,12 +995,14 @@ async function cmdCenter(a: Args): Promise<void> {
     return out(flag(a, "json") ? JSON.stringify(v, null, 2) : center.render(v));
   }
   const host = opt(a, "host") ?? "127.0.0.1", port = Number(opt(a, "port") ?? 5004);
-  if (!remote.loopback(host)) fail("center serve binds loopback only: the view shows every host's messages and spend");
+  if (!remote.loopback(host)) fail(`center ${sub} binds loopback only: the view shows every host's messages and spend`);
   if (!Number.isInteger(port) || port < 1 || port > 65535) fail("--port must be 1..65535");
   peer.identity();
-  const token = center.newToken(), server = center.centerServer({ token });
+  const token = center.persistentToken({ rotate: sub === "serve" && flag(a, "new-token") });
+  if (sub === "url") return out(center.centerAddress(host, port, token));
+  const server = center.centerServer({ token });
   server.on("error", e => { process.stderr.write(`center: ${e.message}\n`); process.exitCode = 1; });
-  server.listen(port, host, () => out(`govern command center: http://${host.includes(":") ? `[${host}]` : host}:${port}/#token=${token}\n(the token lasts while this process runs; keep the address private)`));
+  server.listen(port, host, () => out(`govern command center: ${center.centerAddress(host, port, token)}\n(the token is kept in ${center.tokenFile()} and survives restarts; --new-token replaces it; keep the address private)`));
 }
 
 /** The text of the user service: every Environment= and the ExecStart binary quoted, and the state folders of this shell passed on. */
@@ -1279,10 +1281,11 @@ export const COMMANDS: readonly Cmd[] = [
       register: { flags: { value: ["as", "description", "ttl"], multi: ["project", "alias"], bool: ["ephemeral"] }, lines: [["--project P… [--as NAME | --ephemeral] [--alias NAME]… [--description TEXT] [--ttl S]", "publish this agent's inbox to peer hosts as NAME@HOST for these projects, until it expires or its session ends;\nnames and aliases are unique per host and held by their registering session; --ephemeral generates a name (1 h default, at most 24 h)"]], run: cmdAgents },
       unregister: { flags: { value: ["as"] }, lines: [["[NAME] [--as NAME]", "withdraw a registration this session holds"]], run: cmdAgents },
     } },
-  { name: "center", section: 6, footer: false, defaultSub: "show", noSub: "govern center show|serve (PEERS.md)",
+  { name: "center", section: 6, footer: false, defaultSub: "show", noSub: "govern center show|serve|url (PEERS.md)",
     subs: {
       show: { flags: { bool: ["json"] }, lines: [["[--json]", "the command center: every federated host's health, alerts, agents, 24 h spend and latest messages"]], run: cmdCenter },
-      serve: { flags: { value: ["host", "port"] }, lines: [["[--port 5004] [--host 127.0.0.1]", "the command center in a browser on the selected loopback host, refreshed every 15 s; prints the address with its access token"]], run: cmdCenter },
+      serve: { flags: { value: ["host", "port"], bool: ["new-token"] }, lines: [["[--port 5004] [--host 127.0.0.1] [--new-token]", "the command center in a browser on the selected loopback host, refreshed every 15 s; prints the address with its access token, which is kept in the private state so the address survives restarts (--new-token replaces it)"]], run: cmdCenter },
+      url: { flags: { value: ["host", "port"] }, lines: [["[--port 5004] [--host 127.0.0.1]", "print the command center's address with its access token without starting a server (creates the token when absent)"]], run: cmdCenter },
     } },
   { name: "caps", section: 6, flags: { bool: ["check"] },
     lines: [["", "the capabilities and profiles a queued agent can run under, with each profile's last self-test"],

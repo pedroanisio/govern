@@ -2,10 +2,11 @@
 // derived by code. `govern center` prints it; `govern center serve` shows it in a browser on loopback.
 import { createServer, type Server } from "node:http";
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
-import { readFileSync } from "node:fs";
-import { clip, kTok } from "./util.ts";
+import { readFileSync, writeFileSync, renameSync, statSync, existsSync } from "node:fs";
+import { clip, kTok, fail } from "./util.ts";
 import * as peer from "./peer.ts";
 import * as mesh from "./mesh.ts";
+import { file as peerFile, locked } from "./peer-id.ts";
 import type { Telemetry, Recent } from "./telemetry.ts";
 import { lanesAnswer, definitionOf, type ProcessInfo } from "./livestate.ts";
 import type { LaneState } from "./lanestate.ts";
@@ -178,8 +179,30 @@ export async function processDrawing(v: LiveView, q: { name: string; host?: stri
 
 const PAGE = () => readFileSync(new URL("./center.html", import.meta.url), "utf8");
 const digest = (s: string) => createHash("sha256").update(s).digest();
-/** A fresh bearer token for one `center serve` process. */
+/** A fresh bearer token. */
 export const newToken = (): string => randomBytes(24).toString("base64url");
+/** Where the access token is kept: beside the peer identity, in govern's private state. */
+export const tokenFile = (): string => peerFile("center-token");
+const TOKEN_SHAPE = /^[A-Za-z0-9_-]{32}$/;
+/** The command center's access token: created once (directory 0700, file 0600) and reused by every `center serve` and `center url`, so the
+ *  address survives restarts. A token file readable by group or other is refused, so is one that holds no token; `rotate` replaces it. */
+export function persistentToken(o: { rotate?: boolean } = {}): string {
+  return locked(() => {
+    const f = tokenFile();
+    if (!o.rotate && existsSync(f)) {
+      const mode = statSync(f).mode & 0o777;
+      if (mode & 0o077) fail(`${f} is readable by group or other (mode ${mode.toString(8)}): run chmod 600 on it, or rotate the token with govern center serve --new-token`);
+      const t = readFileSync(f, "utf8").trim();
+      if (!TOKEN_SHAPE.test(t)) fail(`${f} is not a token: delete it, or rotate with govern center serve --new-token`);
+      return t;
+    }
+    const t = newToken(), tmp = `${f}.tmp-${process.pid}`;
+    writeFileSync(tmp, t + "\n", { mode: 0o600 }); renameSync(tmp, f);
+    return t;
+  });
+}
+/** The address of the page on `host:port`, with the token in the fragment (which the browser never sends). */
+export const centerAddress = (host: string, port: number, token: string): string => `http://${host.includes(":") ? `[${host}]` : host}:${port}/#token=${token}`;
 /** The dashboard on loopback. The page is public; /api/state needs `Authorization: Bearer TOKEN`, and every request
  *  must name a loopback host, so a page on another site cannot read the view through a rebound DNS name. */
 export function centerServer(o: { token: string; view?: () => Promise<View>; live?: () => Promise<LiveView>; post?: peer.Post }): Server {

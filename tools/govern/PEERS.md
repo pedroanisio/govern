@@ -166,7 +166,10 @@ whole view.
 
 `govern center serve [--port 5004] [--host 127.0.0.1]` shows the same view in a browser, refreshed every 15 seconds, with search and host
 and state filters over the messages. It binds the selected loopback host (127.0.0.1 by default) and prints its address with an access token in the URL
-fragment; the token lasts while that process runs. The page is served openly, but its data (`/api/state`) requires the
+fragment. The token is created once and kept in the peer state directory (`center-token`, beside the host identity: directory 0700, file 0600),
+so the address is the same after every restart; `govern center url` prints it without starting a server, and `govern center serve --new-token`
+replaces the token on purpose (the old address stops working). A token file readable by group or other, or one that holds no token, stops
+`center serve` and `center url` with a message naming the file. The page is served openly, but its data (`/api/state`) requires the
 token as a bearer header, and every request must name a loopback host, so a page on another site cannot read it
 through a rebound DNS name. A view is reused for ten seconds, so several open tabs do not multiply requests to hosts.
 
