@@ -76,18 +76,21 @@ export function promptFiles(processName?: string): { name: string; file: string 
 }
 /** The front matter keys a prompt may set; govern.ts and ask() read each of them. */
 export const PROMPT_KEYS = ["description", "effort", "model", "repairs", "rules", "schema"] as const;
-/** Read prompt `name` from the first of `dirs` that has `<name>.md`, splitting its `---` front matter into meta; fails
- *  on a bad name, a missing prompt, a front matter line that is not `key: value` or names a key outside PROMPT_KEYS
- *  (a misspelt `schema:` would otherwise drop the check silently), or a `repairs` value that is not a whole number. */
+/** Read prompt `name` from the first of `dirs` that has `<name>.md`, splitting its `---` front matter (LF or CRLF) into
+ *  meta; fails on a bad name, a missing prompt, a front matter block with no closing `---`, a front matter line that is
+ *  not `key: value` or names a key outside PROMPT_KEYS (a misspelt `schema:` would otherwise drop the check silently),
+ *  or a `repairs` value that is not a whole number. */
 export function readPrompt(name: string, dirs: string[]): PromptFile {
   if (!/^[a-z0-9-]+$/.test(name)) fail(`bad prompt name: ${name}`);
   const dir = dirs.find((d) => existsSync(join(d, `${name}.md`)));
   if (!dir) fail(`no prompt "${name}" (see govern prompts)`);
   const f = join(dir!, `${name}.md`);
   const text = readFileSync(f, "utf8");
-  const m = /^---\n([\s\S]*?)\n---\n/.exec(text);
+  // LF or CRLF; a block that opens and never closes is refused, since reading it as body would drop schema: and rules:.
+  const m = /^---\r?\n(?:([\s\S]*?)\r?\n)?---(?:\r?\n|$)/.exec(text);
+  if (!m && /^---\r?\n/.test(text)) fail(`${f}: the front matter opened on line 1 has no closing --- line`);
   const meta = emptyRecord<string>();
-  for (const [n, l] of (m?.[1] ?? "").split("\n").entries()) {
+  for (const [n, l] of (m?.[1] ?? "").split(/\r?\n/).entries()) {
     if (l.trim() === "") continue;
     const i = l.indexOf(":");
     if (i <= 0) fail(`${f}: front matter line ${n + 1} is not "key: value" (got ${JSON.stringify(l)})`);

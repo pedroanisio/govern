@@ -339,9 +339,27 @@ test("ask: a prompt whose front matter has an unknown key or a line that is not 
   }
   assert.equal(jsonl(join(e.root, "argv.log")).length, 0, "codex was never called");
   assert.equal(ledger(e, slug).some((x) => x.kind === "ask"), false, "no ask is recorded");
-  write(join(prompts, "free.md"), "---\ndescription: say hi\n\neffort: low\n---\nSay something as JSON.\n");
-  const ok = govern(e, ["ask", slug, "free"], { GOVERN_PROMPTS: prompts, FAKE_CODEX_SCRIPTS: reply(e, "free", { said: "hi" }) });
-  assert.equal(ok.code, 0, ok.err + ok.out);
+  // CRLF front matter is read, not skipped; a block that never closes is refused, not taken as body.
+  const refused: [string, RegExp][] = [
+    ["---\r\nschmea: free.schema.json\r\n---\r\nSay something as JSON.\r\n", /free\.md: unknown front matter key "schmea"/],
+    ["---\r\nrepairs: lots\r\n---\r\nSay something as JSON.\r\n", /free\.md: repairs must be a whole number/],
+    ["---\nschema: free.schema.json\nSay something as JSON.\n", /free\.md: the front matter opened on line 1 has no closing --- line/],
+    ["---\r\nschema: free.schema.json\r\nSay something as JSON.\r\n", /free\.md: the front matter opened on line 1 has no closing --- line/],
+  ];
+  for (const [text, want] of refused) {
+    write(join(prompts, "free.md"), text);
+    const r = govern(e, ["ask", slug, "free"], { GOVERN_PROMPTS: prompts, FAKE_CODEX_SCRIPTS: reply(e, "free", { said: "hi" }) });
+    assert.equal(r.code, 2, `${JSON.stringify(text)}: ${r.out}`);
+    assert.match(r.err, want);
+  }
+  assert.equal(jsonl(join(e.root, "argv.log")).length, 0, "codex was never called");
+  assert.equal(ledger(e, slug).some((x) => x.kind === "ask"), false, "no ask is recorded");
+  for (const text of ["---\ndescription: say hi\n\neffort: low\n---\nSay something as JSON.\n", "---\r\neffort: low\r\n---\r\nSay something as JSON.\r\n", "---\n---\nSay something as JSON.\n"]) {
+    write(join(prompts, "free.md"), text);
+    const ok = govern(e, ["ask", slug, "free"], { GOVERN_PROMPTS: prompts, FAKE_CODEX_SCRIPTS: reply(e, "free", { said: "hi" }) });
+    assert.equal(ok.code, 0, `${JSON.stringify(text)}: ${ok.err}${ok.out}`);
+  }
+  assert.doesNotMatch(present(stdinLog(e).at(-1), "the prompt sent"), /^---/, "the front matter is not sent as the prompt");
 });
 
 test("work: both segment entries name the manual in force (skillSha of tools/govern/SKILL.md)", () => {
