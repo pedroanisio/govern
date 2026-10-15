@@ -193,7 +193,7 @@
 #     --body B                task send, task reply: the message text
 #     --body-file F           task send, task reply: read the message text from F
 #     --reply-to ID           task send: the message this one answers
-#     --from NAME             task send: the sender (default: the registered session up the parent chain)
+#     --from NAME             task send: local sender without @ (default: the registered session up the parent chain); only receive() files a remote sender
 #     --write                 task send: let the runner change files in the project folder (default: read-only)
 #     --profile P             conversation create, task send: seal the run to profile P's capabilities (govern caps); conversation
 #                             create: default codex-read unless --adapter is given; task send: not with --write

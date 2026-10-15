@@ -28,6 +28,15 @@ function signed(value: unknown, ai: peer.Identity) {
   return { bytes, headers: peer.sign(bytes, ai) };
 }
 
+test("receive still files a signed remote sender as alice@a", () => {
+  const { b, ai } = pair(); use(b); const s = signed(raw(), ai);
+  const r = peer.receive(s.bytes, s.headers, NOW);
+  assert.equal(r.status, 200, JSON.stringify(r.body));
+  const rows = queue.all(); assert.equal(rows.length, 1);
+  assert.equal(rows[0]!.state, "open"); assert.equal(rows[0]!.m.id, r.body.id);
+  assert.equal(rows[0]!.m.from, "alice@a"); assert.deepEqual(rows[0]!.m.remote, { peer: "a", id: "origin-id" });
+});
+
 test("peer identity, registry and address validation", () => {
   const { a, ai, bi } = pair(); use(a);
   assert.deepEqual(peer.identity("a"), ai);

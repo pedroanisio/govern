@@ -3,7 +3,7 @@ import { test, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { COMMANDS } from "../govern.ts";
 import { parseArgs } from "../lib/util.ts";
-import { makeEnv, childEnv } from "./helpers.ts";
+import { makeEnv, childEnv, govern } from "./helpers.ts";
 import * as peer from "../lib/peer.ts";
 import * as queue from "../lib/queue.ts";
 const original = { ...process.env };
@@ -14,6 +14,23 @@ function run(name: string, sub: string, argv: string[] = []) {
   return command.run(a);
 }
 const args = ["--to", "codex@b", "--project", "p", "--task", "t", "--from", "alice", "--summary", "check", "--body", "claim"];
+test("task send refuses remote sender names at the CLI", () => {
+  const e = makeEnv("peer-cli-sender"); process.env = childEnv(e);
+  for (const from of ["alice@a", "alice@@a", "@a"]) {
+    const r = govern(e, ["task", "send", ...args.map(x => x === "codex@b" ? "owner" : x === "alice" ? from : x)]);
+    assert.equal(r.code, 2, r.err);
+    assert.match(r.err, /--from must be a local name without @; only receive\(\) files a remote sender/);
+    assert.deepEqual(queue.all(), []);
+  }
+});
+for (const sub of ["reply", "forward", "close"]) test(`task ${sub} refuses remote actor names at the CLI`, () => {
+  const e = makeEnv(`peer-cli-${sub}`); process.env = childEnv(e);
+  const m = queue.send({ project: "p", task: "t", kind: "TASK", from: "alice", to: "owner", summary: "check", body: "claim", files: [], access: "read-only" });
+  const r = govern(e, ["task", sub, m.id, "--as", "alice@a", ...(sub === "reply" ? ["--kind", "HANDOFF", "--summary", "checked", "--body", "answer"] : sub === "forward" ? ["--to", "owner"] : [])]);
+  assert.equal(r.code, 2, r.err);
+  assert.match(r.err, /--as must be a local name without @; only receive\(\) files a remote sender/);
+  assert.deepEqual(queue.all(), [{ state: "open", m }]);
+});
 test("peer command handlers enforce grants, identity, remote options and relay bounds", async () => {
   const e = makeEnv("peer-cli"); process.env = childEnv(e);
   await run("peer", "id", ["--name", "a"]); const h = peer.identity(); assert.equal(h.name, "a");

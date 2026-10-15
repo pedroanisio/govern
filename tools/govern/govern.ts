@@ -637,6 +637,11 @@ function cmdInbox(a: Args): void {
   rows.forEach((r) => out(rowLine(r)));
 }
 
+function localTaskName(name: string, option: string): string {
+  if (name.includes("@")) fail(`${option} must be a local name without @; only receive() files a remote sender`);
+  return name;
+}
+
 function cmdTask(a: Args): void {
   const sub = a._[1];
   if (sub === "send") {
@@ -650,7 +655,7 @@ function cmdTask(a: Args): void {
     const lane = opt(a, "lane"), estimateUsd = amountOpt(a, "estimate-usd");
     const m = queue.send({
       ...(t.profile ? { profile: t.profile } : {}), ...(lane ? { lane } : {}),
-      project: opt(a, "project") ?? "", task: opt(a, "task") ?? "", kind: opt(a, "kind") ?? "TASK", from: opt(a, "from") ?? resolveAs() ?? fail("cannot tell who is sending (no parent process is a registered Claude Code session): pass --from NAME"),
+      project: opt(a, "project") ?? "", task: opt(a, "task") ?? "", kind: opt(a, "kind") ?? "TASK", from: localTaskName(opt(a, "from") ?? resolveAs() ?? fail("cannot tell who is sending (no parent process is a registered Claude Code session): pass --from NAME"), "--from"),
       to, ...(routed ? { routed: true } : {}), summary: opt(a, "summary") ?? "", body, files: many(a, "file"), replyTo: opt(a, "reply-to"),
       access: t.access, ...(estimateUsd !== undefined ? { estimateUsd } : {}),
     });
@@ -671,7 +676,7 @@ function cmdTask(a: Args): void {
   }
   if (sub === "inbox") return cmdInbox(a);
   if (sub === "close") {
-    const m = queue.close(a._[2] ?? "", requireAs(opt(a, "as")), opt(a, "note"));
+    const m = queue.close(a._[2] ?? "", localTaskName(requireAs(opt(a, "as")), "--as"), opt(a, "note"));
     return out(`closed ${m.id}`);
   }
   if (sub === "reclaim") {
@@ -681,14 +686,14 @@ function cmdTask(a: Args): void {
   if (sub === "reply") {
     const bodyFile = opt(a, "body-file"), b = opt(a, "body");
     if (bodyFile === undefined && b === undefined) fail("--body or --body-file is required");
-    const by = requireAs(opt(a, "as"));
+    const by = localTaskName(requireAs(opt(a, "as")), "--as");
     const m = queue.reply(a._[2] ?? "", by, { kind: opt(a, "kind") ?? "", summary: opt(a, "summary") ?? "", body: bodyFile ? readFileSync(bodyFile, "utf8") : b! });
     out(`replied ${m.id} (${m.kind} to ${m.to}); closed ${a._[2]}`);
     return wakeNote(m);
   }
   if (sub === "forward") {
     const { to, routed } = recipient(opt(a, "to") ?? "");
-    const m = queue.forward(a._[2] ?? "", requireAs(opt(a, "as")), to, routed);
+    const m = queue.forward(a._[2] ?? "", localTaskName(requireAs(opt(a, "as")), "--as"), to, routed);
     out(`forwarded ${a._[2]} to ${m.to} as ${m.id}`);
     return wakeNote(m);
   }
@@ -1075,7 +1080,7 @@ export const COMMANDS: readonly Cmd[] = [
     subs: {
       send: { flags: { value: ["to", "project", "task", "kind", "summary", "body", "body-file", "reply-to", "from", "profile", "lane", "estimate-usd"], multi: ["file"], bool: ["write"] },
         lines: [["--to auto|codex|claude|grok|owner|<session> --project P --task T --kind TASK --summary S (--body B | --body-file F)\n" +
-          "[--file REPO-RELATIVE-PATH]… [--reply-to ID] [--write | --profile P] [--lane SLUG] [--from NAME] [--estimate-usd N]", "--to must be a runner, a profile, owner, a LIVE session name or NAME@PEER;\nremote recipients require a live peer; the receiving host decides write access, profile, lane, estimate and files;\n--profile P (govern caps) seals the run to P's capabilities; --lane names the lane whose gate authorises a spend, publish or push profile;\n--estimate-usd N: what the run is expected to cost, reserved against a matching allowance (govern allow)"]], run: cmdTask },
+          "[--file REPO-RELATIVE-PATH]… [--reply-to ID] [--write | --profile P] [--lane SLUG] [--from NAME] [--estimate-usd N]", "--to must be a runner, a profile, owner, a LIVE session name or NAME@PEER;\nremote recipients require a live peer; the receiving host decides write access, profile, lane, estimate and files;\n--from must be a local name without @; only receive() files a remote sender;\n--profile P (govern caps) seals the run to P's capabilities; --lane names the lane whose gate authorises a spend, publish or push profile;\n--estimate-usd N: what the run is expected to cost, reserved against a matching allowance (govern allow)"]], run: cmdTask },
       list: { flags: { value: ["to", "state", "project"] }, lines: [["[--to X] [--state open|claimed|done|failed] [--project P]", "the queue's messages; a dispatcher reply ends with [checked], [unverified] or [shape only] (content check, declared per profile, in queue config.json checks, or built in for REVIEW)"]], run: cmdTask },
       show: { lines: [["<id>", "a message and its thread, claim holder and result; a dispatcher reply also shows its check (checked, UNVERIFIED with the reason, or shape only)"]], run: cmdTask },
       inbox: { flags: { value: ["as"], bool: ["all", "hook"] },
