@@ -140,7 +140,7 @@ test("the center serves lanes, processes and diagrams over HTTP: token required,
 
 test("the page offers the Projects and Processes views, reads only the token-gated endpoints and stays read-only", async () => {
   const at = new Date(NOW).toISOString();
-  const server = center.centerServer({ token: "secret-token", view: async () => ({ at, hosts: [], peers: [], alerts: [], messages: [] }), live: async () => ({ at, hosts: [], lanes: [], processes: [] }) });
+  const server = center.centerServer({ token: "secret-token", view: async () => ({ at, hosts: [], peers: [], alerts: [], messages: [], agents: [] } as unknown as center.View), live: async () => ({ at, hosts: [], lanes: [], processes: [] }) });
   server.listen(0, "127.0.0.1"); await once(server, "listening");
   const port = (server.address() as { port: number }).port;
   try {
