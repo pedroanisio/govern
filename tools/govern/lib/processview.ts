@@ -62,6 +62,7 @@ export function ago(at: string, now: number): string {
 }
 
 const STATUS_COLOR: Record<Status, string> = { running: "accent", "waiting-on-owner": "warn", "waiting-on-coordinator": "warn", "blocked-by-check": "fail", idle: "muted", done: "ok" };
+/** The palette token of a lane status. */
 export const statusColor = (s: Status) => STATUS_COLOR[s];
 
 // ── drawing ──────────────────────────────────────────────────────────────────────────────────────────────────────

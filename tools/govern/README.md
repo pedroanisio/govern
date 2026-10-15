@@ -30,6 +30,8 @@ starts from `govern brief` instead of re-reading history.
 The built-in processes are in [processes/](processes/): video, ops and dev. A
 workspace can add its own or override these.
 
+**Seeing a process.** - `govern bpmn <process|lane>` draws a process as a BPMN diagram, read-only: owner, coordinator, worker-agent and stage-check lanes, stages as tasks, each check as a task with a pass/gap gateway and a dashed loop back, each gate as a user task in its owner's lane, `next` routes, splits and joins as gateways. Given a process name it adds the live state of the lanes on it (how many lanes stand at each stage, with clickable slugs in the page; pending gates; failing checks); given a lane slug it draws that lane's own process (its frozen snapshot) with its progress: stages done, current, blocked or not yet reached, each gate approved, rejected, pending or waiting with who and when, each check's last result and the first failing line. The SVG goes to stdout or `--svg FILE`; `--scene FILE` writes a scene-render scene; `--png FILE` renders it with `$SCENE_RENDER` or `scene-render` on PATH and fails plainly, writing nothing, when neither exists (`--width`/`--height`, default 3840 wide; `--static` leaves out the live state). A process name wins over a lane slug of the same name.
+
 **Moving a lane.** `govern advance` moves a lane on only when all of these hold:
 
 - the stage's check passes;

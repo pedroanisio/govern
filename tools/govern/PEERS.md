@@ -170,6 +170,27 @@ fragment; the token lasts while that process runs. The page is served openly, bu
 token as a bearer header, and every request must name a loopback host, so a page on another site cannot read it
 through a rebound DNS name. A view is reused for ten seconds, so several open tabs do not multiply requests to hosts.
 
+The page has three views. Overview is the telemetry above. Projects lists the lanes of every host in one table with a host column:
+the lane's process and stage, a strip of its stages (done, current, blocked, not yet), its derived status (running, waiting on
+the owner, waiting on the coordinator, blocked by a failing check, idle, done), gates approved of total with the pending ones,
+the last check result and its age, running jobs and last activity; selecting a lane draws it live in its process. Processes lists
+every process any host defines or runs, by name and revision, with each host's lane counts (running, waiting, blocked); selecting
+a host draws the process as BPMN with that host's lanes on it as clickable slugs, and selecting a slug shows that lane's progress.
+The diagrams are drawn by the center from the latest data, so they are the live state and refresh with the page. The endpoints,
+all `GET`, bearer-token and loopback-host gated like `/api/state`: `/api/lanes` (`{at, hosts, lanes}`), `/api/processes`
+(`{at, hosts, processes}`) and `/api/process/NAME.svg` with `host=H`, `hash=SHA256` (a process of another host is named by its
+hash from `/api/processes`) and `lane=SLUG` (the lane's own process and progress; NAME is then ignored), answered as
+`image/svg+xml`, with 404 for an unknown process, host, lane or hash and 502 when the host that has the definition cannot be reached.
+
+Lanes and processes travel on the same signed channel as telemetry and under the same rule: only to a mesh member the host names
+as an observer. `POST /v1/peer/lanes` answers a signed closed `govern-lanes/1` document: one summary per lane (slug, title,
+process name, revision and hash, stage, stage marks, each gate's decision with who and when, each check's last result with its
+first failing line, running jobs, BLOCKED message summaries, status), the processes by name, revision and hash, and the count of
+lanes left out when the answer would pass about 180 kB (finished and least recently active go first). It never carries raw lane
+state, ledgers or message bodies. `POST /v1/peer/process` returns one definition by name and hash as a signed `govern-process/1`
+answer; the center checks the hash and caches the definition. A host whose govern predates these routes answers 404 and is listed
+with its lanes "unknown"; the rest of the view is unaffected. Telemetry and `/api/state` are unchanged.
+
 A host shares telemetry only with the mesh members its owner names as observers: `--observer HOST` (repeatable) on
 `govern mesh create`, `govern mesh join` or `govern mesh policy`. Without it, the observer is the registrar, which is
 where the operator usually runs the command center. Naming observers replaces the default. Static peers are never
@@ -225,6 +246,8 @@ host. Run the server on each host to receive replies as well as requests. The ph
 | `POST /v1/peer/deliver` | Signed by a peer or member | `{protocol, id, duplicate?}` |
 | `POST /v1/peer/directory` | Signed by a peer or member | `{protocol, agents}`, signed by this host |
 | `POST /v1/peer/telemetry` | Signed by a mesh member this host names as observer | Telemetry, signed by this host |
+| `POST /v1/peer/lanes` | Signed by a mesh member this host names as observer | Lane summaries and process names, revisions and hashes (`govern-lanes/1`), signed by this host |
+| `POST /v1/peer/process` | Signed by a mesh member this host names as observer; names a process and its hash | That process definition (`govern-process/1`), signed by this host; 404 when this host has none |
 | `POST /v1/mesh/join` | Invite proof and joining key's signature | Mesh snapshot, signed by the mesh key |
 | `POST /v1/mesh/sync` | Signed by a live member | Mesh snapshot, signed by the mesh key |
 
