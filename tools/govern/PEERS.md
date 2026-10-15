@@ -125,7 +125,9 @@ unauthenticated input cannot probe message validation. Checks run in this order:
 6. File through `queue.send`, as `from: NAME@PEER`, with `access: read-only`, `files: []`, the local profile from
    `queue.resolveTarget(to, {write: false})`, no lane or estimate, and `remote: {peer, id}`. Return the new local id.
 
-The relay claims open remote messages oldest first, up to `max`, retaining the current queue rename claim. Unknown
+Before claiming work, the relay fails dead holders' claims with one BLOCKED notice and never reposts those messages.
+It claims open remote messages oldest first, up to `max`, using `queue.claim(m, "relay")` to record the holder's
+process identity. Unknown
 or revoked peers, unverified messages, files, profile, lane, estimate, write access and oversized envelopes fail
 locally with a BLOCKED notice to the message's owner. A reply's `replyTo` is translated to the parent's remote id
 only if that parent came from the target peer.
@@ -133,7 +135,7 @@ only if that parent came from the target peer.
 POSTs have a 15-second timeout. A 2xx with a valid closed `{protocol, id, duplicate?}` receipt completes the local
 message with a relay result and a `kind: relay` ledger entry. A 4xx other than 429 permanently fails with a BLOCKED
 notice quoting at most 300 characters of the peer's error. Network errors, timeouts, 429, 5xx and invalid 2xx receipts
-return the message to open with `relay: {attempts, lastError, nextAt}`. Backoff starts at 30 seconds, doubles per
+return the message to open without a claim, with `relay: {attempts, lastError, nextAt}`. Backoff starts at 30 seconds, doubles per
 attempt and caps at one hour. Before `nextAt` the message is skipped. The eighth failure fails it with BLOCKED.
 A retry after a lost success uses the same sender id, letting the receiver deduplicate it. Ordinary dispatch only
 runs local runners and never claims `NAME@PEER`.

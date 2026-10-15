@@ -8,6 +8,7 @@ import { makeEnv, childEnv, reply, write, jsonl } from "./helpers.ts";
 import * as peer from "../lib/peer.ts";
 import * as queue from "../lib/queue.ts";
 import { stateDir } from "../lib/workspace.ts";
+import { identity } from "../lib/locks.ts";
 
 const original = { ...process.env };
 afterEach(() => { process.env = { ...original }; });
@@ -130,6 +131,44 @@ for (const [label, patch] of Object.entries({ unverified: { verification: { stat
   const notice = queue.all().find(x => x.m.kind === "BLOCKED")!.m; assert.equal(notice.to, "owner"); assert.equal(notice.replyTo, m.id);
   assert.match(notice.body, /refused|unverified|files|profile|lane|estimate|write|peer|size|limit/i);
 });
+test("relay records its live process claim before posting", async () => {
+  const { a } = pair(); use(a); const m = send(); let calls = 0;
+  await peer.push({ now: NOW, post: async () => {
+    calls++;
+    const hit = queue.find(m.id)!;
+    assert.equal(hit.state, "claimed");
+    assert.deepEqual(hit.m.claim, { by: "relay", pid: process.pid, start: identity(process.pid)!.start, at: hit.m.claim?.at });
+    assert.ok(Number.isFinite(Date.parse(hit.m.claim!.at)));
+    assert.equal(queue.claimState(hit.m), "live");
+    return { status: 200, text: JSON.stringify({ protocol: peer.PROTOCOL, id: "delivered" }) };
+  } });
+  assert.equal(calls, 1); assert.equal(queue.find(m.id)!.state, "done");
+});
+
+test("push fails a dead relay claim once without posting it before claiming open work", async () => {
+  const { a } = pair(); use(a); const dead = send({ from: "owner" });
+  assert.equal(queue.claim(dead, "relay"), true);
+  dead.claim = { by: "relay", pid: process.pid, start: `${identity(process.pid)!.start}-different`, at: dead.created };
+  queue.save(dead, "claimed");
+  assert.equal(queue.claimState(dead), "dead");
+  const open = send(); let calls = 0;
+  const post: peer.Post = async (_url, bytes) => {
+    calls++;
+    assert.equal(JSON.parse(bytes.toString()).id, open.id);
+    assert.equal(queue.find(dead.id)!.state, "failed");
+    return { status: 200, text: JSON.stringify({ protocol: peer.PROTOCOL, id: "delivered" }) };
+  };
+  assert.match((await peer.push({ now: NOW, post })).join("\n"), /relay.*died during the run/);
+  assert.equal(queue.find(dead.id)!.state, "failed");
+  assert.match(queue.find(dead.id)!.m.result!.error!, /relay.*died during the run/);
+  assert.deepEqual(await peer.push({ now: NOW, post }), []);
+  assert.equal(calls, 1);
+  const notices = queue.all().filter(x => x.m.replyTo === dead.id);
+  assert.equal(notices.length, 1);
+  assert.deepEqual([notices[0]!.m.kind, notices[0]!.m.to], ["BLOCKED", "owner"]);
+  assert.equal(queue.find(dead.id)!.m.result!.reply, notices[0]!.m.id);
+});
+
 for (const mode of ["throw", "503", "429", "invalid success"]) test(`relay retries ${mode}, skips backoff and fails on eighth attempt`, async () => {
   const { a } = pair(); use(a); const m = send(); let calls = 0, now = NOW;
   const post: peer.Post = async () => { calls++; if (mode === "throw") throw new Error("offline"); return mode === "invalid success" ? { status: 200, text: '{"protocol":"govern-peer/1","id":"x","extra":1}' } : { status: Number(mode), text: "busy" }; };
@@ -138,6 +177,9 @@ for (const mode of ["throw", "503", "429", "invalid success"]) test(`relay retri
     const hit = queue.find(m.id)!;
     if (attempt < 8) {
       assert.equal(hit.state, "open"); assert.equal(hit.m.relay?.attempts, attempt);
+      assert.equal(Object.hasOwn(hit.m, "claim"), false);
+      const saved = JSON.parse(readFileSync(join(queue.QUEUE(), "open", `${m.id}.json`), "utf8"));
+      assert.equal(Object.hasOwn(saved, "claim"), false);
       const next = Date.parse(hit.m.relay!.nextAt); assert.equal(next - now, Math.min(30000 * 2 ** (attempt - 1), 3600000));
       await peer.push({ now: next - 1, post }); assert.equal(calls, attempt); now = next;
     } else assert.equal(hit.state, "failed");

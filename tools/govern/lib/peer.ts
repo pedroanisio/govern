@@ -168,11 +168,11 @@ const postFetch: Post = async (url, bytes, headers, timeoutMs) => {
 const RECEIPT = obj({ protocol: literal(PROTOCOL), id: nonempty }, { duplicate: bool });
 /** One relay pass; a retry is bounded by eight attempts and an exponential backoff capped at one hour. */
 export async function push(o: { max?: number; now?: number | (() => number); post?: Post } = {}): Promise<string[]> {
-  const clock = () => typeof o.now === "function" ? o.now() : o.now ?? Date.now(), post = o.post ?? postFetch, lines: string[] = [];
   if (o.max !== undefined && (!Number.isInteger(o.max) || o.max < 1)) fail("max must be a positive integer");
+  const clock = () => typeof o.now === "function" ? o.now() : o.now ?? Date.now(), post = o.post ?? postFetch, lines = queue.reclaimDead();
   const todo = queue.all().filter(x => x.state === "open" && parseAddress(x.m.to) && (!x.m.relay || Date.parse(x.m.relay.nextAt) <= clock())).slice(0, o.max ?? Infinity);
   for (const { m } of todo) {
-    if (!queue.move(m, "open", "claimed")) continue;
+    if (!queue.claim(m, "relay")) continue;
     const start = Date.now(), now = clock(), address = parseAddress(m.to)!;
     const failMessage = (why: string) => {
       const notice = queue.send({ project: m.project, task: m.task, kind: "BLOCKED", from: "relay", to: ["dispatcher", "relay"].includes(m.from) ? "owner" : queue.LEGACY_OWNER(m), summary: clip(`relay refused: ${why}`, 200), body: `${m.id} to ${m.to} refused: ${why}`, files: [], replyTo: m.id, access: "read-only" });
@@ -206,6 +206,7 @@ export async function push(o: { max?: number; now?: number | (() => number); pos
     const attempts = (m.relay?.attempts ?? 0) + 1;
     m.relay = { attempts, lastError, nextAt: new Date(clock() + Math.min(30_000 * 2 ** (attempts - 1), 3600_000)).toISOString() };
     if (attempts >= MAX_ATTEMPTS) { failMessage(`after ${attempts} attempts: ${lastError}`); continue; }
+    delete m.claim;
     queue.save(m, "claimed"); queue.move(m, "claimed", "open"); lines.push(`${m.id} → ${m.to}: retry ${attempts} at ${m.relay.nextAt}: ${lastError}`);
   }
   return lines;
