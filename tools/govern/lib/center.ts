@@ -7,6 +7,10 @@ import { clip, kTok } from "./util.ts";
 import * as peer from "./peer.ts";
 import * as mesh from "./mesh.ts";
 import type { Telemetry, Recent } from "./telemetry.ts";
+import { lanesAnswer, definitionOf, type ProcessInfo } from "./livestate.ts";
+import type { LaneState } from "./lanestate.ts";
+import { parseProcess, getProcess, processes, type Process } from "./process.ts";
+import { processSvg } from "./processview.ts";
 
 export const WARN_CERT_MS = 7 * 86400_000, STALE_SYNC_MS = 3600_000, CACHE_MS = 10_000, MESSAGES = 60;
 export interface HostView { host: string; url?: string; self: boolean; registrar: boolean; ok: boolean; error?: string; telemetry?: Telemetry }
@@ -97,15 +101,92 @@ export function render(v: View): string {
   return L.join("\n");
 }
 
+// ---- Live lanes and processes: every host's lane summaries, and the processes they run, in the same read-only view ----
+
+/** One host's part of the lanes view. `unknown` marks a host whose govern predates lane reporting: it is listed, its lanes are not. */
+export interface HostLanes { host: string; self: boolean; ok: boolean; unknown?: boolean; error?: string; lanes: number; omitted: number; unreadable: number }
+export interface LaneRow { host: string; self: boolean; lane: LaneState }
+/** How many lanes of one process a host has, by derived status. */
+export interface ProcessHost { host: string; self: boolean; lanes: number; running: number; waiting: number; blocked: number; done: number }
+export interface ProcessRow extends ProcessInfo { hosts: ProcessHost[] }
+export interface LiveView { at: string; hosts: HostLanes[]; lanes: LaneRow[]; processes: ProcessRow[] }
+
+const tally = (ls: LaneState[]) => ({
+  lanes: ls.length, running: ls.filter(l => l.status === "running").length, done: ls.filter(l => l.status === "done").length,
+  waiting: ls.filter(l => l.status === "waiting-on-owner" || l.status === "waiting-on-coordinator").length, blocked: ls.filter(l => l.status === "blocked-by-check").length,
+});
+
+/** Gather every host's lanes and processes: this host's, then every mesh member's asked in parallel over the signed channel. A host without the route is marked unknown. */
+export async function gatherLive(o: { post?: peer.Post; now?: () => number } = {}): Promise<LiveView> {
+  const now = o.now ?? Date.now, id = peer.identity(), s = mesh.state();
+  const local = lanesAnswer({ host: id.name, fingerprint: peer.fingerprint(id.publicKey), now: now() });
+  const remote = s ? await peer.observeLanes({ ...(o.post ? { post: o.post } : {}), now }) : [];
+  const hosts: HostLanes[] = [
+    { host: local.host, self: true, ok: true, lanes: local.lanes.length, omitted: local.omitted, unreadable: local.unreadable },
+    ...remote.map(r => ({ host: r.host, self: false, ok: r.ok, ...(r.unknown ? { unknown: true } : {}), ...(r.error ? { error: r.error } : {}), lanes: r.answer?.lanes.length ?? 0, omitted: r.answer?.omitted ?? 0, unreadable: r.answer?.unreadable ?? 0 })),
+  ];
+  const lanes: LaneRow[] = [
+    ...local.lanes.map(lane => ({ host: local.host, self: true, lane })),
+    ...remote.flatMap(r => (r.answer?.lanes ?? []).map(lane => ({ host: r.host, self: false, lane }))),
+  ];
+  const known = new Map<string, ProcessRow>();
+  const add = (host: string, self: boolean, infos: ProcessInfo[]) => {
+    for (const i of infos) {
+      const key = `${i.name}@${i.hash}`, row = known.get(key) ?? { ...i, hosts: [] };
+      known.set(key, row);
+      const mine = lanes.filter(l => l.host === host && l.lane.process.name === i.name && l.lane.process.hash === i.hash).map(l => l.lane);
+      row.hosts.push({ host, self, ...tally(mine) });
+    }
+  };
+  add(local.host, true, local.processes);
+  for (const r of remote) if (r.answer) add(r.host, false, r.answer.processes);
+  const processes = [...known.values()].sort((a, b) => a.name.localeCompare(b.name) || b.revision - a.revision);
+  return { at: new Date(now()).toISOString(), hosts, lanes, processes };
+}
+
+/** The SVG of one process with the live state of the lanes on it, or with one lane's progress. `host` names whose lanes and definitions to use (default: this host).
+ *  Returns the problem as a status and message when there is none to draw. */
+export async function processDrawing(v: LiveView, q: { name: string; host?: string; hash?: string; lane?: string }, o: { post?: peer.Post; now?: () => number; definitions?: Map<string, Process> } = {}): Promise<{ status: 200; svg: string } | { status: 404 | 502; error: string }> {
+  const now = (o.now ?? Date.now)(), self = v.hosts.find(h => h.self)!, host = q.host ?? self.host;
+  const h = v.hosts.find(x => x.host === host);
+  if (!h) return { status: 404, error: `no host ${host} in the view` };
+  let name = q.name, hash = q.hash;
+  const selected = q.lane ? v.lanes.find(l => l.host === host && l.lane.slug === q.lane)?.lane : undefined;
+  if (q.lane && !selected) return { status: 404, error: `no lane ${q.lane} on ${host}` };
+  if (selected) { name = selected.process.name; hash = selected.process.hash; }
+  let pr: Process | undefined;
+  const key = `${host}@${name}@${hash ?? ""}`, cache = o.definitions;
+  if (hash && cache?.has(key)) pr = cache.get(key);
+  else if (h.self) {
+    try {
+      if (hash) { const text = definitionOf(name, hash); pr = text === undefined ? undefined : parseProcess(`${name}.json`, text); }
+      else pr = processes().has(name) ? getProcess(name) : undefined;
+    } catch (e) { return { status: 502, error: clip((e as Error).message, 300) }; }
+  } else {
+    if (!hash) return { status: 404, error: "a process of another host is named by its hash (see /api/processes)" };
+    if (h.unknown || !h.ok) return { status: 502, error: h.error ?? `${host} did not answer` };
+    try {
+      const text = await peer.fetchProcess(host, name, hash, { ...(o.post ? { post: o.post } : {}), now: () => now });
+      pr = text === undefined ? undefined : parseProcess(`${host}/${name}.json`, text);
+    } catch (e) { return { status: 502, error: clip((e as Error).message, 300) }; }
+  }
+  if (!pr) return { status: 404, error: `${host} has no process ${name}${hash ? ` with hash ${hash.slice(0, 12)}` : ""}` };
+  if (hash) cache?.set(key, pr);
+  const mine = v.lanes.filter(l => l.host === host && l.lane.process.name === name && (!hash || l.lane.process.hash === hash)).map(l => l.lane);
+  return { status: 200, svg: processSvg(pr, selected ? { now, lanes: [selected], selected } : { now, lanes: mine }) };
+}
+
 const PAGE = () => readFileSync(new URL("./center.html", import.meta.url), "utf8");
 const digest = (s: string) => createHash("sha256").update(s).digest();
 /** A fresh bearer token for one `center serve` process. */
 export const newToken = (): string => randomBytes(24).toString("base64url");
 /** The dashboard on loopback. The page is public; /api/state needs `Authorization: Bearer TOKEN`, and every request
  *  must name a loopback host, so a page on another site cannot read the view through a rebound DNS name. */
-export function centerServer(o: { token: string; view?: () => Promise<View> }): Server {
+export function centerServer(o: { token: string; view?: () => Promise<View>; live?: () => Promise<LiveView>; post?: peer.Post }): Server {
   const view = o.view ?? (() => gather());
-  let cached: { at: number; v: Promise<View> } | undefined;
+  const liveView = o.live ?? (() => gatherLive(o.post ? { post: o.post } : {}));
+  let cached: { at: number; v: Promise<View> } | undefined, cachedLive: { at: number; v: Promise<LiveView> } | undefined;
+  const definitions = new Map<string, Process>();
   const server = createServer((req, res) => {
     const send = (status: number, type: string, body: string) => {
       res.writeHead(status, { "Content-Type": type, "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff", "Referrer-Policy": "no-referrer",
@@ -117,11 +198,25 @@ export function centerServer(o: { token: string; view?: () => Promise<View> }): 
     const hostName = (req.headers.host ?? "").replace(/:\d+$/, "");
     if (!["127.0.0.1", "localhost", "[::1]"].includes(hostName)) return json(403, { error: "loopback host names only" });
     if (req.method === "GET" && req.url === "/") return send(200, "text/html; charset=utf-8", PAGE());
-    if (req.method !== "GET" || req.url !== "/api/state") return json(404, { error: "not found" });
+    const url = new URL(req.url ?? "/", "http://loopback"), svgName = /^\/api\/process\/([^/]+)\.svg$/.exec(url.pathname)?.[1];
+    if (req.method !== "GET" || !(url.pathname === "/api/state" || url.pathname === "/api/lanes" || url.pathname === "/api/processes" || svgName)) return json(404, { error: "not found" });
     const given = /^Bearer (.+)$/.exec(req.headers.authorization ?? "")?.[1] ?? "";
     if (!timingSafeEqual(digest(given), digest(o.token))) return json(401, { error: "missing or wrong token" });
-    if (!cached || Date.now() - cached.at > CACHE_MS) cached = { at: Date.now(), v: view() };
-    cached.v.then(v => json(200, v), (e: Error) => { cached = undefined; json(500, { error: clip(e.message, 300) }); });
+    if (url.pathname === "/api/state") {
+      if (!cached || Date.now() - cached.at > CACHE_MS) cached = { at: Date.now(), v: view() };
+      return void cached.v.then(v => json(200, v), (e: Error) => { cached = undefined; json(500, { error: clip(e.message, 300) }); });
+    }
+    if (!cachedLive || Date.now() - cachedLive.at > CACHE_MS) cachedLive = { at: Date.now(), v: liveView() };
+    cachedLive.v.then(async v => {
+      if (url.pathname === "/api/lanes") return json(200, { at: v.at, hosts: v.hosts, lanes: v.lanes });
+      if (url.pathname === "/api/processes") return json(200, { at: v.at, hosts: v.hosts, processes: v.processes });
+      let name: string;
+      try { name = decodeURIComponent(svgName!); } catch { return json(404, { error: "not found" }); }
+      const q = url.searchParams, hash = q.get("hash") ?? undefined, host = q.get("host") ?? undefined, lane = q.get("lane") ?? undefined;
+      if (hash !== undefined && !/^[0-9a-f]{64}$/.test(hash)) return json(404, { error: "hash must be a 64 digit lowercase hex SHA-256" });
+      const r = await processDrawing(v, { name, ...(host ? { host } : {}), ...(hash ? { hash } : {}), ...(lane ? { lane } : {}) }, { ...(o.post ? { post: o.post } : {}), definitions });
+      if (r.status === 200) send(200, "image/svg+xml; charset=utf-8", r.svg); else json(r.status, { error: r.error });
+    }).catch((e: Error) => { cachedLive = undefined; json(500, { error: clip(e.message, 300) }); });
   });
   server.requestTimeout = 30_000;
   server.headersTimeout = 10_000;

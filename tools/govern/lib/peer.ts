@@ -2,7 +2,7 @@
 // signed request names the key it is addressed to, so a delivery to one host cannot be replayed to another. Grants
 // decide which local recipients a sender may address; execution policy stays local.
 import { createServer, type Server } from "node:http";
-import { randomUUID } from "node:crypto";
+import { randomUUID, createHash } from "node:crypto";
 import { existsSync, appendFileSync } from "node:fs";
 import { join } from "node:path";
 import { obj, str, bool, arr, literal, parseFile, check, reject, type Shape } from "./shape.ts";
@@ -14,6 +14,7 @@ import {
 import * as mesh from "./mesh.ts";
 import * as agents from "./agents.ts";
 import * as telemetry from "./telemetry.ts";
+import * as live from "./livestate.ts";
 import { fail, clip } from "./util.ts";
 import * as queue from "./queue.ts";
 
@@ -234,6 +235,70 @@ export async function observe(o: { post?: Post; now?: () => number } = {}): Prom
   }));
 }
 
+const LANES_REQUEST = obj({ protocol: literal(PROTOCOL), kind: literal("lanes"), at: iso, toKey: hex64, id: nonempty });
+const PROCESS_REQUEST = obj({ protocol: literal(PROTOCOL), kind: literal("process"), at: iso, toKey: hex64, id: nonempty, name: nonempty, hash: hex64 });
+/** The sender of a read-only observer request, or the refusal: signed, addressed to this host, fresh, and a mesh member this host names as an observer. */
+function observerOnly<T extends { toKey: string; at: string }>(bytes: Buffer, headers: Headers, now: number, shape: Shape<T>, what: string): { q: T } | Response {
+  const sender = authenticate(bytes, headers, now);
+  if (isResponse(sender)) return sender;
+  let q: T;
+  try { q = parseFile(`${what} $`, bytes.toString("utf8"), shape); } catch (e) { return error(400, (e as Error).message); }
+  if (!forMe(q.toKey)) return error(403, "addressed to another host");
+  if (!fresh(q.at, now)) return error(403, "timestamp outside five minute window");
+  if (sender.via !== "mesh" || !mesh.observers().includes(sender.name)) return error(403, "not an observer of this host");
+  return { q };
+}
+/** POST /v1/peer/lanes: this host's lane summaries and the processes it uses, signed, for an observer. */
+export function serveLanes(bytes: Buffer, headers: Headers, now = Date.now()): Response {
+  const r = observerOnly(bytes, headers, now, LANES_REQUEST, "lanes");
+  if ("status" in r) return r;
+  const id = identity();
+  return signedJson(200, live.lanesAnswer({ host: id.name, fingerprint: fingerprint(id.publicKey), now }) as unknown as Record<string, unknown>, id.privateKey);
+}
+/** POST /v1/peer/process: one process definition of this host by name and hash, signed, for an observer; 404 when this host has no such definition. */
+export function serveProcess(bytes: Buffer, headers: Headers, now = Date.now()): Response {
+  const r = observerOnly(bytes, headers, now, PROCESS_REQUEST, "process");
+  if ("status" in r) return r;
+  const definition = live.definitionOf(r.q.name, r.q.hash);
+  if (definition === undefined) return error(404, "no such process definition here");
+  const id = identity();
+  return signedJson(200, { protocol: live.PROCESS_PROTOCOL, host: id.name, fingerprint: fingerprint(id.publicKey), at: new Date(now).toISOString(), name: r.q.name, hash: r.q.hash, definition }, id.privateKey);
+}
+/** One host's lanes answer in a command-center pass. `unknown` marks a host that does not serve lanes (an older govern): its lanes cannot be shown. */
+export interface ObservedLanes { host: string; url: string; ok: boolean; unknown?: boolean; error?: string; answer?: live.LanesAnswer }
+async function askMember<T>(m: ReturnType<typeof mesh.others>[number], kind: "lanes" | "process", extra: Record<string, string>, shape: Shape<T>, o: { post: Post; now: () => number }): Promise<{ status: number; value?: T; error?: string }> {
+  const bytes = Buffer.from(JSON.stringify({ protocol: PROTOCOL, kind, at: new Date(o.now()).toISOString(), toKey: fingerprint(m.publicKey), id: randomUUID(), ...extra }));
+  const res = await o.post(`${m.url.replace(/\/$/, "")}/v1/peer/${kind}`, bytes, { ...sign(bytes), ...mesh.presentHeaders() }, TIMEOUT_MS);
+  if (res.status !== 200) return { status: res.status, error: `refused (${res.status}): ${clip(res.text, 300)}` };
+  if (!verifyBytes(Buffer.from(res.text), header(res.headers ?? {}, "govern-signature"), m.publicKey)) return { status: 200, error: "answer not signed by the host's key" };
+  return { status: 200, value: parseFile(`${m.name} ${kind}`, res.text, shape) };
+}
+/** Ask every live mesh member for its lanes. An answer must carry that host's signature, parse as the closed shape and name that host's key;
+ *  a host that answers 404 does not know the route and is marked `unknown`. One host's failure does not stop the others. */
+export async function observeLanes(o: { post?: Post; now?: () => number } = {}): Promise<ObservedLanes[]> {
+  const post = o.post ?? postFetch, now = o.now ?? Date.now;
+  return Promise.all(mesh.others(now()).map(async (m): Promise<ObservedLanes> => {
+    try {
+      const r = await askMember(m, "lanes", {}, live.LANES_ANSWER, { post, now });
+      if (r.status === 404) return { host: m.name, url: m.url, ok: false, unknown: true, error: "this host's govern does not report lanes yet" };
+      if (!r.value) return { host: m.name, url: m.url, ok: false, error: r.error ?? "no answer" };
+      if (r.value.fingerprint !== fingerprint(m.publicKey)) return { host: m.name, url: m.url, ok: false, error: "answer names another host's key" };
+      return { host: m.name, url: m.url, ok: true, answer: r.value };
+    } catch (e) { return { host: m.name, url: m.url, ok: false, error: clip((e as Error).message, 300) }; }
+  }));
+}
+/** One process definition (its JSON text) from mesh member `host`, checked against the hash asked for; undefined when the host does not have it. */
+export async function fetchProcess(host: string, name: string, hash: string, o: { post?: Post; now?: () => number } = {}): Promise<string | undefined> {
+  const post = o.post ?? postFetch, now = o.now ?? Date.now, m = mesh.others(now()).find((x) => x.name === host);
+  if (!m) fail(`${host} is not a live mesh member`);
+  const r = await askMember(m, "process", { name, hash }, live.PROCESS_ANSWER, { post, now });
+  if (r.status === 404) return undefined;
+  if (!r.value) return fail(r.error ?? "no answer");
+  if (r.value.fingerprint !== fingerprint(m.publicKey) || r.value.name !== name || r.value.hash !== hash) return fail("answer is for another host or process");
+  if (createHash("sha256").update(r.value.definition).digest("hex") !== hash) return fail("definition does not match its hash");
+  return r.value.definition;
+}
+
 const RECEIPT = obj({ protocol: literal(PROTOCOL), id: nonempty }, { duplicate: bool });
 /** One relay pass; a retry is bounded by eight attempts and an exponential backoff capped at one hour. */
 export async function push(o: { max?: number; now?: number | (() => number); post?: Post } = {}): Promise<string[]> {
@@ -285,6 +350,8 @@ const ROUTES: Record<string, Route> = {
   "POST /v1/peer/deliver": receive,
   "POST /v1/peer/directory": serveDirectory,
   "POST /v1/peer/telemetry": serveTelemetry,
+  "POST /v1/peer/lanes": serveLanes,
+  "POST /v1/peer/process": serveProcess,
   "POST /v1/mesh/join": mesh.serveJoin,
   "POST /v1/mesh/sync": mesh.serveSync,
 };
