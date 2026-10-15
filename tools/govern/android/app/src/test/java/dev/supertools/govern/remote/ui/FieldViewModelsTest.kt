@@ -8,6 +8,45 @@ import java.time.Instant
 import java.time.ZoneOffset
 
 class FieldViewModelsTest {
+    @Test fun pairingCodesGroupDigitsAndNormalizeExistingSpaces() {
+        assertEquals("482 719", pairCode("482719"))
+        assertEquals("482 719", pairCode(" 482  719 "))
+        assertEquals("123 45", pairCode("12345"))
+        assertEquals("12", pairCode("12")); assertEquals("", pairCode(""))
+    }
+    @Test fun pairingPillsMapEveryTerminalStateAndTone() {
+        val expected = listOf(
+            PairPill(dev.supertools.govern.remote.R.string.awaiting_confirmation, PairTone.WAITING),
+            PairPill(dev.supertools.govern.remote.R.string.host_confirmed, PairTone.SUCCESS),
+            PairPill(dev.supertools.govern.remote.R.string.pair_refused, PairTone.ERROR),
+            PairPill(dev.supertools.govern.remote.R.string.pair_expired, PairTone.ERROR),
+            PairPill(dev.supertools.govern.remote.R.string.pair_cancelled, PairTone.ERROR))
+        assertEquals(expected, PairState.entries.map(::pairPill))
+    }
+    @Test fun pairingChecklistKeepsReadAndIdentifiedDoneForEveryState() {
+        for (state in PairState.entries) {
+            val last = when (state) {
+                PairState.WAITING -> PairCheck.WAITING
+                PairState.CONFIRMED -> PairCheck.DONE
+                else -> PairCheck.ERROR
+            }
+            assertEquals(listOf(PairCheck.DONE, PairCheck.DONE, last), pairChecklist(state))
+        }
+    }
+    @Test fun pairingScopeChipSupportsAllOneAndMany() {
+        assertEquals("All lanes", pairScope(null, "All lanes", "%d lane", "%d lanes"))
+        assertEquals("1 lane", pairScope(listOf("a"), "All lanes", "%d lane", "%d lanes"))
+        assertEquals("2 lanes", pairScope(listOf("a", "b"), "All lanes", "%d lane", "%d lanes"))
+        assertEquals("0 lanes", pairScope(emptyList(), "All lanes", "%d lane", "%d lanes"))
+    }
+    @Test fun pairingModeDistinguishesFormValidAndInvalidOffers() {
+        val link = PairingLink("https://host.test", "482719", null)
+        assertEquals(PairMode.FORM, pairMode(null, null))
+        assertEquals(PairMode.SCANNED_INVALID, pairMode(null, "bad QR"))
+        assertEquals(PairMode.SCANNED_LINK, pairMode(link, "valid QR"))
+        assertEquals(PairMode.SCANNED_LINK, pairMode(link, null))
+    }
+
     @Test fun countPillsAndBadges() {
         assertEquals("00", countPill(0)); assertEquals("02", countPill(2)); assertEquals("100", countPill(100))
         assertFalse(showDecisionBadge(0)); assertTrue(showDecisionBadge(2))

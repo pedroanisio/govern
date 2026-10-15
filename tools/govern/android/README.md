@@ -34,7 +34,7 @@ are written as JSON under `noBackupFilesDir/cache/<hostId>/`, using a synced tem
 Snapshots load on startup or when opening a lane. A cached banner shows the snapshot timestamp when offline;
 a lane never fetched on this phone cannot be opened offline. Corrupt snapshots report an error.
 
-FIELD follows the system dark/light setting. Light mode uses cream, white cards, deep green and lime; dark mode retains the dark palette. Codes, pins and ledger text use monospace.
+FIELD uses a light theme with cream, white cards, deep green and lime. Codes, pins and ledger text use monospace.
 English is the default language; Brazilian Portuguese follows the device locale. Both resource sets have matching
 keys and format arguments, enforced by `StringsTest`. Server-authored content and protocol error details remain
 in the language sent by the host.
@@ -102,8 +102,13 @@ links, comparison-code vectors, closed pairing wire types and certificate pinnin
    govern remote pair --url https://<machine>.<tailnet>.ts.net
    ```
 
-3. Scan the QR code it draws with the phone's camera: the app opens with the form filled in. Check the server address,
-   then tap **Pair**. Without a camera, paste the `govern-remote://pair?…` link it prints, or type the address and the code.
+3. Tap **Scan QR code** in FIELD. Google Play services scans QR codes without a CAMERA permission.
+   Scanned QR codes and opened `govern-remote://pair?…` links share the same parser and review card.
+   Check the address, grouped code and whether a certificate pin is present, set the device name, then tap **Pair**.
+   **Use a different link** clears the card. If scanning is unavailable, cancelled or fails, an inline message
+   leaves **Enter manually** usable: address, code and device name, with the pin under **Self-signed TLS**.
+   The command box copies `govern remote pair --url <address>` to the clipboard. Pairing errors remain inline
+   and also appear in the snackbar; submission shows progress and disables fields.
    The phone must have a screen lock.
 
 `govern remote devices` lists paired phones; `govern remote revoke <id>` cuts one off at once. For a self-signed
@@ -123,7 +128,7 @@ and gets 403 for other lanes. `PairResponse` from the original flow also include
 
 `PairingLinks.parse` accepts `govern remote link` links without a `code`, with an optional `lane`; `requestPairing`
 is true for these links. Its `code` is empty so existing form consumers remain compatible. Links with `code=` keep
-the original flow; an explicitly empty code is invalid. Opening a link without a code starts the request screen. The phone displays the requested host and scope, a grouped comparison code, and a countdown. Polling stops at the injected-clock deadline or a terminal response; Cancel posts to the cancellation route. Confirmed credentials are sealed in HostStore, then Operation opens. Refusal, expiry and cancellation are displayed. The request secret stays in memory; process death requires a new request after the old one expires.
+the original flow; an explicitly empty code is invalid. Opening a link without a code shows the review card; tapping Pair starts the request screen. The two numbered pairing steps share a phone-to-host illustration. The request screen displays the host, address and requested scope chip, a grouped comparison code in green/lime, a state pill, checklist and countdown. Cancel request is available while waiting; terminal states show Back. Polling stops at the injected-clock deadline or a terminal response; Cancel posts to the cancellation route. Confirmed credentials are sealed in HostStore, then Operation opens. Refusal, expiry and cancellation are displayed. The request secret stays in memory; process death requires a new request after the old one expires.
 
 ## Requirements
 
@@ -169,3 +174,5 @@ and display only the event kind; notes and decisions retain their human text.
 Tones are `ok`, `failed`, `running`, or `info`; unknown/missing tones use info.
 Pure presentation helpers cover counts, checks, subtitles, link banners, activity
 dates/times, fallbacks, tones, and job IDs with unit tests.
+
+Pairing presentation tests cover grouping (including existing spaces and non-six-digit lengths), every state’s pill and checklist, all/one/many scope labels, and manual/valid/invalid link modes. `StringsTest` checks pairing labels in both languages. QR scanner availability, clipboard interaction and visual fidelity still require a device check.

@@ -65,9 +65,14 @@ class AppModel @JvmOverloads constructor(app: Application, private val clock: ja
     fun selectedHost(): Host? = state(selected.value)?.host
     fun isLive(id: String): Boolean = state(id)?.link == Link.Live
     fun consumeMessage() { _message.value = null }
-    fun consumePrefill() { _prefill.value = null }
+    private val _pairInput = MutableStateFlow<String?>(null)
+    val pairInput: StateFlow<String?> = _pairInput
+    private val _pairError = MutableStateFlow<String?>(null)
+    val pairError: StateFlow<String?> = _pairError
+    fun consumePrefill() { _prefill.value = null; _pairInput.value = null; _pairError.value = null }
+    private fun pairFailure(message: String) { _pairError.value = message; report(message) }
     fun beginPairing() { closeSession(); _pairing.value = true; closeLane(); activityJob?.cancel() }
-    fun cancelPairing() { if (pairJob?.isActive == true) { cancelRequest(); return }; if (!_busy.value) { _pairing.value = false; _prefill.value = null } }
+    fun cancelPairing() { if (pairJob?.isActive == true) { cancelRequest(); return }; if (!_busy.value) { _pairing.value = false; consumePrefill() } }
 
     fun selectHost(id: String) {
         closeSession()
@@ -79,19 +84,22 @@ class AppModel @JvmOverloads constructor(app: Application, private val clock: ja
     }
 
     fun offerLink(link: String) {
+        if (_busy.value || pairJob?.isActive == true) return
+        consumePrefill()
+        _pairInput.value = link
+        beginPairing()
         when (val offer = PairingLinks.offer(link, null)) {
             is LinkOffer.Fill -> {
                 _prefill.value = offer.link
-                beginPairing()
-                if (offer.link.requestPairing) requestPair(offer.link, android.os.Build.MODEL.orEmpty())
-                else report(text(R.string.check_host, offer.link.url))
+                report(text(R.string.check_host, offer.link.url))
             }
-            is LinkOffer.Refused -> report(offer.reason)
+            is LinkOffer.Refused -> pairFailure(offer.reason)
         }
     }
 
     fun pair(addressOrLink: String, codeField: String, pinField: String, deviceName: String) {
-        if (_busy.value) return
+        if (_busy.value || pairJob?.isActive == true) return
+        _pairError.value = null
         _busy.value = true
         viewModelScope.launch {
             var pairingHostId: String? = null
@@ -105,7 +113,7 @@ class AppModel @JvmOverloads constructor(app: Application, private val clock: ja
                 } else Triple(PairingLinks.serverUrl(address), codeField.trim(), pinField.trim().ifEmpty { null }?.let(PairingLinks::pin))
                 if (code.isEmpty()) {
                     _busy.value = false
-                    requestPair(PairingLink(url, "", pin, if (address.startsWith("govern-remote:")) PairingLinks.parse(address).lane else null), deviceName)
+                    requestPair(PairingLink(url, "", pin, if (address.startsWith("govern-remote:")) PairingLinks.parse(address).lane else _prefill.value?.takeIf { it.url == url }?.lane), deviceName)
                     return@launch
                 }
                 val previous = _hosts.value.firstOrNull { it.host.baseUrl == url }?.host
@@ -130,13 +138,14 @@ class AppModel @JvmOverloads constructor(app: Application, private val clock: ja
                 saved = true
                 _hosts.update { old -> store.all().map { h -> if (h.id == host.id) HostState(h) else old.firstOrNull { it.host.id == h.id } ?: HostState(h) } }
                 selectHost(host.id)
+                consumePrefill()
                 _pairing.value = false
                 report(text(R.string.paired_as, host.person, host.deviceId))
             } catch (e: CancellationException) { throw e }
-            catch (e: Exception) { report(describe(e)) }
+            catch (e: Exception) { pairFailure(describe(e)) }
             finally {
                 if (!saved) createdAlias?.let { alias -> withContext(NonCancellable + Dispatchers.IO) { DeviceKey.delete(alias) } }
-                _busy.value = false
+                _busy.value = pairJob?.isActive == true && _pairRequest.value == null
                 pairingHostId?.let { id ->
                     removing.remove(id)
                     state(id)?.host?.let(::start)
@@ -447,7 +456,7 @@ class AppModel @JvmOverloads constructor(app: Application, private val clock: ja
     val pairRequest: StateFlow<PairingProgress?> = _pairRequest
     private var pairJob: Job? = null
     private var pairCancel = false
-    fun dismissPairRequest() { if (pairJob?.isActive != true) { _pairRequest.value = null; _prefill.value = null } }
+    fun dismissPairRequest() { if (pairJob?.isActive != true) { _pairRequest.value = null; consumePrefill() } }
     fun cancelRequest() { pairCancel = true }
 
     private fun requestPair(link: PairingLink, name: String) {
@@ -468,8 +477,8 @@ class AppModel @JvmOverloads constructor(app: Application, private val clock: ja
                 }
                 val request = withContext(Dispatchers.IO) { c.requestPairing(name.ifBlank { text(R.string.android_device) }, key, link.lane?.let(::listOf)) }
                 val countdown = PairCountdown(request.expires, clock)
-                val code = ComparisonCode.of(request.id, key, link.pin).chunked(3).joinToString(" ")
-                _pairRequest.value = PairingProgress(request.host, link.lane?.let(::listOf), code, request.expires, PairState.WAITING)
+                val code = ComparisonCode.of(request.id, key, link.pin)
+                _pairRequest.value = PairingProgress(request.host, link.lane?.let(::listOf), code, request.expires, PairState.WAITING, address = link.url)
                 _busy.value = false
                 while (countdown.waiting()) {
                     if (pairCancel) {
@@ -492,7 +501,7 @@ class AppModel @JvmOverloads constructor(app: Application, private val clock: ja
                         saved = true
                         streams.remove(id)?.cancelAndJoin()
                         _hosts.update { old -> store.all().map { h -> if (h.id == host.id) HostState(h) else old.firstOrNull { it.host.id == h.id } ?: HostState(h) } }
-                        selectHost(host.id); closeLane(); _pairing.value = false; _pairRequest.value = null; _prefill.value = null
+                        selectHost(host.id); closeLane(); _pairing.value = false; _pairRequest.value = null; consumePrefill()
                         removing.remove(id)
                         start(host)
                         return@launch
@@ -504,7 +513,7 @@ class AppModel @JvmOverloads constructor(app: Application, private val clock: ja
             } catch (e: CancellationException) { throw e }
             catch (e: Exception) {
                 _pairRequest.update { it?.copy(error = describe(e)) }
-                report(describe(e))
+                pairFailure(describe(e))
             } finally {
                 if (created && !saved) withContext(NonCancellable + Dispatchers.IO) { DeviceKey.delete(alias) }
                 removing.remove(id)
@@ -526,4 +535,4 @@ class AppModel @JvmOverloads constructor(app: Application, private val clock: ja
     }
 }
 
-data class PairingProgress(val host: String, val lanes: List<String>?, val code: String, val expires: String, val state: PairState, val error: String? = null)
+data class PairingProgress(val host: String, val lanes: List<String>?, val code: String, val expires: String, val state: PairState, val error: String? = null, val address: String = "")

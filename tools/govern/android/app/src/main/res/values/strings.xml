@@ -31,7 +31,7 @@
     <string name="request_failed">The request failed.</string>
     <string name="no_signature">The confirmation returned no signature.</string>
     <string name="not_sent">Not sent: %1$s</string>
-    <string name="pair_instructions">At your own terminal, run govern remote pair --url &lt;address the phone reaches&gt;. Scan the QR code with your camera, paste the pairing link, or enter the address and code.</string>
+    <string name="pair_instructions">Run govern remote pair on the host, then scan its QR code.</string>
     <string name="server_address">Pairing link or host address</string>
     <string name="pair_code">Pairing code</string>
     <string name="certificate_pin">Certificate pin (self-signed TLS only)</string>
@@ -52,9 +52,6 @@
     <string name="decision_location">%1$s · %2$s</string>
     <string name="no_activity">No recent activity available.</string>
     <string name="activity_location">%1$s · %2$s</string>
-    <string name="finished">Finished</string>
-    <string name="ready">Ready</string>
-    <string name="open">Open</string>
     <string name="back">Back</string>
     <string name="refresh">Refresh</string>
     <string name="lane_kind">%1$s · %2$s</string>
@@ -170,19 +167,17 @@
     <string name="session_created">Session created.</string>
     <string name="create_session">Create session</string>
     <string name="choice">%1$s: %2$s</string>
-    <string name="pairing_label">PAIRING</string>
     <string name="request_sent_host">The request was sent to %1$s.</string>
-    <string name="phone_host">Phone → Host</string>
     <string name="identified_session">IDENTIFIED SESSION</string>
-    <string name="code_read">✓ Code read</string>
-    <string name="session_identified">✓ Session identified</string>
-    <string name="host_confirmed">✓ Host confirmed</string>
-    <string name="host_confirmation_pending">○ Host confirmation</string>
+    <string name="code_read">Code read</string>
+    <string name="session_identified">Session identified</string>
+    <string name="host_confirmed">Confirmed</string>
+    <string name="host_confirmation_pending">Confirmation on the host</string>
     <string name="expires_in">Expires in %1$s</string>
     <string name="awaiting_confirmation">Awaiting confirmation</string>
-    <string name="pair_refused">The host refused this request.</string>
-    <string name="pair_expired">This request expired. Connect again to request access.</string>
-    <string name="pair_cancelled">This request was cancelled.</string>
+    <string name="pair_refused">Refused</string>
+    <string name="pair_expired">Expired</string>
+    <string name="pair_cancelled">Cancelled</string>
     <string name="pair_token_missing">The host did not deliver a token. Request pairing again.</string>
     <plurals name="session_count"><item quantity="one">%d session</item><item quantity="other">%d sessions</item></plurals>
     <plurals name="decision_count"><item quantity="one">%d needs your decision</item><item quantity="other">%d need your decision</item></plurals>
@@ -201,4 +196,27 @@
     <string name="today">Today</string>
     <string name="yesterday">Yesterday</string>
     <string name="undated">Undated</string>
+    <string name="pair_step">PAIRING / %1$02d OF 02</string>
+    <string name="pair_headline">Pair with a host.</string>
+    <string name="scan_qr">Scan QR code</string>
+    <string name="scan_cancelled">Scan cancelled. You can try again or enter manually.</string>
+    <string name="scan_failed">Scanner unavailable or scan failed. Try again or enter manually.</string>
+    <string name="pair_link">Pairing link</string>
+    <string name="different_link">Use a different link</string>
+    <string name="enter_manually">Enter manually</string>
+    <string name="self_signed_tls">Self-signed TLS</string>
+    <string name="pair_pin_present">Certificate pin present: yes</string>
+    <string name="pair_pin_absent">Certificate pin present: no</string>
+    <string name="pair_not_paired">Not paired</string>
+    <string name="pair_host">Host</string>
+    <string name="this_android">This Android</string>
+    <string name="access_requested">Access requested</string>
+    <string name="pair_all_lanes">All lanes</string>
+    <string name="pair_one_lane">%d lane</string>
+    <string name="pair_many_lanes">%d lanes</string>
+    <string name="pair_address_scope">%1$s / %2$s</string>
+    <string name="compare_hint">Both devices must show the same code.</string>
+    <string name="copy_command">Copy</string>
+    <string name="pair_command">govern remote pair --url %1$s</string>
+    <string name="pair_address_placeholder">&lt;address&gt;</string>
 </resources>

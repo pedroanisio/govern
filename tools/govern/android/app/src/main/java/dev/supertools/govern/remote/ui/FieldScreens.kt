@@ -20,6 +20,8 @@ import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
@@ -415,47 +417,137 @@ private fun Choice(label: String, value: String, options: List<Pair<String, Stri
     }
 }
 
+val PairGreen = Color(0xFF1E3A2C)
+private val PairLime = Color(0xFFD9F26A)
+
 @Composable
-fun PairRequestScreen(request: PairingProgress, model: AppModel) {
-    var remaining by remember(request.expires) { mutableStateOf("") }
-    LaunchedEffect(request.expires, request.state) {
-        val timer = PairCountdown(request.expires, java.time.Clock.fixed(model.now(), java.time.ZoneOffset.UTC))
-        remaining = timer.text()
-        while (request.state == PairState.WAITING) {
-            remaining = PairCountdown(request.expires, java.time.Clock.fixed(model.now(), java.time.ZoneOffset.UTC)).text()
-            if (remaining == "00:00") break
-            delay(250)
+fun PairTopBar(step: Int, back: (() -> Unit)?, enabled: Boolean = true) {
+    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+        if (back != null) FilledTonalIconButton(back, enabled = enabled,
+            colors = IconButtonDefaults.filledTonalIconButtonColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)) {
+            val label = stringResource(R.string.back)
+            Text("←", modifier = Modifier.semantics { contentDescription = label })
         }
-    }
-    LazyColumn(contentPadding = PaddingValues(24.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
-        item { Text(stringResource(R.string.connect_session), style = MaterialTheme.typography.headlineMedium); Text(stringResource(R.string.pairing_label)) }
-        item { Text(stringResource(R.string.confirm_host), style = MaterialTheme.typography.titleLarge); Text(stringResource(R.string.request_sent_host, request.host)) }
-        item { Text(stringResource(R.string.phone_host), style = MaterialTheme.typography.headlineLarge); Text(stringResource(pairStateString(request.state))) }
-        item { Card { Column(Modifier.fillMaxWidth().padding(16.dp)) {
-            Text(stringResource(R.string.identified_session)); Text(request.host)
-            Text(stringResource(R.string.scope, request.lanes?.joinToString(", ") ?: stringResource(R.string.all)))
-        } } }
-        item {
-            Text(stringResource(R.string.compare_host))
-            Surface(color = MaterialTheme.colorScheme.surfaceVariant) { Text(request.code, Modifier.fillMaxWidth().padding(24.dp), style = FieldCode.copy(fontSize = MaterialTheme.typography.headlineLarge.fontSize)) }
-            Text(stringResource(R.string.code_read)); Text(stringResource(R.string.session_identified))
-            Text(stringResource(if (request.state == PairState.CONFIRMED) R.string.host_confirmed else R.string.host_confirmation_pending))
-        }
-        item {
-            request.error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
-            if (request.state == PairState.WAITING && request.error == null) {
-                Text(stringResource(R.string.expires_in, remaining))
-                OutlinedButton(model::cancelRequest) { Text(stringResource(R.string.cancel_request)) }
-            } else TextButton(model::dismissPairRequest) { Text(stringResource(R.string.back)) }
-            Text(stringResource(R.string.no_access), style = MaterialTheme.typography.bodySmall)
+        Column {
+            Text(stringResource(R.string.connect_session), style = MaterialTheme.typography.titleMedium, color = PairGreen)
+            Text(stringResource(R.string.pair_step, step), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
     }
 }
 
-private fun pairStateString(state: PairState): Int = when (state) {
-    PairState.WAITING -> R.string.awaiting_confirmation
-    PairState.CONFIRMED -> R.string.host_confirmed
-    PairState.REFUSED -> R.string.pair_refused
-    PairState.EXPIRED -> R.string.pair_expired
-    PairState.CANCELLED -> R.string.pair_cancelled
+@Composable
+fun PairError(message: String) {
+    Surface(Modifier.fillMaxWidth(), shape = MaterialTheme.shapes.medium, color = MaterialTheme.colorScheme.errorContainer) {
+        Text(message, Modifier.padding(12.dp), color = MaterialTheme.colorScheme.onErrorContainer, style = MaterialTheme.typography.bodySmall)
+    }
+}
+
+@Composable
+fun PairIllustration(host: String, state: PairState? = null) {
+    val pill = state?.let(::pairPill)
+    val tone = when (pill?.tone) {
+        PairTone.ERROR -> MaterialTheme.colorScheme.errorContainer
+        PairTone.SUCCESS -> MaterialTheme.colorScheme.surfaceVariant
+        else -> PairLime
+    }
+    Surface(Modifier.fillMaxWidth(), shape = MaterialTheme.shapes.large, color = Color(0xFFE8EEDC)) {
+        Column(Modifier.padding(16.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Surface(shape = CircleShape, color = tone) {
+                Text(stringResource(pill?.text ?: R.string.pair_not_paired), Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
+                    style = MaterialTheme.typography.labelSmall, color = if (pill?.tone == PairTone.ERROR) MaterialTheme.colorScheme.onErrorContainer else PairGreen)
+            }
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Icon(androidx.compose.ui.res.painterResource(R.drawable.ic_pair_phone), contentDescription = null, tint = PairGreen, modifier = Modifier.size(52.dp, 64.dp))
+                PairDots(Modifier.weight(1f))
+                Surface(Modifier.size(42.dp), shape = CircleShape, color = PairGreen) {
+                    Box(contentAlignment = Alignment.Center) { Text("→", color = PairLime, style = MaterialTheme.typography.headlineSmall) }
+                }
+                PairDots(Modifier.weight(1f))
+                Icon(androidx.compose.ui.res.painterResource(R.drawable.ic_pair_host), contentDescription = null, tint = PairGreen, modifier = Modifier.size(52.dp, 32.dp))
+            }
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+                Text(stringResource(R.string.this_android), Modifier.weight(1f), style = MaterialTheme.typography.labelSmall, color = PairGreen)
+                Text(host, Modifier.weight(1f), style = MaterialTheme.typography.labelSmall, color = PairGreen, textAlign = androidx.compose.ui.text.style.TextAlign.End)
+            }
+        }
+    }
+}
+
+@Composable
+private fun PairDots(modifier: Modifier) {
+    androidx.compose.foundation.Canvas(modifier.height(2.dp)) {
+        drawLine(Color(0xFFB2C4A7), androidx.compose.ui.geometry.Offset.Zero, androidx.compose.ui.geometry.Offset(size.width, 0f),
+            strokeWidth = 2.dp.toPx(), pathEffect = androidx.compose.ui.graphics.PathEffect.dashPathEffect(floatArrayOf(1.dp.toPx(), 7.dp.toPx())))
+    }
+}
+
+@Composable
+fun PairRequestScreen(request: PairingProgress, model: AppModel) {
+    var remaining by remember(request.expires) { mutableStateOf("") }
+    val waiting = request.state == PairState.WAITING && request.error == null
+    val back = { if (waiting) model.cancelRequest() else model.dismissPairRequest() }
+    androidx.activity.compose.BackHandler { back() }
+    LaunchedEffect(request.expires, waiting) {
+        do {
+            remaining = PairCountdown(request.expires, java.time.Clock.fixed(model.now(), java.time.ZoneOffset.UTC)).text()
+            if (!waiting || remaining == "00:00") break
+            delay(250)
+        } while (true)
+    }
+    val scope = pairScope(request.lanes, stringResource(R.string.pair_all_lanes), stringResource(R.string.pair_one_lane), stringResource(R.string.pair_many_lanes))
+    LazyColumn(contentPadding = PaddingValues(24.dp), verticalArrangement = Arrangement.spacedBy(18.dp)) {
+        item { PairTopBar(2, back) }
+        item {
+            Text(stringResource(R.string.confirm_host), style = MaterialTheme.typography.headlineLarge, color = PairGreen)
+            Text(stringResource(R.string.request_sent_host, request.host), style = MaterialTheme.typography.bodyMedium)
+        }
+        item { PairIllustration(request.host, request.state) }
+        item { Card(Modifier.fillMaxWidth()) {
+            Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Text(stringResource(R.string.identified_session), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text(request.host, style = MaterialTheme.typography.titleLarge, color = PairGreen)
+                Text(stringResource(R.string.pair_address_scope, request.address, request.lanes?.joinToString(", ") ?: scope), style = FieldCode.copy(fontSize = MaterialTheme.typography.bodySmall.fontSize))
+                HorizontalDivider()
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
+                    Text(stringResource(R.string.access_requested), style = MaterialTheme.typography.bodySmall)
+                    Surface(shape = CircleShape, color = MaterialTheme.colorScheme.surfaceVariant) {
+                        Text(scope, Modifier.padding(horizontal = 12.dp, vertical = 4.dp), style = MaterialTheme.typography.labelSmall)
+                    }
+                }
+            }
+        } }
+        item {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(stringResource(R.string.compare_host), style = MaterialTheme.typography.titleMedium, color = PairGreen)
+                Text(stringResource(R.string.compare_hint), style = MaterialTheme.typography.bodySmall)
+                Surface(Modifier.fillMaxWidth(), shape = MaterialTheme.shapes.medium, color = PairGreen) {
+                    Text(pairCode(request.code), Modifier.padding(16.dp), color = PairLime,
+                        style = FieldCode.copy(fontSize = MaterialTheme.typography.headlineLarge.fontSize), textAlign = androidx.compose.ui.text.style.TextAlign.Center)
+                }
+            }
+        }
+        item {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                val labels = listOf(R.string.code_read, R.string.session_identified, R.string.host_confirmation_pending)
+                pairChecklist(request.state).forEachIndexed { index, check ->
+                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        val color = when (check) { PairCheck.DONE -> Color(0xFF48845B); PairCheck.WAITING -> Color(0xFFC87535); PairCheck.ERROR -> MaterialTheme.colorScheme.error }
+                        Text(when (check) { PairCheck.DONE -> "✓"; PairCheck.WAITING -> "●"; PairCheck.ERROR -> "✕" }, color = color)
+                        Text(stringResource(labels[index]), Modifier.weight(1f), style = MaterialTheme.typography.bodySmall, color = if (index == 2) color else PairGreen)
+                        if (index == 2 && waiting) Text(stringResource(R.string.expires_in, remaining), style = FieldCode.copy(fontSize = MaterialTheme.typography.labelSmall.fontSize))
+                    }
+                }
+            }
+        }
+        item {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                request.error?.let { PairError(it) }
+                FilledTonalButton(back, Modifier.fillMaxWidth(), colors = ButtonDefaults.filledTonalButtonColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)) {
+                    Text(stringResource(if (waiting) R.string.cancel_request else R.string.back))
+                }
+                Text(stringResource(R.string.no_access), Modifier.fillMaxWidth(), style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant, textAlign = androidx.compose.ui.text.style.TextAlign.Center)
+            }
+        }
+    }
 }

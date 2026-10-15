@@ -52,28 +52,97 @@ private fun PairScreen(model: AppModel, canCancel: Boolean) {
     if (request != null) { PairRequestScreen(request!!, model); return }
     val busy by model.busy.collectAsStateWithLifecycle()
     val prefill by model.prefill.collectAsStateWithLifecycle()
+    val input by model.pairInput.collectAsStateWithLifecycle()
+    val error by model.pairError.collectAsStateWithLifecycle()
     var address by rememberSaveable { mutableStateOf("") }
     var code by rememberSaveable { mutableStateOf("") }
     var pin by rememberSaveable { mutableStateOf("") }
     var name by rememberSaveable { mutableStateOf(Build.MODEL.orEmpty()) }
-    BackHandler(canCancel) { model.cancelPairing() }
+    var manual by rememberSaveable { mutableStateOf(false) }
+    var tls by rememberSaveable { mutableStateOf(false) }
+    var scanning by remember { mutableStateOf(false) }
+    var scanMessage by rememberSaveable { mutableStateOf<Int?>(null) }
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val mode = pairMode(prefill, input)
+    val enabled = !busy && !scanning
+    BackHandler(canCancel && enabled) { model.cancelPairing() }
     LaunchedEffect(prefill) {
-        prefill?.let { address = it.url; code = it.code; pin = it.pin.orEmpty(); model.consumePrefill() }
+        prefill?.let { address = it.url; code = it.code; pin = it.pin.orEmpty(); scanMessage = null }
     }
-    Column(Modifier.padding(16.dp).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        Text(stringResource(R.string.connect_session), style = MaterialTheme.typography.headlineSmall)
-        Text(stringResource(R.string.pair_instructions))
-        OutlinedTextField(address, { address = it }, Modifier.fillMaxWidth(), enabled = !busy, label = { Text(stringResource(R.string.server_address)) }, singleLine = true)
-        if (!address.trim().startsWith("govern-remote:")) {
-            OutlinedTextField(code, { code = it }, Modifier.fillMaxWidth(), enabled = !busy, textStyle = FieldCode, label = { Text(stringResource(R.string.pair_code)) }, singleLine = true)
-            OutlinedTextField(pin, { pin = it }, Modifier.fillMaxWidth(), enabled = !busy, textStyle = FieldCode, label = { Text(stringResource(R.string.certificate_pin)) }, singleLine = true)
+    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(24.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
+        PairTopBar(1, if (canCancel) model::cancelPairing else null, enabled)
+        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Text(stringResource(R.string.pair_headline), style = MaterialTheme.typography.headlineLarge, color = PairGreen)
+            Text(stringResource(R.string.pair_instructions), style = MaterialTheme.typography.bodyMedium)
         }
-        OutlinedTextField(name, { name = it }, Modifier.fillMaxWidth(), enabled = !busy, label = { Text(stringResource(R.string.device_name)) }, singleLine = true)
-        Button({ model.pair(address, code, pin, name) }, enabled = !busy && address.isNotBlank()) {
-            Text(stringResource(if (busy) R.string.pairing else R.string.pair))
+        PairIllustration(prefill?.url ?: stringResource(R.string.pair_host))
+        Button({
+            scanning = true
+            scanMessage = null
+            try {
+                val options = com.google.mlkit.vision.codescanner.GmsBarcodeScannerOptions.Builder()
+                    .setBarcodeFormats(com.google.mlkit.vision.barcode.common.Barcode.FORMAT_QR_CODE).build()
+                com.google.mlkit.vision.codescanner.GmsBarcodeScanning.getClient(context, options).startScan()
+                    .addOnSuccessListener { barcode -> scanning = false; model.offerLink(barcode.rawValue.orEmpty()) }
+                    .addOnCanceledListener { scanning = false; scanMessage = R.string.scan_cancelled }
+                    .addOnFailureListener { scanning = false; scanMessage = R.string.scan_failed }
+            } catch (_: Exception) { scanning = false; scanMessage = R.string.scan_failed }
+        }, Modifier.fillMaxWidth(), enabled = enabled) {
+            if (scanning) CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
+            else Text(stringResource(R.string.scan_qr))
         }
-        if (canCancel) TextButton(model::cancelPairing, enabled = !busy) { Text(stringResource(R.string.cancel)) }
-        Text(stringResource(R.string.pair_security), style = MaterialTheme.typography.bodySmall)
+        scanMessage?.let { PairError(stringResource(it)) }
+        if (mode == PairMode.SCANNED_LINK) {
+            Card(Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(stringResource(R.string.pair_link), style = MaterialTheme.typography.titleSmall)
+                    Text(prefill!!.url, style = FieldCode)
+                    if (prefill!!.code.isNotEmpty()) Text(pairCode(prefill!!.code), style = FieldCode)
+                    Text(stringResource(if (prefill!!.pin != null) R.string.pair_pin_present else R.string.pair_pin_absent), style = MaterialTheme.typography.bodySmall)
+                    OutlinedTextField(name, { name = it }, Modifier.fillMaxWidth(), enabled = enabled, label = { Text(stringResource(R.string.device_name)) }, singleLine = true)
+                    PairSubmit(busy, enabled) { model.pair(prefill!!.url, prefill!!.code, prefill!!.pin.orEmpty(), name) }
+                    error?.let { PairError(it) }
+                    TextButton({ model.consumePrefill(); address = ""; code = ""; pin = ""; manual = false }, enabled = enabled) {
+                        Text(stringResource(R.string.different_link))
+                    }
+                }
+            }
+        } else {
+            if (mode == PairMode.SCANNED_INVALID) error?.let { PairError(it) }
+            TextButton({ manual = !manual }, enabled = enabled) { Text(stringResource(R.string.enter_manually)) }
+            if (manual) {
+                OutlinedTextField(address, { address = it }, Modifier.fillMaxWidth(), enabled = enabled, label = { Text(stringResource(R.string.server_address)) }, singleLine = true)
+                OutlinedTextField(code, { code = it }, Modifier.fillMaxWidth(), enabled = enabled, textStyle = FieldCode, label = { Text(stringResource(R.string.pair_code)) }, singleLine = true)
+                OutlinedTextField(name, { name = it }, Modifier.fillMaxWidth(), enabled = enabled, label = { Text(stringResource(R.string.device_name)) }, singleLine = true)
+                TextButton({ tls = !tls }, enabled = enabled) { Text(stringResource(R.string.self_signed_tls)) }
+                if (tls) OutlinedTextField(pin, { pin = it }, Modifier.fillMaxWidth(), enabled = enabled, textStyle = FieldCode, label = { Text(stringResource(R.string.certificate_pin)) }, singleLine = true)
+                PairSubmit(busy, enabled && address.isNotBlank()) { model.pair(address, code, pin, name) }
+                error?.let { PairError(it) }
+            }
+        }
+        val placeholder = stringResource(R.string.pair_address_placeholder)
+        val command = stringResource(R.string.pair_command, address.ifBlank { placeholder })
+        Surface(shape = MaterialTheme.shapes.medium, color = MaterialTheme.colorScheme.surfaceVariant) {
+            Row(Modifier.fillMaxWidth().padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
+                Text(command, Modifier.weight(1f), style = FieldCode)
+                TextButton({
+                    val clipboard = context.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+                    clipboard.setPrimaryClip(android.content.ClipData.newPlainText(context.getString(R.string.copy_command), command))
+                }) { Text(stringResource(R.string.copy_command)) }
+            }
+        }
+        Text(stringResource(R.string.pair_security), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+    }
+}
+
+@Composable
+private fun PairSubmit(busy: Boolean, enabled: Boolean, submit: () -> Unit) {
+    Button(submit, Modifier.fillMaxWidth(), enabled = enabled) {
+        if (busy) {
+            CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
+            Spacer(Modifier.width(8.dp))
+        }
+        Text(stringResource(if (busy) R.string.pairing else R.string.pair))
     }
 }
 

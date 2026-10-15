@@ -145,3 +145,28 @@ fun linkBanner(link: Link, cached: Boolean): LinkBanner = when {
 
 fun showLiveControl(link: Link, control: Boolean): Boolean = link == Link.Live && control
 fun jobStatus(status: String): String = status.uppercase(Locale.ROOT)
+
+fun pairCode(code: String): String = code.filterNot(Char::isWhitespace).chunked(3).joinToString(" ")
+enum class PairTone { WAITING, SUCCESS, ERROR }
+data class PairPill(val text: Int, val tone: PairTone)
+fun pairPill(state: PairState): PairPill = when (state) {
+    PairState.WAITING -> PairPill(dev.supertools.govern.remote.R.string.awaiting_confirmation, PairTone.WAITING)
+    PairState.CONFIRMED -> PairPill(dev.supertools.govern.remote.R.string.host_confirmed, PairTone.SUCCESS)
+    PairState.REFUSED -> PairPill(dev.supertools.govern.remote.R.string.pair_refused, PairTone.ERROR)
+    PairState.EXPIRED -> PairPill(dev.supertools.govern.remote.R.string.pair_expired, PairTone.ERROR)
+    PairState.CANCELLED -> PairPill(dev.supertools.govern.remote.R.string.pair_cancelled, PairTone.ERROR)
+}
+enum class PairCheck { DONE, WAITING, ERROR }
+fun pairChecklist(state: PairState): List<PairCheck> = listOf(PairCheck.DONE, PairCheck.DONE, when (state) {
+    PairState.WAITING -> PairCheck.WAITING
+    PairState.CONFIRMED -> PairCheck.DONE
+    else -> PairCheck.ERROR
+})
+fun pairScope(lanes: List<String>?, all: String, one: String, many: String): String =
+    lanes?.let { String.format(Locale.getDefault(), if (it.size == 1) one else many, it.size) } ?: all
+enum class PairMode { FORM, SCANNED_LINK, SCANNED_INVALID }
+fun pairMode(prefill: PairingLink?, input: String?): PairMode = when {
+    prefill != null -> PairMode.SCANNED_LINK
+    input != null -> PairMode.SCANNED_INVALID
+    else -> PairMode.FORM
+}

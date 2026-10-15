@@ -17,6 +17,18 @@ class StringsTest {
         return result.toMap()
     }
 
+    @Test fun pairingLabelsExistInBothLanguages() {
+        val keys = listOf("pair_step", "pair_headline", "scan_qr", "scan_cancelled", "scan_failed",
+            "pair_link", "different_link", "enter_manually", "self_signed_tls", "pair_pin_present",
+            "pair_pin_absent", "pair_not_paired", "this_android", "pair_host", "access_requested",
+            "pair_all_lanes", "pair_one_lane", "pair_many_lanes", "compare_hint", "copy_command",
+            "pair_address_scope", "pair_command", "pair_address_placeholder")
+        for (locale in listOf("values", "values-pt-rBR")) {
+            val values = strings(locale)
+            for (key in keys) assertFalse("$locale/$key", values[key].isNullOrBlank())
+        }
+    }
+
     @Test fun englishAndPortugueseHaveMatchingKeysAndArguments() {
         val en = strings("values")
         val pt = strings("values-pt-rBR")

@@ -31,7 +31,7 @@
     <string name="request_failed">A solicitação falhou.</string>
     <string name="no_signature">A confirmação não retornou uma assinatura.</string>
     <string name="not_sent">Não enviado: %1$s</string>
-    <string name="pair_instructions">No seu terminal, execute govern remote pair --url &lt;endereço acessível pelo celular&gt;. Leia o QR code com a câmera, cole o link de pareamento ou digite o endereço e o código.</string>
+    <string name="pair_instructions">Execute govern remote pair no host e escaneie o QR code.</string>
     <string name="server_address">Link de pareamento ou endereço do host</string>
     <string name="pair_code">Código de pareamento</string>
     <string name="certificate_pin">Pin do certificado (apenas TLS autoassinado)</string>
@@ -52,9 +52,6 @@
     <string name="decision_location">%1$s · %2$s</string>
     <string name="no_activity">Nenhuma atividade recente disponível.</string>
     <string name="activity_location">%1$s · %2$s</string>
-    <string name="finished">Concluída</string>
-    <string name="ready">Pronta</string>
-    <string name="open">Aberta</string>
     <string name="back">Voltar</string>
     <string name="refresh">Atualizar</string>
     <string name="lane_kind">%1$s · %2$s</string>
@@ -170,19 +167,17 @@
     <string name="session_created">Sessão criada.</string>
     <string name="create_session">Criar sessão</string>
     <string name="choice">%1$s: %2$s</string>
-    <string name="pairing_label">PAREAMENTO</string>
     <string name="request_sent_host">A solicitação foi enviada para %1$s.</string>
-    <string name="phone_host">Telefone → Host</string>
     <string name="identified_session">SESSÃO IDENTIFICADA</string>
-    <string name="code_read">✓ Código lido</string>
-    <string name="session_identified">✓ Sessão identificada</string>
-    <string name="host_confirmed">✓ Confirmação no host</string>
-    <string name="host_confirmation_pending">○ Confirmação no host</string>
+    <string name="code_read">Código lido</string>
+    <string name="session_identified">Sessão identificada</string>
+    <string name="host_confirmed">Confirmado</string>
+    <string name="host_confirmation_pending">Confirmação no host</string>
     <string name="expires_in">Expira em %1$s</string>
     <string name="awaiting_confirmation">Aguardando confirmação</string>
-    <string name="pair_refused">O host recusou esta solicitação.</string>
-    <string name="pair_expired">Esta solicitação expirou. Conecte novamente para solicitar acesso.</string>
-    <string name="pair_cancelled">Esta solicitação foi cancelada.</string>
+    <string name="pair_refused">Recusado</string>
+    <string name="pair_expired">Expirado</string>
+    <string name="pair_cancelled">Cancelado</string>
     <string name="pair_token_missing">O host não entregou um token. Solicite o pareamento novamente.</string>
     <plurals name="session_count"><item quantity="one">%d sessão</item><item quantity="other">%d sessões</item></plurals>
     <plurals name="decision_count"><item quantity="one">%d pede sua decisão</item><item quantity="other">%d pedem sua decisão</item></plurals>
@@ -201,4 +196,27 @@
     <string name="today">Hoje</string>
     <string name="yesterday">Ontem</string>
     <string name="undated">Sem data</string>
+    <string name="pair_step">PAREAMENTO / %1$02d DE 02</string>
+    <string name="pair_headline">Conecte-se a um host.</string>
+    <string name="scan_qr">Escanear QR code</string>
+    <string name="scan_cancelled">Leitura cancelada. Tente novamente ou digite manualmente.</string>
+    <string name="scan_failed">Leitor indisponível ou falha na leitura. Tente novamente ou digite manualmente.</string>
+    <string name="pair_link">Link de pareamento</string>
+    <string name="different_link">Usar outro link</string>
+    <string name="enter_manually">Digitar manualmente</string>
+    <string name="self_signed_tls">TLS autoassinado</string>
+    <string name="pair_pin_present">Pin do certificado presente: sim</string>
+    <string name="pair_pin_absent">Pin do certificado presente: não</string>
+    <string name="pair_not_paired">Não pareado</string>
+    <string name="pair_host">Host</string>
+    <string name="this_android">Este Android</string>
+    <string name="access_requested">Acesso solicitado</string>
+    <string name="pair_all_lanes">Todas as lanes</string>
+    <string name="pair_one_lane">%d lane</string>
+    <string name="pair_many_lanes">%d lanes</string>
+    <string name="pair_address_scope">%1$s / %2$s</string>
+    <string name="compare_hint">Os dois dispositivos devem mostrar o mesmo código.</string>
+    <string name="copy_command">Copiar</string>
+    <string name="pair_command">govern remote pair --url %1$s</string>
+    <string name="pair_address_placeholder">&lt;address&gt;</string>
 </resources>
