@@ -60,12 +60,14 @@ function ctxFooter(): void {
   if (c && c.ctx > CTX_WARN) out(`⚠ this session reads ${kTok(c.ctx)} per call (limit ${kTok(CTX_WARN)}): ${CTX_ADVICE}.`);
 }
 
-type Engine = "claude" | "codex" | "grok";
+/** The engines a work segment runs on (`govern work --engine`); the dispatcher's built-in runners are the same set. */
+export const ENGINES = ["claude", "codex", "grok"] as const;
+type Engine = (typeof ENGINES)[number];
 /** The engine of a work segment: --engine, else the session running govern (Claude Code by CLAUDE_CODE_SESSION_ID, Grok
  *  by the GROK_AGENT / GROK_SESSION_ID its shells export), else codex. */
 function engineOf(a: Args): Engine {
   const e = opt(a, "engine") ?? (process.env.CLAUDE_CODE_SESSION_ID ? "claude" : process.env.GROK_AGENT || process.env.GROK_SESSION_ID ? "grok" : "codex");
-  if (e !== "claude" && e !== "codex" && e !== "grok") fail("--engine must be claude, codex or grok");
+  if (!(ENGINES as readonly string[]).includes(e)) fail(`--engine must be ${ENGINES.slice(0, -1).join(", ")} or ${ENGINES.at(-1)}`);
   return e as Engine;
 }
 /** The id of the running session of `engine` (what the usage report finds its transcript by); codex has none. */

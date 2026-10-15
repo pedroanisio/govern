@@ -7,11 +7,11 @@ import assert from "node:assert/strict";
 import { readFileSync, readdirSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { HERE, present } from "./helpers.ts";
-import { COMMANDS } from "../govern.ts";
+import { COMMANDS, ENGINES } from "../govern.ts";
 import { BUILTIN_RUNNERS, MAX_FILES_CHARS } from "../lib/queue.ts";
 import { MAX_INLINE } from "../lib/codex.ts";
 import { LEGACY_PROFILES } from "../lib/caps.ts";
-import { CONFIG_FILE, DOT_DIR } from "../lib/workspace.ts";
+import { CONFIG_FILE, DOT_DEFAULTS, DOT_DIR } from "../lib/workspace.ts";
 import { parseArgs, GovernError, type FlagSpec } from "../lib/util.ts";
 
 const GOVERN_DIR = resolve(HERE, "..");
@@ -42,12 +42,8 @@ const flat = (doc: string): string => present(DOCS[doc], `document ${doc}`).repl
 
 // ---- (a) runner and engine lists ------------------------------------------------------------------------------------
 
-/** The engines `govern work --engine` takes: the members of govern.ts's `type Engine` union. */
-function engineSet(text: string): string[] {
-  const m = /\btype Engine = ([^;]+);/.exec(text);
-  if (!m?.[1]) throw new Error("govern.ts declares no type Engine");
-  return [...m[1].matchAll(/"([a-z]+)"/g)].map((x) => x[1] ?? "").sort();
-}
+/** The engines `govern work --engine` takes, sorted. */
+const sortedEngines = (): string[] => [...ENGINES].sort();
 
 /** Every run of list items in `text` (words or <placeholders> joined by `|`, `, `, `, or `, ` or ` or ` and `) that names
  *  some built-in runners but not all of them: a list of runners that has fallen behind the code. Matches are
@@ -64,7 +60,7 @@ function partialRunnerLists(text: string, runners: readonly string[]): string[] 
 }
 
 test("the engines govern work takes are the dispatcher's built-in runners", () => {
-  assert.deepEqual(engineSet(src("govern.ts")), [...BUILTIN_RUNNERS].sort());
+  assert.deepEqual(sortedEngines(), [...BUILTIN_RUNNERS].sort());
 });
 
 test("drift: every list of runners in the MANPAGE and SKILL.md names all the built-in runners", () => {
@@ -72,7 +68,7 @@ test("drift: every list of runners in the MANPAGE and SKILL.md names all the bui
 });
 
 test("drift: every --engine choice list names exactly the engines", () => {
-  const engines = engineSet(src("govern.ts"));
+  const engines = sortedEngines();
   for (const doc of ["MANPAGE", "SKILL.md"]) {
     const lists = [...flat(doc).matchAll(/--engine ([a-z]+(?:\|[a-z]+)+)/g)].map((m) => (m[1] ?? "").split("|").sort());
     assert.ok(lists.length > 0, `${doc} shows the --engine choices`);
@@ -87,7 +83,6 @@ test("the runner-list check catches a list that misses a runner", () => {
   assert.deepEqual(partialRunnerLists("--engine claude or codex", r), ["claude or codex"]);
   assert.deepEqual(partialRunnerLists("--to codex|claude|grok|<profile> and codex, claude and grok", r), []);
   assert.deepEqual(partialRunnerLists("a Codex or Grok session; claude-read, codex-read", r), [], "capitalised names and profiles are not runner lists");
-  assert.throws(() => engineSet("type Other = 1;"), /no type Engine/);
 });
 
 // ---- (b) numbers ----------------------------------------------------------------------------------------------------
@@ -314,13 +309,6 @@ test("the example check refuses what govern refuses", () => {
 
 // ---- (d) the FILES section ------------------------------------------------------------------------------------------
 
-/** The folder and file names a .govern/ workspace uses with no config: the values of workspace.ts's DOT_DEFAULTS. */
-function dotDefaults(text: string): string[] {
-  const m = /\bconst DOT_DEFAULTS = \{([^}]*)\}/.exec(text);
-  if (!m?.[1]) throw new Error("workspace.ts declares no DOT_DEFAULTS");
-  return [...m[1].matchAll(/:\s*"([^"]+)"/g)].map((x) => x[1] ?? "");
-}
-
 /** What FILES gets wrong: a workspace path it omits, and a `.govern/…` path that is not one govern uses. */
 function filesProblems(files: string, defaults: readonly string[]): string[] {
   const problems: string[] = [];
@@ -334,7 +322,7 @@ function filesProblems(files: string, defaults: readonly string[]): string[] {
 }
 
 test("drift: the MANPAGE FILES section names the workspace layout govern uses, and no other", () => {
-  const defaults = dotDefaults(src("lib/workspace.ts"));
+  const defaults = Object.values(DOT_DEFAULTS);
   assert.ok(defaults.includes("projects") && defaults.includes("state"), `DOT_DEFAULTS read: ${defaults.join(", ")}`);
   assert.deepEqual(filesProblems(section(MAN, "FILES").join("\n"), defaults), []);
 });
@@ -345,7 +333,6 @@ test("the FILES check catches a missing and an invented path", () => {
   assert.deepEqual(filesProblems("", ["a"]), ["the MANPAGE has no FILES section"]);
   assert.deepEqual(filesProblems(all.replace(`${DOT_DIR}/a `, ""), ["a"]), [`FILES lacks ${DOT_DIR}/a`]);
   assert.deepEqual(filesProblems(`${all} ${DOT_DIR}/b`, ["a"]), [`FILES names ${DOT_DIR}/b, which govern does not use`]);
-  assert.throws(() => dotDefaults("const X = 1;"), /no DOT_DEFAULTS/);
 });
 
 // ---- (e) environment variables --------------------------------------------------------------------------------------
@@ -376,7 +363,7 @@ function governVars(texts: readonly string[], engines: readonly string[]): Set<s
 
 test("drift: SKILL.md, the agents' manual, names every GOVERN_ variable the code reads or sets", () => {
   const texts = sources().map((f) => readFileSync(f, "utf8"));
-  const vars = governVars(texts, engineSet(src("govern.ts")));
+  const vars = governVars(texts, sortedEngines());
   for (const n of ["GOVERN_REPO", "GOVERN_JOB_DIR", "GOVERN_GROK_BIN", "GOVERN_PYTHON"]) assert.ok(vars.has(n), `the scan finds ${n}`);
   const missing = [...vars].sort().filter((n) => !new RegExp(`(?<![\\w])${n}(?![\\w])`).test(SKILL));
   assert.deepEqual(missing, []);

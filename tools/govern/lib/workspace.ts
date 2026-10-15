@@ -12,7 +12,7 @@ export const CONFIG_FILE = "govern.config.json";
 /** The conventional workspace folder; its parent is the workspace root. */
 export const DOT_DIR = ".govern";
 /** Where each folder lives inside .govern/ when its config.json does not say. */
-const DOT_DEFAULTS = {
+export const DOT_DEFAULTS = {
   projects: "projects", queue: "queue", tuningLog: "tuning.jsonl", processes: "processes", state: "state", capabilities: "capabilities",
 } as const;
 
