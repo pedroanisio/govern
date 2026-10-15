@@ -87,6 +87,8 @@ export interface Message {
   verification?: Verification;
   /** The process that took this message, regardless of which service claimed it. */
   claim?: { by: string; pid: number; start: string; at: string };
+  remote?: { peer: string; id: string };
+  relay?: { attempts: number; lastError: string; nextAt: string };
   result?: { profile?: string; profileHash?: string; closedBy?: string; note?: string; agent: string; ok: boolean; usage?: Usage & { costUsd?: number }; turns?: number; seconds: number; reply?: string; error?: string };
 }
 
@@ -124,7 +126,7 @@ const laneOf = (m: Pick<Message, "lane" | "project">): string | undefined => m.l
  *  it as an open message with a fresh id and creation time; fails on the first invalid part. */
 export function send(m: Omit<Message, "id" | "created">): Message {
   for (const [k, v] of [["task", m.task], ["to", m.to], ["from", m.from]] as const)
-    if (!NAME.test(v)) fail(`--${k} must be lowercase letters, digits, dots and dashes: ${v}`);
+    if (!(NAME.test(v) || (k !== "task" && v.split("@").length === 2 && v.split("@").every((part) => NAME.test(part))))) fail(`--${k} must be lowercase letters, digits, dots and dashes: ${v}`);
   if (!/^[a-z0-9][a-z0-9.\/-]*$/.test(m.project) || m.project.split("/").some((x) => x === ".." || x === ""))
     fail(`--project must be a project slug (lowercase, digits, dots, dashes, /): ${m.project}`);
   if (!KINDS.includes(m.kind as any)) fail(`--kind must be one of ${KINDS.join(", ")}`);
@@ -205,11 +207,13 @@ export function thread(m: Message): Message[] {
   return chain;
 }
 
-function move(m: Message, from: State, to: State): boolean {
+/** Move a message's file between state folders with one atomic rename; false when it is no longer in `from` (another process took it). */
+export function move(m: Message, from: State, to: State): boolean {
   mkdirSync(dir(to), { recursive: true });
   try { renameSync(join(dir(from), `${m.id}.json`), join(dir(to), `${m.id}.json`)); return true; } catch { return false; }
 }
-const save = (m: Message, s: State) => {
+/** Write a message back into its state folder `s`: a temporary file renamed into place. */
+export const save = (m: Message, s: State) => {
   const path = join(dir(s), `${m.id}.json`), tmp = `${path}.tmp-${process.pid}`;
   writeFileSync(tmp, JSON.stringify(m, null, 2) + "\n");
   renameSync(tmp, path);
@@ -312,8 +316,8 @@ export function prompt(m: Message, maxChars = charLimit("GOVERN_QUEUE_MAX_INLINE
     brief,
     `Thread (oldest first):`,
     ...t.map((x) => x.verification?.state === "unverified"
-      ? `--- ${x.id} [${x.kind}] from ${x.from} to ${x.to}: [Host: unverified reply withheld because its content check failed. Inspect it with govern task show ${x.id}.]`
-      : `--- ${x.id} [${x.kind}] from ${x.from} to ${x.to}: ${x.summary}\n${x.body}`),
+      ? `--- ${x.id} [${x.kind}] from ${x.from}${x.from.includes("@") ? " (another host)" : ""} to ${x.to}: [Host: unverified reply withheld because its content check failed. Inspect it with govern task show ${x.id}.]`
+      : `--- ${x.id} [${x.kind}] from ${x.from}${x.from.includes("@") ? " (another host)" : ""} to ${x.to}: ${x.summary}\n${x.body}`),
     files.length ? `Files named by the message:\n${files.join("\n")}` : "",
     `Answer with JSON only: {"kind": one of ${REPLY_KINDS.join("|")}, "summary": one line of at most ${SUMMARY_MAX} characters, "body": the full answer}. Use BLOCKED when you cannot do it, saying exactly what is missing.`,
   ].filter(Boolean).join("\n");
@@ -506,7 +510,7 @@ function runConfigured(def: RunnerDef, m: Message, p: string, timeoutSec: number
 }
 
 /** Who hears that a task was refused: the sender, or the owner when the sender is itself a runner. */
-const LEGACY_OWNER = (m: Message): string => (runners().includes(m.from) ? "owner" : m.from);
+export const LEGACY_OWNER = (m: Message): string => (runners().includes(m.from) ? "owner" : m.from);
 
 /** Dispatched runs already used by the thread `m` belongs to (not counting m itself). */
 function threadRuns(m: Message): number {
