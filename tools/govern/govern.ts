@@ -28,6 +28,7 @@ import * as jev from "./lib/decide.ts";
 import { desk } from "./lib/desk.ts";
 import { listLines, showLines, place } from "./lib/resources.ts";
 import * as reaping from "./lib/reap.ts";
+import * as qr from "./lib/qr.ts";
 import * as slicing from "./lib/slice.ts";
 import * as allowances from "./lib/allowances.ts";
 import { registry, getProfile, listText, showText, failing } from "./lib/caps.ts";
@@ -725,7 +726,9 @@ function cmdRemote(a: Args): void {
       if (!/^https?:\/\/[^\s]+$/.test(url)) fail("--url must be the server's http(s) address, as the phone reaches it");
       const q = new URLSearchParams({ url, code });
       if (cert) q.set("pin", remote.certPin(readFileSync(cert, "utf8")));
-      out(`pairing link (paste it in the app): govern-remote://pair?${q}`);
+      const link = `govern-remote://pair?${q}`;
+      out(`pairing link (paste it in the app): ${link}`);
+      if (!flag(a, "no-qr")) out(`or scan it with the phone's camera (it opens the app with the form filled in):\n${qr.render(qr.encode(link), { colour: process.stdout.isTTY === true })}`);
     }
     return;
   }
@@ -1024,8 +1027,8 @@ export const COMMANDS: readonly Cmd[] = [
   } },
   { name: "remote", section: 7, noSub: "govern remote pair|devices|revoke|serve (the protocol: tools/govern/REMOTE.md)",
     subs: {
-      pair: { flags: { value: ["as", "minutes", "url", "tls-cert"] },
-        lines: [["[--as PERSON] [--minutes 10] [--url URL] [--tls-cert F]", "a one-time code that pairs one phone (govern-remote app) as PERSON (default owner); only from the\nowner's own terminal. --url and --tls-cert add the server and its certificate pin to the printed pairing link"]], run: cmdRemote },
+      pair: { flags: { value: ["as", "minutes", "url", "tls-cert"], bool: ["no-qr"] },
+        lines: [["[--as PERSON] [--minutes 10] [--url URL] [--tls-cert F] [--no-qr]", "a one-time code that pairs one phone (govern-remote app) as PERSON (default owner); only from the\nowner's own terminal. --url and --tls-cert add the server and its certificate pin to the printed pairing link,\nalso drawn as a QR code the phone's camera opens in the app (--no-qr: the link only)"]], run: cmdRemote },
       devices: { lines: [["", "the paired devices: id, name, person, when paired, revoked"]], run: cmdRemote },
       revoke: { lines: [["<device-id>", "the device's token and key stop working at once (its open stream ends too)"]], run: cmdRemote },
       serve: { flags: { value: ["host", "port", "tls-cert", "tls-key"] },

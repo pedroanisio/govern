@@ -83,6 +83,13 @@ The code is 12 characters from a 30-letter alphabet without look-alike letters (
 default (1 to 60), single-use, and void after 5 wrong tries. Only its SHA-256 is stored. Guessing it is therefore
 limited to 5 attempts against 2^59 values.
 
+With `--url`, `govern remote pair` also prints the pairing link and draws it as a QR code in the terminal (`--no-qr`
+leaves the code out). The app registers the `govern-remote://pair` link, so the phone's camera opens a scanned code in
+the app. The link only fills the pairing form: the server address stays visible, and nothing is sent until the person
+taps **Pair**. A paired app refuses the link. Because any app or web page on the phone can open such a link, the person
+must check the address before tapping **Pair**: pairing with a server they do not know sends approvals there, not to
+their own.
+
 The phone generates its key during pairing. The key is ECDSA P-256 in the Android Keystore, in StrongBox hardware when
 the phone has it, and it cannot be exported. It is created with `setUserAuthenticationRequired(true)` and
 `setUserAuthenticationParameters(0, BIOMETRIC_STRONG | DEVICE_CREDENTIAL)`, so each single signature needs the person to
@@ -164,7 +171,7 @@ open the stream.
 ## Operating it
 
 ```sh
-govern remote pair --url https://build-box.tailnet.ts.net    # at the owner's terminal: prints the code and a pairing link
+govern remote pair --url https://build-box.tailnet.ts.net    # at the owner's terminal: the code, a pairing link and its QR code
 govern remote serve                                         # loopback, port 5002; then: tailscale serve --bg 5002
 govern remote devices                                       # paired devices
 govern remote revoke d-4f1c2a9b7e30                         # the token and key stop working now

@@ -28,7 +28,7 @@
 #     govern log SLUG [JOB] [--tail N] [--grep RE]
 #     govern prompts [PROCESS]  |  ask SLUG STEP [--file F]... [--var K=V]... [--image PNG]... [--effort E] [--model M]
 #     govern usage [SLUG...] [--since DATE]  |  ctx  |  desk  |  tune  |  publish SLUG
-#     govern remote pair [--as PERSON] [--minutes N] [--url URL] [--tls-cert F]  |  remote devices  |  remote revoke DEVICE
+#     govern remote pair [--as PERSON] [--minutes N] [--url URL] [--tls-cert F] [--no-qr]  |  remote devices  |  remote revoke DEVICE
 #     govern remote serve [--host H] [--port 5002] [--tls-cert F --tls-key F]
 #     govern caps [PROFILE]  |  caps --check PROFILE
 #     govern decide ask --questions F (--state S | --state-file F) [--purpose P] [--json]  |  decide report
@@ -100,6 +100,8 @@
 #     --tls-key F             remote serve: the PEM private key of --tls-cert
 #     --minutes N             remote pair: how long the pairing code is valid (1..60, default 10)
 #     --url URL               remote pair: the server's address as the phone reaches it, printed as a pairing link
+#                             and drawn as a QR code the phone's camera opens in the app
+#     --no-qr                 remote pair: print the pairing link without its QR code
 #     --advance               tick: progress ready event, subprocess and retry stages through normal gates
 #     --ack ID                alerts: acknowledge an alert without approving a business decision
 #     --action NAME           conversation recover, recover: retry an investigated failure or confirm compensation with compensated

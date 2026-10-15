@@ -94,11 +94,16 @@ private fun PairScreen(model: AppModel) {
     var code by rememberSaveable { mutableStateOf("") }
     var pin by rememberSaveable { mutableStateOf("") }
     var name by rememberSaveable { mutableStateOf(Build.MODEL ?: "Android") }
+    val prefill by model.prefill.collectAsStateWithLifecycle()
+    // A scanned link fills each field on its own, so the server address stays in view before the person taps Pair.
+    LaunchedEffect(prefill) {
+        prefill?.let { address = it.url; code = it.code; pin = it.pin ?: ""; model.consumePrefill() }
+    }
     val isLink = address.trim().startsWith("govern-remote:")
     Column(Modifier.padding(16.dp).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         Text("Pair with govern", style = MaterialTheme.typography.headlineSmall)
-        Text("At your own terminal, run: govern remote pair --url <address the phone reaches>. Paste the pairing link it prints, " +
-            "or the address and the code.", style = MaterialTheme.typography.bodyMedium)
+        Text("At your own terminal, run: govern remote pair --url <address the phone reaches>. Scan the QR code it draws with " +
+            "this phone's camera, or paste the pairing link it prints, or type the address and the code.", style = MaterialTheme.typography.bodyMedium)
         OutlinedTextField(address, { address = it }, Modifier.fillMaxWidth(), label = { Text("Pairing link or server address") }, singleLine = true)
         if (!isLink) {
             OutlinedTextField(code, { code = it }, Modifier.fillMaxWidth(), label = { Text("Pairing code") }, singleLine = true)

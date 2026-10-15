@@ -1,5 +1,6 @@
 package dev.supertools.govern.remote
 
+import android.content.Intent
 import android.hardware.biometrics.BiometricManager.Authenticators
 import android.hardware.biometrics.BiometricPrompt
 import android.os.Bundle
@@ -22,6 +23,8 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContent { App(model, ::confirm) }
+        // A recreated activity (rotation) still holds the intent it was opened with: offer it once, not on every recreate.
+        if (savedInstanceState == null) offer(intent)
         // The stream runs while the app is on screen; it is not a background service.
         lifecycleScope.launch {
             repeatOnLifecycle(Lifecycle.State.STARTED) {
@@ -29,6 +32,18 @@ class MainActivity : ComponentActivity() {
                 try { kotlinx.coroutines.awaitCancellation() } finally { model.stopStream() }
             }
         }
+    }
+
+    /** A scan while the app is already open (singleTop) arrives here instead of starting a second copy. */
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        offer(intent)
+    }
+
+    /** A govern-remote://pair link the phone opened in this app (the manifest's VIEW filter) fills the pairing form. */
+    private fun offer(intent: Intent?) {
+        if (intent?.action == Intent.ACTION_VIEW) intent.dataString?.let(model::offerLink)
     }
 
     /**

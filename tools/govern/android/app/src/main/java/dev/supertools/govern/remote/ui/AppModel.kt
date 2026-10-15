@@ -8,6 +8,8 @@ import dev.supertools.govern.remote.protocol.Desk
 import dev.supertools.govern.remote.protocol.Endpoint
 import dev.supertools.govern.remote.protocol.GovernClient
 import dev.supertools.govern.remote.protocol.LaneDetail
+import dev.supertools.govern.remote.protocol.LinkOffer
+import dev.supertools.govern.remote.protocol.PairingLink
 import dev.supertools.govern.remote.protocol.PairingLinks
 import dev.supertools.govern.remote.protocol.ServerException
 import dev.supertools.govern.remote.protocol.SignedAction
@@ -46,12 +48,25 @@ class AppModel(app: Application) : AndroidViewModel(app) {
     val message: StateFlow<String?> = _message
     private val _busy = MutableStateFlow(false)
     val busy: StateFlow<Boolean> = _busy
+    private val _prefill = MutableStateFlow<PairingLink?>(null)
+    /** A scanned pairing link waiting to fill the pairing form; the form takes it with [consumePrefill]. */
+    val prefill: StateFlow<PairingLink?> = _prefill
 
     private var streamJob: Job? = null
 
     private fun client(): GovernClient? = store.endpoint()?.let { GovernClient(it) }
 
     fun consumeMessage() { _message.value = null }
+
+    /** A link the phone opened in this app (the camera scanning `govern remote pair`'s QR code): fills the form, never pairs. */
+    fun offerLink(link: String) {
+        when (val o = PairingLinks.offer(link, _paired.value?.baseUrl)) {
+            is LinkOffer.Fill -> { _prefill.value = o.link; _message.value = "check that ${o.link.url} is your server, then tap Pair" }
+            is LinkOffer.Refused -> _message.value = o.reason
+        }
+    }
+
+    fun consumePrefill() { _prefill.value = null }
 
     /** Pairs this device: a pairing link fills address, code and pin; otherwise they come from the form. */
     fun pair(addressOrLink: String, codeField: String, pinField: String, deviceName: String) {
