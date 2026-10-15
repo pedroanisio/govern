@@ -147,32 +147,44 @@
     {
       "t": "2026-10-14T20:12:01.497Z",
       "kind": "job",
-      "text": "{\"id\":\"20261014T201201Z-test\",\"name\":\"test\",\"bg\":false,\"status\":\"ok\",\"exit\":0,\"seconds\":0,\"resource\":\"local\",\"machineSeconds\":0}"
+      "text": "{\"id\":\"20261014T201201Z-test\",\"name\":\"test\",\"bg\":false,\"status\":\"ok\",\"exit\":0,\"seconds\":0,\"resource\":\"local\",\"machineSeconds\":0}",
+      "summary": "test ok · exit 0 · 0 s",
+      "tone": "ok"
     },
     {
       "t": "2026-10-14T20:12:01.499Z",
       "kind": "check",
-      "text": "{\"stage\":\"draft\",\"name\":\"test\",\"ok\":true,\"exit\":0,\"job\":\"20261014T201201Z-test\"}"
+      "text": "{\"stage\":\"draft\",\"name\":\"test\",\"ok\":true,\"exit\":0,\"job\":\"20261014T201201Z-test\"}",
+      "summary": "check test passed · draft",
+      "tone": "ok"
     },
     {
       "t": "2026-10-14T20:12:01.525Z",
       "kind": "artifact",
-      "text": "{\"name\":\"proof.txt\",\"sha256\":\"cba06b5736faf67e54b07b561eae94395e774c517a7d910a54369e1263ccfbd4\",\"bytes\":3,\"title\":null,\"caption\":null}"
+      "text": "{\"name\":\"proof.txt\",\"sha256\":\"cba06b5736faf67e54b07b561eae94395e774c517a7d910a54369e1263ccfbd4\",\"bytes\":3,\"title\":null,\"caption\":null}",
+      "summary": "artifact proof.txt published",
+      "tone": "ok"
     },
     {
       "t": "2026-10-14T20:12:01.536Z",
       "kind": "artifact-reviewed",
-      "text": "{\"artifact\":{\"name\":\"proof.txt\",\"sha256\":\"cba06b5736faf67e54b07b561eae94395e774c517a7d910a54369e1263ccfbd4\"},\"by\":\"old\",\"device\":\"d-old\"}"
+      "text": "{\"artifact\":{\"name\":\"proof.txt\",\"sha256\":\"cba06b5736faf67e54b07b561eae94395e774c517a7d910a54369e1263ccfbd4\"},\"by\":\"old\",\"device\":\"d-old\"}",
+      "summary": "old reviewed proof.txt",
+      "tone": "ok"
     },
     {
       "t": "2026-10-14T20:12:01.550Z",
       "kind": "artifact",
-      "text": "{\"name\":\"proof.txt\",\"sha256\":\"ee8250fb76e094b34b471f13a73dbbe51d1ae142e9df59d7c0d31ec20f0a0a8e\",\"bytes\":8,\"title\":\"Proof\",\"caption\":\"Latest evidence\"}"
+      "text": "{\"name\":\"proof.txt\",\"sha256\":\"ee8250fb76e094b34b471f13a73dbbe51d1ae142e9df59d7c0d31ec20f0a0a8e\",\"bytes\":8,\"title\":\"Proof\",\"caption\":\"Latest evidence\"}",
+      "summary": "artifact proof.txt published",
+      "tone": "ok"
     },
     {
       "t": "2026-10-14T20:12:01.552Z",
       "kind": "artifact-reviewed",
-      "text": "{\"artifact\":{\"name\":\"proof.txt\",\"sha256\":\"ee8250fb76e094b34b471f13a73dbbe51d1ae142e9df59d7c0d31ec20f0a0a8e\"},\"by\":\"owner\",\"device\":\"d-fixture\"}"
+      "text": "{\"artifact\":{\"name\":\"proof.txt\",\"sha256\":\"ee8250fb76e094b34b471f13a73dbbe51d1ae142e9df59d7c0d31ec20f0a0a8e\"},\"by\":\"owner\",\"device\":\"d-fixture\"}",
+      "summary": "owner reviewed proof.txt",
+      "tone": "ok"
     }
   ]
 }

@@ -342,11 +342,9 @@ test("govern remote pair needs the owner's terminal; serve refuses a public host
 function shapeDiff(a: unknown, b: unknown, path = "$"): string[] {
   if (a === null || b === null || typeof a !== "object" || typeof b !== "object" || path.endsWith(".data")) return [];
   if (Array.isArray(a) || Array.isArray(b)) return Array.isArray(a) && Array.isArray(b) && a.length && b.length ? shapeDiff(a[0], b[0], `${path}[0]`) : [];
-  // The Android fixture may predate these optional display fields; all other keys still match exactly.
-  const expected = path.endsWith(".ledger[0]") ? { summary: "", tone: "info", ...b } : b;
-  const ka = Object.keys(a), kb = Object.keys(expected);
+  const ka = Object.keys(a), kb = Object.keys(b);
   return [...ka.filter((k) => !kb.includes(k)).map((k) => `${path}.${k} only on the server`), ...kb.filter((k) => !ka.includes(k)).map((k) => `${path}.${k} only in the app's fixture`),
-    ...ka.filter((k) => kb.includes(k)).flatMap((k) => shapeDiff((a as Record<string, unknown>)[k], (expected as Record<string, unknown>)[k], `${path}.${k}`))];
+    ...ka.filter((k) => kb.includes(k)).flatMap((k) => shapeDiff((a as Record<string, unknown>)[k], (b as Record<string, unknown>)[k], `${path}.${k}`))];
 }
 
 test("the server's desk and lane match the app's contract fixtures (android/app/src/test/resources/fixtures)", async () => {
@@ -370,7 +368,7 @@ test("the server's desk and lane match the app's contract fixtures (android/app/
     assert.deepEqual(shapeDiff(desk, JSON.parse(readFileSync(join(dir, "desk.json"), "utf8"))), []);
     const lane = await (await fetch(`${base}/v1/lane?slug=r1`, { headers: auth(phone) })).json();
     const fixture = JSON.parse(readFileSync(join(dir, "lane.json"), "utf8"));
-    // Older app fixtures omit the additive display fields. Check those separately on every server row.
+    // every server ledger row carries a bounded human summary and a known tone
     for (const row of (lane as any).ledger) {
       assert.equal(typeof row.summary, "string");
       assert.ok(row.summary.length > 0 && row.summary.length <= 160);
