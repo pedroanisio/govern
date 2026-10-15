@@ -90,6 +90,7 @@ test("the command center merges every host, newest messages first, and raises al
   assert.ok(v.alerts.some(x => x.host === "a" && /dispatcher not running/.test(x.message)));
   assert.ok(v.alerts.some(x => /last mesh sync/.test(x.message)));
   assert.deepEqual(v.messages.map(m => [m.host, m.summary]), [["b", "from b"]]);
+  assert.deepEqual(v.agents.filter(r => r.kind === "runners").map(r => r.host), ["a", "b"], "every reporting host lists its agents");
   const text = center.render(v);
   for (const s of ["COMMAND CENTER", "mesh lab (registrar a)", "HOSTS (3)", "● a", "✖ c", "ALERTS", "‼ c: no telemetry", "AGENTS", "SPEND, LAST 24 H", "MESSAGES (latest 1)", "codex@c"]) assert.ok(text.includes(s), s);
   use(a); const all = await center.gather({ post: network(hosts), now: () => NOW });
@@ -105,6 +106,25 @@ test("certificate and failure alerts are derived from telemetry alone", () => {
   const busy = center.alertsFor(t({ relay: { outboundOpen: 2, retrying: 1, failed24h: 3, delivered24h: 0, inbound24h: 0, lastError: "offline" }, queue: { open: 0, claimed: 0, done: 0, failed: 0, unverified: 2 }, runs24h: { count: 4, ok: 3, failed: 1, seconds: 1, input: 0, output: 0, costUsd: 0 } }), NOW);
   assert.deepEqual(busy.map(x => x.message), ["3 outbound deliveries failed in 24 h: offline", "1 outbound deliveries are retrying", "2 replies failed verification and wait for review", "1 of 4 runs failed in 24 h"]);
 });
+test("the agents list shows every live session once, beside registered agents and runners, for each reporting host", () => {
+  const h = (host: string, agents: Record<string, unknown>) => ({ host, self: false, registrar: false, ok: true, telemetry: { ...peerless(), host, agents } as never });
+  const rows = center.agentRows([
+    h("a", { runners: ["codex"], sessions: ["ana", "bob"], registered: [{ name: "ana", kind: "stable", aliases: ["qa"], projects: ["p", "q"], expires: iso(NOW) }, { name: "e-k3v9q2mz", kind: "ephemeral", aliases: [], projects: ["p"], expires: iso(NOW + 1) }] }),
+    h("b", { runners: ["codex", "grok"], sessions: ["cy"], registered: [] }),
+    { host: "c", self: false, registrar: false, ok: false, error: "offline" },
+  ]);
+  assert.deepEqual(rows, [
+    { host: "a", address: "ana@a (qa)", kind: "stable", reach: "p, q", until: iso(NOW) },
+    { host: "a", address: "e-k3v9q2mz@a", kind: "ephemeral", reach: "p", until: iso(NOW + 1) },
+    { host: "a", address: "bob@a", kind: "session", reach: "this host only" },
+    { host: "a", address: "codex @a", kind: "runners", reach: "as granted" },
+    { host: "b", address: "cy@b", kind: "session", reach: "this host only" },
+    { host: "b", address: "codex, grok @b", kind: "runners", reach: "as granted" },
+  ], "a registered session is listed once, as registered; an unreachable host lists nothing");
+  const text = center.render({ at: iso(NOW), hosts: [], peers: [], alerts: [], messages: [], agents: rows });
+  for (const s of ["bob@a  session  this host only", "ana@a (qa)  stable  p, q  until " + iso(NOW), "codex, grok @b  runners  as granted"]) assert.ok(text.includes(s), s);
+});
+
 function peerless() {
   return { protocol: "govern-telemetry/1", host: "h", fingerprint: "0".repeat(64), at: iso(NOW), dispatcher: { running: true }, peers: 0,
     queue: { open: 0, claimed: 0, done: 0, failed: 0, unverified: 0 }, relay: { outboundOpen: 0, retrying: 0, failed24h: 0, delivered24h: 0, inbound24h: 0 },
@@ -119,7 +139,7 @@ async function get(port: number, path: string, headers: Record<string, string> =
 }
 test("the dashboard serves its page openly and its data only with the token, to loopback host names", async () => {
   let calls = 0;
-  const view: center.View = { at: iso(NOW), hosts: [], peers: [], alerts: [], messages: [] };
+  const view: center.View = { at: iso(NOW), hosts: [], peers: [], alerts: [], messages: [], agents: [] };
   const server = center.centerServer({ token: "secret-token", view: async () => { calls++; return view; } });
   server.listen(0, "127.0.0.1"); await once(server, "listening");
   const port = (server.address() as { port: number }).port;

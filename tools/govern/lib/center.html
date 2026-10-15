@@ -70,7 +70,7 @@ td.mono, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; fo
   <section><h2>Alerts</h2><div id="alerts"></div></section>
   <section><h2>Hosts</h2><div class="hosts" id="hosts"></div></section>
   <div class="two">
-    <section><h2>Agents</h2><div class="table"><table><thead><tr><th>Address</th><th>Kind</th><th>Projects</th><th>Until</th></tr></thead><tbody id="agents"></tbody></table></div></section>
+    <section><h2>Agents</h2><div class="table"><table><thead><tr><th>Address</th><th>Kind</th><th>Reach</th><th>Until</th></tr></thead><tbody id="agents"></tbody></table></div></section>
     <section><h2>Spend, last 24 h</h2><div class="table"><table><thead><tr><th>Host</th><th>Agent</th><th>Runs</th><th>Failed</th><th>Cost</th><th>Tokens in / out</th></tr></thead><tbody id="spend"></tbody></table></div></section>
   </div>
   <section>
@@ -108,7 +108,8 @@ function render(v) {
   const sum = f => tel.reduce((a, t) => a + f(t), 0);
   $("kpis").replaceChildren(...[
     [`${v.hosts.filter(h => h.ok).length} / ${v.hosts.length}`, "hosts reporting"],
-    [sum(t => t.agents.registered.length), "registered agents"],
+    [v.agents.filter(r => r.kind !== "runners").length, "agents"],
+    [sum(t => t.agents.registered.length), "reachable from other hosts"],
     [sum(t => t.queue.open), "open messages"],
     [sum(t => t.relay.outboundOpen), "deliveries pending"],
     [sum(t => t.runs24h.count), "runs, 24 h"],
@@ -132,10 +133,7 @@ function render(v) {
     ]) dl.append(el("dt", {}, k), el("dd", {}, val));
     return el("div", { class: "host" }, head, dl);
   }));
-  const agents = v.hosts.flatMap(h => h.telemetry ? [
-    ...h.telemetry.agents.registered.map(a => el("tr", {}, el("td", { class: "mono" }, `${a.name}@${h.host}` + (a.aliases.length ? ` (${a.aliases.join(", ")})` : "")), el("td", {}, a.kind), el("td", {}, a.projects.join(", ")), el("td", {}, when(a.expires)))),
-    el("tr", {}, el("td", { class: "mono" }, `${h.telemetry.agents.runners.join(", ")} @${h.host}`), el("td", {}, "runners"), el("td", {}, "as granted"), el("td", {}, "—")),
-  ] : []);
+  const agents = v.agents.map(r => el("tr", {}, el("td", { class: "mono", title: r.description || "" }, r.address), el("td", {}, r.kind), el("td", {}, r.reach), el("td", {}, r.until ? when(r.until) : r.kind === "session" ? "live" : "—")));
   rows($("agents"), agents, "No agents reported.", 4);
   const spend = v.hosts.flatMap(h => Object.entries(h.telemetry ? h.telemetry.byAgent : {}).map(([a, r]) =>
     el("tr", {}, el("td", {}, h.host), el("td", { class: "mono" }, a), el("td", { class: "num" }, r.count), el("td", { class: "num" }, r.failed), el("td", { class: "num" }, usd(r.costUsd)), el("td", { class: "num" }, `${tok(r.input)} / ${tok(r.output)}`))));

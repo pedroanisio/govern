@@ -14,7 +14,24 @@ export interface Alert { level: "critical" | "warning"; host: string; message: s
 export interface View {
   at: string; mesh?: { name: string; registrar?: string; revoked: number };
   hosts: HostView[]; peers: { name: string; url: string; revoked: boolean }[];
-  alerts: Alert[]; messages: (Recent & { host: string })[];
+  alerts: Alert[]; messages: (Recent & { host: string })[]; agents: AgentRow[];
+}
+/** One line of the agents list. `reach` says who can address it: a registered agent's projects (from other hosts too),
+ *  "this host only" for a live session that has not registered, "as granted" for runners. */
+export interface AgentRow { host: string; address: string; kind: string; reach: string; until?: string; description?: string }
+
+/** Every agent on every reporting host: its registered agents, then its live sessions that hold no registration under
+ *  their own name (each listed once), then its runners. A host without telemetry lists nothing; its alert says why. */
+export function agentRows(hosts: HostView[]): AgentRow[] {
+  return hosts.flatMap(h => {
+    const t = h.telemetry; if (!t) return [];
+    const registered = new Set(t.agents.registered.map(a => a.name));
+    return [
+      ...t.agents.registered.map(a => ({ host: h.host, address: `${a.name}@${h.host}` + (a.aliases.length ? ` (${a.aliases.join(", ")})` : ""), kind: a.kind, reach: a.projects.join(", "), until: a.expires, ...(a.description ? { description: a.description } : {}) })),
+      ...t.agents.sessions.filter(n => !registered.has(n)).map(n => ({ host: h.host, address: `${n}@${h.host}`, kind: "session", reach: "this host only" })),
+      ...(t.agents.runners.length ? [{ host: h.host, address: `${t.agents.runners.join(", ")} @${h.host}`, kind: "runners", reach: "as granted" }] : []),
+    ];
+  });
 }
 
 /** What needs the operator's attention on host `h`, each stated with its consequence. */
@@ -51,7 +68,7 @@ export async function gather(o: { post?: peer.Post; now?: () => number } = {}): 
   return {
     at: new Date(now()).toISOString(),
     ...(s ? { mesh: { name: s.mesh.name, ...(registrar ? { registrar } : {}), revoked: s.revoked.length } } : {}),
-    hosts, peers: peer.peers().map(p => ({ name: p.name, url: p.url, revoked: !!p.revokedAt })), alerts, messages,
+    hosts, peers: peer.peers().map(p => ({ name: p.name, url: p.url, revoked: !!p.revokedAt })), alerts, messages, agents: agentRows(hosts),
   };
 }
 
@@ -70,12 +87,9 @@ export function render(v: View): string {
   L.push("", `ALERTS (${v.alerts.length})`);
   for (const a of v.alerts) L.push(`  ${a.level === "critical" ? "‼" : "!"} ${a.host}: ${a.message}`);
   if (!v.alerts.length) L.push("  none");
-  L.push("", "AGENTS");
-  for (const h of v.hosts) {
-    const t = h.telemetry; if (!t) continue;
-    L.push(`  ${h.host}: runners ${t.agents.runners.join(", ")}${t.agents.sessions.length ? ` · sessions ${t.agents.sessions.join(", ")}` : ""}`);
-    for (const a of t.agents.registered) L.push(`    ${a.name}@${h.host}  ${a.kind}  ${a.projects.join(", ")}  until ${a.expires}${a.aliases.length ? `  aliases ${a.aliases.join(", ")}` : ""}${a.description ? `  ${a.description}` : ""}`);
-  }
+  L.push("", `AGENTS (${v.agents.filter(r => r.kind !== "runners").length})`);
+  for (const r of v.agents) L.push(`  ${r.address}  ${r.kind}  ${r.reach}${r.until ? `  until ${r.until}` : ""}${r.description ? `  ${r.description}` : ""}`);
+  if (!v.agents.length) L.push("  none");
   L.push("", "SPEND, LAST 24 H");
   for (const h of v.hosts) for (const [agent, r] of Object.entries(h.telemetry?.byAgent ?? {})) L.push(`  ${h.host.padEnd(16)} ${agent.padEnd(16)} ${String(r.count).padStart(4)} runs  ${r.failed} failed  ${usd(r.costUsd)}  ${Math.round(r.seconds)}s`);
   L.push("", `MESSAGES (latest ${v.messages.length})`);
