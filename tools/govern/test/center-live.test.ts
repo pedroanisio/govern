@@ -137,3 +137,17 @@ test("the center serves lanes, processes and diagrams over HTTP: token required,
     assert.equal((await get(port, "/api/nothing", auth)).status, 404);
   } finally { server.close(); }
 });
+
+test("the page offers the Projects and Processes views, reads only the token-gated endpoints and stays read-only", async () => {
+  const at = new Date(NOW).toISOString();
+  const server = center.centerServer({ token: "secret-token", view: async () => ({ at, hosts: [], peers: [], alerts: [], messages: [] }), live: async () => ({ at, hosts: [], lanes: [], processes: [] }) });
+  server.listen(0, "127.0.0.1"); await once(server, "listening");
+  const port = (server.address() as { port: number }).port;
+  try {
+    const page = (await get(port, "/")).body;
+    assert.match(page, /data-view="projects"/); assert.match(page, /data-view="processes"/);
+    for (const path of ["/api/lanes", "/api/processes", "/api/process/"]) assert.ok(page.includes(path), `the page reads ${path}`);
+    assert.ok(!/method:\s*["'](POST|PUT|DELETE|PATCH)/i.test(page), "the page never writes");
+    assert.deepEqual(JSON.parse((await get(port, "/api/lanes", auth)).body), { at, hosts: [], lanes: [] });
+  } finally { server.close(); }
+});
