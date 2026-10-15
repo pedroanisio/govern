@@ -66,6 +66,8 @@ Documentation:
   with `govern --help` or `st-man govern`.
 - [SKILL.md](SKILL.md) is the operating manual for the AI (`govern manual`).
 - [PURPOSE.md](PURPOSE.md) explains why govern exists.
+- [ARCHITECTURE.md](ARCHITECTURE.md) describes govern's structure: actors, subsystems, state layout and how a lane moves,
+  with a one-frame 4K diagram built by [scripts/govern_architecture.py](../../scripts/govern_architecture.py).
 - [BUSINESS.md](BUSINESS.md) covers the business-workflow features: routes, parallel stages, case data, human tasks and approval policies.
 - [LIFECYCLE.md](LIFECYCLE.md) covers deadlines, external events, retries and subprocesses.
 - [ITERATION.md](ITERATION.md) covers bounded loops, conditional branches and per-item subprocesses.
