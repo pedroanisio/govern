@@ -601,3 +601,105 @@ test("Grok stream adapter emits tool events and covers every parse failure", asy
     assert.throws(() => adapter!.parse({ type: "result", subtype: "success", stop_reason: "end_turn", result: "final", usage: { input_tokens: -1 } }), /invalid runtime usage/);
   } finally { adapter?.finish(); process.env = saved; }
 });
+
+test("conversation CLI rejects incomplete options and invalid numeric bounds without queuing work", () => {
+  const e = setup();
+  create(e);
+  const cases: [string[], RegExp][] = [
+    [["create", "both", "--profile", "codex-read", "--adapter", "echo"], /choose --profile or --adapter/],
+    [["create", "unknown", "--adapter", "absent"], /unknown conversation adapter/],
+    [["create", "chat", "--adapter", "echo"], /already exists/],
+    [["create", "invalid", "--max-context-chars", "NaN"], /must be nonnegative/],
+    [["create", "invalid", "--max-context-chars", "-1"], /must be nonnegative/],
+    [["create", "invalid", "--max-context-chars", "1.5"], /must be between/],
+    [["create", "invalid", "--max-context-chars", "1000001"], /must be between/],
+    [["send", "chat", "--message", "x", "--bg"], /--bg requires --run/],
+    [["send", "chat"], /choose --message or --message-file/],
+    [["send", "chat", "--message", "x", "--message-file", "absent"], /choose --message or --message-file/],
+    [["send", "chat", "--message", "x", "--request-id", " "], /request-id must be nonempty/],
+    [["send", "chat", "--message", "x", "--request-id", "x".repeat(257)], /request-id must be nonempty/],
+    [["send", "chat", "--message", "x", "--estimate-usd", "-1"], /must be nonnegative/],
+    [["events", "chat", "--after", "1.5"], /must be an integer/],
+    [["cancel", "chat"], /run ID required/],
+    [["recover", "chat"], /--action required/],
+    [["recover", "chat", "--action", "continue"], /--note required/],
+    [["context", "chat"], /--summary required/],
+  ];
+  for (const [args, error] of cases) {
+    const result = govern(e, ["conversation", ...args]);
+    assert.equal(result.code, 2, result.err + result.out);
+    assert.match(result.err, error);
+  }
+  assert.equal(state(e).runs.length, 0);
+});
+
+test("message files execute through send --run and history and listing report retained state", () => {
+  const e = setup();
+  create(e);
+  const file = write(join(e.root, "message.txt"), "from file");
+  const result = ok(e, ["send", "chat", "--message-file", file, "--estimate-usd", "0", "--run"]);
+  const output = result.trim().split("\n").map((line) => JSON.parse(line));
+  assert.ok(output.some((v) => v.type === "assistant.committed"));
+  assert.equal(json(e, ["history", "chat"]).at(-1).content, "reply:from file:previous=0");
+  assert.deepEqual(json(e, ["list"]), [{ id: "chat", title: "chat", runs: 1 }]);
+  const failed = setup();
+  create(failed, "partial");
+  assert.equal(govern(failed, ["conversation", "send", "chat", "--message", "fail", "--run"]).code, 1);
+});
+
+test("runtime enforces terminal ordering and tool lifecycles before committing replies", () => {
+  const done = { type: "done", text: "reply" };
+  const start = { type: "tool.started", id: "t", name: "read" };
+  const finish = { type: "tool.finished", id: "t", name: "read", ok: false };
+  const cases: [unknown[], RegExp | undefined][] = [
+    [[done, { type: "assistant.delta", text: "late" }], /after terminal result/],
+    [[start, done], /unfinished tools/],
+    [[finish], /completion has no start/],
+    [[start, finish, start], /restarted after completion/],
+    [[start, start, finish, done], undefined],
+    [[], /without an explicit terminal reply/],
+    [[{ type: "error", text: "explicit refusal" }], /explicit refusal/],
+  ];
+  for (const [events, error] of cases) {
+    const e = setup();
+    const f = join(e.root, "govern.config.json"), c = JSON.parse(readFileSync(f, "utf8"));
+    c.conversationAdapters.protocol = { argv: [process.execPath, "-e", `process.stdout.end(${JSON.stringify(events.map((x) => JSON.stringify(x)).join("\n") + "\n")})`] };
+    write(f, JSON.stringify(c));
+    create(e, "protocol"); send(e, "verify protocol");
+    const result = govern(e, ["conversation", "run", "chat"]);
+    assert.equal(result.code, error ? 1 : 0, result.err + result.out);
+    const s = state(e);
+    assert.equal(s.runs[0].state, error ? "failed" : "completed");
+    assert.equal(s.messages.filter((m: any) => m.role === "assistant").length, error ? 0 : 1);
+    if (error) assert.match(s.runs[0].error, error);
+    else assert.equal(s.runs[0].tools[0].state, "failed");
+  }
+});
+
+test("runtime accepts an unterminated final JSON line and reports malformed final fragments and stderr", () => {
+  for (const [script, error] of [
+    ['process.stdout.end("\\n"+JSON.stringify({type:"done",text:"final"}))', undefined],
+    ['process.stdout.end("{")', /JSON/],
+    ['process.stderr.write("diagnostic");process.exitCode=7', /adapter exit 7: diagnostic/],
+  ] as const) {
+    const e = setup();
+    const f = join(e.root, "govern.config.json"), c = JSON.parse(readFileSync(f, "utf8"));
+    c.conversationAdapters.protocol = { argv: [process.execPath, "-e", script] };
+    write(f, JSON.stringify(c)); create(e, "protocol"); send(e, "fragment");
+    const result = govern(e, ["conversation", "run", "chat"]);
+    assert.equal(result.code, error ? 1 : 0, result.err + result.out);
+    if (error) assert.match(state(e).runs[0].error, error);
+    else assert.equal(state(e).messages.at(-1).content, "final");
+  }
+});
+
+test("native terminal completion without an assistant message fails without committing an empty reply", () => {
+  const e = setup();
+  json(e, ["create", "chat", "--profile", "codex-read"]);
+  send(e, "missing reply");
+  const script = write(join(e.root, "empty-completion.jsonl"), JSON.stringify({ type: "turn.completed" }) + "\n");
+  const result = govern(e, ["conversation", "run", "chat"], { FAKE_CODEX_SCRIPTS: script });
+  assert.equal(result.code, 1, result.err + result.out);
+  assert.match(state(e).runs[0].error, /no final reply/);
+  assert.equal(state(e).messages.filter((m: any) => m.role === "assistant").length, 0);
+});
