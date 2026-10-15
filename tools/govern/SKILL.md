@@ -13,6 +13,14 @@ You and the owner do the work together; `govern` keeps that conversation cheap a
 
 A process may own a manual with the rules of its kind of work (for example how a build runs or what its steps must say). The brief names it when it does (`manual: govern manual <process>`); read it once, then work from the brief. `govern manual <process>` prints it.
 
+For a recipient on another host, `govern task send --to NAME@PEER` uses a configured live peer and skips local session
+liveness. The receiving host decides write access, profile, lane, spend estimate and files: do not pass `--write`,
+`--profile`, `--lane`, `--estimate-usd` or `--file`, and do not use `auto@PEER`. `govern peer push` relays one pass;
+`govern task dispatch --loop` relays after each local pass. Sessions on PEER are not woken by the queue. Unverified
+output never leaves the host. `govern peer list` shows each peer's grants, open outbound messages and last relay
+error. `govern peer id`, `govern peer add`, `govern peer revoke` and `govern peer serve` are the owner's setup steps:
+`add` and `revoke` work only from the owner's own terminal, and you never run them. See [PEERS.md](PEERS.md).
+
 ## Start
 
 The owner's one screen is `govern desk`: every lane, their inbox, the queue and today's tokens. One session works one lane; the other lanes wait in their files, not in open chat tabs.

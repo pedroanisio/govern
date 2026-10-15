@@ -59,7 +59,7 @@ The server binds `127.0.0.1` by default and serves any other address only over T
 must never cross a network in clear text. The app holds the same line from its side: it allows clear-text HTTP only to
 `localhost`, `127.0.0.1` and the emulator's `10.0.2.2`
 ([network_security_config.xml](android/app/src/main/res/xml/network_security_config.xml)), keeping the default that
-Android enforces from API 28. Two deployments satisfy both sides:
+Android enforces from API 28. For agent queue delivery between hosts, see [govern peers](PEERS.md), including Cloudflare and Tailscale deployment. Two deployments satisfy both sides:
 
 1. **Tailscale (recommended).** `govern remote serve` stays on loopback, and `tailscale serve` publishes it as
    `https://<machine>.<tailnet>.ts.net` with a publicly trusted certificate. The phone joins the tailnet; nothing is

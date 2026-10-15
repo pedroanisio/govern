@@ -155,6 +155,11 @@ function servedDocs(): string[] {
   return docs;
 }
 
+test("MANPAGE names every peer subcommand and the peer protocol document", () => {
+  for (const sub of ["id", "add", "list", "revoke", "serve", "push"]) assert.ok(MAN.includes(`govern peer ${sub}`), sub);
+  assert.ok(MAN.includes("tools/govern/PEERS.md"));
+});
+
 const MAN = manText(readFileSync(BIN, "utf8"));
 
 test("drift: MANPAGE OPTIONS has one entry per flag the command table declares, naming the commands that take it", () => {

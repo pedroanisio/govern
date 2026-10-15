@@ -36,7 +36,13 @@
 #     govern caps [PROFILE]  |  caps --check PROFILE
 #     govern decide ask --questions F (--state S | --state-file F) [--purpose P] [--json]  |  decide report
 #     govern help [COMMAND]  |  COMMAND --help  |  manual [PROCESS]  |  install-skill [SKILLS-DIR] [--check]
-#     govern task send --to codex|claude|grok|RUNNER|PROFILE|auto|owner|SESSION --project P --task T --kind K --summary S
+#     govern peer id [--name N]
+#     govern peer add NAME --url URL --key BASE64 [--allow NAME]... [--project SLUG|*]...
+#     govern peer list
+#     govern peer revoke NAME
+#     govern peer serve [--port 5003] [--host 127.0.0.1]
+#     govern peer push [--max N]
+#     govern task send --to codex|claude|grok|RUNNER|PROFILE|auto|owner|SESSION|NAME@PEER --project P --task T --kind K --summary S
 #                      (--body B | --body-file F) [--file PATH]... [--reply-to ID] [--write | --profile P]
 #                      [--lane SLUG] [--from NAME] [--estimate-usd N]
 #     govern task list [--to X] [--state S] [--project P]  |  show ID  |  inbox [--as NAME] [--all] [--hook]
@@ -76,6 +82,10 @@
 #     `task inbox --hook`), answers with `reply`, and `close`s or `forward`s what is not for it. NAME defaults to
 #     GOVERN_AS, else the registered session found up this process's parent chain. `task reclaim` releases an abandoned
 #     claim after checking its external effects and spend, recording the required --note and notifying the owner.
+#     Peer delivery uses signed HTTP behind a TLS tunnel (PEERS.md). Peer add and revoke require the owner's
+#     terminal. Remote sends require a live peer and refuse --write, --profile, --lane, --estimate-usd, --file and
+#     auto@PEER: the receiving host decides these. Sessions on PEER are not woken. Dispatch --loop also relays;
+#     unverified output never leaves. Peer list shows grants, fingerprints, open outbound counts and last errors.
 # OPTIONS
 #     --adapter A             conversation create: trusted named NDJSON adapter from conversationAdapters in workspace config
 #     --max-context-chars N    conversation create: maximum assembled context characters (default 64000, at most 1000000); checkpoint rather than truncate
@@ -97,14 +107,16 @@
 #     --id ID                 event: stable delivery id used for deduplication
 #     --correlation JSON      event: typed value matching the waiting stage
 #     --generation N          event: activation generation, required when the event contract declares it
-#     --port N                event-listen, remote serve: event-listen: loopback webhook port (default 5001); remote serve:
+#     --port N                event-listen, remote serve, peer serve: event-listen: loopback webhook port (default 5001); remote serve:
 #                             the API port (default 5002)
-#     --host H                remote serve: the address to listen on (default 127.0.0.1); another needs TLS
+#     --host H                remote serve, peer serve: default 127.0.0.1; remote: another needs TLS; peer: loopback only, TLS from the tunnel
 #     --tls-cert F            remote pair, remote link, remote serve: the server's PEM certificate; pair, link: its pin goes
 #                             into the printed link; serve: serve HTTPS (with --tls-key)
 #     --tls-key F             remote serve: the PEM private key of --tls-cert
 #     --minutes N             remote pair: how long the pairing code is valid (1..60, default 10)
-#     --url URL               remote pair, remote link: the server's address as the phone reaches it, printed as a link
+#     --key BASE64            peer add: Ed25519 base64 DER SPKI public key
+#     --allow NAME            peer add: permitted local recipient (repeatable, no wildcard)
+#     --url URL               remote pair, remote link, peer add: the server's address as the phone reaches it, printed as a link
 #                             and drawn as a QR code the phone's camera opens in the app (link: default http://127.0.0.1:5002)
 #     --no-qr                 remote pair, remote link: print the link without its QR code
 #     --code NNNNNN           remote confirm: the 6-digit code the phone shows; a wrong code refuses the request for good
@@ -119,7 +131,7 @@
 #                             task: the message kind (TASK, the default for send; ACK, REVIEW, HANDOFF, BLOCKED…)
 #     --title T               conversation create, new, artifact add: conversation create: its title (default: its id); new: the
 #                             lane's title (default: its slug); artifact add: the artifact's title shown to the reviewer
-#     --name N                artifact add: the artifact's name in the lane (default: the file's base name)
+#     --name N                artifact add, peer id: peer id: identity name on creation; artifact add: the artifact's name in the lane (default: the file's base name)
 #     --caption C             artifact add: a caption shown with the artifact
 #     --lang L                new: the lane's language, en (default) or pt-BR
 #     --parent SLUG           new: the lane this one comes from (shown in its brief)
@@ -174,7 +186,7 @@
 #     --to X                  human, task send, task list, task forward: human delegate: the person the task goes to; send:
 #                             codex, claude, grok, a queue config runner, a profile, auto, owner or a live session; list: only messages to X; forward:
 #                             the new recipient
-#     --project P             task send, task list: the message's project; list: only that project's messages
+#     --project P             task send, task list, peer add: peer add: allowed project (repeatable, * alone for any); the message's project; list: only that project's messages
 #     --task T                task send: the task the message belongs to
 #     --summary S             conversation context, task send, task reply: conversation context: the checkpoint summary
 #                             (required, with --through); task: the one-line summary
@@ -199,7 +211,7 @@
 #                             confirm: grant the device every lane. With no requested lanes, choose --lane SLUG
 #                             (repeatable) or --all; confirmation never grants every lane implicitly
 #     --hook                  task inbox: the UserPromptSubmit hook form, silent when empty
-#     --max N                 task dispatch: run at most N messages
+#     --max N                 task dispatch, peer push: run at most N messages
 #     --only E                task dispatch: only messages to that runner (codex, claude, grok or a queue config runner)
 #     --loop                  tick, task dispatch: keep dispatching every --interval seconds
 #     --interval S            tick, task dispatch, task install-service: seconds between rounds (default 30)
@@ -273,7 +285,7 @@
 #     lanes process workflow video codex claude grok tokens usage orchestration pals-notes youtube
 # SEE ALSO
 #     st-man - tools/govern/SKILL.md (govern manual) - tools/govern/processes/video/MANUAL.md (govern manual video)
-#     - tools/govern/BUSINESS.md - tools/govern/PURPOSE.md - tools/govern/CONVERSATIONS.md - tools/govern/REMOTE.md
+#     - tools/govern/BUSINESS.md - tools/govern/PURPOSE.md - tools/govern/CONVERSATIONS.md - tools/govern/REMOTE.md - tools/govern/PEERS.md
 # MANPAGE <<<
 set -eu
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)

@@ -36,6 +36,7 @@ import { checkProfile } from "./lib/capcheck.ts";
 import { tune, chooseRunner } from "./lib/tune.ts";
 import { verifyQuote, origin, GROK_MARKERS } from "./lib/approval.ts";
 import * as remote from "./lib/remote.ts";
+import * as peer from "./lib/peer.ts";
 import * as artifacts from "./lib/artifacts.ts";
 import * as remotePair from "./lib/remote-pair.ts";
 import { checkRecipient, requireAs, resolveAs } from "./lib/sessions.ts";
@@ -591,6 +592,12 @@ function cmdPublish(a: Args): void {
 
 /** Recipient of a new message: runner, auto (the tuning loop picks the runner), owner or a live session. */
 function recipient(to: string): { to: string; routed: boolean } {
+  const address = peer.parseAddress(to);
+  if (address) {
+    if (address.name === "auto") fail("the receiving host decides routing; --to auto@PEER is not allowed");
+    if (!peer.peers().some(p => p.name === address.peer && !p.revokedAt)) fail(`no live peer ${address.peer}`);
+    return { to, routed: false };
+  }
   checkRecipient(to, queue.runners());
   if (to !== "auto") return { to, routed: false };
   const c = chooseRunner(queue.all().filter((x) => x.m.routed).length);
@@ -599,6 +606,8 @@ function recipient(to: string): { to: string; routed: boolean } {
 }
 /** The queue does not wake a session: say so when a message goes to one. */
 function wakeNote(m: queue.Message): void {
+  const address = peer.parseAddress(m.to);
+  if (address) return out(`sessions on ${address.peer} are not woken by the queue`);
   if (!queue.runners().includes(m.to) && m.to !== "owner")
     out(`sessions are not woken by the queue: also tell ${m.to} "govern task show ${m.id}" (SendMessage)`);
 }
@@ -634,7 +643,10 @@ function cmdTask(a: Args): void {
     const bodyFile = opt(a, "body-file");
     const body = bodyFile ? readFileSync(bodyFile, "utf8") : opt(a, "body") ?? "";
     const { to, routed } = recipient(opt(a, "to") ?? "");
-    const t = queue.resolveTarget(to, { write: flag(a, "write"), profile: opt(a, "profile") });
+    const address = peer.parseAddress(to);
+    if (address && (flag(a, "write") || ["profile", "lane", "estimate-usd"].some(k => opt(a, k) !== undefined) || many(a, "file").length))
+      fail("the receiving host decides write access, profile, lane, estimate and files; these options cannot be sent to a peer");
+    const t = address ? { access: "read-only" as const } : queue.resolveTarget(to, { write: flag(a, "write"), profile: opt(a, "profile") });
     const lane = opt(a, "lane"), estimateUsd = amountOpt(a, "estimate-usd");
     const m = queue.send({
       ...(t.profile ? { profile: t.profile } : {}), ...(lane ? { lane } : {}),
@@ -694,8 +706,11 @@ function cmdTask(a: Args): void {
     // The tuning measurement runs hourly in the same loop: reading transcripts, no model.
     let lastTune = 0, lastReap = 0;
     const reapEvery = secondsOpt(a, "reap-every");
-    const tick = () => {
+    const tick = async () => {
       once();
+      try {
+        if (peer.peers().some(p => !p.revokedAt)) for (const line of await peer.push({ max })) out(`[peer] ${line}`);
+      } catch (e) { out(`[peer] failed: ${(e as Error).message}`); }
       if (reapEvery && Date.now() - lastReap >= reapEvery * 1000) {
         lastReap = Date.now();
         try { for (const r of reaping.scan([], REAP_TIMEOUT)) out(`[reap] ${r.resource}: ${r.status === "ok" ? `${r.orphans.length} with no job` : r.why}`); } catch (e) { out(`[reap] failed: ${(e as Error).message}`); }
@@ -790,6 +805,41 @@ function cmdRemote(a: Args): void {
   const server = remote.remoteServer({ tls });
   server.on("error", (e) => { process.stderr.write(`remote: ${e.message}\n`); process.exitCode = 1; });
   server.listen(port, host, () => out(`govern remote (${remote.devices().filter((d) => !d.revokedAt).length} paired devices) on ${tls ? "https" : "http"}://${host}:${port}${tls ? ` · certificate pin ${remote.certPin(tls.cert)}` : ""}`));
+}
+
+/** Peer grants are owner-only; the server always binds IPv4 loopback behind a TLS tunnel. */
+async function cmdPeer(a: Args): Promise<void> {
+  const sub = a._[1];
+  if ((sub === "add" || sub === "revoke") && origin().kind !== "terminal")
+    fail("manage peers from the owner's own terminal: a peer's allow list grants runs on this host", 1);
+  if (sub === "id") {
+    const h = peer.identity(opt(a, "name"));
+    return out(`${h.name}\nfingerprint: ${peer.fingerprint(h.publicKey)}\npublic key: ${h.publicKey}`);
+  }
+  if (sub === "add") {
+    const p = peer.addPeer({ name: a._[2] ?? fail("govern peer add <name>"), url: opt(a, "url") ?? fail("--url is required"), publicKey: opt(a, "key") ?? fail("--key is required"), allow: many(a, "allow"), projects: many(a, "project") });
+    return out(`added ${p.name} (${peer.fingerprint(p.publicKey)})`);
+  }
+  if (sub === "revoke") return out(`revoked ${peer.revokePeer(a._[2] ?? fail("govern peer revoke <name>")).name}`);
+  if (sub === "list") {
+    const rows = queue.all();
+    return out(peer.peers().map(p => {
+      const outbound = rows.filter(x => x.state === "open" && peer.parseAddress(x.m.to)?.peer === p.name);
+      const last = rows.filter(x => peer.parseAddress(x.m.to)?.peer === p.name && (x.m.relay?.lastError || x.m.result?.error)).at(-1)?.m;
+      return `${p.name}${p.revokedAt ? " REVOKED" : ""}  ${p.url}\n  allow: ${p.allow.join(", ")}  projects: ${p.projects.join(", ")}\n  fingerprint: ${peer.fingerprint(p.publicKey)}  open: ${outbound.length}\n  last relay error: ${last?.relay?.lastError ?? last?.result?.error ?? "none"}`;
+    }).join("\n") || "(no peers: govern peer add)");
+  }
+  if (sub === "push") {
+    for (const line of await peer.push({ max: opt(a, "max") === undefined ? undefined : Number(opt(a, "max")) })) out(line);
+    return;
+  }
+  const host = opt(a, "host") ?? "127.0.0.1", port = Number(opt(a, "port") ?? 5003);
+  if (!remote.loopback(host)) fail("peer serve binds loopback only; TLS comes from the tunnel (Cloudflare or Tailscale)");
+  if (!Number.isInteger(port) || port < 1 || port > 65535) fail("--port must be 1..65535");
+  peer.identity();
+  const server = peer.peerServer();
+  server.on("error", e => { process.stderr.write(`peer: ${e.message}\n`); process.exitCode = 1; });
+  server.listen(port, "127.0.0.1", () => out(`govern peer on http://127.0.0.1:${port} · TLS comes from the tunnel`));
 }
 
 /** The text of the user service: every Environment= and the ExecStart binary quoted, and the state folders of this shell passed on. */
@@ -1025,7 +1075,7 @@ export const COMMANDS: readonly Cmd[] = [
     subs: {
       send: { flags: { value: ["to", "project", "task", "kind", "summary", "body", "body-file", "reply-to", "from", "profile", "lane", "estimate-usd"], multi: ["file"], bool: ["write"] },
         lines: [["--to auto|codex|claude|grok|owner|<session> --project P --task T --kind TASK --summary S (--body B | --body-file F)\n" +
-          "[--file REPO-RELATIVE-PATH]… [--reply-to ID] [--write | --profile P] [--lane SLUG] [--from NAME] [--estimate-usd N]", "--to must be a runner, a profile, owner or a LIVE session name;\n--profile P (govern caps) seals the run to P's capabilities; --lane names the lane whose gate authorises a spend, publish or push profile;\n--estimate-usd N: what the run is expected to cost, reserved against a matching allowance (govern allow)"]], run: cmdTask },
+          "[--file REPO-RELATIVE-PATH]… [--reply-to ID] [--write | --profile P] [--lane SLUG] [--from NAME] [--estimate-usd N]", "--to must be a runner, a profile, owner, a LIVE session name or NAME@PEER;\nremote recipients require a live peer; the receiving host decides write access, profile, lane, estimate and files;\n--profile P (govern caps) seals the run to P's capabilities; --lane names the lane whose gate authorises a spend, publish or push profile;\n--estimate-usd N: what the run is expected to cost, reserved against a matching allowance (govern allow)"]], run: cmdTask },
       list: { flags: { value: ["to", "state", "project"] }, lines: [["[--to X] [--state open|claimed|done|failed] [--project P]", "the queue's messages; a dispatcher reply ends with [checked], [unverified] or [shape only] (content check, declared per profile, in queue config.json checks, or built in for REVIEW)"]], run: cmdTask },
       show: { lines: [["<id>", "a message and its thread, claim holder and result; a dispatcher reply also shows its check (checked, UNVERIFIED with the reason, or shape only)"]], run: cmdTask },
       inbox: { flags: { value: ["as"], bool: ["all", "hook"] },
@@ -1036,10 +1086,19 @@ export const COMMANDS: readonly Cmd[] = [
       reply: { flags: { value: ["kind", "summary", "body", "body-file", "as"] },
         lines: [["<id> --kind K --summary S (--body B | --body-file F) [--as NAME]", "answer the sender, then close <id>"]], run: cmdTask },
       dispatch: { flags: { value: ["max", "only", "interval", "reap-every"], bool: ["loop"] },
-        lines: [["[--max N] [--only codex|claude|grok] [--loop --interval 30 [--reap-every S]]", "first fail dead claims (unknown spend charged as reserved), then run open messages addressed to runners;\n--reap-every lists each resource's tagged instances\nevery S seconds into state for the desk (off by default; lists only, never stops a machine)"]], run: cmdTask },
+        lines: [["[--max N] [--only codex|claude|grok] [--loop --interval 30 [--reap-every S]]", "first fail dead claims (unknown spend charged as reserved), then run open messages addressed to runners; --loop also relays to live peers;\n--reap-every lists each resource's tagged instances\nevery S seconds into state for the desk (off by default; lists only, never stops a machine)"]], run: cmdTask },
       "install-service": { flags: { value: ["interval", "reap-every"] }, lines: [["[--interval 30] [--reap-every S]", "a user systemd service running dispatch --loop"]], run: cmdTask },
     } },
 
+  { name: "peer", section: 6, footer: false, noSub: "govern peer id|add|list|revoke|serve|push (PEERS.md)",
+    subs: {
+      id: { flags: { value: ["name"] }, lines: [["[--name N]", "create or show the host identity, fingerprint and public key; --name only on creation"]], run: cmdPeer },
+      add: { flags: { value: ["url", "key"], multi: ["allow", "project"] }, lines: [["<name> --url URL --key BASE64 [--allow NAME]… [--project SLUG|*]…", "trust a peer for these local recipients and projects; owner's terminal only"]], run: cmdPeer },
+      list: { lines: [["", "peers, grants, fingerprints, open outbound counts and last relay errors"]], run: cmdPeer },
+      revoke: { lines: [["<name>", "revoke a peer's grants; owner's terminal only"]], run: cmdPeer },
+      serve: { flags: { value: ["host", "port"] }, lines: [["[--port 5003] [--host 127.0.0.1]", "bind 127.0.0.1 only; TLS comes from a Cloudflare or Tailscale tunnel"]], run: cmdPeer },
+      push: { flags: { value: ["max"] }, lines: [["[--max N]", "run one relay pass, oldest first; print one line per message"]], run: cmdPeer },
+    } },
   { name: "caps", section: 6, flags: { bool: ["check"] },
     lines: [["", "the capabilities and profiles a queued agent can run under, with each profile's last self-test"],
       ["<profile>", "its permission patterns, Codex mapping, side-effect classes and secret names"],

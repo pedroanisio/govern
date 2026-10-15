@@ -1,5 +1,6 @@
 // Signed queue delivery between hosts. Peers grant local recipient/project access; execution policy stays local.
 import { createHash, createPublicKey, createPrivateKey, generateKeyPairSync, sign as edSign, verify as edVerify } from "node:crypto";
+import { createServer, type Server } from "node:http";
 import { hostname } from "node:os";
 import { existsSync, mkdirSync, readFileSync, writeFileSync, renameSync, appendFileSync } from "node:fs";
 import { join } from "node:path";
@@ -208,4 +209,46 @@ export async function push(o: { max?: number; now?: number | (() => number); pos
     queue.save(m, "claimed"); queue.move(m, "claimed", "open"); lines.push(`${m.id} → ${m.to}: retry ${attempts} at ${m.relay.nextAt}: ${lastError}`);
   }
   return lines;
+}
+
+/** Loopback HTTP transport; a tunnel supplies TLS. Authentication and closed-shape parsing live in receive(). */
+export function peerServer(o: { now?: () => number } = {}): Server {
+  const now = o.now ?? Date.now;
+  const server = createServer((req, res) => {
+    const reply = (status: number, value: unknown): void => {
+      if (res.headersSent) return;
+      res.writeHead(status, { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store" });
+      res.end(JSON.stringify(value));
+    };
+    const fault = () => reply(500, { error: "internal error" });
+    const route = `${req.method} ${req.url}`;
+    if (route === "GET /v1/health") {
+      req.resume();
+      try { reply(200, { protocol: PROTOCOL, name: identity().name }); } catch { fault(); }
+      return;
+    }
+    if (route === "POST /v1/peer/deliver") {
+      let size = 0; const chunks: Buffer[] = [];
+      // Drain excess bytes so the client receives the 413 instead of a reset connection.
+      req.on("data", (chunk: Buffer) => {
+        size += chunk.length;
+        if (size > MAX_BODY) { chunks.length = 0; reply(413, { error: "body exceeds size limit" }); }
+        else chunks.push(chunk);
+      });
+      req.on("end", () => {
+        if (res.headersSent) return;
+        try {
+          const headers: Headers = {};
+          for (const [key, value] of Object.entries(req.headers)) if (typeof value === "string") headers[key] = value;
+          const r = receive(Buffer.concat(chunks), headers, now()); reply(r.status, r.body);
+        } catch { fault(); }
+      });
+      req.on("error", () => reply(400, { error: "incomplete request" }));
+      return;
+    }
+    req.resume(); reply(404, { error: "not found" });
+  });
+  server.requestTimeout = 30_000;
+  server.headersTimeout = 10_000;
+  return server;
 }

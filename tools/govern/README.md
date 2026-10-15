@@ -12,6 +12,8 @@ disclaimer:
 
 Part of [super-tools](../../README.md).
 
+Send queued tasks between hosts with [govern peers](PEERS.md): `NAME@PEER` addressing, signed delivery and local execution policy.
+
 Runs lanes of agent work through checked stages, with few tokens. A lane can be
 a video, software, ops, or any other process.
 
