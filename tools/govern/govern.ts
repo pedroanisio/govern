@@ -1059,6 +1059,12 @@ const REAP_TIMEOUT = 120;
 const TASK_SUBS = "govern task send|list|show|inbox|close|reclaim|reply|forward|dispatch|install-service (govern help)";
 
 export const COMMANDS: readonly Cmd[] = [
+  { name: "version", section: 5, footer: false, flags: { bool: ["json"] },
+    lines: [["[--json]", "print the package version (also govern --version)"]],
+    run: (a) => {
+      const { version } = JSON.parse(readFileSync(join(HERE, "package.json"), "utf8")) as { version: string };
+      out(flag(a, "json") ? JSON.stringify({ name: "govern", version }) : `govern ${version}`);
+    } },
   {name:'conversation',section:0,footer:false,subs:CONVERSATION_SUBS,noSub:'govern conversation create|list|show|history|send|run|cancel|recover|context|events|close (govern help)'},
   { name: "init", section: 0, flags: { bool: ["nested"] },
     lines: [["[<dir>] [--nested]", "make <dir> (default: here) a workspace by the convention: .govern/ with projects, queue, processes; inside another workspace only with --nested"]],
@@ -1385,8 +1391,11 @@ const FLAG_WORDS: ReadonlySet<string> = new Set(
     .flatMap((f) => [...(withHelp(f).bool ?? []), ...(f?.value ?? []), ...(f?.multi ?? [])]),
 );
 
+/** Leading words that name a command by another spelling: `govern --version` is `govern version`. */
+export const ALIASES: Readonly<Record<string, string>> = { "--version": "version" };
+
 async function main(argv: string[]): Promise<void> {
-  const name = argv[0];
+  const name = argv[0] !== undefined && Object.hasOwn(ALIASES, argv[0]) ? ALIASES[argv[0]] : argv[0];
   if (name === undefined || name === "-h" || name === "--help") return void out(HELP);
   if (name.startsWith("--")) fail(`the command comes first: govern <command> [<args>] [--flags] (got ${name} first; govern help)`);
   const c = byName.get(name) ?? unknownCommand(name);

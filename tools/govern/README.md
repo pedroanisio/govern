@@ -61,6 +61,9 @@ govern advance ops/govern                      # runs the stage's check; moves o
 govern help advance                            # one command's usage and flags
 ```
 
+`govern version` (also `govern --version`) prints the installed package version; add
+`--json` for a JSON object with `name` and `version`.
+
 The CLI is TypeScript ([govern.ts](govern.ts), [lib/](lib/)). It runs directly
 under Node through type stripping, from the [bin/govern](../../bin/govern)
 launcher. `tsc` is a dev dependency used only for type checking.
@@ -111,3 +114,47 @@ Documentation:
 - [OPENCLAW-GAP.md](OPENCLAW-GAP.md) and [OPENCLAW-PARITY.md](OPENCLAW-PARITY.md) are research snapshots, not
   maintained: how OpenClaw could run on top of govern, and what govern would need to offer an OpenClaw-like
   assistant.
+
+## Releasing
+
+The release version lives in `package.json`. Bump its `version` field and add a
+matching dated section to [CHANGELOG.md](CHANGELOG.md). Run the checks and build:
+
+<!-- readme-example: skip: release preparation in a repository checkout -->
+```sh
+cd tools/govern
+npm ci
+npm run -s typecheck
+node --disable-warning=ExperimentalWarning --test 'test/*.test.ts'
+npm run -s package
+```
+
+Commit as `chore(govern): release X.Y.Z`, create an annotated tag
+`govern-vX.Y.Z` on that commit (`git tag -a govern-vX.Y.Z -m "govern X.Y.Z"`),
+then push the commit and tag (`git push origin main` and
+`git push origin govern-vX.Y.Z`). CI tests, builds the package, checks that the
+tag matches the version, and publishes the GitHub Release with that version's
+changelog notes. A missing or empty changelog section fails publication.
+
+The local build writes `generated/govern-package/govern-X.Y.Z.tar.gz` and
+`generated/govern-package/SHA256SUMS` at the repository root. It excludes tests,
+Android sources, installed dependencies, coverage output and ignored files.
+It sorts archive entries, fixes ownership, and uses the last commit's timestamp
+(or `SOURCE_DATE_EPOCH` when set) for reproducible builds. Directories use mode
+700 and output files use mode 600. `npm run -s package -- --check govern-vX.Y.Z`
+checks a proposed tag before building.
+
+To install, download the tarball and `SHA256SUMS` from the same GitHub Release,
+then verify and extract them in the download directory:
+
+<!-- readme-example: skip: requires downloaded release assets -->
+```sh
+sha256sum --check SHA256SUMS
+tar -xzf govern-X.Y.Z.tar.gz
+export PATH="$PWD/govern-X.Y.Z/bin:$PATH"
+govern version
+```
+
+Keep `bin` and `tools` together inside the extracted directory. The standalone
+package needs Node 24 or newer. It runs without npm installation; `govern -h`
+uses built-in help when the repository's `st-man` tool is absent.

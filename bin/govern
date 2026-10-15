@@ -3,6 +3,7 @@
 # NAME
 #     govern — run lanes of agent work (videos, software, ops, any process) through checked stages, with few tokens
 # SYNOPSIS
+#     govern version [--json]  |  govern --version [--json]
 #     govern conversation create ID [--profile P | --adapter A] [--lane SLUG] [--title T] [--timeout S] [--max-context-chars N]
 #     govern conversation list | show ID | history ID | close ID
 #     govern conversation send ID (--message TEXT | --message-file FILE) [--request-id KEY] [--mode queue|interrupt] [--estimate-usd N] [--run [--bg]]
@@ -223,7 +224,8 @@
 #     --state-file F          decide ask: read the state from F
 #     --questions F           decide ask: the JSON file of typed questions (choice, score, noul)
 #     --purpose P             decide ask: the name the decision is recorded under (default ask)
-#     --json                  decide ask, center show: print the whole decision, or the command center view, as JSON
+#     --json                  version, decide ask, center show: print the version, the whole decision, or the command center
+#                             view, as JSON
 #     --observer HOST         mesh create, mesh join, mesh policy: a member that may read this host's telemetry (repeatable;
 #                             default: the registrar)
 #     --ttl S                 mesh invite, agents register: seconds the invite or registration lasts (invite 3600 default,
@@ -282,7 +284,8 @@
 #     Webhooks: GOVERN_WEBHOOK_TOKEN (event-listen bearer token; at least 16 characters, configured securely).
 #     Test and diagnostic: GOVERN_NOW (the allowances clock) · GOVERN_PROC=ps (read the process table with ps).
 #     Coverage: ST_VAR (npm run coverage writes V8 profiles and coverage.json under $ST_VAR/out/govern/coverage;
-#     default <repo>/var) · NODE_V8_COVERAGE (set by npm run coverage so every child node process writes its profile).
+#     default <repo>/var) · NODE_V8_COVERAGE (set by npm run coverage so every child node process writes its profile)
+#     · SOURCE_DATE_EPOCH (npm run package: the archive's file times; default the last commit's time).
 #     Set for what govern runs: GOVERN_JOB_ID, GOVERN_JOB_DIR (every job; slice and up read GOVERN_JOB_DIR to find the
 #     job they run in) · GOVERN_TAG, GOVERN_LANE, GOVERN_RESOURCE, GOVERN_COUNT, GOVERN_ID (a resource's up, down and
 #     list commands) · GOVERN_PIECES, GOVERN_OUT, GOVERN_TAG, GOVERN_PIECE, GOVERN_ID (a slice recipe's steps)
@@ -327,5 +330,10 @@ set -eu
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 # Only a leading -h/--help is the manpage: after the command, --help is that command's help (govern.ts), and a
 # --help inside a value or after `--` belongs to the argv it is in.
-case "${1-}" in -h|--help) exec "$ROOT/bin/st-man" govern ;; esac
+case "${1-}" in
+  -h|--help)
+    if [ -x "$ROOT/bin/st-man" ]; then exec "$ROOT/bin/st-man" govern; fi
+    exec node --disable-warning=ExperimentalWarning "$ROOT/tools/govern/govern.ts" help
+    ;;
+esac
 exec node --disable-warning=ExperimentalWarning "$ROOT/tools/govern/govern.ts" "$@"

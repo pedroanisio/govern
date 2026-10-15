@@ -7,7 +7,7 @@ import assert from "node:assert/strict";
 import { readFileSync, readdirSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { HERE, present } from "./helpers.ts";
-import { COMMANDS, ENGINES } from "../govern.ts";
+import { ALIASES, COMMANDS, ENGINES } from "../govern.ts";
 import { BUILTIN_RUNNERS, MAX_FILES_CHARS } from "../lib/queue.ts";
 import { MAX_INLINE, PROMPT_KEYS } from "../lib/codex.ts";
 import { LEGACY_PROFILES } from "../lib/caps.ts";
@@ -260,7 +260,7 @@ const FLAG_WORDS = new Set(COMMANDS.flatMap((c) => [c.flags, ...Object.values(c.
 /** Why govern would refuse `argv` (the words after `govern`) before running it, or undefined: the same command and
  *  subcommand lookup and flag parse as govern.ts main. */
 function refusal(argv: readonly string[]): string | undefined {
-  const [name, ...rest] = argv;
+  const [word, ...rest] = argv, name = word !== undefined && Object.hasOwn(ALIASES, word) ? ALIASES[word] : word;
   if (name === undefined || name === "-h" || name === "--help") return undefined;
   const c = COMMANDS.find((x) => x.name === name);
   if (!c) return `unknown command ${name}`;
@@ -310,6 +310,8 @@ test("the example check refuses what govern refuses", () => {
   assert.equal(refusal(["task", "--help"]), undefined);
   assert.match(refusal(["wait", "a", "--bg"]) ?? "", /unknown flag --bg/);
   assert.match(refusal(["nope"]) ?? "", /unknown command nope/);
+  assert.equal(refusal(["--version"]), undefined);
+  assert.match(refusal(["constructor"]) ?? "", /unknown command constructor/);
   assert.match(refusal(["task", "nope"]) ?? "", /no subcommand nope/);
   assert.match(refusal(["note", "a", "--quote"]) ?? "", /unknown flag/);
   assert.match(refusal(["approve", "a", "g", "--quote", "--bg"]) ?? "", /needs a value/);

@@ -1,0 +1,74 @@
+name: govern
+
+on:
+  push:
+    branches: [main]
+    tags: ['govern-v*']
+    paths:
+      - 'tools/govern/**'
+      - 'bin/govern'
+      - '.github/workflows/govern.yml'
+  pull_request:
+    paths:
+      - 'tools/govern/**'
+      - 'bin/govern'
+      - '.github/workflows/govern.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: tools/govern
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: tools/govern/package-lock.json
+      - run: npm ci
+      - run: npm run -s typecheck
+      - run: node --disable-warning=ExperimentalWarning --test 'test/*.test.ts'
+      - run: npm run -s package
+      # GitHub's first-party artifact action; no third-party actions are used.
+      - uses: actions/upload-artifact@v7
+        with:
+          name: govern-package
+          path: generated/govern-package/*
+          if-no-files-found: error
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/govern-v')
+    needs: test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    defaults:
+      run:
+        working-directory: tools/govern
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: tools/govern/package-lock.json
+      - run: npm ci
+      - run: npm run -s package -- --check "$GITHUB_REF_NAME"
+      - name: Publish release with changelog notes
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          umask 077
+          node --disable-warning=ExperimentalWarning scripts/release-notes.ts > ../../generated/govern-package/RELEASE-NOTES.md
+          version=$(node --input-type=module -e 'import fs from "node:fs"; console.log(JSON.parse(fs.readFileSync("package.json", "utf8")).version)')
+          gh release create "$GITHUB_REF_NAME" \
+            "../../generated/govern-package/govern-${version}.tar.gz" \
+            ../../generated/govern-package/SHA256SUMS \
+            --verify-tag --title "govern ${version}" \
+            --notes-file ../../generated/govern-package/RELEASE-NOTES.md

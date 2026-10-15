@@ -5,6 +5,8 @@ description: Work on a lane of agent work (a video, software, ops, an audit, gov
 
 # Working with govern
 
+`govern version` (or `govern --version`) prints the installed package version. Add `--json` for the name and version as JSON.
+
 You and the owner do the work together; `govern` keeps that conversation cheap and keeps the work in files. A lane of work follows a **process** (its stages, exit conditions, checks and the owner's gates), and nothing in govern knows one kind of work: a new kind is a new process description. The money in agent work goes into four things, and the rules below remove them:
 - re-reading a huge context on every call;
 - polling long jobs from inside the model;
