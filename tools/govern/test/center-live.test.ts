@@ -151,3 +151,18 @@ test("the page offers the Projects and Processes views, reads only the token-gat
     assert.deepEqual(JSON.parse((await get(port, "/api/lanes", auth)).body), { at, hosts: [], lanes: [] });
   } finally { server.close(); }
 });
+
+test("the page explains a missing token and a failed update in the live views instead of loading forever", async () => {
+  const server = center.centerServer({ token: "secret-token", view: async () => ({}) as unknown as center.View, live: async () => ({ at: new Date(NOW).toISOString(), hosts: [], lanes: [], processes: [] }) });
+  server.listen(0, "127.0.0.1"); await once(server, "listening");
+  const port = (server.address() as { port: number }).port;
+  try {
+    const page = (await get(port, "/")).body;
+    assert.match(page, /govern center url/, "the no-token text names the command that prints the address");
+    assert.ok(!page.includes("govern center serve printed"), "no pointer to the old per-process address");
+    assert.match(page, /liveError = token \? "" : NO_TOKEN/, "a page opened without a token says so in the live views");
+    assert.match(page, /catch \(e\) \{\s*liveError = "update failed: "/, "a refused or failed live update is shown, not swallowed");
+    assert.match(page, /liveError \|\| "loading…"/, "the tables show the error in place of loading…");
+  } finally { server.close(); }
+});
+

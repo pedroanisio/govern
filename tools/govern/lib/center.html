@@ -134,6 +134,7 @@ tr.pick { cursor: pointer; } tr.pick:hover td { background: var(--chip); } tr.pi
 <script>
 "use strict";
 const token = new URLSearchParams(location.hash.slice(1)).get("token") || "";
+const NO_TOKEN = "No access token in this address: open the one `govern center url` prints (it ends in #token=…).";
 let view = null;
 const $ = id => document.getElementById(id);
 function el(tag, attrs, ...kids) {
@@ -217,7 +218,7 @@ function renderMessages() {
     el("td", {}, m.summary, ...(m.closedBy ? [el("div", {}, `Closed by ${m.closedBy}${m.note ? `: ${m.note}` : ""}`)] : []), ...(m.lastError ? [el("div", { class: "err" }, m.lastError)] : [])))), "No messages match.", 7);
 }
 async function refresh() {
-  if (!token) { $("status").textContent = "Open the address govern center serve printed: it carries the access token."; return; }
+  if (!token) { $("status").textContent = NO_TOKEN; $("status").className = "status err"; return; }
   try {
     const r = await fetch("/api/state", { headers: { Authorization: "Bearer " + token }, cache: "no-store" });
     const body = await r.json();
@@ -229,7 +230,7 @@ async function refresh() {
 }
 
 // ---- views: Projects (every host's lanes) and Processes (live BPMN) ----
-let live = { lanes: null, processes: null };
+let live = { lanes: null, processes: null }, liveError = token ? "" : NO_TOKEN;
 let current = "overview", picked = null, shown = null;
 const ago = iso => { const s = Math.max(0, (Date.now() - Date.parse(iso)) / 1000); return s < 90 ? "now" : s < 5400 ? Math.round(s / 60) + "m" : s < 129600 ? Math.round(s / 3600) + "h" : Math.round(s / 86400) + "d"; };
 function show(view) {
@@ -269,7 +270,7 @@ function laneRow(h, l) {
   const gates = l.gates, approved = gates.filter(g => g.decision === "approved").length, pending = gates.filter(g => g.decision === "pending");
   const lc = lastCheck(l);
   return el("tr", { class: "pick" + (picked && picked.host === h && picked.slug === l.slug ? " picked" : ""), "data-key": h + "/" + l.slug },
-    el("td", {}, h), el("td", { class: "mono" }, l.slug, ...(l.title && l.title !== l.slug ? [el("div", { class: "none" }, l.title)] : [])),
+    el("td", { class: "nowrap" }, h), el("td", { class: "mono" }, l.slug, ...(l.title && l.title !== l.slug ? [el("div", { class: "none" }, l.title)] : [])),
     el("td", {}, `${l.process.name} r${l.process.revision}`),
     el("td", {}, `${l.stage} (${l.stageIndex}/${l.stageTotal})`),
     el("td", {}, el("span", { class: "strip", title: l.stages.map(x => x.name + ": " + x.mark).join("\n") }, ...l.stages.map(x => el("i", { class: x.mark })))),
@@ -281,7 +282,7 @@ function laneRow(h, l) {
 }
 function drawProjects() {
   const hostSel = $("phost"), keep = hostSel.value;
-  if (!live.lanes) { $("lanes").replaceChildren(el("tr", {}, el("td", { colspan: "10", class: "none" }, "loading…"))); return; }
+  if (!live.lanes) { $("lanes").replaceChildren(el("tr", {}, el("td", { colspan: "10", class: liveError ? "err" : "none" }, liveError || "loading…"))); return; }
   hostSel.replaceChildren(el("option", { value: "" }, "All hosts"), ...live.lanes.hosts.map(h => el("option", { value: h.host }, h.host)));
   hostSel.value = keep;
   const q = $("pq").value.toLowerCase(), host = hostSel.value, status = $("pstatus").value, out = [];
@@ -309,7 +310,7 @@ function openLane(host, slug, from) {
   show(from === "process" ? "processes" : "projects");
 }
 function drawProcesses() {
-  if (!live.processes) { $("procs").replaceChildren(el("tr", {}, el("td", { colspan: "5", class: "none" }, "loading…"))); return; }
+  if (!live.processes) { $("procs").replaceChildren(el("tr", {}, el("td", { colspan: "5", class: liveError ? "err" : "none" }, liveError || "loading…"))); return; }
   const out = live.processes.processes.map(p => {
     const cell = el("td", {});
     for (const h of p.hosts) {
@@ -337,8 +338,12 @@ async function refreshLive() {
   try {
     const [l, p] = await Promise.all([api("/api/lanes"), api("/api/processes")]);
     if (!l.ok || !p.ok) throw new Error((await (l.ok ? p : l).json()).error || "refused");
-    live = { lanes: await l.json(), processes: await p.json() };
-  } catch (e) { live = { lanes: live.lanes, processes: live.processes }; return; }
+    live = { lanes: await l.json(), processes: await p.json() }; liveError = "";
+  } catch (e) {
+    liveError = "update failed: " + e.message + (live.lanes ? " (showing the last answer)" : "");
+    $("status").textContent = liveError; $("status").className = "status err";
+    if (live.lanes) return;
+  }
   if (current !== "overview") { drawProjects(); drawProcesses(); redraw(); }
 }
 for (const id of ["pq", "phost", "pstatus"]) $(id).addEventListener("input", drawProjects);
