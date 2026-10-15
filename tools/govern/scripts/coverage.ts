@@ -3,7 +3,7 @@ import { spawnSync } from "node:child_process";
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, writeFileSync } from "node:fs";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
-import { mergeCoverage, type CoverageProfile } from "./coverage-merge.ts";
+import { mergeCoverage, readCoverageProfiles } from "./coverage-merge.ts";
 
 const root = realpathSync(resolve(dirname(fileURLToPath(import.meta.url)), ".."));
 const generated = resolve(process.env.ST_VAR || join(root, "..", "..", "var"), "out", "govern", "coverage");
@@ -33,25 +33,23 @@ const collect = (path: string) => {
 };
 sources["govern.ts"] = readFileSync(join(root, "govern.ts"), "utf8");
 collect(join(root, "lib"));
-const profiles: CoverageProfile[] = [];
-for (const name of readdirSync(directory).sort()) {
-  if (!name.endsWith(".json")) continue;
-  const profile: CoverageProfile = JSON.parse(readFileSync(join(directory, name), "utf8"));
+const { profiles, unreadable } = readCoverageProfiles(directory);
+console.log(`unreadable V8 profiles: ${unreadable.length} (${unreadable.join(", ")})`);
+for (const profile of profiles) {
   profile.result = profile.result.flatMap((script) => {
     if (!script.url.startsWith("file:")) return [];
     const path = relative(root, fileURLToPath(script.url)).split(sep).join("/");
     return Object.hasOwn(sources, path) ? [{ ...script, url: path }] : [];
   });
-  profiles.push(profile);
 }
-if (!profiles.length) throw new Error(`No V8 coverage profiles written to ${directory}`);
+if (!profiles.length && !unreadable.length) throw new Error(`No V8 coverage profiles written to ${directory}`);
 const files = mergeCoverage(sources, profiles);
 const percent = (value: number | null) => value === null ? "unobserved" : `${value.toFixed(2)}%`;
 console.log("\nFile\tLine %\tBranch %\tUncovered branches (file:line)");
 for (const row of files) console.log(`${row.file}\t${percent(row.lines.percent)}\t${percent(row.branches.percent)}\t${row.uncoveredBranchLines.map((line) => `${row.file}:${line}`).join(", ")}`);
 const output = resolve(args[1] ?? join(generated, "coverage.json"));
 mkdirSync(dirname(output), { recursive: true, mode: 0o700 });
-writeFileSync(output, JSON.stringify({ profiles: profiles.length, suite: { status: result.status, signal: result.signal, error: result.error?.message }, files }, null, 2) + "\n", { mode: 0o600 });
+writeFileSync(output, JSON.stringify({ profiles: profiles.length, unreadableProfiles: unreadable, suite: { status: result.status, signal: result.signal, error: result.error?.message }, files }, null, 2) + "\n", { mode: 0o600 });
 chmodSync(output, 0o600);
 console.log(`JSON: ${output}\nV8 profiles: ${directory}`);
 process.exitCode = result.error || result.signal ? 1 : (result.status ?? 1);

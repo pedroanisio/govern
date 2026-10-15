@@ -1,9 +1,27 @@
+import { readFileSync, readdirSync } from "node:fs";
+import { join } from "node:path";
+
 // V8 offsets are UTF-16 offsets into the original source; Node's type stripping preserves them.
 export interface CoverageRange { startOffset: number; endOffset: number; count: number }
 export interface FunctionCoverage { functionName: string; isBlockCoverage: boolean; ranges: CoverageRange[] }
 export interface CoverageProfile { result: { url: string; functions: FunctionCoverage[] }[] }
 export interface Metric { covered: number; total: number; percent: number | null }
 export interface FileCoverage { file: string; observed: boolean; lines: Metric; branches: Metric; uncoveredBranchLines: number[] }
+
+/** Read sorted V8 JSON profiles, returning unreadable filenames for failed reads or invalid JSON (including interrupted writes). */
+export function readCoverageProfiles(directory: string): { profiles: CoverageProfile[]; unreadable: string[] } {
+  const profiles: CoverageProfile[] = [];
+  const unreadable: string[] = [];
+  for (const name of readdirSync(directory).sort()) {
+    if (!name.endsWith(".json")) continue;
+    try {
+      profiles.push(JSON.parse(readFileSync(join(directory, name), "utf8")) as CoverageProfile);
+    } catch {
+      unreadable.push(name);
+    }
+  }
+  return { profiles, unreadable };
+}
 
 const key = (r: CoverageRange) => `${r.startOffset}:${r.endOffset}`;
 const metric = (covered: number, total: number, empty: number | null): Metric => ({ covered, total, percent: total ? covered / total * 100 : empty });
