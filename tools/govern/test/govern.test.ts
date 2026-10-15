@@ -259,23 +259,39 @@ test("ask: a repair call's input is hashed too; promptSha stays the first call's
   assert.deepEqual(l.callShas, sent.map(sha256));
 });
 
-test("ask: a step without a schema records no schemaSha", () => {
+test("ask: a prompt without schema exits 2 naming the file before any codex call", () => {
   const { e, slug } = video();
-  const prompts = join(e.root, "prompts");
-  write(join(prompts, "free.md"), "---\neffort: low\n---\nSay something about {{title}} as JSON.\n");
-  const r = govern(e, ["ask", slug, "free"], { GOVERN_PROMPTS: prompts, FAKE_CODEX_SCRIPTS: reply(e, "free", { said: "hi" }) });
-  assert.equal(r.code, 0, r.err + r.out);
+  const prompts = join(e.root, "prompts"), file = join(prompts, "free.md");
+  for (const text of ["Say something as JSON.\n", "---\neffort: low\n---\nSay something as JSON.\n", "---\nschema: \n---\nSay something as JSON.\n"]) {
+    write(file, text);
+    const r = govern(e, ["ask", slug, "free"], { GOVERN_PROMPTS: prompts, FAKE_CODEX_SCRIPTS: reply(e, "free", { said: "hi" }) });
+    assert.equal(r.code, 2, r.err + r.out);
+    assert.ok(r.err.includes(`${file}: schema is required`), r.err);
+    assert.doesNotMatch(r.out, /verified/);
+  }
+  assert.deepEqual(jsonl(join(e.root, "argv.log")), [], "codex was never called");
+  assert.equal(ledger(e, slug).some((x) => x.kind === "ask"), false);
+});
+
+test("ask: an unknown reply field against a closed schema fails verification with exit 3", () => {
+  const { e, slug } = video();
+  const r = govern(e, ["ask", slug, "hooks"], { FAKE_CODEX_SCRIPTS: reply(e, "extra", { ...goodHooks, surprise: "untrusted" }) });
+  assert.equal(r.code, 3, r.err + r.out);
+  assert.match(r.out, /FAILED verification/);
+  assert.match(r.out, /\$\.surprise: unknown field/);
+  assert.doesNotMatch(r.out, /· verified ·/);
   const l = ledger(e, slug).find((x) => x.kind === "ask");
-  assert.equal(l.promptSha, sha256(present(stdinLog(e)[0], "the prompt sent")));
-  assert.equal("schemaSha" in l, false);
-  assert.equal(jsonl(join(e.root, "argv.log"))[0].includes("--output-schema"), false);
+  assert.equal(l.ok, false);
+  assert.equal(l.calls, 2, "the unknown field is still refused after repair");
+  assert.match(l.schemaSha, /^[0-9a-f]{64}$/);
 });
 
 test("ask: {{var.constructor}} is a required var not given until --var sets it (an Object.prototype name is not a var)", () => {
   const { e, slug } = video();
   const prompts = join(e.root, "prompts");
   const env = { GOVERN_PROMPTS: prompts, FAKE_CODEX_SCRIPTS: reply(e, "free", { said: "hi" }) };
-  write(join(prompts, "need.md"), "Use {{var.constructor}} as JSON.\n");
+  write(join(prompts, "need.md"), "---\nschema: reply.json\n---\nUse {{var.constructor}} as JSON.\n");
+  write(join(prompts, "reply.json"), JSON.stringify({ type: "object", additionalProperties: false, properties: { said: { type: "string" } }, required: ["said"] }));
   const r = govern(e, ["ask", slug, "need"], env);
   assert.equal(r.code, 2, r.out);
   assert.match(r.err, /prompt need: unfilled var\.constructor \(pass --var NAME=VALUE\)/);
@@ -288,7 +304,8 @@ test("ask: {{opt.toString}} renders (none) until --var sets it (an Object.protot
   const { e, slug } = video();
   const prompts = join(e.root, "prompts");
   const env = { GOVERN_PROMPTS: prompts, FAKE_CODEX_SCRIPTS: reply(e, "free", { said: "hi" }) };
-  write(join(prompts, "maybe.md"), "Hint: {{opt.toString}}; also {{opt.valueOf}}.\n");
+  write(join(prompts, "maybe.md"), "---\nschema: reply.json\n---\nHint: {{opt.toString}}; also {{opt.valueOf}}.\n");
+  write(join(prompts, "reply.json"), JSON.stringify({ type: "object", additionalProperties: false, properties: { said: { type: "string" } }, required: ["said"] }));
   assert.equal(govern(e, ["ask", slug, "maybe"], env).code, 0);
   assert.match(present(stdinLog(e)[0], "the prompt sent"), /Hint: \(none\); also \(none\)\./);
   assert.equal(govern(e, ["ask", slug, "maybe", "--var", "toString=short"], env).code, 0);
@@ -298,7 +315,8 @@ test("ask: {{opt.toString}} renders (none) until --var sets it (an Object.protot
 test("ask: a prompt named constructor has no house-rule checks and its reply is verified", () => {
   const { e, slug } = video();
   const prompts = join(e.root, "prompts");
-  write(join(prompts, "constructor.md"), "Say something as JSON.\n");
+  write(join(prompts, "constructor.md"), "---\nschema: reply.json\n---\nSay something as JSON.\n");
+  write(join(prompts, "reply.json"), JSON.stringify({ type: "object", additionalProperties: false, properties: { said: { type: "string" } }, required: ["said"] }));
   const c = govern(e, ["ask", slug, "constructor"], { GOVERN_PROMPTS: prompts, FAKE_CODEX_SCRIPTS: reply(e, "free", { said: "hi" }) });
   assert.equal(c.code, 0, c.err + c.out);
   assert.match(c.out, /verified/);
@@ -309,15 +327,16 @@ test("ask: a prompt named constructor has no house-rule checks and its reply is 
 test("ask: a prompt whose repairs is not a whole number 0 or more is refused before calling codex, never passed as verified", () => {
   const { e, slug } = video();
   const prompts = join(e.root, "prompts");
+  write(join(prompts, "reply.json"), JSON.stringify({ type: "object", additionalProperties: false, properties: { said: { type: "string" } }, required: ["said"] }));
   for (const bad of ["lots", "-1", "1.5", ""]) {
-    write(join(prompts, "free.md"), `---\nrepairs: ${bad}\n---\nSay something as JSON.\n`);
+    write(join(prompts, "free.md"), `---\nschema: reply.json\nrepairs: ${bad}\n---\nSay something as JSON.\n`);
     const r = govern(e, ["ask", slug, "free"], { GOVERN_PROMPTS: prompts, FAKE_CODEX_SCRIPTS: reply(e, "free", { said: "hi" }) });
     assert.equal(r.code, 2, `repairs: ${bad}: ${r.out}`);
     assert.match(r.err, new RegExp(`free\\.md: repairs must be a whole number, 0 or more \\(got "${bad.replace(".", "\\.")}"\\)`));
   }
   assert.equal(jsonl(join(e.root, "argv.log")).length, 0, "codex was never called");
   assert.equal(ledger(e, slug).some((x) => x.kind === "ask"), false, "no ask is recorded");
-  write(join(prompts, "free.md"), "---\nrepairs: 0\n---\nSay something as JSON.\n");
+  write(join(prompts, "free.md"), "---\nschema: reply.json\nrepairs: 0\n---\nSay something as JSON.\n");
   assert.equal(govern(e, ["ask", slug, "free"], { GOVERN_PROMPTS: prompts, FAKE_CODEX_SCRIPTS: reply(e, "free", { said: "hi" }) }).code, 0);
 });
 
@@ -354,7 +373,8 @@ test("ask: a prompt whose front matter has an unknown key or a line that is not 
   }
   assert.equal(jsonl(join(e.root, "argv.log")).length, 0, "codex was never called");
   assert.equal(ledger(e, slug).some((x) => x.kind === "ask"), false, "no ask is recorded");
-  for (const text of ["---\ndescription: say hi\n\neffort: low\n---\nSay something as JSON.\n", "---\r\neffort: low\r\n---\r\nSay something as JSON.\r\n", "---\n---\nSay something as JSON.\n"]) {
+  write(join(prompts, "free.schema.json"), JSON.stringify({ type: "object", additionalProperties: false, properties: { said: { type: "string" } }, required: ["said"] }));
+  for (const text of ["---\nschema: free.schema.json\ndescription: say hi\n\neffort: low\n---\nSay something as JSON.\n", "---\r\nschema: free.schema.json\r\neffort: low\r\n---\r\nSay something as JSON.\r\n", "---\nschema: free.schema.json\n---\nSay something as JSON.\n"]) {
     write(join(prompts, "free.md"), text);
     const ok = govern(e, ["ask", slug, "free"], { GOVERN_PROMPTS: prompts, FAKE_CODEX_SCRIPTS: reply(e, "free", { said: "hi" }) });
     assert.equal(ok.code, 0, `${JSON.stringify(text)}: ${ok.err}${ok.out}`);

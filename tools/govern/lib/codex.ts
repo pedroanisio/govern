@@ -79,7 +79,7 @@ export const PROMPT_KEYS = ["description", "effort", "model", "repairs", "rules"
 /** Read prompt `name` from the first of `dirs` that has `<name>.md`, splitting its `---` front matter (LF or CRLF) into
  *  meta; fails on a bad name, a missing prompt, a front matter block with no closing `---`, a front matter line that is
  *  not `key: value` or names a key outside PROMPT_KEYS (a misspelt `schema:` would otherwise drop the check silently),
- *  or a `repairs` value that is not a whole number. */
+ *  no `schema:` declaration, or a `repairs` value that is not a whole number. */
 export function readPrompt(name: string, dirs: string[]): PromptFile {
   if (!/^[a-z0-9-]+$/.test(name)) fail(`bad prompt name: ${name}`);
   const dir = dirs.find((d) => existsSync(join(d, `${name}.md`)));
@@ -101,6 +101,7 @@ export function readPrompt(name: string, dirs: string[]): PromptFile {
   // ask() loops 1 + repairs times and an ask with no call has no errors: a repairs value that is not a whole number 0 or
   // more would make zero calls and pass as verified, so it is refused here.
   if (meta.repairs !== undefined && !/^\d+$/.test(meta.repairs)) fail(`${f}: repairs must be a whole number, 0 or more (got ${JSON.stringify(meta.repairs)})`);
+  if (!meta.schema) fail(`${f}: schema is required`);
   return { name, meta, body: m ? text.slice(m[0].length) : text, dir: dir! };
 }
 
@@ -169,7 +170,8 @@ const isCount = (x: unknown) => Number.isInteger(x) && (x as number) >= 0;
 const key = (path: string, k: string) => (/^[A-Za-z_$][\w$]*$/.test(k) && k !== "__proto__" ? `${path}.${k}` : `${path}[${JSON.stringify(k)}]`);
 
 /** Check that `schema` uses only keywords validate() enforces, each with a well-formed value, at every depth (inside
- *  properties, items and additionalProperties), whether or not a value would reach that branch. Throws SchemaError. */
+ *  properties, items and additionalProperties), whether or not a value would reach that branch. Object schemas must
+ *  close additional properties or validate them with a schema. Throws SchemaError. */
 export function checkSchema(schema: unknown, at = "#"): void {
   const bad = (why: string): never => { throw new SchemaError(`schema ${at}: ${why}`); };
   if (!isObj(schema)) bad(`expected a schema object, got ${JSON.stringify(schema)}`);
@@ -186,11 +188,13 @@ export function checkSchema(schema: unknown, at = "#"): void {
   }
   if ("items" in s) checkSchema(s.items, `${at}/items`); // a tuple (array) form is not a schema object: refused
   if ("additionalProperties" in s && typeof s.additionalProperties !== "boolean") checkSchema(s.additionalProperties, `${at}/additionalProperties`);
+  if ((s.type === "object" || "properties" in s) && s.additionalProperties !== false && !isObj(s.additionalProperties))
+    bad("object schemas require additionalProperties: false or a schema");
 }
 
 /**
  * Check a parsed reply against a JSON schema and return every violation as "path: problem" (empty when it conforms).
- * Enforced: type, enum, required, properties, additionalProperties (false, true or a schema), items, minItems,
+ * Enforced: type, enum, required, properties, additionalProperties (false or a schema for objects), items, minItems,
  * maxItems, minLength, maxLength. The schema is checked first (checkSchema), so a keyword outside that subset throws
  * SchemaError instead of being ignored. Only own fields count: an inherited name such as "constructor" is not present.
  */
@@ -253,14 +257,14 @@ export interface AskResult { ok: boolean; value?: any; errors: string[]; usage: 
 export function ask(p: Project, name: string, o: { files?: string[]; vars?: Record<string, string>; images?: string[]; effort?: string; model?: string; timeoutSec?: number }): AskResult {
   const pf = readPrompt(name, promptDirs(processName(p)));
   const prompt = render(pf, p, o.files ?? [], o.vars ?? {});
-  const schemaPath = pf.meta.schema ? resolve(pf.dir, pf.meta.schema) : undefined;
-  if (schemaPath && !existsSync(schemaPath)) fail(`prompt ${name}: schema not found: ${pf.meta.schema} (relative to ${pf.dir})`);
+  const schemaPath = resolve(pf.dir, pf.meta.schema!);
+  if (!existsSync(schemaPath)) fail(`prompt ${name}: schema not found: ${pf.meta.schema} (relative to ${pf.dir})`);
   const rulesFile = pf.meta.rules ? resolve(pf.dir, pf.meta.rules) : undefined;
   if (rulesFile && !existsSync(rulesFile)) fail(`prompt ${name}: rules not found: ${pf.meta.rules} (relative to ${pf.dir})`);
   const houseRules = rulesFile ? loadRules(rulesFile) : undefined;
-  const schemaBytes = schemaPath ? readFileSync(schemaPath) : undefined;
-  const schema = schemaBytes ? JSON.parse(schemaBytes.toString("utf8")) : undefined;
-  if (schema) checkSchema(schema); // before any model call: a schema validate() cannot enforce must not cost one
+  const schemaBytes = readFileSync(schemaPath);
+  const schema = JSON.parse(schemaBytes.toString("utf8"));
+  checkSchema(schema); // before any model call: a schema validate() cannot enforce must not cost one
   const outDir = join(governDir(p.slug), "ask");
   mkdirSync(outDir, { recursive: true });
   const id = `${stamp()}-${name}`;
@@ -289,7 +293,7 @@ export function ask(p: Project, name: string, o: { files?: string[]; vars?: Reco
       try { value = JSON.parse(String(text ?? "").replace(/^```(?:json)?\s*|\s*```$/g, "")); }
       catch { errors.push("reply is not JSON"); }
     }
-    if (!errors.length && schema) errors.push(...validate(schema, value));
+    if (!errors.length) errors.push(...validate(schema, value));
     if (!errors.length && houseRules) errors.push(...applyRules(houseRules, value, p.kind));
     if (!errors.length || r.error || r.status !== 0) break;
     input = `${prompt}\n\nYour previous reply:\n${text}\n\nIt failed these checks; reply again with the whole corrected JSON and change only what the checks require:\n- ${errors.join("\n- ")}\n`;
@@ -300,7 +304,7 @@ export function ask(p: Project, name: string, o: { files?: string[]; vars?: Reco
   const seconds = Math.round((Date.now() - t0) / 1000);
   // Provenance: promptSha is the rendered prompt (the first call's stdin, byte for byte), callShas every call's stdin
   // (a repair call adds the reply and the errors to it), schemaSha the --output-schema file codex was given.
-  appendLedger(p.slug, { kind: "ask", id, prompt: name, promptSha: callShas[0], callShas, ...(schemaBytes ? { schemaSha: sha256(schemaBytes) } : {}),
+  appendLedger(p.slug, { kind: "ask", id, prompt: name, promptSha: callShas[0], callShas, schemaSha: sha256(schemaBytes),
     model: model ?? "codex-default", effort: effort ?? "codex-default", usage: total, turns, calls, ok, errors: errors.slice(0, 5), seconds, out });
   return { ok, value, errors, usage: total, turns, calls, out, seconds };
 }

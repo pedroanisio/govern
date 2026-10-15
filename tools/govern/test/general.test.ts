@@ -28,7 +28,7 @@ function audit(): string {
   }));
   write(join(ws, "procs", "audit", "MANUAL.md"), "# audit manual\nAlways quote the invoice number.\n");
   write(join(ws, "procs", "audit", "prompts", "findings.md"), "---\neffort: low\nschema: schemas/findings.json\nrules: rules/findings.json\n---\nList findings for {{title}} as JSON.\n");
-  write(join(ws, "procs", "audit", "prompts", "schemas", "findings.json"), JSON.stringify({ type: "object", required: ["findings"], properties: { findings: { type: "array", items: { type: "object", required: ["text"], properties: { text: { type: "string" } } } } } }));
+  write(join(ws, "procs", "audit", "prompts", "schemas", "findings.json"), JSON.stringify({ type: "object", additionalProperties: false, required: ["findings"], properties: { findings: { type: "array", items: { type: "object", additionalProperties: false, required: ["text"], properties: { text: { type: "string" } } } } } }));
   write(join(ws, "procs", "audit", "prompts", "rules", "findings.json"), JSON.stringify([
     { at: "findings[].text", forbid: "acme", flags: "i", message: "{at}: names the client" },
     { at: "findings[].text", maxWords: 6, message: "{at}: {n} words; at most 6" },
@@ -171,8 +171,8 @@ test("lib/ and govern.ts name no project, channel or workspace (the CLAUDE.md ba
 function auditWithWorkspacePrompts(): string {
   const ws = audit();
   write(join(ws, "govern.config.json"), JSON.stringify({ projects: "lanes", queue: "q", processes: "procs", prompts: "wsp", paths: { checker: "tools/check.sh" } }));
-  write(join(ws, "wsp", "findings.md"), "---\neffort: high\ndescription: workspace findings\n---\nWORKSPACE VERSION for {{title}}; answer as JSON.\n");
-  write(join(ws, "wsp", "memo.md"), "---\ndescription: a memo\n---\nMemo for {{title}}.\n");
+  write(join(ws, "wsp", "findings.md"), "---\neffort: high\ndescription: workspace findings\nschema: ../procs/audit/prompts/schemas/findings.json\n---\nWORKSPACE VERSION for {{title}}; answer as JSON.\n");
+  write(join(ws, "wsp", "memo.md"), "---\ndescription: a memo\nschema: ../procs/audit/prompts/schemas/findings.json\n---\nMemo for {{title}}.\n");
   return ws;
 }
 

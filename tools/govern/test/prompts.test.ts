@@ -18,7 +18,8 @@ function lane(body: string) {
   const r = govern(e, ["new", "film/shorts", "--kind", "short", "--title", "A Test", "--lang", "en"]);
   assert.equal(r.code, 0, r.err);
   const prompts = join(e.root, "my-prompts");
-  write(join(prompts, "inc.md"), `---\neffort: low\n---\n${body}\n`);
+  write(join(prompts, "inc.md"), `---\neffort: low\nschema: reply.json\n---\n${body}\n`);
+  write(join(prompts, "reply.json"), JSON.stringify({ type: "object", additionalProperties: false, required: ["done"], properties: { done: { type: "boolean" } } }));
   const ok = reply(e, "ok", { done: true });
   return { e, ask: () => govern(e, ["ask", "film/shorts", "inc"], { GOVERN_PROMPTS: prompts, FAKE_CODEX_SCRIPTS: ok }) };
 }
