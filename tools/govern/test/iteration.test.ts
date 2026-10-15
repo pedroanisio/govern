@@ -1,6 +1,7 @@
 import { completeStage, nextStages, rejectRoute } from "../lib/business.ts";
 import { syncItems } from "../lib/fanout.ts";
-import { load } from "../lib/project.ts";
+import { load, parseProject } from "../lib/project.ts";
+import { freezeProcess } from "../lib/process.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { join } from "node:path";
@@ -417,3 +418,34 @@ test("foreach refuses ancestor cycles and nesting beyond sixteen levels", () => 
     else process.env.GOVERN_REPO = old;
   }
 });
+
+
+for (const [label, change, message] of [
+  ["snapshot mismatch", (p: any) => { p.runtime.items.batch.snapshot = freezeProcess(parseProcess("/wrong.json", JSON.stringify({ version: 1, name: "wrong", stages: [{ name: "work" }] }))); }, /foreach snapshot mismatch/],
+  ["oversized batch", (p: any) => { p.runtime.items.batch.items = ["a", "b", "c"]; }, /invalid foreach batch/],
+  ["negative item index", (p: any) => { p.runtime.items.batch.children = { "-1": "child" }; }, /invalid item index/],
+  ["noncanonical item index", (p: any) => { p.runtime.items.batch.children = { "00": "child" }; }, /invalid item index/],
+  ["out of range item index", (p: any) => { p.runtime.items.batch.children = { "1": "child" }; }, /invalid item index/],
+  ["synced missing children", (p: any) => { p.runtime.items.batch.children = {}; p.runtime.items.batch.synced = true; }, /synced batch has missing children/],
+] as const) {
+  test(`govern.json rejects foreach ${label} with file and runtime path`, () => {
+    const e = foreachRig();
+    ok(e, ["subprocess", "p"]);
+    const p = state(e), file = join(e.projects, "p/govern.json");
+    change(p);
+    const old = process.env.GOVERN_REPO;
+    process.env.GOVERN_REPO = e.root;
+    try {
+      assert.throws(() => parseProject(file, JSON.stringify(p), "p"), (err: unknown) => {
+        assert.ok(err instanceof Error);
+        assert.ok(err.message.includes(file), err.message);
+        assert.ok(err.message.includes("$.runtime"), err.message);
+        assert.match(err.message, message);
+        return true;
+      });
+    } finally {
+      if (old === undefined) delete process.env.GOVERN_REPO;
+      else process.env.GOVERN_REPO = old;
+    }
+  });
+}

@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { join } from "node:path";
 import { rmSync } from "node:fs";
 import { makeEnv, govern, jsonl, write, present } from "./helpers.ts";
-import { claudeCalls, behaviour, behaviourText, isPoll, BIG_READ_CHARS } from "../lib/usage.ts";
+import { claudeCalls, grokCalls, currentCtx, totals, behaviour, behaviourText, isPoll, BIG_READ_CHARS } from "../lib/usage.ts";
 
 const u = { input_tokens: 10, cache_read_input_tokens: 1000, cache_creation_input_tokens: 0, output_tokens: 20 };
 const asst = (t: string, id: string, content: unknown) => ({ type: "assistant", timestamp: t, message: { id, model: "claude-opus-5-5", content, usage: u } });
@@ -176,4 +176,117 @@ test("usage: grok sessions are found in govern's private home as well as in the 
   assert.match(present(out.split("\n").find((l) => / plan grok/.test(l)), "plan row"), /\s1\s+4k\s/);
   assert.match(present(out.split("\n").find((l) => / script grok/.test(l)), "script row"), /\s1\s+6k\s/);
   assert.doesNotMatch(out, /no transcript found/);
+});
+
+
+test("usage attributes Codex cumulative counters, ignores repeats and reports unknown model cost", () => {
+  const e = makeEnv(), slug = "film/codex", start = "2026-01-01T00:00:00.000Z";
+  assert.equal(govern(e, ["new", slug, "--kind", "short"]).code, 0);
+  write(join(e.projects, slug, "govern/ledger.jsonl"), lines([
+    { kind: "work", t: start, stage: "plan", engine: "codex", session: "rollout" },
+    { kind: "done", t: "2026-01-01T00:00:10Z", engine: "codex", session: "rollout" },
+    { kind: "ask", t: start, prompt: "review", ok: false, usage: { input: 100, cached: 50, output: 20 }, calls: 2 },
+    { kind: "ask", t: start, prompt: "review", ok: true },
+  ]));
+  const row = (timestamp: string, type: string, payload: unknown) => ({ timestamp, type, payload });
+  const count = (input: number, cached: number, output: number, last?: unknown) => ({
+    type: "token_count", info: { total_token_usage: { input_tokens: input, cached_input_tokens: cached, output_tokens: output },
+      ...(last ? { last_token_usage: last } : {}) }
+  });
+  write(join(e.root, "codex-sessions/rollout.jsonl"), lines([
+    row(start, "response_item", { type: "function_call", arguments: `govern work ${slug} plan` }),
+    row(start, "turn_context", { model: "unpriced-model" }),
+    row("2026-01-01T00:00:01Z", "response_item", { type: "message", role: "user" }),
+    row("2026-01-01T00:00:02Z", "event_msg", count(1000, 200, 50)),
+    row("2026-01-01T00:00:03Z", "event_msg", count(1000, 200, 50)),
+    row("2026-01-01T00:00:04Z", "event_msg", count(3000, 1000, 150, { input_tokens: 2000 })),
+    row("2026-01-01T00:00:11Z", "event_msg", count(4000, 1000, 200)),
+    { type: "event_msg" },
+  ]) + "{broken\n");
+  const result = govern(e, ["usage", slug]);
+  assert.equal(result.code, 0, result.err);
+  const plan = present(result.out.split("\n").find((l) => / plan codex/.test(l)), "Codex usage row");
+  assert.match(plan, /\s2\s+3k\s+150\s+2k\s+2k\s+33%\s+1\s+-/);
+  assert.match(result.out, /per message from you: 3k input-side tokens/);
+  assert.match(result.out, /codex ask: 2 steps \(review×2\), 3 calls, 100 in \(50% cached\), 20 out, 1 failed verification/);
+  const filtered = govern(e, ["usage", slug, "--since", "2026-01-02"]);
+  assert.equal(filtered.code, 0, filtered.err);
+  assert.doesNotMatch(filtered.out, /plan codex|codex ask:/);
+});
+
+test("Grok usage tolerates partial store files and preserves valid turn accounting", () => {
+  const e = makeEnv(), file = join(e.root, "grok/usage.json");
+  write(file, "{partial");
+  assert.deepEqual(grokCalls(file), { calls: [], owner: [], tools: [] });
+  write(file, JSON.stringify({ turns: "not-an-array" }));
+  assert.deepEqual(grokCalls(file).calls, []);
+  const at = "2026-01-01T00:00:10Z";
+  write(join(e.root, "grok/events.jsonl"), lines([
+    { type: "turn_started", turn_number: 0, ts: "2026-01-01T00:00:00Z" },
+    { type: "turn_started", turn_number: 0, ts: "2026-01-01T00:00:05Z" },
+    { type: "turn_started", turn_number: 1, ts: "2026-01-01T00:00:20Z" },
+    { type: "turn_started", turn_number: "invalid", ts: at },
+    { type: "turn_started", turn_number: 2, ts: "invalid" },
+    { type: "other" },
+  ]) + '{"turn_started":\n');
+  write(file, JSON.stringify({ turns: [null, { endedAt: "invalid" },
+    { turnNumber: 1, endedAt: at, inputTokens: 100, cachedReadTokens: 200, cacheCreationTokens: 0,
+      outputTokens: 5, modelCalls: 2, primaryModelId: "test", costUsdTicks: 1e8 },
+    { turnNumber: 2, endedAt: at, inputTokens: "bad", cachedReadTokens: null, outputTokens: "bad" },
+  ] }));
+  const calls = grokCalls(file).calls;
+  assert.equal(calls.length, 2);
+  assert.deepEqual(calls[0], { t: Date.parse(at), t0: Date.parse("2026-01-01T00:00:00Z"),
+    model: "test", input: 0, cacheRead: 100, cacheWrite: 0, output: 5, ctx: 50, sub: false, usd: 0.01 });
+  assert.deepEqual(calls[1], { t: Date.parse(at), model: "grok", input: 0, cacheRead: 0,
+    cacheWrite: 0, output: 0, ctx: 0, sub: false });
+  assert.equal(totals(calls).usd, undefined);
+  assert.equal(totals([calls[0]!]).usd, 0.01);
+});
+
+test("current context reads the latest assistant usage past partial and unrelated tail entries", () => {
+  const e = makeEnv(), oldDir = process.env.GOVERN_CLAUDE_PROJECTS, oldSession = process.env.CLAUDE_CODE_SESSION_ID;
+  process.env.GOVERN_CLAUDE_PROJECTS = join(e.root, "claude");
+  try {
+    delete process.env.CLAUDE_CODE_SESSION_ID;
+    assert.equal(currentCtx(), undefined);
+    process.env.CLAUDE_CODE_SESSION_ID = "context";
+    assert.equal(currentCtx(), undefined);
+    const file = join(e.root, "claude/proj/context.jsonl");
+    write(file, lines([
+      asst("2026-01-01T00:00:00Z", "old", []),
+      { type: "assistant", message: { usage: { input_tokens: 2, cache_creation_input_tokens: 3 } } },
+      { type: "user", message: { usage: {} } },
+      { type: "assistant", message: { content: "no usage" } },
+    ]) + '{"usage": broken\n');
+    assert.deepEqual(currentCtx(), { session: "context", file, ctx: 5 });
+    write(file, lines([{ type: "assistant", message: { usage: {} } }]));
+    assert.equal(currentCtx()?.ctx, 0);
+    write(file, '{"usage": broken\n');
+    assert.equal(currentCtx(), undefined);
+  } finally {
+    if (oldDir === undefined) delete process.env.GOVERN_CLAUDE_PROJECTS;
+    else process.env.GOVERN_CLAUDE_PROJECTS = oldDir;
+    if (oldSession === undefined) delete process.env.CLAUDE_CODE_SESSION_ID;
+    else process.env.CLAUDE_CODE_SESSION_ID = oldSession;
+  }
+});
+
+test("Claude transcript defaults missing counters, counts human turns and canonicalizes nested inputs", () => {
+  const e = makeEnv();
+  const file = write(join(e.root, "claude.jsonl"), lines([
+    { type: "user", timestamp: "2026-01-01T00:00:00Z", origin: { kind: "human" } },
+    { type: "assistant", uuid: "fallback", timestamp: "2026-01-01T00:00:01Z", message: { usage: {}, content: [
+      tu("a", "Read", { paths: ["a", null], nested: { b: 2, a: 1 } }),
+      tu("b", "Read", { nested: { a: 1, b: 2 }, paths: ["a", null] }),
+      tu("c", "Read", null),
+    ] } },
+    results("2026-01-01T00:00:02Z", [tr("a", [{ text: big }, { image: "ignored" }]), tr("a", "duplicate")]),
+  ]));
+  const data = claudeCalls(file, true);
+  assert.deepEqual(data.owner, [Date.parse("2026-01-01T00:00:00Z")]);
+  assert.equal(data.calls[0]?.model, "?");
+  assert.equal(data.calls[0]?.ctx, 0);
+  assert.equal(data.calls[0]?.sub, true);
+  assert.deepEqual(behaviour(data.tools), { tools: 3, repeats: 1, polls: 0, agents: 0, bigReads: 1 });
 });

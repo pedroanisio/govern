@@ -489,3 +489,81 @@ test("policy capability authorization refuses cached, expired and identity-less 
     assert.doesNotMatch(ok(e, ["brief", "p"]), /budget ✓/);
   });
 });
+
+
+const businessContract = () => ({ version: 1, name: "purchase",
+  fields: { amount: { type: "integer" }, text: { type: "string" }, flag: { type: "boolean" },
+    items: { type: "array", items: { type: "integer" } } },
+  people: { alice: { user: "alice", roles: ["reviewer"] }, bob: { user: "bob" } },
+  stages: [{ name: "start", next: [{ to: ["done"] }] }, { name: "done", next: [] }], gates: [] });
+
+for (const [label, patch, path] of [
+  ["nonboolean required", (p: any) => { p.fields.text.required = 1; }, "$.fields.text.required"],
+  ["nonnumeric bound", (p: any) => { p.fields.amount.min = "zero"; }, "$.fields.amount.min"],
+  ["nonscalar default", (p: any) => { p.fields.text.default = null; }, "$.fields.text.default"],
+  ["array without items", (p: any) => { delete p.fields.items.items; }, "$.fields.items"],
+  ["array enum", (p: any) => { p.fields.items.enum = [1]; }, "$.fields.items"],
+  ["fractional array bound", (p: any) => { p.fields.items.min = 0.5; }, "$.fields.items"],
+  ["boolean item bound", (p: any) => { p.fields.items.items = { type: "boolean", max: 1 }; }, "$.fields.items.items"],
+  ["inverted item bounds", (p: any) => { p.fields.items.items = { type: "integer", min: 2, max: 1 }; }, "$.fields.items.items"],
+  ["wrong item enum type", (p: any) => { p.fields.items.items.enum = ["one"]; }, "$.fields.items.items.enum"],
+  ["items on scalar", (p: any) => { p.fields.text.items = { type: "string" }; }, "$.fields.text.items"],
+  ["inverted scalar bounds", (p: any) => { p.fields.amount.min = 2; p.fields.amount.max = 1; }, "$.fields.amount"],
+  ["boolean bound", (p: any) => { p.fields.flag.min = 0; }, "$.fields.flag"],
+  ["wrong scalar enum type", (p: any) => { p.fields.amount.enum = ["one"]; }, "$.fields.amount.enum"],
+  ["default outside enum", (p: any) => { p.fields.amount.enum = [1]; p.fields.amount.default = 2; }, "$.fields.amount.default"],
+  ["array default too short", (p: any) => { p.fields.items.min = 1; p.fields.items.default = []; }, "$.fields.items.default"],
+  ["array default too long", (p: any) => { p.fields.items.max = 0; p.fields.items.default = [1]; }, "$.fields.items.default"],
+  ["scalar array default", (p: any) => { p.fields.items.default = 1; }, "$.fields.items.default"],
+  ["string default below min", (p: any) => { p.fields.text.min = 2; p.fields.text.default = "a"; }, "$.fields.text.default"],
+  ["number default above max", (p: any) => { p.fields.amount.max = 1; p.fields.amount.default = 2; }, "$.fields.amount.default"],
+  ["duplicate OS identity", (p: any) => { p.people.bob.user = "alice"; }, "$.people.bob.user"],
+  ["unknown required field", (p: any) => { p.stages[0].requiredFields = ["missing"]; }, "$.stages[0].requiredFields"],
+  ["graph stage without next", (p: any) => { delete p.stages[1].next; }, "$.stages[1].next"],
+  ["empty route", (p: any) => { p.stages[0].next[0].to = []; }, "$.stages[0].next[0].to"],
+  ["duplicate route", (p: any) => { p.stages[0].next[0].to = ["done", "done"]; }, "$.stages[0].next[0].to"],
+  ["two fallback routes", (p: any) => { p.stages[0].next.push({ to: ["done"] }); }, "$.stages[0].next"],
+  ["join without branches", (p: any) => { p.stages[0].next[0].join = "done"; }, "$.stages[0].next.join"],
+  ["dynamic route without join", (p: any) => { p.stages[0].next[0].branches = [{ to: "done", when: { field: "flag", op: "exists" } }]; }, "$.stages[0].next"],
+  ["both human identities", (p: any) => { p.stages[0].human = { role: "reviewer", assignee: "alice" }; }, "$.stages[0].human"],
+  ["unknown assignee", (p: any) => { p.stages[0].human = { assignee: "missing" }; }, "$.stages[0].human.assignee"],
+  ["unknown role", (p: any) => { p.stages[0].human = { role: "missing" }; }, "$.stages[0].human.role"],
+  ["duplicate join predecessors", (p: any) => { p.stages[1].join = { mode: "all", stages: ["start", "start"] }; }, "$.stages[1].join"],
+  ["unknown join predecessor", (p: any) => { p.stages[1].join = { mode: "all", stages: ["missing"] }; }, "$.stages[1].join"],
+  ...[
+    ["exists with value", { field: "text", op: "exists", value: "a" }],
+    ["comparison without value", { field: "text", op: "eq" }],
+    ["array outside in", { field: "text", op: "eq", value: ["a"] }],
+    ["scalar in", { field: "text", op: "in", value: "a" }],
+    ["unknown condition field", { field: "missing", op: "exists" }],
+    ["ordered string", { field: "text", op: "gt", value: "a" }],
+    ["ordered nonnumeric value", { field: "amount", op: "gt", value: "a" }],
+    ["array equality", { field: "items", op: "eq", value: 1 }],
+    ["contains scalar", { field: "text", op: "contains", value: "a" }],
+    ["fractional integer comparison", { field: "amount", op: "eq", value: 1.5 }],
+    ["wrong contains type", { field: "items", op: "contains", value: "a" }],
+    ["nested all", { all: [{ field: "missing", op: "exists" }] }],
+    ["nested any", { any: [{ field: "missing", op: "exists" }] }],
+    ["nested not", { not: { field: "missing", op: "exists" } }],
+  ].map(([label, condition]) => [label, (p: any) => { p.stages[0].next[0].when = condition; }, "$.stages[0].next[0].when"] as const),
+  ...[
+    ["no approver source", { quorum: 1 }],
+    ["duplicate approvers", { people: ["alice", "alice"], quorum: 1 }],
+    ["unknown approver", { people: ["missing"], quorum: 1 }],
+    ["empty role pool", { role: "missing", quorum: 1 }],
+    ["excessive quorum", { role: "reviewer", quorum: 2 }],
+    ["nonidentity exclusion", { people: ["alice"], quorum: 1, excludeFields: ["amount"] }],
+    ["unknown rejection stage", { people: ["alice"], quorum: 1, rejectTo: "missing" }],
+  ].map(([label, policy]) => [label, (p: any) => { p.gates = [{ name: "approval", policy }]; }, "$.gates[0].policy"] as const),
+] as const) {
+  test(`business process refuses ${label} with file and JSON path`, () => {
+    const raw = businessContract();
+    (patch as (p: any) => void)(raw);
+    assert.throws(() => parseProcess("/processes/purchase.json", JSON.stringify(raw)), (err: unknown) => {
+      assert.ok(err instanceof Error);
+      assert.ok(err.message.includes("/processes/purchase.json"), err.message);
+      assert.ok(err.message.includes(path as string), err.message);
+      return true;
+    });
+  });
+}

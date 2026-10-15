@@ -5,7 +5,9 @@ import { readFileSync, unlinkSync } from "node:fs";
 import { userInfo } from "node:os";
 import { makeEnv, govern, write, type Env } from "./helpers.ts";
 import { businessDeadline } from "../lib/lifecycle-runtime.ts";
-import { tickTimers } from "../lib/lifecycle.ts";
+import { tickTimers, runtimeOf, resetExecution, beginAttempt, checkFailed, checkSucceeded,
+  requireLifecycleReady, recover, startChild, syncChild, migrate, pin } from "../lib/lifecycle.ts";
+import { parseProject, load } from "../lib/project.ts";
 import { parseProcess } from "../lib/process.ts";
 import { eventServer } from "../lib/event-server.ts";
 import type { Project } from "../lib/project.ts";
@@ -732,4 +734,240 @@ test("webhook adapter rejects weak tokens, wrong routes, invalid deliveries and 
     if (old === undefined) delete process.env.GOVERN_REPO;
     else process.env.GOVERN_REPO = old;
   }
+});
+
+
+const lifecycleContract = () => ({
+  version: 1, name: "fulfillment",
+  fields: { id: { type: "string" }, result: { type: "string" },
+    items: { type: "array", items: { type: "string" } },
+    results: { type: "array", items: { type: "string" } } },
+  people: { alice: { user: "alice", roles: ["reviewer"] }, bob: { user: "bob", roles: ["manager"] } },
+  calendars: { office: { timezone: "UTC", weekdays: [1], start: "09:00", end: "17:00" } },
+  stages: [{ name: "wait" }, { name: "done" }], gates: []
+});
+
+for (const [label, patch, path] of [
+  ["invalid timezone", (p: any) => { p.calendars.office.timezone = "Unknown/Zone"; }, "$.calendars.office.timezone"],
+  ["invalid hours", (p: any) => { p.calendars.office.start = "17:00"; }, "$.calendars.office"],
+  ["duplicate weekday", (p: any) => { p.calendars.office.weekdays = [1, 1]; }, "$.calendars.office.weekdays"],
+  ["weekday outside ISO range", (p: any) => { p.calendars.office.weekdays = [8]; }, "$.calendars.office.weekdays"],
+  ["invalid holiday syntax", (p: any) => { p.calendars.office.holidays = ["tomorrow"]; }, "$.calendars.office.holidays"],
+  ["invalid holiday date", (p: any) => { p.calendars.office.holidays = ["2026-02-30"]; }, "$.calendars.office.holidays"],
+  ["unknown calendar", (p: any) => { p.stages[0].timer = { afterSeconds: 1, calendar: "missing" }; }, "$.stages[0].timer.calendar"],
+  ["duplicate reminders", (p: any) => { p.stages[0].timer = { afterSeconds: 1, reminders: [1, 1] }; }, "$.stages[0].timer.reminders"],
+  ["unknown exception destination", (p: any) => { p.stages[0].onError = { to: "missing" }; }, "$.stages[0].onError.to"],
+  ["self exception", (p: any) => { p.stages[0].onError = { to: "wait" }; }, "$.stages[0].onError.to"],
+  ["two escalation identities", (p: any) => { p.stages[0].timer = { afterSeconds: 1, escalate: { afterSeconds: 2, assignee: "alice", role: "reviewer" } }; }, "$.stages[0].timer.escalate"],
+  ["escalation without human role", (p: any) => { p.stages[0].timer = { afterSeconds: 1, escalate: { afterSeconds: 2, assignee: "alice" } }; }, "$.stages[0].timer.escalate"],
+  ["ineligible escalation", (p: any) => { p.stages[0].human = { role: "reviewer" }; p.stages[0].timer = { afterSeconds: 1, escalate: { afterSeconds: 2, role: "manager" } }; }, "$.stages[0].timer.escalate"],
+  ["array correlation", (p: any) => { p.stages[0].event = { name: "arrived", correlationField: "items" }; }, "$.stages[0].event.correlationField"],
+  ["overwritten correlation", (p: any) => { p.stages[0].event = { name: "arrived", correlationField: "id", outputs: { id: "value" } }; }, "$.stages[0].event.outputs"],
+  ["nonboolean generation requirement", (p: any) => { p.stages[0].event = { name: "arrived", correlationField: "id", requireGeneration: 1 }; }, "$.stages[0].event.requireGeneration"],
+  ["recursive call", (p: any) => { p.stages[0].call = { process: "fulfillment" }; }, "$.stages[0].call"],
+  ["unknown call input", (p: any) => { p.stages[0].call = { process: "child", inputs: { id: "missing" } }; }, "$.stages[0].call.inputs"],
+  ["unknown call output", (p: any) => { p.stages[0].call = { process: "child", outputs: { missing: "value" } }; }, "$.stages[0].call.outputs"],
+  ["call and event", (p: any) => { p.stages[0].call = { process: "child" }; p.stages[0].event = { name: "arrived", correlationField: "id" }; }, "$.stages[0]"],
+  ["empty error policy", (p: any) => { p.stages[0].onError = {}; }, "$.stages[0].onError"],
+  ...[
+    ["scalar collection", { collection: "id" }, "collection"],
+    ["recursive foreach", { process: "fulfillment" }, ""],
+    ["oversized foreach", { maxItems: 10001 }, ""],
+    ["excessive concurrency", { concurrency: 257 }, ""],
+    ["overridden item input", { inputs: { item: "id" } }, "inputs"],
+    ["unknown foreach input", { inputs: { other: "missing" } }, "inputs"],
+    ["scalar collected output", { outputs: { result: "value" } }, "outputs"],
+    ["overwritten collection", { outputs: { items: "value" } }, "outputs"],
+    ["overwritten static input", { inputs: { other: "results" }, outputs: { results: "value" } }, "outputs"],
+    ["unknown collected output", { outputs: { missing: "value" } }, "outputs"],
+  ].map(([label, changes, suffix]) => [label, (p: any) => { p.stages[0].foreach = {
+    process: "child", collection: "items", itemField: "item", maxItems: 2, ...changes as object
+  }; }, "$.stages[0].foreach" + (suffix ? "." + suffix : "")] as const),
+  ["foreach with event", (p: any) => { p.stages[0].foreach = { process: "child", collection: "items", itemField: "item", maxItems: 2 }; p.stages[0].event = { name: "arrived", correlationField: "id" }; }, "$.stages[0].foreach"],
+] as const) {
+  test(`lifecycle process refuses ${label} with file and JSON path`, () => {
+    const raw = lifecycleContract();
+    (patch as (p: any) => void)(raw);
+    assert.throws(() => parseProcess("/processes/fulfillment.json", JSON.stringify(raw)), (err: unknown) => {
+      assert.ok(err instanceof Error);
+      assert.ok(err.message.includes("/processes/fulfillment.json"), err.message);
+      assert.ok(err.message.includes(path as string), err.message);
+      return true;
+    });
+  });
+}
+
+for (const [label, patch, at] of [
+  ["negative attempts", (p: any) => { p.runtime.payment.attempts = -1; }, "$.runtime.payment.attempts"],
+  ["nonboolean check marker", (p: any) => { p.runtime.payment.checkInFlight = "yes"; }, "$.runtime.payment.checkInFlight"],
+  ["unknown runtime stage", (p: any) => { p.runtime.unknown = p.runtime.payment; }, "$.runtime"],
+  ["plain stage runtime", (p: any) => { p.runtime.ship = p.runtime.payment; }, "$.runtime"],
+  ["duplicate timer markers", (p: any) => { p.runtime.payment.deadlines.due = p.created; p.runtime.payment.fired = ["due", "due"]; }, "$.runtime"],
+  ["child on event stage", (p: any) => { p.runtime.payment.child = "child"; }, "$.runtime"],
+  ["synced child without child", (p: any) => { p.runtime.payment.childSynced = true; }, "$.runtime"],
+  ["undeclared retry state", (p: any) => { p.runtime.payment.attempts = 0; }, "$.runtime"],
+  ["unknown fired deadline", (p: any) => { p.runtime.payment.fired = ["unknown"]; }, "$.runtime"],
+  ["undeclared compensation", (p: any) => { p.runtime.payment.compensation = "done"; }, "$.runtime"],
+  ["orphaned receipt marker", (p: any) => { p.runtime.payment.eventId = "missing"; }, "$.runtime"],
+  ["unknown event stage", (p: any) => { p.events = [{ id: "e", name: "arrived", stage: "unknown", generation: 1, correlation: "x", data: {}, at: p.created }]; }, "$.events"],
+  ["duplicate events", (p: any) => { const e = { id: "e", name: "arrived", stage: "payment", generation: 1, correlation: "x", data: {}, at: p.created }; p.events = [e, e]; }, "$.events"],
+  ["unknown alert stage", (p: any) => { p.alerts = [{ id: "a", stage: "unknown", kind: "due", at: p.created, message: "due" }]; }, "$.alerts"],
+  ["duplicate alerts", (p: any) => { const a = { id: "a", stage: "payment", kind: "due", at: p.created, message: "due" }; p.alerts = [a, a]; }, "$.alerts"],
+] as const) {
+  test(`govern.json refuses ${label} with file and JSON path`, () => {
+    const e = setup(), p = lane(e);
+    patch(p);
+    context(e, () => assert.throws(() => parseProject(path(e), JSON.stringify(p), "p"), (err: unknown) => {
+      assert.ok(err instanceof Error);
+      assert.ok(err.message.includes(path(e)), err.message);
+      assert.ok(err.message.includes(at), err.message);
+      return true;
+    }));
+  });
+}
+
+test("retry recovery respects injected deadlines, exhausted attempts and uncertain compensation", () => {
+  const raw = retryDefinition(3, "refund");
+  delete (raw.stages[0]!.onError as any).to;
+  raw.stages = raw.stages.filter((s) => s.name !== "manual");
+  const e = setup(raw), p = lane(e), at = Date.parse("2026-01-01T00:00:00Z");
+  context(e, () => {
+    assert.throws(() => recover(p, "retry", "checked"), /no failed or interrupted/);
+    beginAttempt(p);
+    checkFailed(p, "declined", at);
+    assert.equal(p.runtime!.charge!.retryAt, "2026-01-01T00:01:00.000Z");
+    assert.throws(() => requireLifecycleReady(p, at), /retry is scheduled/);
+    requireLifecycleReady(p, at + 60000);
+    beginAttempt(p);
+    checkFailed(p, "declined again", at);
+    assert.equal(p.runtime!.charge!.retryAt, "2026-01-01T00:02:00.000Z");
+    p.runtime!.charge!.compensation = "running";
+    assert.throws(() => recover(p, "retry", "checked"), /uncertain compensation/);
+    assert.throws(() => requireLifecycleReady(p, at), /compensation running/);
+    recover(p, "compensated", "Refund confirmed");
+    assert.equal(p.runtime!.charge!.compensation, "done");
+    recover(p, "retry", "Safe to retry");
+    assert.equal(p.runtime!.charge!.attempts, 0);
+    assert.equal(p.runtime!.charge!.failure, undefined);
+    p.runtime!.charge!.failure = "exhausted";
+    assert.throws(() => requireLifecycleReady(p, at), /retries exhausted/);
+    checkSucceeded(p);
+    requireLifecycleReady(p, at);
+  });
+});
+
+test("retry refuses exponential delays beyond its horizon and compensation without a declaration", () => {
+  const raw = retryDefinition(100);
+  const e = setup(raw), p = lane(e);
+  context(e, () => {
+    p.runtime!.charge!.attempts = 99;
+    assert.throws(() => checkFailed(p, "failed", 0), /ten-year horizon/);
+    assert.throws(() => recover(p, "compensated", "checked"), /no compensation/);
+    p.runtime!.charge!.retryAt = "2026-01-01T00:00:00Z";
+    delete p.runtime!.charge!.failure;
+    assert.throws(() => parseProject(path(e), JSON.stringify(p), "p"), /retry schedule requires a failed check/);
+  });
+});
+
+test("reroute refuses unknown destinations and interrupted work without changing the current stage", () => {
+  const e = setup(retryDefinition()), p = lane(e);
+  context(e, () => {
+    assert.throws(() => resetExecution(p, "missing", "checked"), /unknown exception destination/);
+    p.runtime!.charge!.checkInFlight = true;
+    assert.throws(() => resetExecution(p, "manual", "checked"), /resolve interrupted checks/);
+    assert.equal(p.stage, "charge");
+    assert.throws(() => runtimeOf(p, "done"), /no lifecycle definition/);
+  });
+});
+
+test("subprocess recovers a child created before the parent was saved and rejects invocation tampering", () => {
+  const { e } = childSetup();
+  context(e, () => {
+    const p = load("p"), child = startChild(p, "onboard"), original = state(e, child);
+    delete p.runtime!.onboard!.child;
+    assert.equal(startChild(p, "onboard"), child);
+    for (const patch of [{ parent: "another" }, { stage: "wrong" }, { generation: 2 }]) {
+      const changed = structuredClone(original);
+      Object.assign(changed.invocation!, patch);
+      persist(e, changed);
+      assert.throws(() => syncChild(p, "onboard"), /invocation mismatch/);
+      delete p.runtime!.onboard!.child;
+      assert.throws(() => startChild(p, "onboard"), /belongs to another invocation/);
+      p.runtime!.onboard!.child = child;
+    }
+    persist(e, original);
+    assert.throws(() => resetExecution(p, "done", "checked"), /unfinished subprocesses/);
+    assert.throws(() => startChild(p, "done"), /not active|no subprocess call/);
+  });
+});
+
+
+for (const [label, change, message] of [
+  ["missing input", (p: any) => { delete p.data.supplier; }, /input supplier is missing/],
+  ["undeclared output", (_p: any, child: any) => { delete child.fields.approved; }, /output field approved is not declared/],
+  ["incompatible output", (_p: any, child: any) => { child.fields.approved.type = "string"; }, /incompatible type/],
+] as const) {
+  test(`subprocess refuses ${label} before recording a child`, () => {
+    const { e, child } = childSetup(), p = state(e);
+    change(p, child);
+    // The child contract must be valid independently of its compatibility with the parent.
+    child.stages[0]!.requiredFields = [];
+    definition(e, "supplier", child);
+    context(e, () => {
+      assert.throws(() => startChild(p, "onboard"), message);
+      assert.equal(p.runtime?.onboard?.child, undefined);
+    });
+  });
+}
+
+test("migration refuses unsafe revisions and mappings before altering the saved case", () => {
+  const e = setup(), p = lane(e);
+  context(e, () => {
+    pin(p);
+    assert.throws(() => migrate(p, {}, {}, "checked"), /higher declared process revision/);
+    p.finished = "2026-01-01T00:00:00Z";
+    assert.throws(() => migrate(p, {}, {}, "checked"), /finished cases/);
+    delete p.finished;
+    const snapshot = p.processSnapshot;
+    delete p.processSnapshot;
+    assert.throws(() => migrate(p, {}, {}, "checked"), /pin the existing process/);
+    p.processSnapshot = snapshot;
+    const raw = eventDefinition();
+    raw.revision = 2;
+    definition(e, "fulfillment", raw);
+    assert.throws(() => migrate(p, { unknown: "ship" }, {}, "checked"), /invalid stage mapping/);
+    assert.throws(() => migrate(p, { payment: "missing" }, {}, "checked"), /invalid stage mapping/);
+    const linear = { ...raw, stages: raw.stages.map(({ name, event }) => ({ name, ...(event ? { event } : {}) })) };
+    definition(e, "fulfillment", linear);
+    assert.throws(() => migrate(p, {}, {}, "checked"), /preserve linear versus graph/);
+    assert.equal(state(e).processSnapshot?.revision, 1);
+  });
+});
+
+test("migration maps persisted receipts, alerts, checks and removes obsolete data", () => {
+  const e = setup();
+  lane(e);
+  ok(e, ["data", "p", "--set", '{"orderId":"O-1"}']);
+  ok(e, receipt());
+  const current = state(e);
+  current.checks = { payment: "verify" };
+  current.alerts = [{ id: "old", stage: "payment", kind: "due", at: current.created, message: "review" }];
+  persist(e, current);
+  const raw = eventDefinition();
+  raw.revision = 2;
+  raw.stages[0]!.name = "paid";
+  definition(e, "fulfillment", raw);
+  context(e, () => {
+    const migrating = load("p");
+    assert.throws(() => migrate(migrating, {}, {}, "checked"), /map removed stage payment/);
+    migrate(migrating, { payment: "paid" }, { paid: null }, "Use revised payment policy");
+    const saved = load("p");
+    assert.equal(saved.stage, "paid");
+    assert.equal(saved.runtime?.paid?.generation, 2);
+    assert.equal(saved.runtime?.paid?.eventId, undefined);
+    assert.equal(saved.events?.[0]?.stage, "paid");
+    assert.equal(saved.alerts?.[0]?.stage, "paid");
+    assert.deepEqual({ ...saved.checks }, { paid: "verify" });
+    assert.equal(saved.data?.paid, undefined);
+  });
 });
