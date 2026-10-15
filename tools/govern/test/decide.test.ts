@@ -1,8 +1,9 @@
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
-import { spawn, type ChildProcess } from "node:child_process";
+import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { mkdirSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
+import { createServer } from "node:net";
 import { makeEnv, govern, jsonl, write, present, setConfig, tempDir, HERE, type Env } from "./helpers.ts";
 import { QUESTIONS, TASK_QUESTIONS, checkAnswers, calibration, fit } from "../lib/decide.ts";
 import { check } from "../lib/shape.ts";
@@ -350,4 +351,30 @@ test("decide report scores each noul answer against the task's outcome and bucke
   assert.match(r.out, /0\.0–0\.2\s+n 2\s+ok 50%\s+\$1\.00\s+60s/);
   assert.match(r.out, /0\.6–0\.8\s+n 2\s+ok 50%\s+\$3\.00\s+60s/);
   assert.match(govern(makeEnv("decide-empty"), ["decide", "report"]).out, /no decisions yet/);
+});
+
+
+test("TypeSafe transport: missing keys, successful text and failures with or without cause codes", async () => {
+  const run = (url: string) => {
+    const env = { ...process.env };
+    delete env.TYPESAFE_API_KEY;
+    const r = spawnSync(process.execPath,
+      ["--disable-warning=ExperimentalWarning", new URL("../lib/typesafeCall.ts", import.meta.url).pathname],
+      { env, input: JSON.stringify({ url, body: { check: true }, timeoutMs: 1000 }), encoding: "utf8", timeout: 10000 });
+    assert.equal(r.status, 0, r.stderr);
+    return JSON.parse(r.stdout);
+  };
+  assert.match(run("not a URL").error, /Failed to parse URL/);
+  assert.equal(run("http://127.0.0.1:9").error, "fetch failed");
+  const server = createServer();
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", resolve);
+  });
+  const address = server.address();
+  assert.ok(address && typeof address === "object");
+  const port = address.port;
+  await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+  assert.match(run(`http://127.0.0.1:${port}`).error, /fetch failed \(ECONNREFUSED\)/);
+  assert.deepEqual(run("data:text/plain,transport-ok"), { status: 200, text: "transport-ok" });
 });

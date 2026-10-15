@@ -691,3 +691,45 @@ test("migration and deadline rerouting cannot discard an uncertain check outcome
   assert.match(govern(e, ["tick", "p"]).out, /uncertain|interrupted/);
   assert.equal(state(e).alerts?.length, 1);
 });
+
+
+test("webhook adapter rejects weak tokens, wrong routes, invalid deliveries and filesystem errors", async () => {
+  assert.throws(() => eventServer("short"), /at least 16 characters/);
+  const raw = eventDefinition();
+  // This event has no mapped outputs, so omitted data is a valid empty delivery.
+  Object.assign(raw.stages[0]!.event!, { outputs: {} });
+  const e = setup(raw);
+  lane(e);
+  ok(e, ["data", "p", "--set", '{"orderId":"O-1"}']);
+  const old = process.env.GOVERN_REPO;
+  process.env.GOVERN_REPO = e.root;
+  const token = "test-webhook-token-012345", server = eventServer(token);
+  try {
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    assert.ok(address && typeof address === "object");
+    const url = `http://127.0.0.1:${address.port}`;
+    const post = (body: unknown) => fetch(url + "/events", { method: "POST",
+      headers: { Authorization: "Bearer " + token }, body: JSON.stringify(body) });
+    assert.equal((await fetch(url + "/events")).status, 404);
+    assert.equal((await fetch(url + "/other", { method: "POST" })).status, 404);
+    assert.equal((await fetch(url + "/events", { method: "POST", headers: { Authorization: "Bearer wrong" } })).status, 401);
+    const invalid = await post({ lane: "p", name: "payment.received", id: "bad" });
+    assert.equal(invalid.status, 409);
+    assert.match((await invalid.json() as { error: string }).error, /correlation/);
+    const body = { lane: "p", name: "payment.received", id: "http-empty-data", correlation: "O-1" };
+    const conflict = await post({ ...body, correlation: "wrong" });
+    assert.equal(conflict.status, 409);
+    const accepted = await post({ ...body, generation: state(e).runtime!.payment!.generation });
+    assert.equal(accepted.status, 200);
+    assert.deepEqual(await accepted.json(), { accepted: true, duplicate: false });
+    write(join(e.projects, "broken", "govern.json", "child"), "");
+    const broken = await post({ ...body, lane: "broken" });
+    assert.equal(broken.status, 500);
+    assert.deepEqual(await broken.json(), { error: "event delivery failed" });
+  } finally {
+    await new Promise<void>((resolve, reject) => server.close((err) => err ? reject(err) : resolve()));
+    if (old === undefined) delete process.env.GOVERN_REPO;
+    else process.env.GOVERN_REPO = old;
+  }
+});

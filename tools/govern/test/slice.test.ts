@@ -1,8 +1,9 @@
+import { spawnSync } from "node:child_process";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { existsSync, readFileSync, readdirSync, chmodSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { makeEnv, govern, jsonl, write, present, setConfig, type Env } from "./helpers.ts";
+import { makeEnv, govern, jsonl, write, present, setConfig, type Env, childEnv } from "./helpers.ts";
 import { sleepSync, readJson } from "../lib/util.ts";
 import { parseProcess } from "../lib/process.ts";
 
@@ -442,4 +443,36 @@ test("a recipe step that names an unknown placeholder, or puts one inside an sh 
   bad({ ...base, piece: ["ls", "{nope}"] }, /\$\.recipes\.r\.piece\[1\]: unknown placeholder \{nope\}/);
   bad({ ...base, join: ["sh", "-c", "cat {pieces}/x > {out}"] }, /\$\.recipes\.r\.join\[2\].*\$GOVERN_PIECES/);
   assert.doesNotThrow(() => parse({ ...base, join: ["ls", "{pieces}", "{out}", "{repo}", "{dir}", "{python}", "{paths.filmBuild}"] }));
+});
+
+
+test("sliceRunner: usage, governed refusal and filesystem failures exit with the right codes", () => {
+  const r = rig();
+  const run = (args: string[]) => spawnSync(process.execPath,
+    ["--disable-warning=ExperimentalWarning", new URL("../lib/sliceRunner.ts", import.meta.url).pathname, ...args],
+    { env: childEnv(r.e), encoding: "utf8", timeout: 10000 });
+  const usage = run([]);
+  assert.equal(usage.status, 2);
+  assert.match(usage.stderr, /usage: sliceRunner/);
+  const refused = run(["lane", "missing", "1"]);
+  assert.equal(refused.status, 2);
+  assert.match(refused.stderr, /no recipe/);
+  // load reads this path as a file: a directory produces an ordinary filesystem error.
+  write(join(r.e.projects, "broken", "govern.json", "child"), "");
+  const broken = run(["broken", "batch", "1", "60"]);
+  assert.equal(broken.status, 1);
+  assert.match(broken.stderr, /EISDIR/);
+});
+
+test("sliceRunner: a standalone runner completes and cleans up its machines", () => {
+  const r = rig({ recipe: { machines: 1 } });
+  const jobDir = join(r.e.root, "standalone-job");
+  write(join(jobDir, ".keep"), "");
+  const result = spawnSync(process.execPath,
+    ["--disable-warning=ExperimentalWarning", new URL("../lib/sliceRunner.ts", import.meta.url).pathname, "lane", "batch", "1"],
+    { env: childEnv(r.e, { ...r.env, GOVERN_JOB_DIR: jobDir }), encoding: "utf8", timeout: 20000 });
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.deepEqual(cloudLines(r), []);
+  assert.equal(JSON.parse(readFileSync(join(jobDir, "slice.json"), "utf8")).phase, "ended");
+  assert.deepEqual(readFileSync(join(jobDir, "out", "joined"), "utf8").trim().split("\n"), ["p1", "p2", "p3", "p4", "p5"]);
 });

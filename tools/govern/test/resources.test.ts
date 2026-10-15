@@ -3,10 +3,11 @@ import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { existsSync, readdirSync, readFileSync, statSync, writeFileSync, mkdirSync, utimesSync } from "node:fs";
 import { join } from "node:path";
-import { makeEnv, govern, jsonl, write, tempDir, present, setConfig, type Env } from "./helpers.ts";
+import { makeEnv, govern, jsonl, write, tempDir, present, setConfig, type Env, childEnv } from "./helpers.ts";
 import { sleepSync } from "../lib/util.ts";
 import { parseResources, costOf, machineLines, slots, type Resource } from "../lib/resources.ts";
 import * as locks from "../lib/locks.ts";
+import { withLaneLock } from "../lib/lane-lock.ts";
 
 const R = (extra: Record<string, unknown> = {}) => ({ name: "lab-vm", kind: "vm", sharing: "shared", ...extra });
 const parse = (raw: unknown) => parseResources("resources.json", raw);
@@ -471,4 +472,122 @@ test("a background job waiting on a lock has no slot file and an empty log until
     assert.ok(end && end.machineSeconds as number <= (end.seconds as number));
     assert.match(govern(e, ["resources", "lab-vm"]).out, /holder: none/);
   } finally { killGroup(e); }
+});
+
+test("locks: malformed guards fail closed and timed-out callers remove their own token", (t) => {
+  for (const raw of ["", "{", "{}", JSON.stringify({ pid: process.pid, ...locks.identity(process.pid) })]) {
+    const dir = tempDir("guard-timeout"), m = write(join(dir, "mutex"), raw);
+    let calls = 0;
+    const clock = t.mock.method(Date, "now", () => calls++ ? 40000 : 0);
+    try {
+      assert.throws(() => locks.withMutex(dir, () => assert.fail("entered locked section")), /guard did not free up/);
+      assert.equal(readFileSync(m, "utf8"), raw);
+      assert.deepEqual(readdirSync(dir), ["mutex"]);
+    } finally { clock.mock.restore(); }
+  }
+});
+
+test("locks: unreadable and malformed owner tokens are never released", () => {
+  const dir = tempDir("guard-token"), m = join(dir, "mutex");
+  mkdirSync(m);
+  assert.equal(locks.readMutex(m), "");
+  assert.equal(locks.releaseMutex(m, "mine"), false);
+  const bad = write(join(dir, "bad"), "{");
+  assert.equal(locks.releaseMutex(bad, "mine"), false);
+  assert.equal(readFileSync(bad, "utf8"), "{");
+  assert.equal(locks.identity(-1), undefined);
+  assert.equal(locks.live({ pid: process.pid, start: "wrong-start" }), false);
+});
+
+test("locks: tickets survive adoption, duplicate enqueue and stale entries", () => {
+  const dir = tempDir("slot-adoption");
+  const who = (id: string) => ({ id, label: id, pid: process.pid, ...locks.identity(process.pid) });
+  assert.equal(locks.enqueue(dir, who("a"), 7), 7);
+  assert.equal(locks.enqueue(dir, who("a")), 7);
+  assert.equal(locks.enqueue(dir, who("b"), 3), 3);
+  assert.equal(locks.ahead(dir, "a"), 1);
+  assert.equal(locks.ahead(dir, "missing"), undefined);
+  assert.equal(locks.tryAcquire(dir, "missing", 1), false);
+  assert.equal(locks.tryAcquire(dir, "a", 1), false);
+  assert.equal(locks.tryAcquire(dir, "b", 1), true);
+  assert.equal(locks.tryAcquire(dir, "b", 1), true);
+  assert.equal(locks.enqueue(dir, who("b")), undefined);
+  locks.adopt(dir, "b", { pid: process.pid });
+  assert.equal(locks.inspect(dir).holders[0]?.start, undefined);
+  locks.adopt(dir, "a", { pid: process.pid, start: "wrong-start" });
+  assert.equal(locks.known(dir, "a"), false);
+  write(join(dir, "queue", "bad.json"), "{");
+  write(join(dir, "queue", "ignore.txt"), "ignored");
+  locks.release(dir, "b");
+  assert.equal(locks.enqueue(dir, who("c")), 8);
+  assert.deepEqual(locks.inspect(dir).queue.map((x) => x.id), ["c"]);
+  assert.equal(readdirSync(join(dir, "queue")).some((x) => x.includes(Buffer.from("a").toString("base64url") + ".json")), false);
+});
+
+
+test("lane lock: a stale holder is reclaimed and exceptions release the transaction", (t) => {
+  t.mock.method(Atomics, "wait", () => "timed-out" as const);
+  const dir = tempDir("lane-guard");
+  write(join(dir, "transaction"), JSON.stringify({ pid: process.pid, start: "wrong-start" }));
+  assert.throws(() => withLaneLock(dir, () => { throw new Error("callback failed"); }), /callback failed/);
+  assert.deepEqual(readdirSync(dir), []);
+  assert.equal(withLaneLock(dir, () => 42), 42);
+});
+
+test("lane lock: malformed and live holders fail closed at the deadline", (t) => {
+  for (const raw of ["", "{", "{}", JSON.stringify({ pid: process.pid, ...locks.identity(process.pid) })]) {
+    const dir = tempDir("lane-timeout");
+    write(join(dir, "transaction"), raw);
+    let calls = 0;
+    const clock = t.mock.method(Date, "now", () => calls++ ? 40000 : 0);
+    try {
+      assert.throws(() => withLaneLock(dir, () => assert.fail("entered locked section")), /lane is being changed/);
+      assert.deepEqual(readdirSync(dir), ["transaction"]);
+      assert.equal(readFileSync(join(dir, "transaction"), "utf8"), raw);
+    } finally { clock.mock.restore(); }
+  }
+});
+
+
+test("lockwait: recovered tickets acquire, release and cap helpers exit normally", () => {
+  const e = makeEnv("lockwait"), dir = join(e.root, "slots"), job = join(e.root, "job");
+  mkdirSync(job);
+  const run = (args: string[]) => spawnSync(process.execPath,
+    ["--disable-warning=ExperimentalWarning", new URL("../lib/lockwait.ts", import.meta.url).pathname, ...args],
+    { encoding: "utf8", env: childEnv(e), timeout: 10000 });
+  const invalid = run([]);
+  assert.equal(invalid.status, 2);
+  assert.match(invalid.stderr, /usage: lockwait/);
+  const acquired = run(["wait", dir, "recover", "1", job, "9"]);
+  assert.equal(acquired.status, 0, acquired.stderr);
+  assert.ok(existsSync(join(job, "acquired")));
+  assert.equal(readFileSync(join(dir, "seq"), "utf8"), "9");
+  assert.equal(locks.inspect(dir).holders[0]?.label, "recover");
+  assert.equal(run(["release", dir, "recover"]).status, 0);
+  assert.deepEqual(locks.inspect(dir), { holders: [], queue: [] });
+  for (const stopped of [undefined, "killed"]) {
+    write(join(job, "job.json"), JSON.stringify({ id: "finished", slug: "lane", name: "done", argv: ["true"], cwd: e.root,
+      start: "2026-01-01T00:00:00Z", end: "2026-01-01T00:00:01Z", bg: false, ...(stopped ? { stopped } : {}) }));
+    const capped = run(["cap", job, "0"]);
+    assert.equal(capped.status, 0, capped.stderr);
+    assert.equal(JSON.parse(readFileSync(join(job, "job.json"), "utf8")).stopped, stopped ?? "timeout");
+  }
+  assert.match(readFileSync(join(job, "log"), "utf8"), /reserved estimate \(0s\)/);
+});
+
+test("locks: recycled holder identities and old malformed guards can be reclaimed", (t) => {
+  t.mock.method(Atomics, "wait", () => "timed-out" as const);
+  const clock = t.mock.method(Date, "now", () => 100000);
+  try {
+    for (const [raw, mtime] of [
+      [JSON.stringify({ pid: process.pid, start: "wrong-start" }), 100],
+      [JSON.stringify({ pid: -1 }), 100],
+      ["{", 0],
+    ] as const) {
+      const dir = tempDir("reclaim-guard"), m = write(join(dir, "mutex"), raw);
+      utimesSync(m, mtime, mtime);
+      assert.equal(locks.withMutex(dir, () => "acquired"), "acquired");
+      assert.deepEqual(readdirSync(dir), []);
+    }
+  } finally { clock.mock.restore(); }
 });
