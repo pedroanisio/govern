@@ -3,7 +3,7 @@
 import { test, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { join } from "node:path";
-import { makeEnv, childEnv, write, type Env } from "./helpers.ts";
+import { makeEnv, write, NOW, DAY, use, lower, network, policy, trio, task } from "./helpers.ts";
 import * as peer from "../lib/peer.ts";
 import * as mesh from "../lib/mesh.ts";
 import * as agents from "../lib/agents.ts";
@@ -13,39 +13,6 @@ import { newKeys, type Headers } from "../lib/peer-id.ts";
 
 const original = { ...process.env };
 afterEach(() => { process.env = { ...original }; });
-const NOW = Date.parse("2026-10-15T12:00:00.000Z"), DAY = 86400_000;
-const use = (e: Env) => { process.env = childEnv(e); };
-const lower = (h: Headers = {}) => Object.fromEntries(Object.entries(h).map(([k, v]) => [k.toLowerCase(), v]));
-const ROUTES: Record<string, (b: Buffer, h: Headers, now: number) => peer.Response> = {
-  "/v1/peer/deliver": peer.receive, "/v1/peer/directory": peer.serveDirectory, "/v1/mesh/join": mesh.serveJoin, "/v1/mesh/sync": mesh.serveSync,
-};
-/** An in-process network: each origin is a host's workspace; a call runs the route there at `clock()`. */
-function network(hosts: Record<string, Env>, clock = () => NOW, tap?: (u: string, b: Buffer, h: Headers) => void): peer.Post {
-  return async (u, bytes, headers) => {
-    tap?.(u, bytes, headers);
-    const { origin, pathname } = new URL(u), host = hosts[origin], back = process.env;
-    if (!host) throw new Error(`no host at ${origin}`);
-    use(host);
-    try { const r = ROUTES[pathname]!(bytes, lower(headers), clock()); return { status: r.status, text: r.bytes ? r.bytes.toString() : JSON.stringify(r.body), headers: lower(r.headers) }; }
-    finally { process.env = back; }
-  };
-}
-const policy = (allow: string[] = ["codex"], projects = ["p"]) => ({ allow, projects });
-/** Hosts a (registrar), b and c, each joined with one invite; b synced after c joined so every host knows every other. */
-async function trio() {
-  const a = makeEnv("mesh-a"), b = makeEnv("mesh-b"), c = makeEnv("mesh-c");
-  const hosts = { "https://a.example": a, "https://b.example": b, "https://c.example": c }, post = network(hosts);
-  for (const [e, n] of [[a, "a"], [b, "b"], [c, "c"]] as const) { use(e); peer.identity(n); }
-  use(a); mesh.create({ name: "lab", url: "https://a.example", policy: policy(), now: NOW });
-  for (const [e, u] of [[b, "https://b.example"], [c, "https://c.example"]] as const) {
-    use(a); const { code } = mesh.invite({ now: NOW });
-    use(e); await mesh.join(code, { url: u, policy: policy(), post, now: () => NOW });
-  }
-  use(b); await mesh.sync({ post, now: () => NOW });
-  return { a, b, c, hosts, post };
-}
-const task = (to: string, extra: Partial<queue.Message> = {}) => queue.send({ project: "p", task: "t", kind: "TASK", from: "alice", to, summary: "check this", body: "evidence", files: [], access: "read-only", ...extra });
-
 test("three hosts each join once and can deliver to each other with no pairwise setup", async () => {
   const { a, b, c, post } = await trio();
   for (const e of [a, b, c]) { use(e); assert.deepEqual(peer.remotes(NOW).map(r => r.name), ["a", "b", "c"].filter(n => n !== peer.identity().name)); }

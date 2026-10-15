@@ -27,7 +27,8 @@ output never leaves the host. `govern peer list` shows each peer's grants, open 
 error. `govern peer id`, `govern peer add`, `govern peer revoke`, `govern peer serve`, `govern mesh create`,
 `govern mesh invite`, `govern mesh join`, `govern mesh policy` and `govern mesh revoke` are the owner's setup steps:
 those that grant runs work only from the owner's own terminal, and you never run them. `govern mesh status` and a
-plain `govern mesh sync` are safe to run. See [PEERS.md](PEERS.md).
+plain `govern mesh sync` are safe to run. `govern center show` prints the operator's command center: every federated
+host's health, alerts, agents, spend and latest messages; `govern center serve` shows it in a browser for the owner. See [PEERS.md](PEERS.md).
 
 ## Start
 

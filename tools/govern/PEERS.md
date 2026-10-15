@@ -141,6 +141,35 @@ fails, and deliveries from the mesh member are refused, until the owner revokes 
 `govern peer list` shows each peer's URL, grants, fingerprint, open outbound count and last relay error, including
 revoked entries. `govern peer push --max 10` runs a bounded relay pass and prints one line for each handled message.
 
+## Command center
+
+`govern center` (also `govern center show`) is the operator's view of the whole federation. For this host and every
+mesh member it shows:
+
+- whether the dispatcher runs, the queue by state, and replies waiting for review after failing verification;
+- relay health: deliveries sent, received and pending in the last 24 hours, retries, failures and the last error;
+- the last 24 hours of runs, failures, seconds, tokens and spend, per agent;
+- runners, live sessions and registered agents with their kind, aliases, projects and expiry;
+- certificate expiry and last sync;
+- the 60 newest messages across all hosts: sender, recipient, project, task, state and summary. Message bodies never
+  leave their host.
+
+Alerts are derived by code from that telemetry, each with its consequence: an unreachable host or one that refuses
+telemetry (critical), an expired certificate (critical), a certificate expiring within seven days, a sync more than an
+hour old, a stopped dispatcher, failed or retrying deliveries, failed runs and unverified replies. `--json` prints the
+whole view.
+
+`govern center serve [--port 5004]` shows the same view in a browser, refreshed every 15 seconds, with search and host
+and state filters over the messages. It binds 127.0.0.1 only and prints its address with an access token in the URL
+fragment; the token lasts while that process runs. The page is served openly, but its data (`/api/state`) requires the
+token as a bearer header, and every request must name a loopback host, so a page on another site cannot read it
+through a rebound DNS name. A view is reused for ten seconds, so several open tabs do not multiply requests to hosts.
+
+A host shares telemetry only with the mesh members its owner names as observers: `--observer HOST` (repeatable) on
+`govern mesh create`, `govern mesh join` or `govern mesh policy`. Without it, the observer is the registrar, which is
+where the operator usually runs the command center. Naming observers replaces the default. Static peers are never
+observers. Telemetry includes message summaries, routing and spend; name as observers only hosts the operator controls.
+
 ## Send and reply
 
 ```sh
@@ -190,6 +219,7 @@ host. Run the server on each host to receive replies as well as requests. The ph
 | `GET /v1/health` | None | `{protocol, name}` |
 | `POST /v1/peer/deliver` | Signed by a peer or member | `{protocol, id, duplicate?}` |
 | `POST /v1/peer/directory` | Signed by a peer or member | `{protocol, agents}`, signed by this host |
+| `POST /v1/peer/telemetry` | Signed by a mesh member this host names as observer | Telemetry, signed by this host |
 | `POST /v1/mesh/join` | Invite proof and joining key's signature | Mesh snapshot, signed by the mesh key |
 | `POST /v1/mesh/sync` | Signed by a live member | Mesh snapshot, signed by the mesh key |
 
@@ -207,7 +237,7 @@ replaced by `-`. Host, peer and recipient names match `^[a-z0-9][a-z0-9.-]*$`.
 | File in `<stateDir>/peer/` | Contents |
 |---|---|
 | `peers.json` | `{peers: [{name, url, publicKey, allow, projects, addedAt, revokedAt?}]}`; live names and keys unique |
-| `mesh.json` | `{version: 1, mesh: {name, publicKey, url}, cert, members, revoked, syncedAt, policy: {allow, projects}}` |
+| `mesh.json` | `{version: 1, mesh: {name, publicKey, url, registrar?}, cert, members, revoked, syncedAt, policy: {allow, projects, observers?}}` |
 | `mesh-registrar.json` | Registrar only: `{version: 1, name, url, publicKey, privateKey, members, invites}`; invites store a SHA-256 of the secret |
 | `agents.json` | `{version: 2, agents: [{name, kind, aliases, owner, description, projects, registeredAt, expires, pid?, procStart?}]}`; `kind` is `stable` or `ephemeral` |
 | `received.json` | `{received: [{peer, id, localId, at}]}`; delivery ids kept seven days |
@@ -254,6 +284,12 @@ the signer, each granted name as `runner`, `profile` or `recipient` with the sen
 agent whose projects intersect them as `agent` with its `lifetime`, `aliases` and description. The answer carries `Govern-Signature` by this
 host's key, and the asker discards an answer its own record of that host's key does not verify.
 
+A telemetry request is `{protocol, kind: "telemetry", at, toKey, id}` and passes steps 1 to 3; the signer must be a
+mesh member this host names as observer (403 `not an observer of this host`). The answer is a closed
+`govern-telemetry/1` object, signed by this host's key: `{protocol, host, fingerprint, at, dispatcher, mesh?, peers,
+queue, relay, runs24h, byAgent, agents, recent}`. The command center discards an answer whose signature or
+`fingerprint` does not match the key it holds for that member, or that does not parse.
+
 ### Mesh certificates, joins and syncs
 
 A certificate is `{body, signature}`: `body` is the JSON text
@@ -266,7 +302,7 @@ the invite expires, when the proof and signature verify, the invite's pinned hos
 live member holds the name (409) or the key under another name (409). A sync is
 `{protocol, kind: "sync", at, toKey, id, url?}` signed by a live member.
 
-Both answer with a snapshot `{protocol, mesh, cert, members, revoked}`: the caller's fresh certificate, a fresh
+Both answer with a snapshot `{protocol, mesh, registrar, cert, members, revoked}`: the caller's fresh certificate, a fresh
 certificate for every live member and the fingerprints of revoked members, signed in `Govern-Signature` by the mesh
 key. The caller verifies the signature against the mesh key it was given in the invite, verifies every certificate,
 and only then writes `mesh.json`.

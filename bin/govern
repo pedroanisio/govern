@@ -42,9 +42,10 @@
 #     govern peer revoke NAME
 #     govern peer serve [--port 5003] [--host 127.0.0.1]
 #     govern peer push [--max N]
-#     govern mesh create --name MESH --url URL --project P... [--allow NAME]...  |  mesh invite [--host NAME] [--ttl S]
-#     govern mesh join CODE --url URL --project P... [--allow NAME]...  |  mesh sync [--url URL]  |  mesh status
-#     govern mesh policy --project P... [--allow NAME]...  |  mesh revoke HOST
+#     govern mesh create --name MESH --url URL --project P... [--allow NAME]... [--observer HOST]...  |  mesh invite [--host NAME] [--ttl S]
+#     govern mesh join CODE --url URL --project P... [--allow NAME]... [--observer HOST]...  |  mesh sync [--url URL]  |  mesh status
+#     govern mesh policy --project P... [--allow NAME]... [--observer HOST]...  |  mesh revoke HOST
+#     govern center [show] [--json]  |  center serve [--port 5004]
 #     govern agents list [--refresh]  |  agents unregister [NAME] [--as NAME]
 #     govern agents register --project P... [--as NAME | --ephemeral] [--alias NAME]... [--description TEXT] [--ttl S]
 #     govern task send --to codex|claude|grok|RUNNER|PROFILE|auto|owner|SESSION|NAME@PEER --project P --task T --kind K --summary S
@@ -98,7 +99,9 @@
 #     ephemeral, with aliases; names and aliases are unique per host and held by the registering session, and a
 #     registration grants no run. An answer to a message this host sent reaches its local author without a grant.
 #     agents list shows what this host may address on every other host. Mesh create, invite, join, policy, revoke and
-#     sync --url require the owner's terminal.
+#     sync --url require the owner's terminal. The command center (center) shows every federated host's dispatcher,
+#     queue, relay, 24 h runs and spend, agents and latest messages, with alerts; each member answers only the observers
+#     its owner names (--observer; default the registrar). center serve shows it on 127.0.0.1 behind a printed token.
 # OPTIONS
 #     --adapter A             conversation create: trusted named NDJSON adapter from conversationAdapters in workspace config
 #     --max-context-chars N    conversation create: maximum assembled context characters (default 64000, at most 1000000); checkpoint rather than truncate
@@ -120,9 +123,9 @@
 #     --id ID                 event: stable delivery id used for deduplication
 #     --correlation JSON      event: typed value matching the waiting stage
 #     --generation N          event: activation generation, required when the event contract declares it
-#     --port N                event-listen, remote serve, peer serve: event-listen: loopback webhook port (default 5001); remote serve:
-#                             the API port (default 5002)
-#     --host H                remote serve, peer serve, mesh invite: default 127.0.0.1; remote: another needs TLS; peer: loopback only,
+#     --port N                event-listen, remote serve, peer serve, center serve: event-listen: loopback webhook port (default 5001);
+#                             remote serve: the API port (default 5002); peer serve: 5003; center serve: 5004
+#     --host H                remote serve, peer serve, mesh invite, center serve: default 127.0.0.1; center: loopback only; remote: another needs TLS; peer: loopback only,
 #                             TLS from the tunnel; mesh invite: the name the joining host must have
 #     --tls-cert F            remote pair, remote link, remote serve: the server's PEM certificate; pair, link: its pin goes
 #                             into the printed link; serve: serve HTTPS (with --tls-key)
@@ -219,7 +222,9 @@
 #     --state-file F          decide ask: read the state from F
 #     --questions F           decide ask: the JSON file of typed questions (choice, score, noul)
 #     --purpose P             decide ask: the name the decision is recorded under (default ask)
-#     --json                  decide ask: print the whole decision as JSON
+#     --json                  decide ask, center show: print the whole decision, or the command center view, as JSON
+#     --observer HOST         mesh create, mesh join, mesh policy: a member that may read this host's telemetry (repeatable;
+#                             default: the registrar)
 #     --ttl S                 mesh invite, agents register: seconds the invite or registration lasts (invite 3600 default,
 #                             60..604800; stable agent 43200 default, at most 604800; ephemeral 3600, at most 86400)
 #     --ephemeral             agents register: generate a short-lived e-XXXXXXXX name that ends with this session

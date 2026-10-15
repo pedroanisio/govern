@@ -39,6 +39,7 @@ import * as remote from "./lib/remote.ts";
 import * as peer from "./lib/peer.ts";
 import * as mesh from "./lib/mesh.ts";
 import * as agents from "./lib/agents.ts";
+import * as center from "./lib/center.ts";
 import * as artifacts from "./lib/artifacts.ts";
 import * as remotePair from "./lib/remote-pair.ts";
 import { checkRecipient, requireAs, resolveAs, callingSession, sessions } from "./lib/sessions.ts";
@@ -860,7 +861,7 @@ async function cmdMesh(a: Args): Promise<void> {
   const sub = a._[1];
   if (sub !== "status" && !(sub === "sync" && opt(a, "url") === undefined) && origin().kind !== "terminal")
     fail("manage the mesh from the owner's own terminal: mesh grants authorize runs on this host", 1);
-  const policy = () => ({ allow: many(a, "allow"), projects: many(a, "project") });
+  const policy = () => ({ allow: many(a, "allow"), projects: many(a, "project"), ...(many(a, "observer").length ? { observers: many(a, "observer") } : {}) });
   if (sub === "create") {
     const m = mesh.create({ name: opt(a, "name") ?? fail("--name is required"), url: opt(a, "url") ?? fail("--url is required (this host's public https address)"), policy: policy() });
     return out(`mesh ${m.mesh.name} created; this host (${peer.identity().name}) is its registrar\nmesh key fingerprint: ${peer.fingerprint(m.mesh.publicKey)}\nnext: govern mesh invite, once per host that joins`);
@@ -875,7 +876,7 @@ async function cmdMesh(a: Args): Promise<void> {
   }
   if (sub === "policy") {
     const m = mesh.setPolicy(policy());
-    return out(`members may address: ${m.policy.allow.join(", ") || "(no runners or profiles; registered agents only)"} in projects ${m.policy.projects.join(", ")}`);
+    return out(`members may address: ${m.policy.allow.join(", ") || "(no runners or profiles; registered agents only)"} in projects ${m.policy.projects.join(", ")}; telemetry observers: ${mesh.observers().join(", ") || "none"}`);
   }
   if (sub === "revoke") { mesh.revoke(a._[2] ?? fail("govern mesh revoke <host>")); return out(`revoked ${a._[2]}: members drop it at their next sync`); }
   if (sub === "sync") {
@@ -889,7 +890,7 @@ async function cmdMesh(a: Args): Promise<void> {
   const self = peer.identity(), cert = s.members.find(m => m.publicKey === self.publicKey);
   out(`mesh ${s.mesh.name}${mesh.isRegistrar() ? " (this host is the registrar)" : ` · registrar ${s.mesh.url}`}`);
   out(`this host: ${self.name} ${cert?.url ?? ""} · certificate expires ${cert?.expires ?? "?"} · synced ${s.syncedAt}`);
-  out(`members may address: ${s.policy.allow.join(", ") || "(registered agents only)"} · projects: ${s.policy.projects.join(", ")}`);
+  out(`members may address: ${s.policy.allow.join(", ") || "(registered agents only)"} · projects: ${s.policy.projects.join(", ")} · telemetry observers: ${mesh.observers().join(", ") || "none"}`);
   for (const m of s.members) out(`  ${m.name}${m.publicKey === self.publicKey ? " (this host)" : ""}  ${m.url}  ${peer.fingerprint(m.publicKey).slice(0, 16)}  until ${m.expires}`);
   if (s.revoked.length) out(`  revoked keys: ${s.revoked.map(f => f.slice(0, 16)).join(", ")}`);
 }
@@ -927,6 +928,22 @@ async function cmdAgents(a: Args): Promise<void> {
     for (const x of h.agents) out(`  ${x.name}@${h.host}  ${x.kind}${x.lifetime ? ` (${x.lifetime})` : ""}  ${x.projects.join(", ")}${x.aliases ? `  aliases: ${x.aliases.map(n => `${n}@${h.host}`).join(", ")}` : ""}${x.description ? `  ${x.description}` : ""}`);
     if (!h.agents.length) out(`  ${h.host}: nothing addressable from this host`);
   }
+}
+
+/** The operator's view of every federated host. serve binds loopback only and prints the address with its token. */
+async function cmdCenter(a: Args): Promise<void> {
+  const sub = a._[1] ?? "show";
+  if (sub === "show") {
+    const v = await center.gather();
+    return out(flag(a, "json") ? JSON.stringify(v, null, 2) : center.render(v));
+  }
+  const host = opt(a, "host") ?? "127.0.0.1", port = Number(opt(a, "port") ?? 5004);
+  if (!remote.loopback(host)) fail("center serve binds loopback only: the view shows every host's messages and spend");
+  if (!Number.isInteger(port) || port < 1 || port > 65535) fail("--port must be 1..65535");
+  peer.identity();
+  const token = center.newToken(), server = center.centerServer({ token });
+  server.on("error", e => { process.stderr.write(`center: ${e.message}\n`); process.exitCode = 1; });
+  server.listen(port, "127.0.0.1", () => out(`govern command center: http://127.0.0.1:${port}/#token=${token}\n(the token lasts while this process runs; keep the address private)`));
 }
 
 /** The text of the user service: every Environment= and the ExecStart binary quoted, and the state folders of this shell passed on. */
@@ -1188,12 +1205,12 @@ export const COMMANDS: readonly Cmd[] = [
     } },
   { name: "mesh", section: 6, footer: false, defaultSub: "status", noSub: "govern mesh create|invite|join|sync|status|policy|revoke (PEERS.md)",
     subs: {
-      create: { flags: { value: ["name", "url"], multi: ["allow", "project"] }, lines: [["--name MESH --url URL --project P… [--allow NAME]…", "make this host the registrar of a new mesh; --project/--allow are the grants every member gets here; owner's terminal only"]], run: cmdMesh },
+      create: { flags: { value: ["name", "url"], multi: ["allow", "project", "observer"] }, lines: [["--name MESH --url URL --project P… [--allow NAME]… [--observer HOST]…", "make this host the registrar of a new mesh; --project/--allow are the grants every member gets here; owner's terminal only"]], run: cmdMesh },
       invite: { flags: { value: ["host", "ttl"] }, lines: [["[--host NAME] [--ttl 3600]", "registrar: print a single-use invite code for one new host; owner's terminal only"]], run: cmdMesh },
-      join: { flags: { value: ["url"], multi: ["allow", "project"] }, lines: [["<code> --url URL --project P… [--allow NAME]…", "join with an invite code, at this host's public URL, granting members these names and projects; owner's terminal only"]], run: cmdMesh },
+      join: { flags: { value: ["url"], multi: ["allow", "project", "observer"] }, lines: [["<code> --url URL --project P… [--allow NAME]… [--observer HOST]…", "join with an invite code, at this host's public URL, granting members these names and projects;\n--observer names the members that may read this host's telemetry (default: the registrar); owner's terminal only"]], run: cmdMesh },
       sync: { flags: { value: ["url"] }, lines: [["[--url URL]", "renew this host's certificate, refresh members and discover agents; --url moves this host (owner's terminal only)"]], run: cmdMesh },
       status: { lines: [["", "the mesh, this host's certificate, the grants members get here, and every member"]], run: cmdMesh },
-      policy: { flags: { multi: ["allow", "project"] }, lines: [["--project P… [--allow NAME]…", "replace the grants every member gets here; owner's terminal only"]], run: cmdMesh },
+      policy: { flags: { multi: ["allow", "project", "observer"] }, lines: [["--project P… [--allow NAME]… [--observer HOST]…", "replace the grants every member gets here, and who reads its telemetry (default: the registrar); owner's terminal only"]], run: cmdMesh },
       revoke: { lines: [["<host>", "registrar: revoke a member; owner's terminal only"]], run: cmdMesh },
     } },
   { name: "agents", section: 6, footer: false, defaultSub: "list", noSub: "govern agents list|register|unregister (PEERS.md)",
@@ -1201,6 +1218,11 @@ export const COMMANDS: readonly Cmd[] = [
       list: { flags: { bool: ["refresh"] }, lines: [["[--refresh]", "agents here, and what this host may address on every other host (cached; --refresh asks each host)"]], run: cmdAgents },
       register: { flags: { value: ["as", "description", "ttl"], multi: ["project", "alias"], bool: ["ephemeral"] }, lines: [["--project P… [--as NAME | --ephemeral] [--alias NAME]… [--description TEXT] [--ttl S]", "publish this agent's inbox to peer hosts as NAME@HOST for these projects, until it expires or its session ends;\nnames and aliases are unique per host and held by their registering session; --ephemeral generates a name (1 h default, at most 24 h)"]], run: cmdAgents },
       unregister: { flags: { value: ["as"] }, lines: [["[NAME] [--as NAME]", "withdraw a registration this session holds"]], run: cmdAgents },
+    } },
+  { name: "center", section: 6, footer: false, defaultSub: "show", noSub: "govern center show|serve (PEERS.md)",
+    subs: {
+      show: { flags: { bool: ["json"] }, lines: [["[--json]", "the command center: every federated host's health, alerts, agents, 24 h spend and latest messages"]], run: cmdCenter },
+      serve: { flags: { value: ["host", "port"] }, lines: [["[--port 5004] [--host 127.0.0.1]", "the command center in a browser on 127.0.0.1, refreshed every 15 s; prints the address with its access token"]], run: cmdCenter },
     } },
   { name: "caps", section: 6, flags: { bool: ["check"] },
     lines: [["", "the capabilities and profiles a queued agent can run under, with each profile's last self-test"],

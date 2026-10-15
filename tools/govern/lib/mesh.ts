@@ -18,9 +18,11 @@ export interface CertBody { protocol: string; mesh: string; name: string; url: s
 export interface Cert { body: string; signature: string }
 const CERT_BODY: Shape<CertBody> = obj({ protocol: literal(MESH_PROTOCOL), mesh: hex64, name, url, publicKey, issued: iso, expires: iso });
 const CERT: Shape<Cert> = obj({ body: str, signature: str });
-export interface Policy { allow: string[]; projects: string[] }
+/** What every member may do here: address `allow` in `projects`, and read this host's telemetry when it is one of
+ *  `observers` (by default the registrar, the operator's command center). */
+export interface Policy { allow: string[]; projects: string[]; observers?: string[] }
 const projects: Shape<string[]> = (v, p) => { const a = arr(project)(v, p); return a.includes("*") && a.length !== 1 ? reject(p, '"*" must be the only project') : a; };
-const POLICY: Shape<Policy> = obj({ allow: arr(name), projects });
+const POLICY: Shape<Policy> = obj({ allow: arr(name), projects }, { observers: arr(name) });
 
 interface RegMember { name: string; url: string; publicKey: string; joinedAt: string; revokedAt?: string }
 interface Invite { id: string; secretSha256: string; expires: string; name?: string; usedAt?: string }
@@ -30,9 +32,9 @@ const REGISTRAR: Shape<Registrar> = keys(obj({
   members: arr(obj({ name, url, publicKey, joinedAt: iso }, { revokedAt: iso })),
   invites: arr(obj({ id: nonempty, secretSha256: hex64, expires: iso }, { name, usedAt: iso })),
 }));
-export interface Member { version: 1; mesh: { name: string; publicKey: string; url: string }; cert: Cert; members: CertBody[]; revoked: string[]; syncedAt: string; policy: Policy }
+export interface Member { version: 1; mesh: { name: string; publicKey: string; url: string; registrar?: string }; cert: Cert; members: CertBody[]; revoked: string[]; syncedAt: string; policy: Policy }
 const MEMBER: Shape<Member> = obj({
-  version: literal(1), mesh: obj({ name, publicKey, url }), cert: CERT, members: arr(CERT_BODY), revoked: arr(hex64), syncedAt: iso, policy: POLICY,
+  version: literal(1), mesh: obj({ name, publicKey, url }, { registrar: name }), cert: CERT, members: arr(CERT_BODY), revoked: arr(hex64), syncedAt: iso, policy: POLICY,
 });
 const REG_FILE = "mesh-registrar.json", MEMBER_FILE = "mesh.json";
 const registrarState = (): Registrar | undefined => readOr<Registrar | undefined>(REG_FILE, REGISTRAR, undefined);
@@ -84,19 +86,20 @@ export function memberByKey(fp: string, presented: string | undefined, now = Dat
   } catch { return undefined; }
 }
 
-const SNAPSHOT = obj({ protocol: literal(MESH_PROTOCOL), mesh: name, cert: CERT, members: arr(CERT), revoked: arr(hex64) });
+const SNAPSHOT = obj({ protocol: literal(MESH_PROTOCOL), mesh: name, registrar: name, cert: CERT, members: arr(CERT), revoked: arr(hex64) });
 type Snapshot = ReturnType<typeof SNAPSHOT>;
 function snapshot(r: Registrar, forKey: string, now: number): Snapshot {
   const live = r.members.filter(m => !m.revokedAt), self = live.find(m => m.publicKey === forKey) ?? fail("not a live member");
   const revoked = [...new Set(r.members.filter(m => m.revokedAt && !live.some(l => l.publicKey === m.publicKey)).map(m => fingerprint(m.publicKey)))];
-  return { protocol: MESH_PROTOCOL, mesh: r.name, cert: issue(r, self, now), members: live.map(m => issue(r, m, now)), revoked };
+  const registrar = live.find(m => m.url === r.url)?.name ?? identity().name;
+  return { protocol: MESH_PROTOCOL, mesh: r.name, registrar, cert: issue(r, self, now), members: live.map(m => issue(r, m, now)), revoked };
 }
 /** Write this host's member state from a snapshot the mesh key signed; every certificate is verified first. */
 function apply(meshName: string, mesh: { publicKey: string; url: string }, snap: Snapshot, policy: Policy, now: number): Member {
   const me = identity(), self = verifyCert(snap.cert, mesh.publicKey, now);
   if (self.publicKey !== me.publicKey || self.name !== me.name) fail("mesh: the registrar certified another host");
   const members = snap.members.map(c => verifyCert(c, mesh.publicKey, now)).filter(m => !snap.revoked.includes(fingerprint(m.publicKey)));
-  const s: Member = { version: 1, mesh: { name: meshName, ...mesh }, cert: snap.cert, members, revoked: snap.revoked, syncedAt: new Date(now).toISOString(), policy };
+  const s: Member = { version: 1, mesh: { name: meshName, ...mesh, registrar: snap.registrar }, cert: snap.cert, members, revoked: snap.revoked, syncedAt: new Date(now).toISOString(), policy: { ...policy, observers: policy.observers ?? [snap.registrar] } };
   write(MEMBER_FILE, check(file(MEMBER_FILE), s, MEMBER)); return s;
 }
 /** The registrar refreshes its own member state from its table: it never calls itself over HTTP. */
@@ -104,6 +107,8 @@ const refreshLocal = (r: Registrar, now: number): Member => {
   const policy = state()?.policy ?? fail("mesh: the registrar has no member state");
   return apply(r.name, { publicKey: r.publicKey, url: r.url }, snapshot(r, identity().publicKey, now), policy, now);
 };
+/** The members allowed to read this host's telemetry. */
+export const observers = (): string[] => { const s = state(); return s ? s.policy.observers ?? (s.mesh.registrar ? [s.mesh.registrar] : []) : []; };
 
 function checkPolicy(p: Policy): Policy {
   const out = check("policy", p, POLICY);
@@ -240,7 +245,10 @@ export function revoke(n: string, now = Date.now()): void {
 /** Replace the grants this host gives every mesh member. */
 export function setPolicy(p: Policy): Member {
   const policy = checkPolicy(p);
-  return locked(() => { const s = state() ?? fail("not in a mesh"); s.policy = policy; write(MEMBER_FILE, s); return s; });
+  return locked(() => {
+    const s = state() ?? fail("not in a mesh");
+    s.policy = { ...policy, observers: policy.observers ?? (s.mesh.registrar ? [s.mesh.registrar] : []) }; write(MEMBER_FILE, s); return s;
+  });
 }
 /** Whether this host is the mesh's registrar. */
 export const isRegistrar = (): boolean => { const r = registrarState(), s = state(); return !!r && !!s && r.publicKey === s.mesh.publicKey; };

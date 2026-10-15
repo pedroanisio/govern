@@ -13,6 +13,7 @@ import {
 } from "./peer-id.ts";
 import * as mesh from "./mesh.ts";
 import * as agents from "./agents.ts";
+import * as telemetry from "./telemetry.ts";
 import { fail, clip } from "./util.ts";
 import * as queue from "./queue.ts";
 
@@ -73,17 +74,17 @@ export function remotes(now = Date.now()): Remote[] {
   return [...names].sort().flatMap(n => { try { return [remote(n, now)]; } catch { return []; } });
 }
 
-interface Sender { name: string; publicKey: string; allow: string[]; projects: string[] }
+interface Sender { name: string; publicKey: string; allow: string[]; projects: string[]; via: "peer" | "mesh" }
 /** The signer of a request: a live static peer by key fingerprint, else a mesh member (listed, or by the certificate it
  *  presents). A mesh member whose name a static peer holds with another key is not a sender. */
 function senderOf(headers: Headers, now: number): Sender | undefined {
   const fp = header(headers, "govern-peer-key");
   if (!fp) return undefined;
   const live = peers().filter(p => !p.revokedAt), p = live.find(x => fingerprint(x.publicKey) === fp);
-  if (p) return p;
+  if (p) return { ...p, via: "peer" };
   const m = mesh.memberByKey(fp, header(headers, "govern-peer-cert"), now), policy = mesh.state()?.policy;
   if (!m || !policy || live.some(x => x.name === m.name)) return undefined;
-  return { name: m.name, publicKey: m.publicKey, allow: policy.allow, projects: policy.projects };
+  return { name: m.name, publicKey: m.publicKey, allow: policy.allow, projects: policy.projects, via: "mesh" };
 }
 /** Authenticate exact bytes before parsing anything a sender wrote. */
 function authenticate(bytes: Buffer, headers: Headers, now: number): Sender | Response {
@@ -198,6 +199,40 @@ export async function discover(o: { post?: Post; now?: () => number } = {}): Pro
 /** The last discovery pass, or undefined before the first. */
 export const cached = (): { fetchedAt: string; hosts: HostListing[] } | undefined => readOr<ReturnType<typeof CACHE> | undefined>("directory.json", CACHE, undefined);
 
+const TELEMETRY_REQUEST = obj({ protocol: literal(PROTOCOL), kind: literal("telemetry"), at: iso, toKey: hex64, id: nonempty });
+/** POST /v1/peer/telemetry: this host's telemetry, signed with its key, for a mesh member this host names as an observer. */
+export function serveTelemetry(bytes: Buffer, headers: Headers, now = Date.now()): Response {
+  const sender = authenticate(bytes, headers, now);
+  if (isResponse(sender)) return sender;
+  let q: ReturnType<typeof TELEMETRY_REQUEST>;
+  try { q = parseFile("telemetry $", bytes.toString("utf8"), TELEMETRY_REQUEST); } catch (e) { return error(400, (e as Error).message); }
+  if (!forMe(q.toKey)) return error(403, "addressed to another host");
+  if (!fresh(q.at, now)) return error(403, "timestamp outside five minute window");
+  if (sender.via !== "mesh" || !mesh.observers().includes(sender.name)) return error(403, "not an observer of this host");
+  return signedJson(200, telemetry.snapshot({ peers: liveStatic(), now }) as unknown as Record<string, unknown>, identity().privateKey);
+}
+const liveStatic = () => peers().filter(p => !p.revokedAt).length;
+/** This host's own telemetry. */
+export const localTelemetry = (now = Date.now()): telemetry.Telemetry => telemetry.snapshot({ peers: liveStatic(), now });
+/** One host's telemetry answer in a command-center pass. */
+export interface Observed { host: string; url: string; ok: boolean; error?: string; telemetry?: telemetry.Telemetry }
+/** Ask every live mesh member for its telemetry; an answer must carry that host's signature and parse as a closed
+ *  telemetry shape naming that host's key. One host's failure is recorded and does not stop the others. */
+export async function observe(o: { post?: Post; now?: () => number } = {}): Promise<Observed[]> {
+  const post = o.post ?? postFetch, now = o.now ?? Date.now;
+  return Promise.all(mesh.others(now()).map(async (m): Promise<Observed> => {
+    try {
+      const bytes = Buffer.from(JSON.stringify({ protocol: PROTOCOL, kind: "telemetry", at: new Date(now()).toISOString(), toKey: fingerprint(m.publicKey), id: randomUUID() }));
+      const res = await post(`${m.url.replace(/\/$/, "")}/v1/peer/telemetry`, bytes, { ...sign(bytes), ...mesh.presentHeaders() }, TIMEOUT_MS);
+      if (res.status !== 200) fail(`refused (${res.status}): ${clip(res.text, 300)}`);
+      if (!verifyBytes(Buffer.from(res.text), header(res.headers ?? {}, "govern-signature"), m.publicKey)) fail("answer not signed by the host's key");
+      const t = parseFile(`${m.name} telemetry`, res.text, telemetry.TELEMETRY);
+      if (t.fingerprint !== fingerprint(m.publicKey)) fail("answer names another host's key");
+      return { host: m.name, url: m.url, ok: true, telemetry: t };
+    } catch (e) { return { host: m.name, url: m.url, ok: false, error: clip((e as Error).message, 300) }; }
+  }));
+}
+
 const RECEIPT = obj({ protocol: literal(PROTOCOL), id: nonempty }, { duplicate: bool });
 /** One relay pass; a retry is bounded by eight attempts and an exponential backoff capped at one hour. */
 export async function push(o: { max?: number; now?: number | (() => number); post?: Post } = {}): Promise<string[]> {
@@ -248,6 +283,7 @@ type Route = (bytes: Buffer, headers: Headers, now: number) => Response;
 const ROUTES: Record<string, Route> = {
   "POST /v1/peer/deliver": receive,
   "POST /v1/peer/directory": serveDirectory,
+  "POST /v1/peer/telemetry": serveTelemetry,
   "POST /v1/mesh/join": mesh.serveJoin,
   "POST /v1/mesh/sync": mesh.serveSync,
 };
