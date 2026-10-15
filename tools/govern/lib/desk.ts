@@ -35,8 +35,8 @@ export function dispatcherInfo(): { running: boolean; pid: number; started: stri
  *  last pid gone. */
 export function dispatcherState(): string {
   const d = dispatcherInfo();
-  if (!d) return "dispatcher: not running (start: govern task dispatch --loop, or the govern-dispatch user service)";
-  return d.running ? `dispatcher: running (pid ${d.pid}, since ${ago(d.started)} ago, every ${d.interval}s)` : `dispatcher: NOT running (last pid ${d.pid} gone)`;
+  if (!d) return "dispatcher: not running (install: govern task install-service)";
+  return d.running ? `dispatcher: running (pid ${d.pid}, since ${ago(d.started)} ago, every ${d.interval}s)` : `dispatcher: NOT running (last pid ${d.pid} gone; install: govern task install-service)`;
 }
 
 /** Model use on `day` (YYYY-MM-DD) per lane: queue runs (the queue's ledger) and codex asks (each lane's ledger).

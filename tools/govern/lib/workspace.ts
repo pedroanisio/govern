@@ -21,6 +21,7 @@ export interface Baseline { mainMedianCtx: number; subagentMedianCtx: number; so
 /** What a workspace keeps in its govern.config.json; each path is relative to the file. */
 export interface WorkspaceConfig {
   /** The lanes' folder (required unless GOVERN_PROJECTS). */
+  mailboxes?: string[]; mailTtlHours?: number;
   projects?: string; queue?: string; processes?: string; workflow?: string; tuningLog?: string; packages?: string; prompts?: string;
   /** Named paths a lane's command can use as {paths.NAME}. */
   paths?: Record<string, string>; baseline?: Baseline;
@@ -40,6 +41,7 @@ export interface WorkspaceConfig {
 /** A file path, or the list shape lib/resources.ts checks (kept as written: resources() builds the registry). */
 const resourcesShape: Shape<unknown> = (v, p) => (typeof v === "string" ? v : (RESOURCES(v, p), v));
 const CONFIG = obj({}, {
+  mailboxes: arr(str), mailTtlHours: posInt,
   projects: str, queue: str, processes: str, workflow: str, tuningLog: str, packages: str, prompts: str, paths: record(str),
   baseline: obj({ mainMedianCtx: posInt, subagentMedianCtx: posInt, source: str }),
   capabilities: str, resources: resourcesShape, allowances: (v: unknown) => v, state: str, decide: obj({}, { shadow: bool, envFile: str }),

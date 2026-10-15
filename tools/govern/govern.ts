@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { installSystemUnit } from "./lib/dispatch-service.ts";
 import * as lifecycle from './lib/lifecycle.ts';
 import { enterRuntime } from './lib/lifecycle-runtime.ts';
 import { eventServer } from './lib/event-server.ts';
@@ -596,7 +597,7 @@ function cmdPublish(a: Args): void {
   out(`Then read the result back, and run: govern note ${p.slug} "published <videoId> at <time>"`);
 }
 
-/** Recipient of a new message: runner, auto (the tuning loop picks the runner), owner or a live session. */
+/** Recipient of a new message: runner, auto (the tuning loop picks the runner), owner, configured mailbox or a live session. */
 function recipient(to: string): { to: string; routed: boolean } {
   const address = peer.parseAddress(to);
   if (address) {
@@ -745,10 +746,13 @@ function cmdTask(a: Args): void {
   }
   if (sub === "install-service") {
     // A user systemd service, so the dispatcher survives sessions and reboots. It runs a model only when a message waits.
+    const system = flag(a, "system");
+    const bin = resolve(HERE, "..", "..", "bin", "govern");
+    const text = serviceUnit(bin, String(secondsOpt(a, "interval") ?? 30), secondsOpt(a, "reap-every"), system);
+    if (system) return out(installSystemUnit(text, flag(a, "write")));
     const unit = join(homedir(), ".config", "systemd", "user", "govern-dispatch.service");
     mkdirSync(dirname(unit), { recursive: true });
-    const bin = resolve(HERE, "..", "..", "bin", "govern");
-    writeFileSync(unit, serviceUnit(bin, opt(a, "interval") ?? "30", secondsOpt(a, "reap-every")));
+    writeFileSync(unit, text);
     return out(`wrote ${unit}\nenable with: systemctl --user daemon-reload && systemctl --user enable --now govern-dispatch`);
   }
   fail(TASK_SUBS);
@@ -1006,15 +1010,15 @@ async function cmdCenter(a: Args): Promise<void> {
 }
 
 /** The text of the user service: every Environment= and the ExecStart binary quoted, and the state folders of this shell passed on. */
-function serviceUnit(bin: string, interval: string, reapEvery: number | undefined): string {
+export function serviceUnit(bin: string, interval: string, reapEvery: number | undefined, system = false): string {
   const env: [string, string][] = [["PATH", process.env.PATH ?? ""], ["GOVERN_REPO", repo()], ["GOVERN_QUEUE", queue.QUEUE()]];
   for (const k of ["GOVERN_STATE", "GOVERN_PROJECTS"]) if (process.env[k]) env.push([k, process.env[k]!]);
   return [
     "[Unit]", "Description=govern task dispatcher (one fresh codex/claude/grok session per queued message)", "",
-    "[Service]", `WorkingDirectory=${repo().replace(/%/g, "%%")}`,
+    "[Service]", ...(system ? [`User=${userInfo().username}`] : []), `WorkingDirectory=${repo().replace(/%/g, "%%")}`,
     `ExecStart=${unitWord(bin, true)} task dispatch --loop --interval ${interval}${reapEvery ? ` --reap-every ${reapEvery}` : ""}`,
     ...env.map(([k, v]) => `Environment=${unitWord(`${k}=${v}`)}`), "Restart=on-failure", "RestartSec=30", "",
-    "[Install]", "WantedBy=default.target", "",
+    "[Install]", `WantedBy=${system ? "multi-user.target" : "default.target"}`, "",
   ].join("\n");
 }
 
@@ -1258,8 +1262,8 @@ export const COMMANDS: readonly Cmd[] = [
       reply: { flags: { value: ["kind", "summary", "body", "body-file", "as"] },
         lines: [["<id> --kind K --summary S (--body B | --body-file F) [--as NAME]", "answer the sender, then close <id>"]], run: cmdTask },
       dispatch: { flags: { value: ["max", "only", "interval", "reap-every"], bool: ["loop"] },
-        lines: [["[--max N] [--only codex|claude|grok] [--loop --interval 30 [--reap-every S]]", "first fail dead claims (unknown spend charged as reserved), then run open messages addressed to runners; --loop also relays to live peers;\n--reap-every lists each resource's tagged instances\nevery S seconds into state for the desk (off by default; lists only, never stops a machine)"]], run: cmdTask },
-      "install-service": { flags: { value: ["interval", "reap-every"] }, lines: [["[--interval 30] [--reap-every S]", "a user systemd service running dispatch --loop"]], run: cmdTask },
+        lines: [["[--max N] [--only codex|claude|grok] [--loop --interval 30 [--reap-every S]]", "first fail dead claims and holderless claims older than twice GOVERN_QUEUE_TIMEOUT_SEC (minimum 3600 s; unknown spend charged as reserved),\nexpire local mail with no live recipient after workspace mailTtlHours (default 72; owner and config mailboxes retained), then run open messages addressed to runners; --loop also relays to live peers;\n--reap-every lists each resource's tagged instances\nevery S seconds into state for the desk (off by default; lists only, never stops a machine)"]], run: cmdTask },
+      "install-service": { flags: { bool: ["system", "write"], value: ["interval", "reap-every"] }, lines: [["[--interval 30] [--reap-every S] [--system [--write]]", "install the standard dispatcher user service; --system prints a system unit with current User=, --write writes it only as root (never escalates)"]], run: cmdTask },
     } },
 
   { name: "peer", section: 6, footer: false, noSub: "govern peer id|add|list|revoke|serve|push (PEERS.md)",

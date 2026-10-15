@@ -44,7 +44,7 @@ export function alertsFor(h: HostView, now: number): Alert[] {
   const out: Alert[] = [], a = (level: Alert["level"], message: string) => out.push({ level, host: h.host, message });
   if (!h.ok || !h.telemetry) { a("critical", `no telemetry: ${h.error ?? "unknown error"}`); return out; }
   const t = h.telemetry;
-  if (!t.dispatcher.running) a("warning", "dispatcher not running: queued runs and relays wait (govern task dispatch --loop)");
+  if (!t.dispatcher.running) a("warning", "dispatcher not running: queued runs and relays wait (install: govern task install-service)");
   if (t.mesh?.certExpires) {
     const left = Date.parse(t.mesh.certExpires) - now;
     if (left <= 0) a("critical", "mesh certificate expired: other members refuse this host until it syncs");
@@ -98,7 +98,7 @@ export function render(v: View): string {
   L.push("", "SPEND, LAST 24 H");
   for (const h of v.hosts) for (const [agent, r] of Object.entries(h.telemetry?.byAgent ?? {})) L.push(`  ${h.host.padEnd(16)} ${agent.padEnd(16)} ${String(r.count).padStart(4)} runs  ${r.failed} failed  ${usd(r.costUsd)}  ${Math.round(r.seconds)}s`);
   L.push("", `MESSAGES (latest ${v.messages.length})`);
-  for (const m of v.messages) L.push(`  ${m.created.slice(5, 16).replace("T", " ")} ${m.host.padEnd(12)} ${m.state.padEnd(7)} ${m.kind.padEnd(8)} ${m.from}→${m.to} [${m.project}/${m.task}] ${clip(m.summary, 70)}${m.lastError ? `  ⚠ ${clip(m.lastError, 60)}` : ""}`);
+  for (const m of v.messages) L.push(`  ${m.created.slice(5, 16).replace("T", " ")} ${m.host.padEnd(12)} ${m.state.padEnd(7)} ${m.kind.padEnd(8)} ${m.from}→${m.to} [${m.project}/${m.task}] ${clip(m.summary, 70)}${m.closedBy ? ` · closed by ${m.closedBy}${m.note ? `: ${m.note}` : ""}` : ""}${m.lastError ? `  ⚠ ${clip(m.lastError, 60)}` : ""}`);
   return L.join("\n");
 }
 

@@ -26,6 +26,8 @@ const no = (capability: string) => ({ result: { capability, status: "refused", e
 /** The passing probe replies of the researcher profile: web, gh-read, read, then the negative probe of edit. */
 const RESEARCHER_OK = [ok("web", "Example Domain"), ok("gh-read", "cli"), ok("read", "NONCE"), no("edit")];
 /** The built-in tools a read-only profile does not grant (lib/caps.ts CLAUDE_BUILTIN minus Read, Grep, Glob). */
+/** A queued Claude run carries the reply schema, inline, for the CLI to enforce. */
+const SCHEMA = ["--json-schema", readFileSync(join(HERE, "..", "schemas", "queue-reply.json"), "utf8")];
 const DENY_RO = ["Agent", "Bash", "Edit", "NotebookEdit", "Task", "TodoWrite", "WebFetch", "WebSearch", "Write"];
 const send = (e: Env, args: string[]) => govern(e, ["task", "send", "--project", "film", "--task", "t", "--summary", "s", ...args]);
 
@@ -91,8 +93,8 @@ test("the built-in claude profiles run sealed: exact argv, no inherited settings
   const r = govern(e, ["task", "dispatch"], { FAKE_CLAUDE_RESULT: ANSWER });
   assert.equal(r.code, 0, r.err);
   const [read, wr] = jsonl(log);
-  assert.deepEqual(present(read, "the read call").argv, ["-p", "--output-format", "json", "--model", "sonnet", "--allowedTools", "Read", "Grep", "Glob", "--tools", "Read", "Grep", "Glob", "--disallowedTools", ...DENY_RO, "--setting-sources", "", "--strict-mcp-config"]);
-  assert.deepEqual(present(wr, "the write call").argv, ["-p", "--output-format", "json", "--model", "sonnet", "--permission-mode", "acceptEdits", "--allowedTools", "Read", "Grep", "Glob", "Edit", "Write", "--tools", "Read", "Grep", "Glob", "Edit", "Write", "--disallowedTools", "Agent", "Bash", "NotebookEdit", "Task", "TodoWrite", "WebFetch", "WebSearch", "--setting-sources", "", "--strict-mcp-config"]);
+  assert.deepEqual(present(read, "the read call").argv, ["-p", "--output-format", "json", "--model", "sonnet", ...SCHEMA, "--allowedTools", "Read", "Grep", "Glob", "--tools", "Read", "Grep", "Glob", "--disallowedTools", ...DENY_RO, "--setting-sources", "", "--strict-mcp-config"]);
+  assert.deepEqual(present(wr, "the write call").argv, ["-p", "--output-format", "json", "--model", "sonnet", ...SCHEMA, "--permission-mode", "acceptEdits", "--allowedTools", "Read", "Grep", "Glob", "Edit", "Write", "--tools", "Read", "Grep", "Glob", "Edit", "Write", "--disallowedTools", "Agent", "Bash", "NotebookEdit", "Task", "TodoWrite", "WebFetch", "WebSearch", "--setting-sources", "", "--strict-mcp-config"]);
   assert.match(present(read, "the read call").input, /You are the "claude" agent/, "the prompt is on stdin: a variadic --tools would swallow a positional one");
 });
 
@@ -107,7 +109,7 @@ test("a profile's own model and MCP config reach the argv; GOVERN_QUEUE_CLAUDE_M
   const d = govern(e, ["task", "dispatch"], { FAKE_CLAUDE_RESULT: ANSWER, GOVERN_QUEUE_CLAUDE_MODEL: "haiku" });
   assert.equal(d.code, 0, d.err);
   const [a, b] = jsonl(join(e.root, "claude.log"));
-  assert.deepEqual(present(a, "pinned call").argv, ["-p", "--output-format", "json", "--model", "opus", "--allowedTools", "Read", "Grep", "Glob", "--tools", "Read", "Grep", "Glob", "--disallowedTools", ...DENY_RO, "--setting-sources", "", "--strict-mcp-config", "--mcp-config", join(e.root, "caps", "mcp", "pinned.json")]);
+  assert.deepEqual(present(a, "pinned call").argv, ["-p", "--output-format", "json", "--model", "opus", ...SCHEMA, "--allowedTools", "Read", "Grep", "Glob", "--tools", "Read", "Grep", "Glob", "--disallowedTools", ...DENY_RO, "--setting-sources", "", "--strict-mcp-config", "--mcp-config", join(e.root, "caps", "mcp", "pinned.json")]);
   assert.equal(present(b, "floating call").argv[4], "haiku");
 });
 
@@ -367,7 +369,8 @@ test("a probe's expectCmd runs under govern and its output must appear in the re
 test("an unparseable, unknown-key, wrong-capability or unsupported reply fails the check (strict parse)", () => {
   const e = env();
   const cases: [string, unknown, RegExp][] = [
-    ["prose", "I could read the file, it says hello", /invalid reply: not JSON/],
+    // Under --json-schema the CLI returns prose without structured_output: the check sees no reply and fails.
+    ["prose", "I could read the file, it says hello", /invalid reply: no reply/],
     ["extra key", { capability: "read", status: "ok", evidence: "NONCE", note: "hi" }, /invalid reply: .*unknown key "note"/],
     ["bad status", { capability: "read", status: "fine", evidence: "NONCE" }, /invalid reply: .*"ok" or "refused" or "error"/],
     ["wrong capability", { capability: "web", status: "ok", evidence: "NONCE" }, /invalid reply: answered for web, asked about read/],
@@ -500,7 +503,7 @@ test("a queued message to claude without a profile runs under the default profil
   const d = govern(e, ["task", "dispatch"], { FAKE_CLAUDE_RESULT: ANSWER });
   assert.equal(d.code, 0, d.err);
   const [ro, rw] = jsonl(join(e.root, "claude.log"));
-  assert.deepEqual(present(ro, "read call").argv.slice(5, 8), ["--allowedTools", "Read", "Grep"]);
+  assert.deepEqual(present(ro, "read call").argv.slice(5, 10), [...SCHEMA, "--allowedTools", "Read", "Grep"]);
   assert.ok(present(rw, "write call").argv.includes("Edit"));
 });
 

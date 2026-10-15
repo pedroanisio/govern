@@ -18,6 +18,7 @@ const num: Shape<number> = (v, p) => (typeof v === "number" && Number.isFinite(v
 export interface Runs { count: number; ok: number; failed: number; seconds: number; input: number; output: number; costUsd: number }
 export interface Recent {
   id: string; state: string; kind: string; from: string; to: string; project: string; task: string; summary: string; created: string;
+  closedBy?: string; note?: string;
   remote?: string; attempts?: number; lastError?: string; ok?: boolean; seconds?: number; costUsd?: number;
 }
 export interface Telemetry {
@@ -34,7 +35,7 @@ export interface Telemetry {
 const RUNS: Shape<Runs> = obj({ count, ok: count, failed: count, seconds: num, input: count, output: count, costUsd: num });
 const RECENT_SHAPE: Shape<Recent> = obj(
   { id: str, state: literal("open", "claimed", "done", "failed"), kind: str, from: str, to: str, project: str, task: str, summary: str, created: iso },
-  { remote: name, attempts: count, lastError: str, ok: bool, seconds: num, costUsd: num },
+  { closedBy: str, note: str, remote: name, attempts: count, lastError: str, ok: bool, seconds: num, costUsd: num },
 );
 /** The closed shape of a telemetry answer: a command center parses a remote host's answer with it before showing it. */
 export const TELEMETRY: Shape<Telemetry> = obj({
@@ -100,6 +101,7 @@ export function snapshot(o: { peers: number; now?: number }): Telemetry {
       id: x.id, state, kind: x.kind, from: x.from, to: x.to, project: x.project, task: x.task, summary: clip(x.summary, 200), created: x.created,
       ...(x.remote ? { remote: x.remote.peer } : {}),
       ...(x.relay ? { attempts: x.relay.attempts, lastError: clip(x.relay.lastError, 300) } : {}),
+      ...(x.result?.closedBy ? { closedBy: x.result.closedBy, ...(x.result.note || x.result.error ? { note: clip(x.result.note ?? x.result.error!, 300) } : {}) } : {}),
       ...(x.result ? { ok: x.result.ok, seconds: x.result.seconds, ...(typeof x.result.usage?.costUsd === "number" ? { costUsd: x.result.usage.costUsd } : {}) } : {}),
     })),
   };

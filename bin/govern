@@ -56,7 +56,7 @@
 #     govern task list [--to X] [--state S] [--project P]  |  show ID  |  inbox [--as NAME] [--all] [--hook]
 #     govern task close ID [--as NAME] [--note T]  |  reclaim ID --note T [--as NAME]  |  forward ID --to NAME [--as NAME]
 #     govern task reply ID --kind K --summary S (--body B | --body-file F) [--as NAME]
-#     govern task dispatch [--max N] [--only RUNNER] [--loop --interval S [--reap-every S]]  |  install-service [--interval S] [--reap-every S]
+#     govern task dispatch [--max N] [--only RUNNER] [--loop --interval S [--reap-every S]]  |  install-service [--interval S] [--reap-every S] [--system [--write]]
 # DESCRIPTION
 #     The control surface an AI uses while it works on a lane of work with the owner. State (stage, decisions,
 #     approvals, commands, files) lives in the lane's govern.json under the workspace's projects folder, so a session starts from
@@ -89,7 +89,15 @@
 #     session is NOT woken: it reads its mail with `task inbox` (or a UserPromptSubmit hook running
 #     `task inbox --hook`), answers with `reply`, and `close`s or `forward`s what is not for it. NAME defaults to
 #     GOVERN_AS, else the registered session found up this process's parent chain. `task reclaim` releases an abandoned
-#     claim after checking its external effects and spend, recording the required --note and notifying the owner.
+#     claim after checking its external effects and spend, recording the required --note and notifying the sender.
+#     Every dispatch tick fails holderless claims after twice GOVERN_QUEUE_TIMEOUT_SEC (at least one hour), never
+#     retrying unknown effects. It expires local mail after mailTtlHours (default 72) only for recipients with no
+#     runner/profile, live registration/alias, live session or mailbox; owner and config mailboxes always stay open.
+#     Remote mail belongs to the relay. Expiry records closedBy=govern and a reason, visible in the center, and sends
+#     a NOTICE only to a known sender. Claude receives --json-schema and returns structured_output; parseReply still
+#     validates every envelope, and malformed replies are kept whole without coercion.
+#     Standard host setup includes task install-service and its printed enable command. --system previews a system
+#     unit with current User=; --system --write requires root, otherwise prints the refusal and unit, never escalates.
 #     Peer delivery uses signed HTTP behind a TLS tunnel (PEERS.md). Peer add and revoke require the owner's
 #     terminal. Remote sends require a live peer and refuse --write, --profile, --lane, --estimate-usd, --file and
 #     auto@PEER: the receiving host decides these. Sessions on PEER are not woken. Dispatch --loop also relays;
@@ -215,7 +223,8 @@
 #     --body-file F           task send, task reply: read the message text from F
 #     --reply-to ID           task send: the message this one answers
 #     --from NAME             task send: local sender without @ (default: the registered session up the parent chain); only receive() files a remote sender
-#     --write                 task send: let the runner change files in the project folder (default: read-only)
+#     --write                 task send, task install-service: task send: let the runner change files in the project folder
+#                             (default: read-only); task install-service with --system: write only as root, otherwise print refusal and unit
 #     --profile P             conversation create, task send: seal the run to profile P's capabilities (govern caps); conversation
 #                             create: default codex-read unless --adapter is given; task send: not with --write
 #     --estimate-usd N        conversation send, task send: what the run is expected to cost, reserved against a matching allowance
@@ -246,6 +255,7 @@
 #     --max N                 task dispatch, peer push: run at most N messages
 #     --only E                task dispatch: only messages to that runner (codex, claude, grok or a queue config runner)
 #     --loop                  tick, task dispatch: keep dispatching every --interval seconds
+#     --system                task install-service: preview /etc/systemd/system/govern-dispatch.service with current User=
 #     --interval S            tick, task dispatch, task install-service: seconds between rounds (default 30)
 #     --reap-every S          task dispatch, task install-service: list each resource's tagged instances every S seconds
 #                             into state for the desk (off by default; never stops a machine)
@@ -277,7 +287,7 @@
 #     · GOVERN_QUEUE_MAX_INLINE (40000) · GOVERN_QUEUE_CLAUDE_MODEL (sonnet) · GOVERN_QUEUE_CODEX_EFFORT (medium)
 #     · GOVERN_CAPS_CHECK_MODEL (haiku, caps --check) · GOVERN_GROK_CHECK_MODEL (the profile's model, caps --check)
 #     · GOVERN_QUEUE_GROK_MODEL (grok's default) · GOVERN_GROK_MAX_TURNS (25; grok has no dollar cap)
-#     · GOVERN_QUEUE_TIMEOUT_SEC (900, one dispatched run).
+#     · GOVERN_QUEUE_TIMEOUT_SEC (900, one dispatched run); holderless claims fail after twice this, at least 3600 s.
 #     Conversation workers: GOVERN_CONVERSATION_RUN (set by the runtime; model-origin approvals are refused).
 #     Jev (decide): TYPESAFE_API_KEY (the TypeSafe key; else the config's decide.envFile) · GOVERN_JEV_MODEL (jev-latest)
 #     · GOVERN_TYPESAFE_URL (https://api.typesafe.ai).
@@ -310,7 +320,9 @@
 #     .govern/state/          run state: locks, instances, reservations, conversations (GOVERN_STATE)
 #     .govern/tuning.jsonl    the log tune appends to
 #     .govern/.gitignore      written by init: keeps state/ and projects/**/govern/jobs/ out of git
-#     govern.config.json      the other workspace form: names every path itself, relative to the file
+#     govern.config.json      the other workspace form: names every path itself, relative to the file; mailboxes is a
+#                             string array of durable inboxes (owner always included); mailTtlHours is a positive integer
+#                             (default 72), governing old local mail to recipients with no live identity
 # EXAMPLES
 #     govern work a-millionth-apart/shorts script
 #     govern run golden-pixel fb gates sheets --bg && govern wait golden-pixel

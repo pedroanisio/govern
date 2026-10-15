@@ -2,7 +2,9 @@
 // Fake `claude -p --output-format json` for govern's tests.
 //   FAKE_CLAUDE_ARGV_OUT  append {argv, cwd, nested, stdin, input} (JSON) to this file; nested = CLAUDECODE was inherited;
 //                         stdin = the prompt's length, input = the prompt text
-//   FAKE_CLAUDE_RESULT    the text of the `result` field
+//   FAKE_CLAUDE_RESULT    result text; with --json-schema, JSON parsed into structured_output (result is empty)
+//   FAKE_CLAUDE_OMIT_STRUCTURED  simulate a CLI that supplies no structured payload
+//   FAKE_CLAUDE_TASK_SHAPE  honor a task demanding verdicts only when no --json-schema is supplied
 //   FAKE_CLAUDE_SCRIPT    a JSON file: [{result, write?: {path, text}}, …], one entry per successive call (the last repeats;
 //                         counter file prefix FAKE_CLAUDE_COUNTER). The token NONCE in result or text becomes the contents of
 //                         ./probe.txt (the self-test's nonce); `write` creates that file in the cwd, as a tool call would.
@@ -28,8 +30,16 @@ process.stdin.on("end", () => {
     result = fill(typeof step.result === "string" ? step.result : JSON.stringify(step.result));
     if (step.write) { const f = join(process.cwd(), step.write.path); mkdirSync(dirname(f), { recursive: true }); writeFileSync(f, fill(step.write.text)); }
   }
+  if (process.env.FAKE_CLAUDE_TASK_SHAPE && Buffer.concat(chunks).toString("utf8").includes('Return only {"verdicts": []}') && !process.argv.includes("--json-schema"))
+    result = JSON.stringify({ verdicts: [] });
+  // As the real CLI: with --json-schema, `result` keeps the text and `structured_output` carries the object however the
+  // model fenced it; text that holds no JSON object yields no structured_output at all.
+  let structured: unknown;
+  try { structured = JSON.parse(result.trim().replace(/^```(?:json)?\s*|\s*```$/g, "")); } catch { structured = undefined; }
+  const object = structured !== null && typeof structured === "object" && !Array.isArray(structured);
   process.stdout.write(JSON.stringify({
     type: "result", subtype: "success", is_error: false, num_turns: 2, result,
+    ...(process.argv.includes("--json-schema") && !process.env.FAKE_CLAUDE_OMIT_STRUCTURED && object ? { structured_output: structured } : {}),
     total_cost_usd: 0.0123, usage: { input_tokens: 5, cache_read_input_tokens: 9000, cache_creation_input_tokens: 1000, output_tokens: 200 },
   }));
 });

@@ -3,6 +3,7 @@
 import { readdirSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { config, findRepo } from "./workspace.ts";
 import { fail, procStat, hasProc, exited } from "./util.ts";
 
 /** procStart: the session process's start time as Claude Code recorded it (field 22 of /proc/<pid>/stat). */
@@ -62,14 +63,15 @@ export function resolveAs(o: { as?: string; env?: NodeJS.ProcessEnv; dir?: strin
 export const requireAs = (as?: string): string =>
   resolveAs({ as }) ?? fail("cannot tell which session this is (no parent process is a registered Claude Code session): pass --as NAME or set GOVERN_AS");
 
-/** The recipient check of `task send`/`forward`: a runner, auto, owner or a live session. Returns whether it is a session. */
+/** The recipient check of `task send`/`forward`: a runner, auto, owner, configured mailbox or a live session. Returns whether it is a session. */
 export function checkRecipient(to: string, runners: readonly string[]): { session: boolean } {
   if (!/^[a-z0-9][a-z0-9.-]*$/.test(to)) fail(`--to must be lowercase letters, digits, dots and dashes: ${to}`);
-  if ([...runners, "auto", "owner"].includes(to)) return { session: false };
+  const mailboxes = findRepo() ? config().mailboxes ?? [] : [];
+  if ([...runners, "auto", "owner", ...mailboxes].includes(to)) return { session: false };
   const live = liveSessions();
   if (live.some((s) => s.name === to)) return { session: true };
   const names = [...new Set(live.map((s) => s.name))].sort();
-  return fail(`--to ${to}: no live session "${to}" (valid: ${[...runners, "auto", "owner", ...names].join(", ")})`);
+  return fail(`--to ${to}: no live session "${to}" (valid: ${[...runners, "auto", "owner", ...mailboxes, ...names].join(", ")})`);
 }
 
 /** The Claude Code session that is the caller: the first live registry entry (named or not) up the parent chain. Its

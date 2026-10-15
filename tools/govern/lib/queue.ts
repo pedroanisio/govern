@@ -7,11 +7,11 @@
 import { spawnSync } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir, homedir } from "node:os";
-import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync, appendFileSync } from "node:fs";
+import { existsSync, statSync, mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync, appendFileSync } from "node:fs";
 import { join, resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { fail, stamp, nowIso, clip, charLimit } from "./util.ts";
-import { repo, projectsDir, queueDir, expandPlaceholders } from "./workspace.ts";
+import { repo, projectsDir, queueDir, config as workspaceConfig, expandPlaceholders } from "./workspace.ts";
 import * as allowances from "./allowances.ts";
 import * as jobs from "./jobs.ts";
 import { cost } from "./usage.ts";
@@ -21,6 +21,9 @@ import { parseEvents, execArgs, validate, type Usage } from "./codex.ts";
 import { type CheckDef, configChecks, declared, verify, type Verification } from "./replycheck.ts";
 import { obj, arr, str, posInt, record, literal, parseFile, type Shape } from "./shape.ts";
 import { registry, getProfile, writes, guardProblem, checkProblem, profileHash, claudeArgs, codexSpec, grokArgs, LEGACY_PROFILES, type Profile, type Registry } from "./caps.ts";
+
+import * as agents from "./agents.ts";
+import { liveSessions } from "./sessions.ts";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 /** The queue folder: GOVERN_QUEUE or the config's "queue". */
@@ -240,8 +243,8 @@ export function claimState(m: Message): "live" | "dead" | "unknown" {
 }
 
 /** Under the claim guard; never retry a run whose external effects and spend are unknown. */
-function failClaim(m: Message, by: string, note?: string): Message {
-  const error = m.claim ? `${m.claim.by} died during the run` : "unknown holder; run interrupted";
+function failClaim(m: Message, by: string, note?: string, reason?: string): Message {
+  const error = reason ?? (m.claim ? `${m.claim.by} died during the run` : "unknown holder; run interrupted");
   const to = LEGACY_OWNER(m);
   m.result = { agent: m.to, ok: false, seconds: 0, error, closedBy: by, ...(note ? { note } : {}) };
   save(m, "claimed");
@@ -256,8 +259,8 @@ function failClaim(m: Message, by: string, note?: string): Message {
   return m;
 }
 
-/** Fail claims of dead processes, for every claimer. Unknown holders are listed for explicit recovery. */
-export function reclaimDead(): string[] {
+/** Fail claims of dead processes, for every claimer. Holderless claims fail after max(3600 s, twice the dispatch timeout); never retry unknown effects. */
+export function reclaimDead(now = Date.now()): string[] {
   return claimGuard(() => {
     const lines: string[] = [];
     for (const { state, m } of all()) {
@@ -265,7 +268,15 @@ export function reclaimDead(): string[] {
       const holder = claimState(m);
       if (holder === "live") continue;
       if (holder === "unknown") {
-        lines.push(`${m.id}: unknown holder; inspect effects, then govern task reclaim ${m.id} --note "<why>"`);
+        const bound = Math.max(3600, 2 * dispatchTimeout());
+        // With no claim timestamp, rename updates ctime, so an old open message cannot inherit an old claim age.
+        const at = m.claim?.at ? Date.parse(m.claim.at) : statSync(join(dir("claimed"), `${m.id}.json`)).ctimeMs;
+        if (now - at <= bound * 1000 || !Number.isFinite(at)) {
+          lines.push(`${m.id}: unknown holder; inspect effects, then govern task reclaim ${m.id} --note "<why>" (automatic failure after ${bound} s)`);
+          continue;
+        }
+        failClaim(m, "govern", undefined, `no holder recorded; claimed more than ${bound} s ago; its effects are unknown`);
+        lines.push(`${m.id}: ${m.result!.error} · failed by govern · notice ${m.result!.reply}`);
         continue;
       }
       failClaim(m, "dispatcher");
@@ -283,6 +294,34 @@ export function reclaim(ref: string, by: string, note: string): Message {
     if (hit.state !== "claimed") fail(`message ${hit.m.id} is not claimed (it is ${hit.state})`);
     if (claimState(hit.m) === "live") fail(`message ${hit.m.id} has a live holder (${hit.m.claim!.by})`);
     return failClaim(hit.m, by, note);
+  });
+}
+
+/** Expire only old local mail whose recipient has no live identity or durable mailbox; no model runs. */
+export function expireMail(now = Date.now()): string[] {
+  const cfg = workspaceConfig(), ttl = cfg.mailTtlHours ?? 72;
+  const known = new Set([...runners(), ...registry().profiles.keys(), "owner", ...(cfg.mailboxes ?? []),
+    ...agents.live(now).flatMap(agents.names), ...liveSessions().map(s => s.name)]);
+  const dead = (name: string) => !name.includes("@") && !known.has(name);
+  return claimGuard(() => {
+    const lines: string[] = [];
+    for (const { state, m } of all()) {
+      if (state !== "open" || !dead(m.to) || !(now - Date.parse(m.created) > ttl * 3600_000)) continue;
+      // Take the file before recording the resolution: another dispatcher cannot run it.
+      if (!move(m, "open", "claimed")) continue;
+      const note = `expired: ${m.to} is no live session or mailbox after ${ttl} h`;
+      m.result = { agent: "govern", ok: false, seconds: 0, closedBy: "govern", note };
+      save(m, "claimed");
+      if (!move(m, "claimed", "failed")) fail(`message ${m.id} could not be moved to failed`);
+      if (!dead(m.from)) {
+        const notice = send({ project: m.project, task: m.task, kind: "NOTICE", from: "govern", to: m.from,
+          summary: clip(note, 200), body: `${m.id}: ${note}`, files: [], replyTo: m.id, access: "read-only" });
+        m.result.reply = notice.id;
+        save(m, "failed");
+      }
+      lines.push(`${m.id}: ${note} · failed by govern${m.result.reply ? ` · notice ${m.result.reply}` : ""}`);
+    }
+    return lines;
   });
 }
 
@@ -372,12 +411,17 @@ export interface RunOut { text?: string; usage?: Usage & { costUsd?: number }; t
 
 export interface SealedOpts { model?: string; lastMessage: string; schema?: string; /** Claude only: the reserved model dollars, a hard cap on the run. */ maxBudgetUsd?: number }
 /** One headless session sealed to a profile: Claude gets only its tools, no settings sources and only its MCP config; Codex gets its
- *  sandbox, -c settings and add-dirs. The prompt goes on stdin. Shared by the dispatcher and the grant self-test. */
+ *  sandbox, -c settings and add-dirs. The prompt goes on stdin. Shared by the dispatcher and the grant self-test.
+ * ARCHITECTURAL REQUIREMENT: LLMs will always produce some form of error.
+ * Absence of output verification is a design defect, not a runtime bug.
+ * All LLM output must be treated as untrusted and validated explicitly.
+ * Callers verify with parseReply (queue) or capability probe assertions (self-test).
+ */
 export function runSealed(reg: Registry, prof: Profile, cwd: string, p: string, timeoutSec: number, o: SealedOpts): RunOut {
   if (prof.engine === "claude") {
-    const args = claudeArgs(reg, prof, o.model ?? prof.model ?? process.env.GOVERN_QUEUE_CLAUDE_MODEL ?? "sonnet", o.maxBudgetUsd);
+    const args = claudeArgs(reg, prof, o.model ?? prof.model ?? process.env.GOVERN_QUEUE_CLAUDE_MODEL ?? "sonnet", o.maxBudgetUsd, o.schema ? readFileSync(o.schema, "utf8") : undefined);
     const r = spawnSync(process.env.GOVERN_CLAUDE_BIN ?? "claude", args, { cwd, input: p, encoding: "utf8", timeout: timeoutSec * 1000, maxBuffer: 64 << 20, env: childEnv() });
-    const res = claudeResult(r.stdout, r.status, r.stderr, r.error);
+    const res = claudeResult(r.stdout, r.status, r.stderr, r.error, o.schema !== undefined);
     return res.error ? { ...res, error: `claude: ${res.error}` } : res;
   }
   if (prof.engine === "grok") return runGrok(reg, prof, cwd, p, timeoutSec, o);
@@ -484,12 +528,17 @@ export function grokResult(stdout: string | undefined, status: number | null, st
   return out;
 }
 
-function claudeResult(stdout: string | undefined, status: number | null, stderr: string | undefined, error?: Error): RunOut {
+/** Decode Claude's result transport; structured requests never fall back to prose. Callers still validate the payload.
+ * ARCHITECTURAL REQUIREMENT: LLMs will always produce some form of error.
+ * Absence of output verification is a design defect, not a runtime bug.
+ * All LLM output must be treated as untrusted and validated explicitly.
+ */
+export function claudeResult(stdout: string | undefined, status: number | null, stderr: string | undefined, error?: Error, structured = false): RunOut {
   let o: any;
   try { o = JSON.parse(stdout ?? ""); } catch { return { error: `no JSON result (exit ${status}): ${clip(stderr ?? stdout ?? "", 300)}` }; }
   const u = o.usage ?? {};
   return {
-    text: o.result, turns: o.num_turns,
+    text: structured ? (o.structured_output === undefined ? undefined : JSON.stringify(o.structured_output)) : o.result, turns: o.num_turns,
     usage: { input: (u.input_tokens ?? 0) + (u.cache_read_input_tokens ?? 0) + (u.cache_creation_input_tokens ?? 0), cached: u.cache_read_input_tokens ?? 0, cacheWrite: u.cache_creation_input_tokens ?? 0, output: u.output_tokens ?? 0, reasoning: 0, costUsd: o.total_cost_usd },
     error: o.is_error ? `${clip(String(o.result ?? o.subtype), 300)}` : error ? error.message : undefined,
   };
@@ -539,7 +588,7 @@ const dispatchTimeout = (): number => { const n = Number(process.env.GOVERN_QUEU
 
 /** Run every open message addressed to a runner, oldest first, at most `max`. Returns what happened, one line each. */
 export function dispatch(o: { max?: number; only?: string; timeoutSec?: number } = {}): string[] {
-  const lines = reclaimDead();
+  const lines = [...reclaimDead(), ...expireMail()];
   const cfg = config();
   // The whole config is checked before any message is claimed or any paid session runs.
   const fromConfig = cfg.checks ?? {};

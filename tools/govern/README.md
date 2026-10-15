@@ -42,7 +42,7 @@ workspace can add its own or override these.
 blocks on them with no model in the loop. The task queue (`govern task …`)
 carries messages between agents. Dispatch recovers claims whose recorded process
 has died into `failed/`, with a BLOCKED notice and unknown spend charged as
-reserved. Runs are never retried automatically. Desk identifies dead or unknown
+reserved. Holderless claims also fail after twice the dispatch timeout, at least one hour, recording that effects are unknown. Runs are never retried automatically. Desk identifies dead or unknown
 holders; after checking effects, release an abandoned claim with
 `govern task reclaim <id> --note "<what you checked>"` (live holders are refused).
 
@@ -114,6 +114,14 @@ Documentation:
 - [OPENCLAW-GAP.md](OPENCLAW-GAP.md) and [OPENCLAW-PARITY.md](OPENCLAW-PARITY.md) are research snapshots, not
   maintained: how OpenClaw could run on top of govern, and what govern would need to offer an OpenClaw-like
   assistant.
+
+## Keeping the queue clear without the owner
+
+Dispatcher setup is standard on each host: `govern task install-service` writes a user systemd unit and prints its enable command. For a system unit, `govern task install-service --system` previews the unit with the current `User=`; add `--write` as root to write `/etc/systemd/system/govern-dispatch.service`. A non-root write request prints the refusal and unit without escalating. Both units quote Environment values, including PATH and GOVERN_REPO with spaces.
+
+Every dispatch tick expires local mail older than `mailTtlHours` (positive integer, default 72) when its recipient has no runner/profile, live registered agent or alias, live session, or configured mailbox. `mailboxes` is a string array in `govern.config.json` (or `.govern/config.json`); `owner` is always retained. Remote mail is left to the relay. Expiration records govern as the handler, moves the message to `failed/`, and sends a NOTICE only to a known sender. The command center shows who settled each message and why.
+
+Claude queue runs pass `--json-schema` and read the CLI's `structured_output`. All replies still pass the strict queue-reply parser; malformed output fails the task and is kept whole. No reply is coerced into an envelope.
 
 ## Releasing
 

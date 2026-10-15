@@ -224,3 +224,14 @@ that fails verification reaches the sender as BLOCKED. A thread that reaches `ma
 | Queue with sealed sessions | Sessions messaging each other | Each run is bounded, its cost is recorded and its reply is verified |
 | Verbatim owner quotes at gates | Inferred or agent-given approval | Only the owner's own words open a gate |
 | Processes as JSON | Code per kind of work | A new kind of work is a new file, and govern does not change |
+
+
+## Automatic queue settlement
+
+The dispatcher tick owns deterministic retention bounds. A holderless claim fails after `max(3600, 2 * dispatchTimeout())` seconds, using its claim timestamp or the claimed file’s metadata-change time (ctime, updated by the claim rename) when no timestamp exists. It follows the abandoned-claim settlement path, charges unknown spend as reserved, records govern as the handler and sends the normal BLOCKED notice. It never retries effects that may already have occurred; manual reclaim remains available and refuses live holders.
+
+Open local mail expires after workspace `mailTtlHours` (positive integer, default 72) only when the recipient is absent from runners, profiles, live registrations (including aliases), live sessions and mailboxes. Workspace `mailboxes` is a string array; `owner` is always included. Remote addresses belong to the relay. Under the claim guard, expiry atomically takes the message, records `closedBy: "govern"` and its reason, and moves it to `failed/`. Only known senders get a NOTICE, so expired names cannot create notice loops. Telemetry carries the resolution handler and reason to the terminal and browser command centers.
+
+Claude's sealed argv includes the serialized queue-reply schema as `--json-schema`. Its JSON transport's `structured_output` is serialized for `parseReply`, which remains the strict validation boundary. Missing structured output never falls back to prose, and another JSON shape is never wrapped into `body`. Failed payloads remain whole beside the failed message. The installed Claude 2.1.300 executable's result schema includes `structured_output`; `claude --help` documents the schema flag. Help did not document the output field, and a documentation fetch was unavailable on this host.
+
+Each host installs the dispatcher as standard setup. The existing user-unit command still writes the user service. `task install-service --system` previews a system unit with the current OS user and `multi-user.target`; `--write` writes the system path only for UID 0 and never escalates. A non-root request prints the unit and refusal. Environment quoting uses the same renderer for both units; PATH with spaces already worked and its escaping is unchanged.

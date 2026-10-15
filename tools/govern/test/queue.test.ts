@@ -88,7 +88,7 @@ test("dispatch runs claude -p with read-only tools, outside this session's env, 
   const call = jsonl(join(e.root, "claude.log"))[0];
   assert.equal(call.nested, false);
   assert.deepEqual(call.argv.slice(0, 5), ["-p", "--output-format", "json", "--model", "sonnet"]);
-  assert.deepEqual(call.argv.slice(5), ["--allowedTools", "Read", "Grep", "Glob", "--tools", "Read", "Grep", "Glob", "--disallowedTools", "Agent", "Bash", "Edit", "NotebookEdit", "Task", "TodoWrite", "WebFetch", "WebSearch", "Write", "--setting-sources", "", "--strict-mcp-config"], "sealed to the claude-read profile");
+  assert.deepEqual(call.argv.slice(5), ["--json-schema", readFileSync(join(HERE, "..", "schemas", "queue-reply.json"), "utf8"), "--allowedTools", "Read", "Grep", "Glob", "--tools", "Read", "Grep", "Glob", "--disallowedTools", "Agent", "Bash", "Edit", "NotebookEdit", "Task", "TodoWrite", "WebFetch", "WebSearch", "Write", "--setting-sources", "", "--strict-mcp-config"], "sealed to the claude-read profile");
 });
 
 const GROK_TOGGLES = ["CLAUDE", "CURSOR"].flatMap((v) => ["AGENTS", "HOOKS", "MCPS", "RULES", "SKILLS"].map((k) => `GROK_${v}_${k}_ENABLED`));
