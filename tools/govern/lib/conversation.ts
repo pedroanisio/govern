@@ -500,8 +500,11 @@ export function update(id: string, runId: string, f: (s: Conversation, r: Run) =
  *  place of a missing reply), then the current message. Fails (exit 1) when it exceeds the context budget. */
 export function context(s: Conversation, r: Run): { role: "user" | "assistant"; content: string }[] {
   const current = s.messages.find((m) => m.id === r.messageId)!;
-  const through = s.context ? s.messages.findIndex((m) => m.id === s.context!.through) : -1;
-  const prior = s.runs.slice(0, s.runs.indexOf(r)).filter((x) => x.state !== "queued" && x.state !== "running");
+  const boundary = s.context ? s.messages.find((m) => m.id === s.context!.through)!.runId : undefined;
+  // Inputs can be queued before earlier replies arrive; checkpoint and current-turn boundaries follow run order.
+  const through = boundary ? s.runs.findIndex((x) => x.id === boundary) : -1;
+  const currentIndex = s.runs.findIndex((x) => x.id === r.id);
+  const prior = s.runs.slice(through + 1, currentIndex).filter((x) => x.state !== "queued" && x.state !== "running");
   const messages: { role: "user" | "assistant"; content: string }[] = [];
   if (s.context)
     messages.push({
@@ -510,7 +513,6 @@ export function context(s: Conversation, r: Run): { role: "user" | "assistant"; 
     });
   for (const run of prior) {
     const input = s.messages.find((m) => m.id === run.messageId)!;
-    if (s.messages.indexOf(input) <= through) continue;
     messages.push({ role: "user", content: input.content });
     const reply = s.messages.find((m) => m.runId === run.id && m.role === "assistant");
     messages.push({

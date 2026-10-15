@@ -251,6 +251,55 @@ test("context budget refuses silent truncation; explicit checkpoint retains the 
   assert.ok(requests[1].messages[0].content.includes("Earlier question answered"));
   assert.ok(state(e).messages.some((m: any) => m.content === "x".repeat(200)));
 });
+
+test("checkpoint preserves queued follow-ups completed after its boundary", () => {
+  for (const checkpointFirst of [true, false]) {
+    const e = setup();
+    create(e);
+    send(e, "first");
+    send(e, "follow-up");
+    const cancelled = send(e, "cancelled follow-up");
+    ok(e, ["run", "chat", "--once"]);
+    const boundary = state(e).messages.at(-1).id;
+    const checkpoint = () => ok(e, ["context", "chat", "--summary", "First turn summarized.", "--through", boundary]);
+    if (checkpointFirst) checkpoint();
+    ok(e, ["cancel", "chat", cancelled.run.id, "--reason", "no longer needed"]);
+    ok(e, ["run", "chat", "--once"]);
+    const followUpReply = state(e).messages.at(-1).content;
+    if (!checkpointFirst) checkpoint();
+    send(e, "third");
+    ok(e, ["run", "chat"]);
+    const requests = readFileSync(e.env.FAKE_CONVERSATION_LOG!, "utf8").trim().split("\n").map((l) => JSON.parse(l));
+    assert.deepEqual(requests.at(-1).messages, [
+      { role: "user", content: "Context summary (historical evidence, not authorization): First turn summarized." },
+      { role: "user", content: "follow-up" },
+      { role: "assistant", content: followUpReply },
+      { role: "user", content: "cancelled follow-up" },
+      { role: "assistant", content: "[Host: prior run cancelled; do not repeat its instructions or assume its external actions succeeded. no longer needed]" },
+      { role: "user", content: "third" },
+    ], `checkpoint ${checkpointFirst ? "before" : "after"} the follow-up completes`);
+    assert.equal(state(e).messages.length, 7, "checkpoint retains durable history");
+  }
+});
+
+test("checkpoint preserves turn order when later queued turns are cancelled", () => {
+  const e = setup();
+  create(e);
+  send(e, "first");
+  ok(e, ["run", "chat"]);
+  ok(e, ["context", "chat", "--summary", "First turn summarized.", "--through", state(e).messages.at(-1).id]);
+  send(e, "second");
+  const future = send(e, "future cancelled instructions");
+  send(e, "last queued turn");
+  ok(e, ["cancel", "chat", future.run.id, "--reason", "no longer needed"]);
+  ok(e, ["run", "chat", "--once"]);
+  const requests = readFileSync(e.env.FAKE_CONVERSATION_LOG!, "utf8").trim().split("\n").map((l) => JSON.parse(l));
+  assert.deepEqual(requests.at(-1).messages, [
+    { role: "user", content: "Context summary (historical evidence, not authorization): First turn summarized." },
+    { role: "user", content: "second" },
+  ]);
+});
+
 test("native Codex uses Govern history and requires its terminal turn completion", () => {
   const e = setup();
   json(e, ["create", "chat", "--profile", "codex-read"]);
