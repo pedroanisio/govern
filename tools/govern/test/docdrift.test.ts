@@ -11,6 +11,7 @@ import { COMMANDS, ENGINES } from "../govern.ts";
 import { BUILTIN_RUNNERS, MAX_FILES_CHARS } from "../lib/queue.ts";
 import { MAX_INLINE, PROMPT_KEYS } from "../lib/codex.ts";
 import { LEGACY_PROFILES } from "../lib/caps.ts";
+import { TESTS as RULE_TESTS } from "../lib/rules.ts";
 import { CONFIG_FILE, DOT_DEFAULTS, DOT_DIR } from "../lib/workspace.ts";
 import { parseArgs, GovernError, type FlagSpec } from "../lib/util.ts";
 
@@ -222,6 +223,12 @@ test("drift: SKILL.md names exactly the prompt front matter keys readPrompt acce
   const named = new Set([...(m[1] ?? "").matchAll(/`([a-z]+)`/g)].map((x) => x[1] ?? ""));
   assert.deepEqual([...named].sort(), [...PROMPT_KEYS].sort());
   assert.deepEqual([...read].sort(), [...PROMPT_KEYS].sort());
+});
+
+test("drift: SKILL.md names exactly the house-rule tests loadRules accepts", () => {
+  const m = present(/the tests (.*?), an optional `when/.exec(flat("SKILL.md")) ?? undefined, "SKILL.md's house-rule test list");
+  const named = [...(m[1] ?? "").matchAll(/`([a-zA-Z]+)`/g)].map((x) => x[1] ?? "").filter((n) => n !== "flags");
+  assert.deepEqual(named.sort(), [...RULE_TESTS].sort());
 });
 
 // ---- (c) example commands -------------------------------------------------------------------------------------------

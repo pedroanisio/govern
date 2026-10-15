@@ -17,7 +17,8 @@ export interface Rule {
   /** Each hit after the first is a time (m:ss or h:mm:ss) at least this many seconds after the hit before it. */
   minSecondsApart?: number;
 }
-const TESTS = ["forbid", "require", "maxWords", "maxItems", "minItems", "equals", "indexOf", "minSecondsApart"] as const;
+/** The tests a rule may use, exactly one each. */
+export const TESTS = ["forbid", "require", "maxWords", "maxItems", "minItems", "equals", "indexOf", "minSecondsApart"] as const;
 
 const count: Shape<number> = (v, p) =>
   (Number.isInteger(v) && (v as number) >= 0 ? (v as number) : reject(p, `must be a whole number, 0 or more (got ${JSON.stringify(v)})`));
