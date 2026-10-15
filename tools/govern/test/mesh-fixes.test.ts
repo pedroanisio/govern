@@ -7,6 +7,7 @@ import { stripTypeScriptTypes } from "node:module";
 import { makeEnv, write, NOW, use, lower, network, trio, task, HERE } from "./helpers.ts";
 import * as peer from "../lib/peer.ts";
 import * as mesh from "../lib/mesh.ts";
+import * as realCenter from "../lib/center.ts";
 import * as agents from "../lib/agents.ts";
 import * as queue from "../lib/queue.ts";
 import * as sessions from "../lib/sessions.ts";
@@ -143,9 +144,9 @@ test("center serve listens and prints the requested IPv6 loopback host", async (
   const source = readFileSync(join(HERE, "..", "govern.ts"), "utf8");
   const fn = source.slice(source.indexOf("async function cmdCenter("), source.indexOf("/** The text of the user service"));
   const listening: unknown[][] = [], output: string[] = [];
-  const run = new Function("opt", "remote", "peer", "center", "out", "fail", "process", stripTypeScriptTypes(fn) + "; return cmdCenter;")(
-    (_a: unknown, n: string) => n === "host" ? "::1" : "5004", { loopback: () => true }, { identity() {} },
-    { newToken: () => "token", centerServer: () => ({ on() {}, listen(...args: unknown[]) { listening.push(args.slice(0, 2)); (args[2] as () => void)(); } }) },
+  const run = new Function("opt", "flag", "remote", "peer", "center", "out", "fail", "process", stripTypeScriptTypes(fn) + "; return cmdCenter;")(
+    (_a: unknown, n: string) => n === "host" ? "::1" : "5004", () => false, { loopback: () => true }, { identity() {} },
+    { persistentToken: () => "token", tokenFile: () => "center-token", centerAddress: realCenter.centerAddress, centerServer: () => ({ on() {}, listen(...args: unknown[]) { listening.push(args.slice(0, 2)); (args[2] as () => void)(); } }) },
     (s: string) => output.push(s), assert.fail, process);
   await run({ _: ["center", "serve"] });
   assert.deepEqual(listening, [[5004, "::1"]]); assert.match(output.join("\n"), /http:\/\/\[::1\]:5004/);
