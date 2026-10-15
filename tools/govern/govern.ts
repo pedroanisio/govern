@@ -40,6 +40,9 @@ import * as peer from "./lib/peer.ts";
 import * as mesh from "./lib/mesh.ts";
 import * as agents from "./lib/agents.ts";
 import * as center from "./lib/center.ts";
+import { processSvg, viewOf, type Overlay } from "./lib/processview.ts";
+import { sceneOf, canvasFor } from "./lib/processscene.ts";
+import { readLane, readLanes } from "./lib/lanestate.ts";
 import * as artifacts from "./lib/artifacts.ts";
 import * as remotePair from "./lib/remote-pair.ts";
 import { checkRecipient, requireAs, resolveAs, callingSession, sessions } from "./lib/sessions.ts";
@@ -940,6 +943,50 @@ async function cmdAgents(a: Args): Promise<void> {
   }
 }
 
+/** The scene-render program: $SCENE_RENDER, else `scene-render` on PATH; undefined when neither runs. */
+function sceneRender(): string | undefined {
+  const named = process.env.SCENE_RENDER;
+  if (named) return existsSync(named) ? named : undefined;
+  return spawnSync("scene-render", ["--version"], { stdio: "ignore" }).error ? undefined : "scene-render";
+}
+
+/** `govern bpmn <process|lane>`: the BPMN diagram of a process (with the live state of every lane on it) or of one lane (its own
+ *  process, with that lane's progress). Read-only: SVG to a file or stdout, a scene-render scene, or a PNG the engine renders. */
+function cmdBpmn(a: Args): void {
+  const name = a._[1] ?? fail("govern bpmn <process|lane-slug> [--svg FILE] [--scene FILE] [--png FILE] [--width N] [--height N] [--static]");
+  const stat = flag(a, "static"), now = Date.now();
+  let p: ReturnType<typeof getProcess>, overlay: Overlay | undefined;
+  if (processes().has(name)) {
+    p = getProcess(name);
+    overlay = stat ? undefined : { now, lanes: readLanes({ now }).lanes.filter((l) => l.process.name === name) };
+  } else if (laneSlugs().includes(name)) {
+    p = processOf(load(name));
+    const sel = readLane(name, { now });
+    overlay = stat ? undefined : { now, lanes: [sel], selected: sel };
+  } else return fail(`"${name}" is neither a process (${[...processes().keys()].join(", ")}) nor a lane (govern status)`);
+  const dim = (k: string): number | undefined => { const v = opt(a, k); if (v === undefined) return undefined; const n = Number(v); if (!Number.isInteger(n) || n < 64 || n > 16384) fail(`--${k} must be a whole number of pixels, 64..16384`); return n; };
+  const svgFile = opt(a, "svg"), sceneFile = opt(a, "scene"), pngFile = opt(a, "png"), width = dim("width"), height = dim("height");
+  if ((width || height) && !sceneFile && !pngFile) fail("--width and --height size the scene and the PNG: add --scene FILE or --png FILE");
+  let engine: string | undefined;
+  if (pngFile) { engine = sceneRender(); if (!engine) fail("--png needs the scene-render engine: set SCENE_RENDER to its path or put scene-render on PATH (no PNG is made without it)"); }
+  if (svgFile || !(sceneFile || pngFile)) {
+    const svg = processSvg(p, overlay);
+    if (svgFile) { writeFileSync(svgFile, svg); out(`wrote ${svgFile}`); } else process.stdout.write(svg + "\n");
+  }
+  if (sceneFile || pngFile) {
+    const v = viewOf(p, overlay), c = canvasFor(v.drawing.width, v.drawing.height, width ?? 3840, height);
+    const xml = sceneOf(v.drawing, c), file = sceneFile ?? join(tmpdir(), `govern-bpmn-${process.pid}.scene.xml`);
+    writeFileSync(file, xml);
+    if (sceneFile) out(`wrote ${sceneFile} (${c.width}x${c.height})`);
+    if (pngFile) {
+      const r = spawnSync(engine!, ["render", file, "--time", "0", "-o", pngFile], { encoding: "utf8" });
+      if (!sceneFile) try { unlinkSync(file); } catch { /* a leftover temp file is harmless */ }
+      if (r.error || r.status !== 0) fail(`scene-render failed${r.error ? `: ${r.error.message}` : ` (exit ${r.status})`}: ${(r.stderr || r.stdout || "").trim().split("\n").slice(-3).join(" | ")}`);
+      out(`wrote ${pngFile} (${c.width}x${c.height})`);
+    }
+  }
+}
+
 /** The operator's view of every federated host. serve binds loopback only and prints the address with its token. */
 async function cmdCenter(a: Args): Promise<void> {
   const sub = a._[1] ?? "show";
@@ -1062,6 +1109,9 @@ export const COMMANDS: readonly Cmd[] = [
       pin: {lines:[["<slug>","freeze the process definition for this lane"]],run:a=>lifecycle.transaction(checkSlug(a._[2]),()=>{const p=load(a._[2]);lifecycle.pin(p);out(`${p.slug}: pinned revision ${p.processSnapshot!.revision}`);})},
       migrate: {flags:{value:['map','data','quote']},lines:[["<slug> [--map JSON] [--data JSON] --quote Q","explicitly migrate to a higher process revision; clears decisions and reinitializes active lifecycle state"]],run:cmdMigrate},
     } },
+  { name: "bpmn", section: 1, flags: { value: ["svg", "scene", "png", "width", "height"], bool: ["static"] },
+    lines: [["<process|lane> [--svg FILE] [--scene FILE] [--png FILE] [--width N --height N] [--static]", "the BPMN diagram of a process, with the live state of the lanes on it, or of one lane with its own progress (SVG to stdout by default; --scene writes a scene-render scene, --png renders it with $SCENE_RENDER or scene-render on PATH; --static omits the live state)"]],
+    run: cmdBpmn },
   { name: "check", section: 1, flags: { value: ["set", "stage", "quote"], bool: ["accept"] },
     lines: [["<slug> [--set <command> --stage <stage>]", "run the stage's exit check (or set the lane's own: ledgered; a swap is flagged)"],
       ["<slug> <stage> --accept --quote \"<the owner's words>\"", "the owner accepts that stage's flagged check changes"]], run: cmdCheck },

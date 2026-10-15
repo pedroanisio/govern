@@ -20,6 +20,7 @@
 #     govern event SLUG NAME --id ID --correlation JSON [--data JSON] [--generation N]
 #     govern event-listen [--port 5001]  |  tick [SLUG] [--advance] [--loop --interval S]
 #     govern alerts SLUG [--ack ID]  |  subprocess SLUG STAGE  |  recover SLUG --action retry|compensated --quote Q
+#     govern bpmn PROCESS|SLUG [--svg FILE] [--scene FILE] [--png FILE] [--width N --height N] [--static]
 #     govern process list|show NAME  |  process pin SLUG  |  process migrate SLUG --map JSON --quote Q  |  check SLUG [--set CMD --stage S]  |  check SLUG STAGE --accept --quote Q
 #     govern advance SLUG [--stage STAGE] [--note EVIDENCE]  |  dep SLUG [--after LANE[:STAGE]] [--rm LANE]  |  hook stop
 #     govern run SLUG CMD [--bg] [--on RESOURCE [--override-resource]] [--estimate HOURS] [-- ARGS]  |  allow NAME --extra N --quote "…" [--by OWNER]  |  resources [NAME]  |  wait SLUG [JOB] [--timeout S]  |  jobs SLUG  |  kill SLUG [JOB]
@@ -245,6 +246,12 @@
 #     --interval S            tick, task dispatch, task install-service: seconds between rounds (default 30)
 #     --reap-every S          task dispatch, task install-service: list each resource's tagged instances every S seconds
 #                             into state for the desk (off by default; never stops a machine)
+#     --svg FILE              bpmn: write the SVG diagram there (with no --svg, --scene or --png it goes to stdout)
+#     --scene FILE            bpmn: write the diagram as a scene-render scene
+#     --png FILE              bpmn: render the scene to a PNG with $SCENE_RENDER, else scene-render on PATH; without an engine it fails
+#     --width N               bpmn: the scene and PNG width in pixels (default 3840)
+#     --height N              bpmn: the scene and PNG height in pixels (default: the diagram's aspect)
+#     --static                bpmn: the process as defined, without the live state of the lanes
 #     A value flag takes the next word even when it starts with --, unless that word is a govern flag;
 #     give such a value as --flag=VALUE. A flag the command does not declare is refused (exit 2).
 # EXIT STATUS
@@ -261,7 +268,7 @@
 #     read and written by tune) · GOVERN_GROK_SESSIONS (else the sessions of govern's grok home and of the user's)
 #     · GOVERN_GROK_HOME (govern's private grok home; default $XDG_STATE_HOME, else ~/.local/state, /govern/grok-home)
 #     · GROK_HOME (the user's grok home, where the login is read from; default ~/.grok).
-#     Programs: GOVERN_CODEX_BIN (codex) · GOVERN_CLAUDE_BIN (claude) · GOVERN_GROK_BIN (grok) · GOVERN_PYTHON (python3;
+#     Programs: SCENE_RENDER (the scene-render engine bpmn --png runs) · GOVERN_CODEX_BIN (codex) · GOVERN_CLAUDE_BIN (claude) · GOVERN_GROK_BIN (grok) · GOVERN_PYTHON (python3;
 #     fills {python}).
 #     Limits and models: GOVERN_CTX_WARN (150000) · GOVERN_TARGET_CTX (150000, tune) · GOVERN_MAX_INLINE (60000, ask)
 #     · GOVERN_QUEUE_MAX_INLINE (40000) · GOVERN_QUEUE_CLAUDE_MODEL (sonnet) · GOVERN_QUEUE_CODEX_EFFORT (medium)
