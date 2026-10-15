@@ -1,12 +1,12 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { mkdirSync, readFileSync, rmSync, symlinkSync, unlinkSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, symlinkSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import * as sessions from "../lib/conversation.ts";
 import { build } from "../lib/conversation-adapters.ts";
-import { owner, ownerLive } from "../lib/conversation-owner.ts";
+import { createOwner, owner, ownerLive, readBoot } from "../lib/conversation-owner.ts";
 import { SUBS } from "../lib/conversation-cli.ts";
 import { parseArgs } from "../lib/util.ts";
 import { makeEnv, childEnv, write, type Env } from "./helpers.ts";
@@ -132,6 +132,22 @@ test("owner identity accepts legacy records and rejects changed start and boot i
   assert.equal(ownerLive({ pid: process.pid }), true);
   assert.equal(ownerLive({ ...current, start: "different-start" }), false);
   assert.equal(ownerLive({ ...current, boot: "different-boot" }), false);
+});
+
+test("owner omits unreadable boot identity and liveness accepts records without boot", () => {
+  const reads: [string, string][] = [];
+  const boot = readBoot((path, encoding) => {
+    reads.push([path, encoding]);
+    throw new Error("boot id unavailable");
+  });
+  assert.deepEqual(reads, [["/proc/sys/kernel/random/boot_id", "utf8"]]);
+  assert.equal(boot, undefined);
+  const withoutBoot = createOwner(boot)(process.pid);
+  assert.equal(Object.hasOwn(withoutBoot, "boot"), false);
+  assert.equal(withoutBoot.pid, process.pid);
+  assert.equal(withoutBoot.start, owner(process.pid).start);
+  assert.equal(ownerLive(withoutBoot), true);
+  assert.equal(ownerLive({ ...withoutBoot, start: "different-start" }), false);
 });
 
 test("profile adapters use configured models and fallback binaries and price only recognized models", () => isolated((e) => {
@@ -333,4 +349,44 @@ test("host forwards input, output, errors and signal exits and terminates normal
     assert.equal(await done, script.includes("pipe") ? 0 : 1);
     if (script.includes("pipe")) { assert.equal(out, "input"); assert.equal(err, "diagnostic"); }
   }
+});
+
+test("non-detached host refuses an exited owner without starting the child and exits 1", { timeout: 5000 }, (t) => isolated(async (e) => {
+  const exited = spawnSync(process.execPath, ["-e", ""], { env: childEnv(e) });
+  assert.equal(exited.error, undefined);
+  assert.equal(exited.status, 0);
+  const deadOwner = owner(exited.pid);
+  assert.equal(ownerLive(deadOwner), false);
+  const marker = join(e.root, "child-started");
+  const host = fileURLToPath(new URL("../lib/conversation-host.ts", import.meta.url));
+  // Without detached, the host is not a process-group leader. Both group kills
+  // fail, allowing stop() to exit normally and V8 to flush its coverage profile.
+  const child = spawn(process.execPath, [host], { detached: false, env: childEnv(e), stdio: ["ignore", "pipe", "pipe", "ipc"] });
+  t.after(() => { if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL"); });
+  const done = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve, reject) => {
+    child.on("error", reject);
+    child.on("close", (code, signal) => resolve({ code, signal }));
+  });
+  child.send({ bin: process.execPath, args: ["-e", 'require("node:fs").writeFileSync(process.argv[1], "started")', marker],
+    cwd: e.root, env: childEnv(e), input: "", owner: deadOwner });
+  assert.deepEqual(await done, { code: 1, signal: null });
+  assert.equal(existsSync(marker), false);
+}));
+
+test("non-detached host exits 1 when its child is killed by a signal", { timeout: 5000 }, async (t) => {
+  const host = fileURLToPath(new URL("../lib/conversation-host.ts", import.meta.url));
+  const child = spawn(process.execPath, [host], { detached: false, stdio: ["ignore", "pipe", "pipe", "ipc"] });
+  let out = "", err = "";
+  child.stdout!.on("data", (chunk) => out += chunk);
+  child.stderr!.on("data", (chunk) => err += chunk);
+  t.after(() => { if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL"); });
+  const done = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve, reject) => {
+    child.on("error", reject);
+    child.on("close", (code, signal) => resolve({ code, signal }));
+  });
+  child.send({ bin: process.execPath, args: ["-e", 'process.stdout.write("signalling", () => process.kill(process.pid, "SIGTERM"))'],
+    cwd: process.cwd(), env: process.env, input: "", owner: owner(process.pid) });
+  assert.deepEqual(await done, { code: 1, signal: null });
+  assert.equal(out, "signalling");
+  assert.equal(err, "");
 });
