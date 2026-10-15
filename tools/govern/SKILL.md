@@ -32,7 +32,7 @@ error. `govern peer id`, `govern peer add`, `govern peer revoke`, `govern peer s
 `govern mesh invite`, `govern mesh join`, `govern mesh policy` and `govern mesh revoke` are the owner's setup steps:
 those that grant runs work only from the owner's own terminal, and you never run them. `govern mesh status` and a
 plain `govern mesh sync` are safe to run. `govern center show` prints the operator's command center: every federated
-host's health, alerts, agents, spend and latest messages; `govern center serve` shows it in a browser for the owner (the address and its token are kept in the private state and survive restarts: `govern center url` prints them; `--new-token` rotates), with a Projects view (every host's lanes: stage, status, gates, last check) and a Processes view (live BPMN of any process, from any host, and of any lane); `govern bpmn <process|lane>` draws the same diagram in a terminal session (SVG, scene or PNG). All of it is read-only. See [PEERS.md](PEERS.md).
+host's health, alerts, agents, spend and latest messages; `govern center serve` shows it in a browser for the owner (the address and its token are kept in the private state and survive restarts: `govern center url` prints them; `--new-token` rotates; the agents list shows the folder each agent works in), with a Projects view (every host's lanes: stage, status, gates, last check) and a Processes view (live BPMN of any process, from any host, and of any lane); `govern bpmn <process|lane>` draws the same diagram in a terminal session (SVG, scene or PNG). All of it is read-only. See [PEERS.md](PEERS.md).
 
 ## Start
 

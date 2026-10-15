@@ -110,7 +110,9 @@ export interface LaneRow { host: string; self: boolean; lane: LaneState }
 /** How many lanes of one process a host has, by derived status. */
 export interface ProcessHost { host: string; self: boolean; lanes: number; running: number; waiting: number; blocked: number; done: number }
 export interface ProcessRow extends ProcessInfo { hosts: ProcessHost[] }
-export interface LiveView { at: string; hosts: HostLanes[]; lanes: LaneRow[]; processes: ProcessRow[] }
+/** Where an agent on `host` works, as that host reports it. */
+export interface PlaceRow { host: string; name: string; cwd: string }
+export interface LiveView { at: string; hosts: HostLanes[]; lanes: LaneRow[]; processes: ProcessRow[]; places: PlaceRow[] }
 
 const tally = (ls: LaneState[]) => ({
   lanes: ls.length, running: ls.filter(l => l.status === "running").length, done: ls.filter(l => l.status === "done").length,
@@ -142,7 +144,11 @@ export async function gatherLive(o: { post?: peer.Post; now?: () => number } = {
   add(local.host, true, local.processes);
   for (const r of remote) if (r.answer) add(r.host, false, r.answer.processes);
   const processes = [...known.values()].sort((a, b) => a.name.localeCompare(b.name) || b.revision - a.revision);
-  return { at: new Date(now()).toISOString(), hosts, lanes, processes };
+  const places: PlaceRow[] = [
+    ...(local.places ?? []).map(p => ({ host: local.host, ...p })),
+    ...remote.flatMap(r => (r.answer?.places ?? []).map(p => ({ host: r.host, ...p }))),
+  ];
+  return { at: new Date(now()).toISOString(), hosts, lanes, processes, places };
 }
 
 /** The SVG of one process with the live state of the lanes on it, or with one lane's progress. `host` names whose lanes and definitions to use (default: this host).
@@ -231,7 +237,7 @@ export function centerServer(o: { token: string; view?: () => Promise<View>; liv
     }
     if (!cachedLive || Date.now() - cachedLive.at > CACHE_MS) cachedLive = { at: Date.now(), v: liveView() };
     cachedLive.v.then(async v => {
-      if (url.pathname === "/api/lanes") return json(200, { at: v.at, hosts: v.hosts, lanes: v.lanes });
+      if (url.pathname === "/api/lanes") return json(200, { at: v.at, hosts: v.hosts, lanes: v.lanes, places: v.places });
       if (url.pathname === "/api/processes") return json(200, { at: v.at, hosts: v.hosts, processes: v.processes });
       let name: string;
       try { name = decodeURIComponent(svgName!); } catch { return json(404, { error: "not found" }); }

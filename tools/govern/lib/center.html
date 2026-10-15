@@ -98,7 +98,7 @@ tr.pick { cursor: pointer; } tr.pick:hover td { background: var(--chip); } tr.pi
   <section><h2>Alerts</h2><div id="alerts"></div></section>
   <section><h2>Hosts</h2><div class="hosts" id="hosts"></div></section>
   <div class="two">
-    <section><h2>Agents</h2><div class="table"><table><thead><tr><th>Address</th><th>Kind</th><th>Reach</th><th>Until</th></tr></thead><tbody id="agents"></tbody></table></div></section>
+    <section><h2>Agents</h2><div class="table"><table><thead><tr><th>Address</th><th>Folder</th><th>Kind</th><th>Reach</th><th>Until</th></tr></thead><tbody id="agents"></tbody></table></div></section>
     <section><h2>Spend, last 24 h</h2><div class="table"><table><thead><tr><th>Host</th><th>Agent</th><th>Runs</th><th>Failed</th><th>Cost</th><th>Tokens in / out</th></tr></thead><tbody id="spend"></tbody></table></div></section>
   </div>
   <section>
@@ -194,11 +194,7 @@ function render(v) {
     ]) dl.append(el("dt", {}, k), el("dd", {}, val));
     return el("div", { class: "host" }, head, dl);
   }));
-  const agents = v.agents.map(r => el("tr", {}, el("td", { class: "mono", title: r.description || "" }, ...(r.kind === "runners"
-    ? [...join(r.names.map(nameChip), ", "), " @", hostChip(r.host)]
-    : [nameChip(r.names[0]), "@", hostChip(r.host), ...(r.names.length > 1 ? [" (", ...join(r.names.slice(1).map(nameChip), ", "), ")"] : []),
-       cb("⧉", `Copy address ${r.names[0]}@${r.host}`, b => copy(`${r.names[0]}@${r.host}`, b), "addr")])), el("td", {}, r.kind), el("td", {}, r.reach), el("td", {}, r.until ? when(r.until) : r.kind === "session" ? "live" : "—")));
-  rows($("agents"), agents, "No agents reported.", 4);
+  renderAgents();
   const spend = v.hosts.flatMap(h => Object.entries(h.telemetry ? h.telemetry.byAgent : {}).map(([a, r]) =>
     el("tr", {}, el("td", {}, h.host), el("td", { class: "mono" }, a), el("td", { class: "num" }, r.count), el("td", { class: "num" }, r.failed), el("td", { class: "num" }, usd(r.costUsd)), el("td", { class: "num" }, `${tok(r.input)} / ${tok(r.output)}`))));
   rows($("spend"), spend, "No runs in the last 24 hours.", 6);
@@ -206,6 +202,18 @@ function render(v) {
   sel.replaceChildren(el("option", { value: "" }, "All hosts"), ...v.hosts.map(h => el("option", { value: h.host }, h.host)));
   sel.value = keep;
   renderMessages();
+}
+/** The agents list, with the folder each agent works in as its host reports it (from the live lanes answer). */
+function renderAgents() {
+  if (!view) return;
+  const places = (live.lanes && live.lanes.places) || [];
+  const folders = r => r.kind === "runners" ? [] : [...new Set(places.filter(p => p.host === r.host && r.names.includes(p.name)).map(p => p.cwd))];
+  const folderCell = r => { const f = folders(r); return el("td", { class: "mono" }, ...(f.length ? join(f.map(c => el("span", { title: c }, c)), ", ") : [r.kind === "runners" ? "—" : live.lanes ? "unknown" : "…"])); };
+  const agents = view.agents.map(r => el("tr", {}, el("td", { class: "mono", title: r.description || "" }, ...(r.kind === "runners"
+    ? [...join(r.names.map(nameChip), ", "), " @", hostChip(r.host)]
+    : [nameChip(r.names[0]), "@", hostChip(r.host), ...(r.names.length > 1 ? [" (", ...join(r.names.slice(1).map(nameChip), ", "), ")"] : []),
+       cb("⧉", `Copy address ${r.names[0]}@${r.host}`, b => copy(`${r.names[0]}@${r.host}`, b), "addr")])), folderCell(r), el("td", {}, r.kind), el("td", {}, r.reach), el("td", {}, r.until ? when(r.until) : r.kind === "session" ? "live" : "—")));
+  rows($("agents"), agents, "No agents reported.", 5);
 }
 function renderMessages() {
   if (!view) return;
@@ -338,7 +346,7 @@ async function refreshLive() {
   try {
     const [l, p] = await Promise.all([api("/api/lanes"), api("/api/processes")]);
     if (!l.ok || !p.ok) throw new Error((await (l.ok ? p : l).json()).error || "refused");
-    live = { lanes: await l.json(), processes: await p.json() }; liveError = "";
+    live = { lanes: await l.json(), processes: await p.json() }; liveError = ""; renderAgents();
   } catch (e) {
     liveError = "update failed: " + e.message + (live.lanes ? " (showing the last answer)" : "");
     $("status").textContent = liveError; $("status").className = "status err";

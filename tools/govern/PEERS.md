@@ -188,7 +188,9 @@ hash from `/api/processes`) and `lane=SLUG` (the lane's own process and progress
 Lanes and processes travel on the same signed channel as telemetry and under the same rule: only to a mesh member the host names
 as an observer. `POST /v1/peer/lanes` answers a signed closed `govern-lanes/1` document: one summary per lane (slug, title,
 process name, revision and hash, stage, stage marks, each gate's decision with who and when, each check's last result with its
-first failing line, running jobs, BLOCKED message summaries, status), the processes by name, revision and hash, and the count of
+first failing line, running jobs, BLOCKED message summaries, status), the processes by name, revision and hash, the folder each
+live session and registered agent works in (its name and working directory, so the command center's agents list can say which
+project it is on; optional, absent from hosts before it), and the count of
 lanes left out when the answer would pass about 180 kB (finished and least recently active go first). It never carries raw lane
 state, ledgers or message bodies. `POST /v1/peer/process` returns one definition by name and hash as a signed `govern-process/1`
 answer; the center checks the hash and caches the definition. A host whose govern predates these routes answers 404 and is listed

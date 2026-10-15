@@ -6,11 +6,11 @@ import { request } from "node:http";
 import { once } from "node:events";
 import { copyFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
-import { trio, use, network, fixture, NOW, type Env } from "./helpers.ts";
+import { trio, use, network, fixture, asSession, NOW, type Env } from "./helpers.ts";
 import * as peer from "../lib/peer.ts";
 import * as center from "../lib/center.ts";
 import { create, load, save } from "../lib/project.ts";
-import { definitionOf, lanesAnswer, LANES_ANSWER } from "../lib/livestate.ts";
+import { definitionOf, lanesAnswer, placesOf, LANES_ANSWER, MAX_CWD } from "../lib/livestate.ts";
 import { parseFile } from "../lib/shape.ts";
 
 const original = { ...process.env };
@@ -140,7 +140,7 @@ test("the center serves lanes, processes and diagrams over HTTP: token required,
 
 test("the page offers the Projects and Processes views, reads only the token-gated endpoints and stays read-only", async () => {
   const at = new Date(NOW).toISOString();
-  const server = center.centerServer({ token: "secret-token", view: async () => ({ at, hosts: [], peers: [], alerts: [], messages: [], agents: [] } as unknown as center.View), live: async () => ({ at, hosts: [], lanes: [], processes: [] }) });
+  const server = center.centerServer({ token: "secret-token", view: async () => ({ at, hosts: [], peers: [], alerts: [], messages: [], agents: [] } as unknown as center.View), live: async () => ({ at, hosts: [], lanes: [], processes: [], places: [] }) });
   server.listen(0, "127.0.0.1"); await once(server, "listening");
   const port = (server.address() as { port: number }).port;
   try {
@@ -148,12 +148,12 @@ test("the page offers the Projects and Processes views, reads only the token-gat
     assert.match(page, /data-view="projects"/); assert.match(page, /data-view="processes"/);
     for (const path of ["/api/lanes", "/api/processes", "/api/process/"]) assert.ok(page.includes(path), `the page reads ${path}`);
     assert.ok(!/method:\s*["'](POST|PUT|DELETE|PATCH)/i.test(page), "the page never writes");
-    assert.deepEqual(JSON.parse((await get(port, "/api/lanes", auth)).body), { at, hosts: [], lanes: [] });
+    assert.deepEqual(JSON.parse((await get(port, "/api/lanes", auth)).body), { at, hosts: [], lanes: [], places: [] });
   } finally { server.close(); }
 });
 
 test("the page explains a missing token and a failed update in the live views instead of loading forever", async () => {
-  const server = center.centerServer({ token: "secret-token", view: async () => ({}) as unknown as center.View, live: async () => ({ at: new Date(NOW).toISOString(), hosts: [], lanes: [], processes: [] }) });
+  const server = center.centerServer({ token: "secret-token", view: async () => ({}) as unknown as center.View, live: async () => ({ at: new Date(NOW).toISOString(), hosts: [], lanes: [], processes: [], places: [] }) });
   server.listen(0, "127.0.0.1"); await once(server, "listening");
   const port = (server.address() as { port: number }).port;
   try {
@@ -166,3 +166,44 @@ test("the page explains a missing token and a failed update in the live views in
   } finally { server.close(); }
 });
 
+test("each live session and registered agent is placed in its folder: one entry per name and folder, runners and folderless sessions left out", () => {
+  const sessions = [{ pid: 1, name: "s1", cwd: "/a" }, { pid: 2, name: "s1", cwd: "/a" }, { pid: 3, name: "s2", cwd: "/b" }, { pid: 4, name: "s3" }, { pid: 5, name: "s1", cwd: "/c" }];
+  const agents = [
+    { name: "bot", aliases: ["b2"], owner: "s2" },
+    { name: "pidbot", aliases: [], owner: "elsewhere", pid: 1 },
+    { name: "term", aliases: [], owner: "terminal" },
+  ];
+  assert.deepEqual(placesOf(sessions, agents), [
+    { name: "b2", cwd: "/b" }, { name: "bot", cwd: "/b" }, { name: "pidbot", cwd: "/a" },
+    { name: "s1", cwd: "/a" }, { name: "s1", cwd: "/c" }, { name: "s2", cwd: "/b" },
+  ]);
+  assert.deepEqual(placesOf([{ pid: 9, name: "long", cwd: "/" + "x".repeat(MAX_CWD + 50) }], []).map((p) => p.cwd.length <= MAX_CWD), [true], "a folder is clipped to the answer's limit");
+});
+
+test("a lanes answer may carry the places and still parses without them; a malformed place is refused", async () => {
+  const { b } = await federation();
+  use(b);
+  const id = peer.identity(), a = lanesAnswer({ host: id.name, fingerprint: peer.fingerprint(id.publicKey), now: NOW });
+  const { places: _, ...without } = a;
+  parseFile("lanes", JSON.stringify(without), LANES_ANSWER);
+  parseFile("lanes", JSON.stringify({ ...a, places: [{ name: "s1", cwd: "/a" }] }), LANES_ANSWER);
+  for (const bad of [[{ name: "s1" }], [{ name: "s1", cwd: 7 }], [{ name: "s1", cwd: "/a", pid: 3 }], [{ name: "s1", cwd: "x".repeat(MAX_CWD + 1) }]])
+    assert.throws(() => parseFile("lanes", JSON.stringify({ ...a, places: bad }), LANES_ANSWER), /places/, JSON.stringify(bad));
+});
+
+test("the central view says in which folder every host's live sessions run, and /api/lanes passes it to the page", async () => {
+  const { a, b, post } = await federation();
+  asSession(b, "sess-b");
+  use(a);
+  const v = await center.gatherLive({ post, now: () => NOW });
+  assert.deepEqual(v.places.filter((p) => p.host === "b"), [{ host: "b", name: "tester", cwd: b.root }]);
+  assert.equal(v.places.some((p) => p.host === "a"), false, "host a runs no session in this test");
+  const server = center.centerServer({ token: "secret-token", live: async () => v });
+  server.listen(0, "127.0.0.1"); await once(server, "listening");
+  const port = (server.address() as { port: number }).port;
+  try {
+    assert.deepEqual(JSON.parse((await get(port, "/api/lanes", auth)).body).places, v.places);
+    const page = (await get(port, "/")).body;
+    assert.match(page, /<th>Folder<\/th>/, "the agents table has a Folder column");
+  } finally { server.close(); }
+});
