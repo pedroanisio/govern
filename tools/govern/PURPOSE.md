@@ -5,7 +5,7 @@ disclaimer:
     Any statement or premise not backed by a real logical definition
     or verifiable reference may be invalid, erroneous, or a hallucination.
   generated_by: "Claude Opus 5.5 via Claude Code"
-  date: "2026-10-14"
+  date: "2026-10-15"
 ---
 
 # govern
@@ -18,10 +18,13 @@ Left alone, agent work turns into long conversations. Its state is buried in a c
 
 govern exists so that whoever owns the work keeps the decisions and knows where everything stands and what it cost, while the agents spend their effort on the work.
 
+This system is for agents to organize and distribute work among themselves, not to burden the human operator. What the operator needs from govern is visibility: where everything stands, who is doing what, what it cost and which decisions are waiting. The operator should get that without running the coordination themselves.
+
 ---
 
 ## How We Approach This
 
+- **Agents coordinate; the operator watches.** Agents plan, split, assign, hand off and follow up on work among themselves through govern. The operator is asked only for the decisions that are theirs, such as gates, grants and spend, and sees everything else without having to ask.
 - **State lives in files, not conversations.** Anyone, agent or person, can pick up any work from what is written down.
 - **No model for what a program can do.** Waiting, relaying and bookkeeping are code; models are for judgement.
 - **Model output is untrusted until checked.** Every model step has a check; a failure is reported, never turned into a pass.
@@ -58,6 +61,6 @@ govern does **not**:
 
 ## Who This Is For
 
-- **People running work through agents.** They see status and cost at a glance, and decide at gates.
+- **People running work through agents.** They see status and cost at a glance, and decide at gates. They do not relay messages, assign tasks or chase agents.
 - **The agents operating it.** They know what to do next, what they may use and when to ask. Their manual is `SKILL.md`.
 - **Anyone adding a kind of work.** They describe a process; govern stays unchanged.
