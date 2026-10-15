@@ -17,3 +17,5 @@ All notable changes to govern are documented here, following Keep a Changelog.
 - Capability profiles that constrain the tools and permissions available to agent runs.
 - Signed govern-peer/2 delivery, mesh federation, agent registration and discovery across hosts.
 - A command center showing federated hosts, queues, dispatchers, agents, runs, spend and alerts.
+- `govern bpmn` renders a process or lane as SVG, scene or PNG; the command center shows live Projects and Processes views.
+- `govern version` and a reproducible release package built and published by GitHub CI.
