@@ -34,6 +34,64 @@ function reviewQueue(body: string) {
   return e;
 }
 
+for (const [label, patch, path] of [
+  ["non-numeric maxRuns", { maxRuns: "four" }, "$.maxRuns"],
+  ["numeric string maxRuns", { maxRuns: "4" }, "$.maxRuns"],
+  ["zero maxRuns", { maxRuns: 0 }, "$.maxRuns"],
+  ["negative maxRuns", { maxRuns: -1 }, "$.maxRuns"],
+  ["fractional maxRuns", { maxRuns: 2.5 }, "$.maxRuns"],
+  ["non-string name", { name: 7 }, "$.name"],
+  ["string argv", { runners: { worker: { argv: "node" } } }, "$.runners.worker.argv"],
+  ["empty argv", { runners: { worker: { argv: [] } } }, "$.runners.worker.argv"],
+  ["non-string argv entry", { runners: { worker: { argv: [7] } } }, "$.runners.worker.argv[0]"],
+  ["unknown key", { maxRun: 4 }, "$.maxRun"],
+  ["unknown runner key", { runners: { worker: { argv: ["node"], extra: true } } }, "$.runners.worker.extra"],
+  ["unknown format", { runners: { worker: { argv: ["node"], format: "yaml" } } }, "$.runners.worker.format"],
+  ["bad check argv", { checks: { TASK: { argv: "node" } } }, "$.checks.TASK.argv"],
+  ["unknown check kind", { checks: { OTHER: { argv: ["node"] } } }, "$.checks.OTHER"],
+] as const) {
+  test(`queue config refuses ${label} at its JSON path before claiming anything`, () => {
+    const e = setup();
+    const runner = write(join(e.root, "worker.cjs"), 'require("node:fs").writeFileSync("started", "yes");console.log(JSON.stringify({kind:"ACK",summary:"ok",body:"ok"}));');
+    const file = join(e.root, "queue/config.json");
+    const valid = { runners: { worker: { argv: [process.execPath, runner] } } };
+    write(file, JSON.stringify(valid));
+    send(e, "worker");
+    const before = messages(e, "open");
+    write(file, JSON.stringify({ ...valid, ...patch }));
+    const r = govern(e, ["task", "dispatch"]);
+    assert.equal(r.code, 2, r.err + r.out);
+    assert.ok(r.err.includes(`${file}: ${path}:`), r.err);
+    assert.deepEqual(messages(e, "open"), before, "the queued task stays untouched");
+    for (const state of ["claimed", "done", "failed"]) assert.deepEqual(messages(e, state), []);
+    assert.equal(existsSync(join(e.root, "started")), false, "no runner is started");
+
+    const desk = govern(e, ["desk"]);
+    assert.equal(desk.code, 0, desk.err + desk.out);
+    const errors = desk.out.split("\n").filter((line) => line.includes("queue: config error"));
+    assert.equal(errors.length, 1, desk.out);
+    assert.ok(errors[0]?.includes(`${file}: ${path}:`), desk.out);
+    assert.match(desk.out, /YOUR INBOX[\s\S]*QUEUE[\s\S]*TOKENS TODAY/);
+  });
+}
+
+test("a valid queue config bounds a runner ping-pong thread at maxRuns", () => {
+  const e = setup();
+  const runner = write(join(e.root, "worker.cjs"), 'console.log(JSON.stringify({kind:"ACK",summary:"continue",body:"continue"}));');
+  write(join(e.root, "queue/config.json"), JSON.stringify({ name: "bounded queue", maxRuns: 2, runners: {
+    first: { argv: [process.execPath, runner], format: "text" }, second: { argv: [process.execPath, runner] },
+  } }));
+  send(e, "first", ["--from", "second"]);
+  ok(e, ["task", "dispatch"]);
+  ok(e, ["task", "dispatch"]);
+  assert.match(ok(e, ["task", "dispatch"]), /stopped: thread already ran 2 times \(maxRuns 2\)/);
+  assert.equal(messages(e, "done").length, 2);
+  assert.equal(messages(e, "failed").length, 1);
+  assert.ok(messages(e, "open").some((m) => m.to === "owner" && m.kind === "BLOCKED" && m.summary === "thread reached maxRuns 2"));
+  assert.equal(ok(e, ["task", "dispatch"]).trim(), "");
+  assert.equal(jsonl(join(e.root, "queue/ledger.jsonl")).length, 2, "only two runners were dispatched");
+});
+
 test("failed content checks cannot dispatch to another runner, including forwarded replies", () => {
   for (const forward of [false, true]) {
     const e = reviewQueue("UNTRUSTED-BODY at missing.ts:7");

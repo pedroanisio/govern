@@ -18,6 +18,7 @@ import { cost } from "./usage.ts";
 import { prepareGrokHome, syncBackAuth } from "./grokhome.ts";
 import { parseEvents, execArgs, validate, type Usage } from "./codex.ts";
 import { type CheckDef, configChecks, declared, verify, type Verification } from "./replycheck.ts";
+import { obj, arr, str, posInt, record, literal, parseFile, type Shape } from "./shape.ts";
 import { registry, getProfile, writes, guardProblem, checkProblem, profileHash, claudeArgs, codexSpec, grokArgs, LEGACY_PROFILES, type Profile, type Registry } from "./caps.ts";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -40,11 +41,16 @@ export interface QueueConfig {
   /** Content checks on replies by message kind, the task's or the reply's (lib/replycheck.ts); a profile's own `check` wins over these for content kinds. */
   checks?: Record<string, CheckDef>;
 }
-/** The queue's config.json, unchecked; {} when there is none, and fails when it is not JSON. */
+const RUNNER: Shape<RunnerDef> = obj({ argv: arr(str, { nonEmpty: true }) }, { format: literal("text", "json-result") });
+
+/** The queue's config.json, strictly parsed; {} when absent. A bad field fails naming the file and JSON path. */
 export function config(): QueueConfig {
   const f = join(QUEUE(), "config.json");
   if (!existsSync(f)) return {};
-  try { return JSON.parse(readFileSync(f, "utf8")); } catch (e) { return fail(`${f}: not JSON (${(e as Error).message})`); }
+  const shape: Shape<QueueConfig> = obj({}, {
+    name: str, maxRuns: posInt, runners: record(RUNNER), checks: (v) => configChecks(f, v, KINDS),
+  });
+  return parseFile(f, readFileSync(f, "utf8"), shape);
 }
 /** Agents the dispatcher can run. Anyone else (owner, a named session) only reads the queue. */
 /** codex, claude, grok and the config.json runners: the queue line of the desk (profiles have their own line). */
@@ -457,8 +463,8 @@ const dispatchTimeout = (): number => { const n = Number(process.env.GOVERN_QUEU
 export function dispatch(o: { max?: number; only?: string; timeoutSec?: number } = {}): string[] {
   const lines: string[] = [];
   const cfg = config();
-  // A bad checks declaration stops the dispatcher before any message is claimed or any paid session runs.
-  const fromConfig = configChecks(join(QUEUE(), "config.json"), cfg.checks, KINDS);
+  // The whole config is checked before any message is claimed or any paid session runs.
+  const fromConfig = cfg.checks ?? {};
   // So does a bad GOVERN_QUEUE_MAX_INLINE: read after a claim, it would leave the message stuck in claimed/.
   const maxInline = charLimit("GOVERN_QUEUE_MAX_INLINE", MAX_FILES_CHARS);
   const names = runners();

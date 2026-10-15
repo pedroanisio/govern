@@ -84,7 +84,9 @@ export function desk(): { text: string; failed: number; lanes: number } {
   const count = (state: string, to?: string) => msgs.filter((x) => x.state === state && (!to || x.m.to === to)).length;
   const bad = msgs.filter((x) => x.m.verification?.state === "unverified" && x.state !== "done").length;
   L.push("", tuningState());
-  const perRunner = queue.plainRunners().map((r) => `${r}: ${count("open", r)} waiting, ${count("claimed", r)} running`);
+  let runners: readonly string[] = queue.BUILTIN_RUNNERS;
+  try { runners = queue.plainRunners(); } catch (e) { L.push(`queue: config error — ${e instanceof Error ? e.message : String(e)}`); }
+  const perRunner = runners.map((r) => `${r}: ${count("open", r)} waiting, ${count("claimed", r)} running`);
   L.push("", `QUEUE  ${perRunner.join(" · ")} · failed: ${count("failed")} · ${dispatcherState()}`);
   if (bad) L.push(`unverified replies: ${bad}  · their content is kept but no check passed: govern task show <id>`);
   // ---- profiles with work queued or a check on record
