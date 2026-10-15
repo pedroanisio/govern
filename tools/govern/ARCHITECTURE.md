@@ -38,14 +38,14 @@ govern runs lanes of agent work through the checked stages of a process. Its des
 
 | Part | What it is |
 |---|---|
-| Actors | The owner, a paired phone, the working agent session, the headless runners the queue starts, and external systems that deliver events |
+| Actors | The owner, a paired phone, the working agent session, the headless runners the queue starts, external systems that deliver events, and peer hosts that exchange queue messages |
 | CLI | [bin/govern](../../bin/govern) runs [govern.ts](govern.ts) under Node with type stripping; the command table dispatches into [lib/](lib/) |
 | Subsystems | Twelve groups of `lib/` modules, listed below |
-| Servers | `govern remote serve` for paired phones and `govern event-listen` for webhooks: two HTTP front doors that end in the same lane transactions as the CLI |
-| State | A workspace folder of JSON and JSONL files; every command and both servers read and write there, and nothing else holds state |
+| Servers | `govern remote serve` for paired phones and `govern event-listen` for webhooks, and `govern peer serve` for signed queue delivery between hosts |
+| State | A workspace folder of JSON and JSONL files; every command and all three servers read and write there, and nothing else holds state |
 
 There is no daemon at the centre. Most `govern` invocations are short processes that load the files they need, act,
-append to a ledger and exit. A few run until they are stopped: the two servers, the timers `task dispatch --loop` and
+append to a ledger and exit. A few run until they are stopped: the three servers, the timers `task dispatch --loop` and
 `tick --loop`, and a background conversation worker (`conversation run --bg`). None of them keeps state outside the files: each
 re-reads them on every request or tick. A worker stopped in the middle of a turn leaves that run marked interrupted, and
 `conversation recover` resolves it explicitly. `govern wait` blocks too, for at most
@@ -61,10 +61,12 @@ block in `bin/govern`, and the operating manual for agents is [SKILL.md](SKILL.m
 
 ## Servers
 
-Both servers are Node `http` servers started from `govern.ts`. Each is a front door to the same functions the CLI
-calls. Neither has a database, a session store or a write path of its own: a request is authenticated, parsed into a
-typed shape, then applied under the lane's lock ([lib/lane-lock.ts](lib/lane-lock.ts), via `transaction` in
-[lib/lifecycle.ts](lib/lifecycle.ts)) and recorded in the lane's ledger.
+The three servers are Node `http` servers started from `govern.ts`. Each is a front door to the same functions the
+CLI calls. None has a database, a session store or a write path of its own: a request is authenticated, then parsed
+into a typed shape. The phone's actions and external events are applied under the lane's lock
+([lib/lane-lock.ts](lib/lane-lock.ts), via `transaction` in [lib/lifecycle.ts](lib/lifecycle.ts)) and recorded in the
+lane's ledger. A peer delivery is filed with `queue.send` under the peer lock. Relaying runs no model, and the
+receiving host keeps its own execution policy ([PEERS.md](PEERS.md)).
 
 ### `govern remote serve`: the phone's API
 
@@ -97,6 +99,22 @@ the HTTP form of `govern event`.
 | Effect | Delivered to the lane's waiting stage under the lane lock, and deduplicated by `id`: a redelivery returns `duplicate: true` and changes nothing |
 | Replies | 200 `{accepted, duplicate}`; 400 for bad JSON, 401, 404 for another route, 409 for a delivery the lane refuses, 413 for a body that is too large. Headers must arrive within 10 s and the whole request within 30 s |
 
+### `govern peer serve`: signed queue delivery between hosts
+
+[lib/peer.ts](lib/peer.ts) serves `govern-peer/1`, specified in [PEERS.md](PEERS.md). A remote queue address is
+`NAME@PEER`; each host keeps its own profiles, gates, allowances and maxRuns.
+
+| Concern | How it works |
+|---|---|
+| Reachability | Always binds `127.0.0.1`, port 5003 by default. A non-loopback `--host` is refused. A Cloudflare or Tailscale tunnel supplies TLS; forwarded-address headers confer no authority |
+| Health | Unauthenticated `GET /v1/health` returns `{protocol, name}` |
+| Delivery | `POST /v1/peer/deliver` accepts `{protocol, id, at, message}`. `Govern-Peer-Key` identifies a live peer by the SHA-256 fingerprint of its public key; `Govern-Signature` is an Ed25519 signature over the exact body bytes, verified before JSON parsing |
+| Limits and authorization | At most 262144 body bytes; a closed typed parse rejects unknown fields and checks protocol, kind, local sender/recipient names and a nonblank summary of at most 200 characters. The timestamp must be within five minutes; the peer must allow the recipient and project. `replyTo` must name a message exchanged with that peer |
+| Filing and duplicates | Under the peer lock, `(peer, id)` deduplicates deliveries for seven days. `queue.send` files an open message from `NAME@PEER`, with read-only access, no files, lane or estimate, a locally resolved profile and `remote: {peer, id}` |
+| Replies | 200 `{protocol, id, duplicate?}`; 400 for invalid delivery data, 403 for unknown/revoked peers, bad signatures, stale/future timestamps or denied grants, 413 for oversized bodies, 404 for every other route. Responses are JSON with `Cache-Control: no-store`; headers have 10 s and the request 30 s |
+| Relay | `govern peer push` sends signed deliveries with a 15 s timeout. Unverified output and sender-selected execution options fail locally. Transient failures retry after 30 s, doubling to at most one hour, with failure on attempt eight; permanent refusals produce BLOCKED notices |
+| State and grants | `<state>/peer/` holds `host.json`, `peers.json` and `received.json`; writes take a lock and rename a temporary file. New directories are mode 700 and files mode 600. Peer add/revoke require the owner's terminal because `allow` grants runs for named local recipients |
+
 ## Subsystems
 
 | Group | Modules | Responsibility |
@@ -108,7 +126,7 @@ the HTTP form of `govern event`.
 | Jobs | `jobs.ts`, `locks.ts`, `lockwait.ts` | `run --bg` starts a detached job, and `wait` blocks on it with no model in the loop. A job past its timeout gets SIGTERM, then SIGKILL 3 s later. `kill` stops the job's whole process tree |
 | Resources and budgets | `resources.ts`, `slice.ts`, `sliceRunner.ts`, `reap.ts`, `allowances.ts` | Declared machines and services with locks; recipe jobs (split, piece, join, verify); tagged `up`, `down` and `reap`; spending allowances |
 | Verified model steps | `codex.ts`, `rules.ts` | `govern ask`: a prompt with front matter, output checked against a JSON schema and the house rules (declared as data next to the prompt), one automatic repair, exit 3 if verification fails. The ledger records the sha256 of every call |
-| Task queue | `queue.ts`, `replycheck.ts`, `sessions.ts`, `grokhome.ts` | Messages move from `open` to `claimed` to `done` or `failed`. `dispatch` starts one sealed headless session per message. A reply is filed only if it parses and passes its checks; otherwise it becomes `BLOCKED` |
+| Task queue | `queue.ts`, `replycheck.ts`, `sessions.ts`, `grokhome.ts`, `peer.ts` | Messages move from `open` to `claimed` to `done` or `failed`. `dispatch` starts one sealed headless session per message. A reply is filed only if it parses and passes its checks; otherwise it becomes `BLOCKED`. `peer.ts` supplies host identity, peer grants, signed queue receive/relay and the peer HTTP server |
 | Capabilities | `caps.ts`, `capcheck.ts` | A profile is a set of grants plus an engine and a model. Each grant has a side-effect class (`read`, `write`, `spend`, `publish` or `push`). `caps --check` runs nonce-verified probes |
 | Conversations | `conversation.ts`, `conversation-runtime.ts`, `conversation-adapters.ts`, `conversation-cli.ts`, `conversation-host.ts`, `conversation-owner.ts`, `conversation-worker.ts` | Durable turns run one at a time, with NDJSON events, cancellation, explicit recovery and context checkpoints ([CONVERSATIONS.md](CONVERSATIONS.md)) |
 | Owner gates | `approval.ts` | Any session can work a lane; only the owner's own words approve. `approve`, `reject`, `allow` and human tasks need the owner's verbatim words, found in a message the person typed. A quote recorded from a Codex or Grok session is refused, because govern cannot check there that the person typed it |
@@ -131,7 +149,7 @@ the HTTP form of `govern event`.
 │  └─ artifacts/                bytes, sha256, reviews
 ├─ queue/{open,claimed,done,failed}/
 │  └─ ledger.jsonl              usage of each dispatched run
-└─ state/                       conversations, lane-locks, locks, remote, ledger.jsonl
+└─ state/                       conversations, lane-locks, locks, remote, peer, ledger.jsonl
 ```
 
 A `govern.config.json` can move any of these folders, and an environment override wins over both. Ledgers are
