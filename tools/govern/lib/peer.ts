@@ -1,90 +1,42 @@
-// Signed queue delivery between hosts. Peers grant local recipient/project access; execution policy stays local.
-import { createHash, createPublicKey, createPrivateKey, generateKeyPairSync, sign as edSign, verify as edVerify } from "node:crypto";
+// Signed queue delivery and agent discovery between hosts. A sender is a static peer or a certified mesh member; every
+// signed request names the key it is addressed to, so a delivery to one host cannot be replayed to another. Grants
+// decide which local recipients a sender may address; execution policy stays local.
 import { createServer, type Server } from "node:http";
-import { hostname } from "node:os";
-import { existsSync, mkdirSync, readFileSync, writeFileSync, renameSync, appendFileSync } from "node:fs";
+import { randomUUID } from "node:crypto";
+import { existsSync, appendFileSync } from "node:fs";
 import { join } from "node:path";
 import { obj, str, bool, arr, literal, parseFile, check, reject, type Shape } from "./shape.ts";
-import { stateDir } from "./workspace.ts";
-import { withLaneLock } from "./lane-lock.ts";
+import {
+  NAME, name, nonempty, iso, slug, hex64, project, publicKey, url, file, locked, read, readOr, write, identity, fingerprint,
+  header, sign, verifyBytes, fresh, covers, intersect, error, signedJson, postFetch, MAX_BODY, TIMEOUT_MS,
+  type Headers, type Response, type Post,
+} from "./peer-id.ts";
+import * as mesh from "./mesh.ts";
+import * as agents from "./agents.ts";
 import { fail, clip } from "./util.ts";
 import * as queue from "./queue.ts";
 
-export const PROTOCOL = "govern-peer/1";
-export const MAX_BODY = 262144;
-const SKEW_MS = 5 * 60_000, RECEIVED_TTL_MS = 7 * 86400_000;
-const MAX_ATTEMPTS = 8, TIMEOUT_MS = 15000;
-const NAME = /^[a-z0-9][a-z0-9.-]*$/;
-const name: Shape<string> = (v, p) => { const s = str(v, p); return NAME.test(s) ? s : reject(p, "must be lowercase letters, digits, dots and dashes, starting with a letter or digit"); };
-const nonempty: Shape<string> = (v, p) => { const s = str(v, p); return s.length ? s : reject(p, "must not be empty"); };
-const iso: Shape<string> = (v, p) => { const s = str(v, p); return /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?Z$/.test(s) && Number.isFinite(Date.parse(s)) ? s : reject(p, "must be an ISO timestamp"); };
-const slug: Shape<string> = (v, p) => { const s = str(v, p); return /^[a-z0-9][a-z0-9.\/-]*$/.test(s) && !s.split("/").some(x => x === ".." || x === "") ? s : reject(p, "must be a project slug"); };
-const publicKey: Shape<string> = (v, p) => {
-  const s = str(v, p);
-  try {
-    const bytes = Buffer.from(s, "base64");
-    const key = createPublicKey({ key: bytes, format: "der", type: "spki" });
-    if (key.asymmetricKeyType !== "ed25519" || bytes.toString("base64") !== s || !key.export({ format: "der", type: "spki" }).equals(bytes)) throw new Error("bad key");
-  } catch { reject(p, "must be a base64 DER Ed25519 SPKI public key"); }
-  return s;
-};
-const url: Shape<string> = (v, p) => {
-  const s = str(v, p);
-  try {
-    const u = new URL(s);
-    const loopback = u.hostname === "localhost" || u.hostname === "[::1]" || /^127\.\d+\.\d+\.\d+$/.test(u.hostname);
-    if ((u.protocol !== "https:" && !(u.protocol === "http:" && loopback)) || u.username || u.password || u.search || u.hash) throw new Error("bad URL");
-  } catch { reject(p, "must be an https URL (http is allowed only on loopback)"); }
-  return s;
-};
+export { identity, fingerprint, sign, MAX_BODY, type Identity, type Headers, type Response, type Post } from "./peer-id.ts";
+export const PROTOCOL = "govern-peer/2";
+const RECEIVED_TTL_MS = 7 * 86400_000, MAX_ATTEMPTS = 8;
 
-export interface Identity { name: string; publicKey: string; privateKey: string }
 export interface Peer { name: string; url: string; publicKey: string; allow: string[]; projects: string[]; addedAt: string; revokedAt?: string }
-const HOST: Shape<Identity> = (v, p) => {
-  const h = obj({ name, publicKey, privateKey: str })(v, p);
-  try {
-    const key = createPrivateKey({ key: h.privateKey, format: "pem", type: "pkcs8" });
-    if (!h.privateKey.startsWith("-----BEGIN PRIVATE KEY-----") || key.asymmetricKeyType !== "ed25519") throw new Error("bad key");
-    if (createPublicKey(key).export({ format: "der", type: "spki" }).toString("base64") !== h.publicKey) throw new Error("mismatched key");
-  } catch { reject(`${p}.privateKey`, "must be an Ed25519 PKCS#8 PEM private key matching publicKey"); }
-  return h;
-};
-const PEER = obj({ name, url, publicKey, allow: arr(name), projects: arr((v, p) => v === "*" ? "*" : slug(v, p)), addedAt: iso }, { revokedAt: iso });
+const PEER: Shape<Peer> = obj({ name, url, publicKey, allow: arr(name), projects: arr(project), addedAt: iso }, { revokedAt: iso });
 const PEERS: Shape<{ peers: Peer[] }> = (v, p) => {
-  const out = obj({ peers: arr(PEER) })(v, p), live = new Set<string>();
+  const out = obj({ peers: arr(PEER) })(v, p), live = new Set<string>(), keys = new Set<string>();
   out.peers.forEach((x, i) => {
-    if (!x.revokedAt) { if (live.has(x.name)) reject(`${p}.peers[${i}].name`, `duplicate live name ${x.name}`); live.add(x.name); }
+    if (!x.revokedAt) {
+      if (live.has(x.name)) reject(`${p}.peers[${i}].name`, `duplicate live name ${x.name}`);
+      if (keys.has(x.publicKey)) reject(`${p}.peers[${i}].publicKey`, "another live peer has this key");
+      live.add(x.name); keys.add(x.publicKey);
+    }
     if (x.projects.includes("*") && x.projects.length !== 1) reject(`${p}.peers[${i}].projects`, '"*" must be the only project');
   });
   return out;
 };
-const dir = () => join(stateDir(), "peer");
-const file = (n: string) => join(dir(), n);
-function ensureDir(): void { mkdirSync(dir(), { recursive: true, mode: 0o700 }); }
-const locked = <T>(f: () => T): T => { ensureDir(); return withLaneLock(file("lock"), f); };
-function read<T>(n: string, shape: Shape<T>): T { return parseFile(file(n), readFileSync(file(n), "utf8"), shape); }
-function write(n: string, value: unknown): void {
-  const f = file(n), tmp = `${f}.tmp-${process.pid}`;
-  writeFileSync(tmp, JSON.stringify(value, null, 2) + "\n", { mode: 0o600 }); renameSync(tmp, f);
-}
-/** Create once under the peer lock; an existing identity can never be renamed implicitly. */
-export function identity(requestedName?: string): Identity {
-  return locked(() => {
-    if (existsSync(file("host.json"))) {
-      const h = read("host.json", HOST);
-      if (requestedName !== undefined && requestedName !== h.name) fail(`host identity already has name ${h.name}`);
-      return h;
-    }
-    const keys = generateKeyPairSync("ed25519");
-    const h = check(file("host.json"), { name: requestedName ?? hostname().toLowerCase().replace(/[^a-z0-9.-]/g, "-"), publicKey: keys.publicKey.export({ format: "der", type: "spki" }).toString("base64"), privateKey: keys.privateKey.export({ format: "pem", type: "pkcs8" }).toString() }, HOST);
-    write("host.json", h); return h;
-  });
-}
-/** The lowercase hex SHA-256 of a base64 DER Ed25519 public key; fails when the key is not one. */
-export function fingerprint(key: string): string { return createHash("sha256").update(Buffer.from(check("publicKey", key, publicKey), "base64")).digest("hex"); }
 /** Every peer in peers.json, revoked ones included; [] before the first `govern peer add`. Fails naming the file and path when it is malformed. */
 export function peers(): Peer[] { return existsSync(file("peers.json")) ? read("peers.json", PEERS).peers : []; }
-/** Add a peer under the peer lock: checked against the peer shape, and refused when its name is already live. */
+/** Add a peer under the peer lock: checked against the peer shape, and refused when its name or key is already live. */
 export function addPeer(input: Omit<Peer, "addedAt" | "revokedAt">): Peer {
   return locked(() => {
     const p = check(file("peers.json"), { ...input, addedAt: new Date().toISOString() }, PEER);
@@ -98,73 +50,154 @@ export function revokePeer(n: string): Peer {
     p.revokedAt = new Date().toISOString(); write("peers.json", { peers: list }); return p;
   });
 }
-/** Syntax only: CLI/relay checks whether the named peer is live. */
+/** Syntax only: `remote()` checks whether the named host is live. */
 export function parseAddress(address: string): { name: string; peer: string } | undefined {
   const parts = address.split("@");
   return parts.length === 2 && parts.every(x => NAME.test(x)) ? { name: parts[0]!, peer: parts[1]! } : undefined;
 }
 
+/** A host this one can send to: a live static peer or a live mesh member, under the name this host uses for it. */
+export interface Remote { name: string; url: string; publicKey: string; via: "peer" | "mesh" }
+/** The host named `n`. A static peer and a mesh member that share a name but not a key make the name ambiguous, and
+ *  it is refused rather than guessed: replies would otherwise reach the wrong host. */
+export function remote(n: string, now = Date.now()): Remote {
+  const p = peers().find(x => x.name === n && !x.revokedAt), m = mesh.memberByName(n, now);
+  if (p && m && p.publicKey !== m.publicKey) fail(`host name ${n} is ambiguous: a peer and a mesh member use it with different keys (revoke the peer)`);
+  if (p) return { name: p.name, url: p.url, publicKey: p.publicKey, via: "peer" };
+  if (m) return { name: m.name, url: m.url, publicKey: m.publicKey, via: "mesh" };
+  return fail(`no live peer or mesh member ${n}`);
+}
+/** Every host this one can send to; ambiguous names are left out. */
+export function remotes(now = Date.now()): Remote[] {
+  const names = new Set([...peers().filter(p => !p.revokedAt).map(p => p.name), ...mesh.others(now).map(m => m.name)]);
+  return [...names].sort().flatMap(n => { try { return [remote(n, now)]; } catch { return []; } });
+}
+
+interface Sender { name: string; publicKey: string; allow: string[]; projects: string[] }
+/** The signer of a request: a live static peer by key fingerprint, else a mesh member (listed, or by the certificate it
+ *  presents). A mesh member whose name a static peer holds with another key is not a sender. */
+function senderOf(headers: Headers, now: number): Sender | undefined {
+  const fp = header(headers, "govern-peer-key");
+  if (!fp) return undefined;
+  const live = peers().filter(p => !p.revokedAt), p = live.find(x => fingerprint(x.publicKey) === fp);
+  if (p) return p;
+  const m = mesh.memberByKey(fp, header(headers, "govern-peer-cert"), now), policy = mesh.state()?.policy;
+  if (!m || !policy || live.some(x => x.name === m.name)) return undefined;
+  return { name: m.name, publicKey: m.publicKey, allow: policy.allow, projects: policy.projects };
+}
+/** Authenticate exact bytes before parsing anything a sender wrote. */
+function authenticate(bytes: Buffer, headers: Headers, now: number): Sender | Response {
+  if (bytes.length > MAX_BODY) return error(413, "body exceeds size limit");
+  const s = senderOf(headers, now);
+  if (!s) return error(403, "unknown peer");
+  if (!verifyBytes(bytes, header(headers, "govern-signature"), s.publicKey)) return error(403, "bad signature");
+  return s;
+}
+const isResponse = (x: Sender | Response): x is Response => "status" in x;
+
 const MESSAGE = obj({ project: slug, task: name, kind: literal(...queue.KINDS), from: name, to: name, summary: (v, p) => { const s = str(v, p); return s.trim() && s.length <= 200 ? s : reject(p, "must be non-empty after trimming and at most 200 characters"); }, body: str }, { replyTo: nonempty });
-const ENVELOPE = obj({ protocol: literal(PROTOCOL), id: nonempty, at: iso, message: MESSAGE });
+const ENVELOPE = obj({ protocol: literal(PROTOCOL), id: nonempty, at: iso, toKey: hex64, message: MESSAGE });
 export type Envelope = ReturnType<typeof ENVELOPE>;
-/** Translate reply threading only when the parent came from the destination host. */
-export function envelope(m: queue.Message, now = Date.now()): Envelope {
+/** The delivery of `m` to the host whose key has fingerprint `toKey`. Reply threading is translated only when the
+ *  parent came from the destination host. */
+export function envelope(m: queue.Message, toKey: string, now = Date.now()): Envelope {
   const address = parseAddress(m.to) ?? fail(`not a remote address: ${m.to}`);
   const parent = m.replyTo ? queue.find(m.replyTo)?.m : undefined;
-  return check("envelope", { protocol: PROTOCOL, id: m.id, at: new Date(now).toISOString(), message: {
+  return check("envelope", { protocol: PROTOCOL, id: m.id, at: new Date(now).toISOString(), toKey, message: {
     project: m.project, task: m.task, kind: m.kind, from: m.from, to: address.name, summary: m.summary, body: m.body,
     ...(parent?.remote?.peer === address.peer ? { replyTo: parent.remote.id } : {}),
   } }, ENVELOPE);
 }
-export type Headers = Record<string, string>;
-/** The delivery headers for `bytes`: this host's key fingerprint and the Ed25519 signature of exactly those bytes. */
-export function sign(bytes: Buffer, host = identity()): Headers {
-  return { "Govern-Peer-Key": fingerprint(host.publicKey), "Govern-Signature": edSign(null, bytes, host.privateKey).toString("base64") };
-}
 interface Received { peer: string; id: string; localId: string; at: string }
 const RECEIVED = obj({ received: arr(obj({ peer: name, id: nonempty, localId: nonempty, at: iso })) });
-export interface Response { status: number; body: { protocol?: string; id?: string; duplicate?: boolean; error?: string } }
-const error = (status: number, message: string): Response => ({ status, body: { error: message } });
-/** Authenticate exact bytes before parsing. Deduplication and filing are serialized across receiver processes. */
+/** Whether this host's own key is the one a signed request is addressed to. */
+const forMe = (toKey: string) => toKey === fingerprint(identity().publicKey);
+
+/** Authenticate, check the destination, clock and grants, then deduplicate and file under the peer lock. */
 export function receive(bytes: Buffer, headers: Headers, now = Date.now()): Response {
-  if (bytes.length > MAX_BODY) return error(413, "body exceeds size limit");
-  const header = (n: string) => Object.entries(headers).find(([k]) => k.toLowerCase() === n)?.[1];
-  const sender = peers().find(p => !p.revokedAt && fingerprint(p.publicKey) === header("govern-peer-key"));
-  if (!sender) return error(403, "unknown peer");
-  try {
-    const sig = header("govern-signature") ?? "";
-    if (!edVerify(null, bytes, createPublicKey({ key: Buffer.from(sender.publicKey, "base64"), type: "spki", format: "der" }), Buffer.from(sig, "base64"))) return error(403, "bad signature");
-  } catch { return error(403, "bad signature"); }
+  const sender = authenticate(bytes, headers, now);
+  if (isResponse(sender)) return sender;
   let env: Envelope;
   try { env = parseFile("delivery $", bytes.toString("utf8"), ENVELOPE); }
   catch (e) { return error(400, (e as Error).message); }
-  if (Math.abs(Date.parse(env.at) - now) > SKEW_MS) return error(403, "timestamp outside five minute window");
-  const m = env.message;
-  if (!sender.allow.includes(m.to)) return error(403, "recipient not allowed");
-  if (!(sender.projects.length === 1 && sender.projects[0] === "*") && !sender.projects.includes(m.project)) return error(403, "project not allowed");
-  if (m.replyTo) {
-    const parent = queue.all().find(x => x.m.id === m.replyTo)?.m;
-    if (!parent || !(parseAddress(parent.to)?.peer === sender.name || parent.remote?.peer === sender.name)) return error(400, "$.message.replyTo: must name a message exchanged with this peer");
+  if (!forMe(env.toKey)) return error(403, "addressed to another host");
+  if (!fresh(env.at, now)) return error(403, "timestamp outside five minute window");
+  const m = env.message, parent = m.replyTo ? queue.all().find(x => x.m.id === m.replyTo)?.m : undefined;
+  if (m.replyTo && (!parent || !(parseAddress(parent.to)?.peer === sender.name || parent.remote?.peer === sender.name))) return error(400, "$.message.replyTo: must name a message exchanged with this peer");
+  // An answer to a message this host sent the sender reaches that message's local author without a grant, so a
+  // conversation either side starts runs both ways. It never starts a run: a runner or profile author needs a grant.
+  const answering = !!parent && parseAddress(parent.to)?.peer === sender.name && parent.from === m.to && parent.project === m.project && !queue.runners().includes(m.to);
+  const agent = agents.resolve(m.to, now);
+  if (!answering) {
+    if (!covers(sender.projects, m.project)) return error(403, "project not allowed");
+    if (!sender.allow.includes(m.to) && !(agent && covers(agent.projects, m.project))) return error(403, "recipient not allowed");
   }
+  // An alias is filed under the agent's own name, so its inbox holds every message to any of its names.
+  const to = agent && !sender.allow.includes(m.to) ? agent.name : m.to;
   return locked(() => {
-    const received: Received[] = (existsSync(file("received.json")) ? read("received.json", RECEIVED).received : []).filter(x => now - Date.parse(x.at) <= RECEIVED_TTL_MS);
+    const received: Received[] = readOr("received.json", RECEIVED, { received: [] }).received.filter(x => now - Date.parse(x.at) <= RECEIVED_TTL_MS);
     const old = received.find(x => x.peer === sender.name && x.id === env.id);
     if (old) { write("received.json", { received }); return { status: 200, body: { protocol: PROTOCOL, id: old.localId, duplicate: true } }; }
     let local: queue.Message;
     try {
-      const target = queue.resolveTarget(m.to, { write: false });
-      local = queue.send({ ...m, from: `${m.from}@${sender.name}`, access: "read-only", ...(target.profile ? { profile: target.profile } : {}), files: [], remote: { peer: sender.name, id: env.id } });
+      const target = queue.resolveTarget(to, { write: false });
+      local = queue.send({ ...m, to, from: `${m.from}@${sender.name}`, access: "read-only", ...(target.profile ? { profile: target.profile } : {}), files: [], remote: { peer: sender.name, id: env.id } });
     } catch (e) { return error(400, `$.message: ${(e as Error).message}`); }
     received.push({ peer: sender.name, id: env.id, localId: local.id, at: new Date(now).toISOString() }); write("received.json", { received });
     return { status: 200, body: { protocol: PROTOCOL, id: local.id } };
   });
 }
 
-export type Post = (url: string, bytes: Buffer, headers: Headers, timeoutMs: number) => Promise<{ status: number; text: string }>;
-const postFetch: Post = async (url, bytes, headers, timeoutMs) => {
-  const r = await fetch(url, { method: "POST", body: new Uint8Array(bytes), headers: { ...headers, "Content-Type": "application/json" }, signal: AbortSignal.timeout(timeoutMs), redirect: "error" });
-  return { status: r.status, text: await r.text() };
-};
+/** One addressable recipient in a directory: a runner or profile the owner granted, another granted name, or an agent
+ *  that registered itself. */
+export interface Listed { name: string; kind: "runner" | "profile" | "recipient" | "agent"; projects: string[]; lifetime?: "stable" | "ephemeral"; aliases?: string[]; description?: string }
+const LISTED: Shape<Listed> = obj({ name, kind: literal("runner", "profile", "recipient", "agent"), projects: arr(project) }, { lifetime: literal("stable", "ephemeral"), aliases: arr(name), description: str });
+const DIRECTORY = obj({ protocol: literal(PROTOCOL), kind: literal("directory"), at: iso, toKey: hex64, id: nonempty });
+const LISTING = obj({ protocol: literal(PROTOCOL), agents: arr(LISTED) });
+/** What `s` may address on this host, and in which projects. */
+function listFor(s: Sender, now: number): Listed[] {
+  const plain = queue.plainRunners(), all = queue.runners();
+  const granted: Listed[] = s.allow.map(n => ({ name: n, kind: plain.includes(n) ? "runner" : all.includes(n) ? "profile" : "recipient", projects: [...s.projects] }));
+  const registered = agents.live(now).filter(a => !s.allow.includes(a.name)).flatMap(a => {
+    const projects = intersect(a.projects, s.projects);
+    return projects.length ? [{ name: a.name, kind: "agent" as const, projects, lifetime: a.kind, ...(a.aliases.length ? { aliases: a.aliases } : {}), ...(a.description ? { description: a.description } : {}) }] : [];
+  });
+  return [...granted, ...registered];
+}
+/** POST /v1/peer/directory: the recipients the signer may address here, signed with this host's key. */
+export function serveDirectory(bytes: Buffer, headers: Headers, now = Date.now()): Response {
+  const sender = authenticate(bytes, headers, now);
+  if (isResponse(sender)) return sender;
+  let q: ReturnType<typeof DIRECTORY>;
+  try { q = parseFile("directory $", bytes.toString("utf8"), DIRECTORY); } catch (e) { return error(400, (e as Error).message); }
+  if (!forMe(q.toKey)) return error(403, "addressed to another host");
+  if (!fresh(q.at, now)) return error(403, "timestamp outside five minute window");
+  return signedJson(200, { protocol: PROTOCOL, agents: listFor(sender, now) }, identity().privateKey);
+}
+
+/** One host's answer in a discovery pass. */
+export interface HostListing { host: string; via: "peer" | "mesh"; ok: boolean; error?: string; agents: Listed[] }
+const HOST_LISTING: Shape<HostListing> = obj({ host: name, via: literal("peer", "mesh"), ok: bool, agents: arr(LISTED) }, { error: str });
+const CACHE = obj({ fetchedAt: iso, hosts: arr(HOST_LISTING) });
+/** Ask every live host what this host may address there; each answer must carry that host's signature. The result is
+ *  cached in directory.json; one host's failure is recorded and does not stop the others. */
+export async function discover(o: { post?: Post; now?: () => number } = {}): Promise<HostListing[]> {
+  const post = o.post ?? postFetch, now = o.now ?? Date.now;
+  const hosts = await Promise.all(remotes(now()).map(async (r): Promise<HostListing> => {
+    try {
+      const bytes = Buffer.from(JSON.stringify({ protocol: PROTOCOL, kind: "directory", at: new Date(now()).toISOString(), toKey: fingerprint(r.publicKey), id: randomUUID() }));
+      const res = await post(`${r.url.replace(/\/$/, "")}/v1/peer/directory`, bytes, { ...sign(bytes), ...mesh.presentHeaders() }, TIMEOUT_MS);
+      if (res.status !== 200) fail(`refused (${res.status}): ${clip(res.text, 300)}`);
+      if (!verifyBytes(Buffer.from(res.text), header(res.headers ?? {}, "govern-signature"), r.publicKey)) fail("answer not signed by the host's key");
+      return { host: r.name, via: r.via, ok: true, agents: parseFile(`${r.name} directory`, res.text, LISTING).agents };
+    } catch (e) { return { host: r.name, via: r.via, ok: false, error: clip((e as Error).message, 300), agents: [] }; }
+  }));
+  locked(() => write("directory.json", { fetchedAt: new Date(now()).toISOString(), hosts }));
+  return hosts;
+}
+/** The last discovery pass, or undefined before the first. */
+export const cached = (): { fetchedAt: string; hosts: HostListing[] } | undefined => readOr<ReturnType<typeof CACHE> | undefined>("directory.json", CACHE, undefined);
+
 const RECEIPT = obj({ protocol: literal(PROTOCOL), id: nonempty }, { duplicate: bool });
 /** One relay pass; a retry is bounded by eight attempts and an exponential backoff capped at one hour. */
 export async function push(o: { max?: number; now?: number | (() => number); post?: Post } = {}): Promise<string[]> {
@@ -179,17 +212,16 @@ export async function push(o: { max?: number; now?: number | (() => number); pos
       m.result = { agent: "relay", ok: false, seconds: Math.round((Date.now() - start) / 1000), error: why, reply: notice.id };
       queue.save(m, "claimed"); queue.move(m, "claimed", "failed"); lines.push(`${m.id} → ${m.to}: failed: ${why}`);
     };
-    let target: Peer | undefined, bytes: Buffer, headers: Headers;
+    let target: Remote, bytes: Buffer, headers: Headers;
     try {
-      target = peers().find(p => p.name === address.peer && !p.revokedAt);
-      if (!target) fail(`unknown or revoked peer ${address.peer}`);
+      target = remote(address.peer, now);
       if (m.verification?.state === "unverified") fail("unverified message");
       if (m.files.length) fail("files are decided by the receiving host");
       for (const k of ["profile", "lane", "estimateUsd"] as const) if (m[k] !== undefined) fail(`${k} is decided by the receiving host`);
       if (m.access === "write") fail("write access is decided by the receiving host");
-      bytes = Buffer.from(JSON.stringify(envelope(m, now)));
+      bytes = Buffer.from(JSON.stringify(envelope(m, fingerprint(target.publicKey), now)));
       if (bytes.length > MAX_BODY) fail("envelope exceeds size limit");
-      headers = sign(bytes);
+      headers = { ...sign(bytes), ...mesh.presentHeaders() };
     } catch (e) { failMessage((e as Error).message); continue; }
     let lastError: string;
     try {
@@ -212,42 +244,47 @@ export async function push(o: { max?: number; now?: number | (() => number); pos
   return lines;
 }
 
-/** Loopback HTTP transport; a tunnel supplies TLS. Authentication and closed-shape parsing live in receive(). */
+type Route = (bytes: Buffer, headers: Headers, now: number) => Response;
+const ROUTES: Record<string, Route> = {
+  "POST /v1/peer/deliver": receive,
+  "POST /v1/peer/directory": serveDirectory,
+  "POST /v1/mesh/join": mesh.serveJoin,
+  "POST /v1/mesh/sync": mesh.serveSync,
+};
+/** Loopback HTTP transport; a tunnel supplies TLS. Authentication and closed-shape parsing live in each route. */
 export function peerServer(o: { now?: () => number } = {}): Server {
   const now = o.now ?? Date.now;
   const server = createServer((req, res) => {
-    const reply = (status: number, value: unknown): void => {
+    const reply = (r: Response): void => {
       if (res.headersSent) return;
-      res.writeHead(status, { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store" });
-      res.end(JSON.stringify(value));
+      res.writeHead(r.status, { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store", ...(r.headers ?? {}) });
+      res.end(r.bytes ?? JSON.stringify(r.body));
     };
-    const fault = () => reply(500, { error: "internal error" });
-    const route = `${req.method} ${req.url}`;
-    if (route === "GET /v1/health") {
+    const fault = () => reply(error(500, "internal error"));
+    const key = `${req.method} ${req.url}`;
+    if (key === "GET /v1/health") {
       req.resume();
-      try { reply(200, { protocol: PROTOCOL, name: identity().name }); } catch { fault(); }
+      try { reply({ status: 200, body: { protocol: PROTOCOL, name: identity().name } }); } catch { fault(); }
       return;
     }
-    if (route === "POST /v1/peer/deliver") {
-      let size = 0; const chunks: Buffer[] = [];
-      // Drain excess bytes so the client receives the 413 instead of a reset connection.
-      req.on("data", (chunk: Buffer) => {
-        size += chunk.length;
-        if (size > MAX_BODY) { chunks.length = 0; reply(413, { error: "body exceeds size limit" }); }
-        else chunks.push(chunk);
-      });
-      req.on("end", () => {
-        if (res.headersSent) return;
-        try {
-          const headers: Headers = {};
-          for (const [key, value] of Object.entries(req.headers)) if (typeof value === "string") headers[key] = value;
-          const r = receive(Buffer.concat(chunks), headers, now()); reply(r.status, r.body);
-        } catch { fault(); }
-      });
-      req.on("error", () => reply(400, { error: "incomplete request" }));
-      return;
-    }
-    req.resume(); reply(404, { error: "not found" });
+    const route = ROUTES[key];
+    if (!route) { req.resume(); reply(error(404, "not found")); return; }
+    let size = 0; const chunks: Buffer[] = [];
+    // Drain excess bytes so the client receives the 413 instead of a reset connection.
+    req.on("data", (chunk: Buffer) => {
+      size += chunk.length;
+      if (size > MAX_BODY) { chunks.length = 0; reply(error(413, "body exceeds size limit")); }
+      else chunks.push(chunk);
+    });
+    req.on("end", () => {
+      if (res.headersSent) return;
+      try {
+        const headers: Headers = {};
+        for (const [k, v] of Object.entries(req.headers)) if (typeof v === "string") headers[k] = v;
+        reply(route(Buffer.concat(chunks), headers, now()));
+      } catch { fault(); }
+    });
+    req.on("error", () => reply(error(400, "incomplete request")));
   });
   server.requestTimeout = 30_000;
   server.headersTimeout = 10_000;

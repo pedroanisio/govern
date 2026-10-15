@@ -33,7 +33,7 @@ test("peer server handler enforces routes, size before auth, signatures and inje
     const call = (bytes: Buffer[], headers: peer.Headers = {}) => request("POST", "/v1/peer/deliver", bytes, headers);
     assert.deepEqual(call([Buffer.from("{")]), { status: 403, body: { error: "unknown peer" } });
     assert.equal(call([Buffer.alloc(peer.MAX_BODY), Buffer.alloc(1), Buffer.alloc(10)]).status, 413);
-    const bytes = Buffer.from(JSON.stringify({ protocol: peer.PROTOCOL, id: "handler-id", at: new Date(now).toISOString(), message: { project: "p", task: "t", kind: "TASK", from: "alice", to: "codex", summary: "check", body: "claim" } }));
+    const bytes = Buffer.from(JSON.stringify({ protocol: peer.PROTOCOL, id: "handler-id", at: new Date(now).toISOString(), toKey: peer.fingerprint(peer.identity().publicKey), message: { project: "p", task: "t", kind: "TASK", from: "alice", to: "codex", summary: "check", body: "claim" } }));
     const headers = peer.sign(bytes, ai);
     const first = call([bytes.subarray(0, 20), bytes.subarray(20)], headers); assert.equal(first.status, 200);
     assert.equal(call([bytes], headers).body.duplicate, true); assert.equal(queue.all().length, 1);

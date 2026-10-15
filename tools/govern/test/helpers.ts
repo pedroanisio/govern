@@ -1,6 +1,8 @@
 import { after } from "node:test";
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
+import { once } from "node:events";
+import { createServer } from "node:net";
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
@@ -119,4 +121,24 @@ export const reply = (e: Env, name: string, value: unknown, usage = { input_toke
 export function setConfig(e: Env, keys: Record<string, unknown>): void {
   const f = join(e.root, "govern.config.json");
   writeFileSync(f, JSON.stringify({ ...JSON.parse(readFileSync(f, "utf8")), ...keys }));
+}
+
+/** `govern peer serve` for workspace `e` on a free loopback port: its URL, and a stop that waits for the exit. */
+export async function servePeer(e: Env) {
+  const probe = createServer(); probe.listen(0, "127.0.0.1"); await once(probe, "listening");
+  const port = (probe.address() as { port: number }).port;
+  await new Promise<void>(resolve => probe.close(() => resolve()));
+  const child = spawn(process.execPath, ["--disable-warning=ExperimentalWarning", GOVERN, "peer", "serve", "--port", String(port)], { env: childEnv(e), stdio: ["ignore", "pipe", "pipe"] });
+  let output = "";
+  child.stdout.on("data", b => { output += b; }); child.stderr.on("data", b => { output += b; });
+  try {
+    await new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error(`server did not start: ${output}`)), 10000);
+      const done = () => { clearTimeout(timer); resolve(); };
+      child.stdout.on("data", () => { if (output.includes("http://127.0.0.1:")) done(); });
+      child.once("exit", code => { clearTimeout(timer); reject(new Error(`server exited ${code}: ${output}`)); });
+      child.once("error", reject);
+    });
+  } catch (e) { child.kill(); throw e; }
+  return { url: `http://127.0.0.1:${port}`, stop: async () => { if (child.exitCode !== null || child.signalCode !== null) return; const end = once(child, "exit"); child.kill(); await end; } };
 }

@@ -7,8 +7,9 @@ import { createServer } from "node:net";
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { stateDir } from "../lib/workspace.ts";
-import { makeEnv, childEnv, govern, GOVERN, reply } from "./helpers.ts";
+import { makeEnv, childEnv, govern, GOVERN, reply, servePeer as serve } from "./helpers.ts";
 import * as peer from "../lib/peer.ts";
+import { newKeys } from "../lib/peer-id.ts";
 import * as queue from "../lib/queue.ts";
 
 const original = { ...process.env };
@@ -22,36 +23,19 @@ function pair() {
   return { a, b, ai, bi };
 }
 const sendArgs = ["task", "send", "--to", "codex@b", "--project", "p", "--task", "t", "--from", "alice", "--summary", "check", "--body", "claim"];
-async function serve(e: ReturnType<typeof makeEnv>) {
-  const probe = createServer(); probe.listen(0, "127.0.0.1"); await once(probe, "listening");
-  const port = (probe.address() as { port: number }).port;
-  await new Promise<void>(resolve => probe.close(() => resolve()));
-  const child = spawn(process.execPath, ["--disable-warning=ExperimentalWarning", GOVERN, "peer", "serve", "--port", String(port)], { env: childEnv(e), stdio: ["ignore", "pipe", "pipe"] });
-  let output = "";
-  child.stdout.on("data", b => { output += b; }); child.stderr.on("data", b => { output += b; });
-  try {
-    await new Promise<void>((resolve, reject) => {
-      const timer = setTimeout(() => reject(new Error(`server did not start: ${output}`)), 10000);
-      const done = () => { clearTimeout(timer); resolve(); };
-      child.stdout.on("data", () => { if (output.includes("http://127.0.0.1:")) done(); });
-      child.once("exit", code => { clearTimeout(timer); reject(new Error(`server exited ${code}: ${output}`)); });
-      child.once("error", reject);
-    });
-  } catch (e) { child.kill(); throw e; }
-  return { url: `http://127.0.0.1:${port}`, stop: async () => { if (child.exitCode !== null || child.signalCode !== null) return; const end = once(child, "exit"); child.kill(); await end; } };
-}
 
 test("peer CLI creates identity, lists relay state and revokes grants", () => {
   const { a, ai, bi } = pair();
   let r = govern(a, ["peer", "id", "--name", "a"]); assert.equal(r.code, 0, r.err);
   for (const s of ["a", ai.publicKey, peer.fingerprint(ai.publicKey)]) assert.ok(r.out.includes(s), r.out);
   r = govern(a, ["peer", "id", "--name", "other"]); assert.equal(r.code, 2); assert.match(r.err, /already.*name/);
-  r = govern(a, ["peer", "add", "c", "--url", "https://c.example", "--key", bi.publicKey, "--allow", "owner", "--allow", "codex", "--project", "p", "--project", "q"]); assert.equal(r.code, 0, r.err);
+  const ck = newKeys().publicKey;
+  r = govern(a, ["peer", "add", "c", "--url", "https://c.example", "--key", ck, "--allow", "owner", "--allow", "codex", "--project", "p", "--project", "q"]); assert.equal(r.code, 0, r.err);
   assert.equal(govern(a, sendArgs).code, 0);
   r = govern(a, ["peer", "push", "--max", "0"]); assert.equal(r.code, 2); assert.match(r.err, /positive integer/);
   use(a); const outbound = queue.all()[0]!.m;
   outbound.relay = { attempts: 1, lastError: "offline test", nextAt: new Date(Date.now() + 30000).toISOString() }; queue.save(outbound, "open");
-  r = govern(a, ["peer", "list"]); assert.equal(r.code, 0, r.err); assert.match(r.out, /https:\/\/c.example/); assert.match(r.out, /owner, codex/); assert.match(r.out, /p, q/); assert.match(r.out, /open: 1/); assert.match(r.out, /last relay error: offline test/); assert.ok(r.out.includes(peer.fingerprint(bi.publicKey)));
+  r = govern(a, ["peer", "list"]); assert.equal(r.code, 0, r.err); assert.match(r.out, /https:\/\/c.example/); assert.match(r.out, /owner, codex/); assert.match(r.out, /p, q/); assert.match(r.out, /open: 1/); assert.match(r.out, /last relay error: offline test/); assert.ok(r.out.includes(peer.fingerprint(ck)));
   r = govern(a, ["peer", "revoke", "b"]); assert.equal(r.code, 0, r.err);
   r = govern(a, sendArgs); assert.equal(r.code, 2); assert.match(r.err, /live peer/);
 });
@@ -84,7 +68,7 @@ test("peer server bounds requests, authenticates bytes, routes strictly and inje
   try {
     const health = await fetch(`${url}/v1/health`); assert.deepEqual(await health.json(), { protocol: peer.PROTOCOL, name: "b" }); assert.equal(health.headers.get("cache-control"), "no-store");
     for (const [path, method] of [["/v1/health", "POST"], ["/v1/peer/deliver", "GET"], ["/no", "GET"], ["/v1/health?x=1", "GET"]]) assert.equal((await fetch(url + path, { method })).status, 404);
-    const bytes = Buffer.from(JSON.stringify({ protocol: peer.PROTOCOL, id: "http-id", at: new Date(now).toISOString(), message: { project: "p", task: "t", kind: "TASK", from: "alice", to: "codex", summary: "check", body: "claim" } }));
+    const bytes = Buffer.from(JSON.stringify({ protocol: peer.PROTOCOL, id: "http-id", at: new Date(now).toISOString(), toKey: peer.fingerprint(peer.identity().publicKey), message: { project: "p", task: "t", kind: "TASK", from: "alice", to: "codex", summary: "check", body: "claim" } }));
     let r = await fetch(`${url}/v1/peer/deliver`, { method: "POST", body: bytes, headers: peer.sign(bytes, ai) }); assert.equal(r.status, 200);
     r = await fetch(`${url}/v1/peer/deliver`, { method: "POST", body: "{", headers: { "X-Forwarded-For": "127.0.0.1" } }); assert.equal(r.status, 403); assert.deepEqual(await r.json(), { error: "unknown peer" });
     r = await fetch(`${url}/v1/peer/deliver`, { method: "POST", body: "x".repeat(peer.MAX_BODY + 1) }); assert.equal(r.status, 413); assert.equal(r.headers.get("cache-control"), "no-store");

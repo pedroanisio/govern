@@ -41,7 +41,7 @@ govern runs lanes of agent work through the checked stages of a process. Its des
 | Actors | The owner, a paired phone, the working agent session, the headless runners the queue starts, external systems that deliver events, and peer hosts that exchange queue messages |
 | CLI | [bin/govern](../../bin/govern) runs [govern.ts](govern.ts) under Node with type stripping; the command table dispatches into [lib/](lib/) |
 | Subsystems | Twelve groups of `lib/` modules, listed below |
-| Servers | `govern remote serve` for paired phones and `govern event-listen` for webhooks, and `govern peer serve` for signed queue delivery between hosts |
+| Servers | `govern remote serve` for paired phones and `govern event-listen` for webhooks, and `govern peer serve` for signed queue delivery, agent discovery and mesh membership between hosts |
 | State | A workspace folder of JSON and JSONL files; every command and all three servers read and write there, and nothing else holds state |
 
 There is no daemon at the centre. Most `govern` invocations are short processes that load the files they need, act,
@@ -101,19 +101,24 @@ the HTTP form of `govern event`.
 
 ### `govern peer serve`: signed queue delivery between hosts
 
-[lib/peer.ts](lib/peer.ts) serves `govern-peer/1`, specified in [PEERS.md](PEERS.md). A remote queue address is
-`NAME@PEER`; each host keeps its own profiles, gates, allowances and maxRuns.
+[lib/peer.ts](lib/peer.ts) serves `govern-peer/2` and, on a mesh registrar, [lib/mesh.ts](lib/mesh.ts) serves
+`govern-mesh/1`; both are specified in [PEERS.md](PEERS.md). A remote queue address is `NAME@HOST`, where HOST is a
+static peer or a mesh member; each host keeps its own profiles, gates, allowances and maxRuns.
 
 | Concern | How it works |
 |---|---|
 | Reachability | Always binds `127.0.0.1`, port 5003 by default. A non-loopback `--host` is refused. A Cloudflare or Tailscale tunnel supplies TLS; forwarded-address headers confer no authority |
 | Health | Unauthenticated `GET /v1/health` returns `{protocol, name}` |
-| Delivery | `POST /v1/peer/deliver` accepts `{protocol, id, at, message}`. `Govern-Peer-Key` identifies a live peer by the SHA-256 fingerprint of its public key; `Govern-Signature` is an Ed25519 signature over the exact body bytes, verified before JSON parsing |
-| Limits and authorization | At most 262144 body bytes; a closed typed parse rejects unknown fields and checks protocol, kind, local sender/recipient names and a nonblank summary of at most 200 characters. The timestamp must be within five minutes; the peer must allow the recipient and project. `replyTo` must name a message exchanged with that peer |
+| Trust | A sender is a live static peer, found by the SHA-256 fingerprint of its key in `Govern-Peer-Key`, or a mesh member: listed in the last sync, or proven by a certificate the mesh key signed in `Govern-Peer-Cert`. `Govern-Signature` is an Ed25519 signature over the exact body bytes, verified before JSON parsing |
+| Delivery | `POST /v1/peer/deliver` accepts `{protocol, id, at, toKey, message}`. `toKey` must be this host's key fingerprint, so a delivery captured at one host or tunnel cannot be replayed to another |
+| Discovery | `POST /v1/peer/directory` answers a signed `{protocol, kind, at, toKey, id}` with what the signer may address here: granted runners, profiles and names, and agents registered for intersecting projects ([lib/agents.ts](lib/agents.ts)). The answer is signed by this host's key |
+| Mesh | On the registrar, `POST /v1/mesh/join` admits a host once per invite (HMAC proof under the hash of the invite secret, plus the joining key's signature) and `POST /v1/mesh/sync` renews a live member's 30-day certificate. Both answer with every live member's certificate and the revoked keys, signed by the mesh key |
+| Limits and authorization | At most 262144 body bytes; a closed typed parse rejects unknown fields and checks protocol, kind, local sender/recipient names and a nonblank summary of at most 200 characters. The timestamp must be within five minutes. The sender's grants (per peer, or this host's mesh policy) must cover the project, and the recipient must be granted or the name or alias of a registered agent for it. `replyTo` must name a message exchanged with that sender; an answer to a message this host sent reaches its non-runner author without a grant, so conversations run both ways |
+| Names | Mesh host names are unique (the registrar refuses a taken name); agent names and aliases are unique per host and held by the registering session, stable or ephemeral (`e-` plus eight base32 letters, at most 24 hours), so `NAME@HOST` names one agent. An alias files under the agent's own name |
 | Filing and duplicates | Under the peer lock, `(peer, id)` deduplicates deliveries for seven days. `queue.send` files an open message from `NAME@PEER`, with read-only access, no files, lane or estimate, a locally resolved profile and `remote: {peer, id}` |
 | Replies | 200 `{protocol, id, duplicate?}`; 400 for invalid delivery data, 403 for unknown/revoked peers, bad signatures, stale/future timestamps or denied grants, 413 for oversized bodies, 404 for every other route. Responses are JSON with `Cache-Control: no-store`; headers have 10 s and the request 30 s |
 | Relay | `govern peer push` sends signed deliveries with a 15 s timeout. Unverified output and sender-selected execution options fail locally. Transient failures retry after 30 s, doubling to at most one hour, with failure on attempt eight; permanent refusals produce BLOCKED notices |
-| State and grants | `<state>/peer/` holds `host.json`, `peers.json` and `received.json`; writes take a lock and rename a temporary file. New directories are mode 700 and files mode 600. Peer add/revoke require the owner's terminal because `allow` grants runs for named local recipients |
+| State and grants | `<state>/peer/` holds `host.json`, `peers.json`, `mesh.json`, `mesh-registrar.json` (registrar only), `agents.json`, `received.json` and `directory.json`; writes take a re-entrant lock and rename a temporary file. New directories are mode 700 and files mode 600. Peer add/revoke and mesh create, invite, join, policy, revoke and `sync --url` require the owner's terminal because they grant runs; agents register only themselves, and a registration grants no run |
 
 ## Subsystems
 
@@ -126,7 +131,7 @@ the HTTP form of `govern event`.
 | Jobs | `jobs.ts`, `locks.ts`, `lockwait.ts` | `run --bg` starts a detached job, and `wait` blocks on it with no model in the loop. A job past its timeout gets SIGTERM, then SIGKILL 3 s later. `kill` stops the job's whole process tree |
 | Resources and budgets | `resources.ts`, `slice.ts`, `sliceRunner.ts`, `reap.ts`, `allowances.ts` | Declared machines and services with locks; recipe jobs (split, piece, join, verify); tagged `up`, `down` and `reap`; spending allowances |
 | Verified model steps | `codex.ts`, `rules.ts` | `govern ask`: a prompt with front matter, output checked against a JSON schema and the house rules (declared as data next to the prompt), one automatic repair, exit 3 if verification fails. The ledger records the sha256 of every call |
-| Task queue | `queue.ts`, `replycheck.ts`, `sessions.ts`, `grokhome.ts`, `peer.ts` | Messages move from `open` to `claimed` to `done` or `failed`. `dispatch` starts one sealed headless session per message. A reply is filed only if it parses and passes its checks; otherwise it becomes `BLOCKED`. `peer.ts` supplies host identity, peer grants, signed queue receive/relay and the peer HTTP server |
+| Task queue | `queue.ts`, `replycheck.ts`, `sessions.ts`, `grokhome.ts`, `peer-id.ts`, `peer.ts`, `mesh.ts`, `agents.ts` | Messages move from `open` to `claimed` to `done` or `failed`. `dispatch` starts one sealed headless session per message. A reply is filed only if it parses and passes its checks; otherwise it becomes `BLOCKED`. `peer-id.ts` holds the host identity and signing primitives; `peer.ts` the peer grants, signed receive, relay, discovery and the peer HTTP server; `mesh.ts` mesh certificates, joins and syncs; `agents.ts` agent self-registration |
 | Capabilities | `caps.ts`, `capcheck.ts` | A profile is a set of grants plus an engine and a model. Each grant has a side-effect class (`read`, `write`, `spend`, `publish` or `push`). `caps --check` runs nonce-verified probes |
 | Conversations | `conversation.ts`, `conversation-runtime.ts`, `conversation-adapters.ts`, `conversation-cli.ts`, `conversation-host.ts`, `conversation-owner.ts`, `conversation-worker.ts` | Durable turns run one at a time, with NDJSON events, cancellation, explicit recovery and context checkpoints ([CONVERSATIONS.md](CONVERSATIONS.md)) |
 | Owner gates | `approval.ts` | Any session can work a lane; only the owner's own words approve. `approve`, `reject`, `allow` and human tasks need the owner's verbatim words, found in a message the person typed. A quote recorded from a Codex or Grok session is refused, because govern cannot check there that the person typed it |

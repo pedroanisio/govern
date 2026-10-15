@@ -42,6 +42,11 @@
 #     govern peer revoke NAME
 #     govern peer serve [--port 5003] [--host 127.0.0.1]
 #     govern peer push [--max N]
+#     govern mesh create --name MESH --url URL --project P... [--allow NAME]...  |  mesh invite [--host NAME] [--ttl S]
+#     govern mesh join CODE --url URL --project P... [--allow NAME]...  |  mesh sync [--url URL]  |  mesh status
+#     govern mesh policy --project P... [--allow NAME]...  |  mesh revoke HOST
+#     govern agents list [--refresh]  |  agents unregister [NAME] [--as NAME]
+#     govern agents register --project P... [--as NAME | --ephemeral] [--alias NAME]... [--description TEXT] [--ttl S]
 #     govern task send --to codex|claude|grok|RUNNER|PROFILE|auto|owner|SESSION|NAME@PEER --project P --task T --kind K --summary S
 #                      (--body B | --body-file F) [--file PATH]... [--reply-to ID] [--write | --profile P]
 #                      [--lane SLUG] [--from NAME] [--estimate-usd N]
@@ -86,6 +91,14 @@
 #     terminal. Remote sends require a live peer and refuse --write, --profile, --lane, --estimate-usd, --file and
 #     auto@PEER: the receiving host decides these. Sessions on PEER are not woken. Dispatch --loop also relays;
 #     unverified output never leaves. Peer list shows grants, fingerprints, open outbound counts and last errors.
+#     A mesh replaces pairwise peer setup: the registrar (mesh create) prints one single-use invite per host (mesh
+#     invite); each host joins once (mesh join) and then trusts every certified member. Certificates last 30 days and
+#     renew on mesh sync, which dispatch --loop runs every ten minutes. Mesh grants (--project, --allow) are this
+#     host's own policy for every member. Agents register themselves (agents register) as NAME@HOST, stable or
+#     ephemeral, with aliases; names and aliases are unique per host and held by the registering session, and a
+#     registration grants no run. An answer to a message this host sent reaches its local author without a grant.
+#     agents list shows what this host may address on every other host. Mesh create, invite, join, policy, revoke and
+#     sync --url require the owner's terminal.
 # OPTIONS
 #     --adapter A             conversation create: trusted named NDJSON adapter from conversationAdapters in workspace config
 #     --max-context-chars N    conversation create: maximum assembled context characters (default 64000, at most 1000000); checkpoint rather than truncate
@@ -109,14 +122,16 @@
 #     --generation N          event: activation generation, required when the event contract declares it
 #     --port N                event-listen, remote serve, peer serve: event-listen: loopback webhook port (default 5001); remote serve:
 #                             the API port (default 5002)
-#     --host H                remote serve, peer serve: default 127.0.0.1; remote: another needs TLS; peer: loopback only, TLS from the tunnel
+#     --host H                remote serve, peer serve, mesh invite: default 127.0.0.1; remote: another needs TLS; peer: loopback only,
+#                             TLS from the tunnel; mesh invite: the name the joining host must have
 #     --tls-cert F            remote pair, remote link, remote serve: the server's PEM certificate; pair, link: its pin goes
 #                             into the printed link; serve: serve HTTPS (with --tls-key)
 #     --tls-key F             remote serve: the PEM private key of --tls-cert
 #     --minutes N             remote pair: how long the pairing code is valid (1..60, default 10)
 #     --key BASE64            peer add: Ed25519 base64 DER SPKI public key
-#     --allow NAME            peer add: permitted local recipient (repeatable, no wildcard)
-#     --url URL               remote pair, remote link, peer add: the server's address as the phone reaches it, printed as a link
+#     --allow NAME            peer add, mesh create, mesh join, mesh policy: permitted local recipient (repeatable, no wildcard)
+#     --url URL               remote pair, remote link, peer add, mesh create, mesh join, mesh sync: the server's address as the
+#                             phone reaches it; peer add: the peer's address; mesh: this host's public https address
 #                             and drawn as a QR code the phone's camera opens in the app (link: default http://127.0.0.1:5002)
 #     --no-qr                 remote pair, remote link: print the link without its QR code
 #     --code NNNNNN           remote confirm: the 6-digit code the phone shows; a wrong code refuses the request for good
@@ -131,7 +146,7 @@
 #                             task: the message kind (TASK, the default for send; ACK, REVIEW, HANDOFF, BLOCKED…)
 #     --title T               conversation create, new, artifact add: conversation create: its title (default: its id); new: the
 #                             lane's title (default: its slug); artifact add: the artifact's title shown to the reviewer
-#     --name N                artifact add, peer id: peer id: identity name on creation; artifact add: the artifact's name in the lane (default: the file's base name)
+#     --name N                artifact add, peer id, mesh create: mesh create: the mesh's name; peer id: identity name on creation; artifact add: the artifact's name in the lane (default: the file's base name)
 #     --caption C             artifact add: a caption shown with the artifact
 #     --lang L                new: the lane's language, en (default) or pt-BR
 #     --parent SLUG           new: the lane this one comes from (shown in its brief)
@@ -186,7 +201,8 @@
 #     --to X                  human, task send, task list, task forward: human delegate: the person the task goes to; send:
 #                             codex, claude, grok, a queue config runner, a profile, auto, owner or a live session; list: only messages to X; forward:
 #                             the new recipient
-#     --project P             task send, task list, peer add: peer add: allowed project (repeatable, * alone for any); the message's project; list: only that project's messages
+#     --project P             task send, task list, peer add, mesh create, mesh join, mesh policy, agents register: peer add, mesh,
+#                             agents register: allowed project (repeatable, * alone for any); the message's project; list: only that project's messages
 #     --task T                task send: the task the message belongs to
 #     --summary S             conversation context, task send, task reply: conversation context: the checkpoint summary
 #                             (required, with --through); task: the one-line summary
@@ -204,7 +220,14 @@
 #     --questions F           decide ask: the JSON file of typed questions (choice, score, noul)
 #     --purpose P             decide ask: the name the decision is recorded under (default ask)
 #     --json                  decide ask: print the whole decision as JSON
-#     --as NAME               human-inbox, human, task inbox, task close, task reclaim, task forward, task reply, remote pair: who you are;
+#     --ttl S                 mesh invite, agents register: seconds the invite or registration lasts (invite 3600 default,
+#                             60..604800; stable agent 43200 default, at most 604800; ephemeral 3600, at most 86400)
+#     --ephemeral             agents register: generate a short-lived e-XXXXXXXX name that ends with this session
+#     --alias NAME            agents register: another name this agent answers to on this host (repeatable)
+#     --description TEXT      agents register: one line other hosts see in agents list
+#     --refresh               agents list: ask every other host now instead of reading the last discovery
+#     --as NAME               human-inbox, human, task inbox, task close, task reclaim, task forward, task reply, remote pair, agents register, agents unregister: who you are;
+#                             agents: must be this session's own name;
 #                             human, human-inbox: a process person, refused unless this OS account is mapped to it; task:
 #                             default GOVERN_AS, else this session; remote pair: the person the device approves as (owner)
 #     --all                   task inbox, remote confirm: task inbox: messages in every state, not only open ones; remote

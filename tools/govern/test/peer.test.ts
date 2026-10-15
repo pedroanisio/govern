@@ -23,7 +23,8 @@ function pair() {
   return { a, b, ai, bi };
 }
 const send = (extra: Partial<queue.Message> = {}) => queue.send({ project: "p", task: "t", kind: "TASK", from: "alice", to: "codex@b", summary: "please check", body: "the claim", files: [], access: "read-only", ...extra });
-const raw = () => ({ protocol: "govern-peer/1", id: "origin-id", at: new Date(NOW).toISOString(), message: { project: "p", task: "t", kind: "TASK", from: "alice", to: "codex", summary: "check", body: "claim" } });
+// A delivery addressed to the host whose workspace is current.
+const raw = () => ({ protocol: peer.PROTOCOL, id: "origin-id", at: new Date(NOW).toISOString(), toKey: peer.fingerprint(peer.identity().publicKey), message: { project: "p", task: "t", kind: "TASK", from: "alice", to: "codex", summary: "check", body: "claim" } });
 function signed(value: unknown, ai: peer.Identity) {
   const bytes = Buffer.from(JSON.stringify(value));
   return { bytes, headers: peer.sign(bytes, ai) };
@@ -72,7 +73,7 @@ test("two hosts round trip through dispatch and relay preserves thread and local
   process.env.FAKE_CODEX_SCRIPTS = reply(b, "answer", { kind: "HANDOFF", summary: "checked", body: "answer" });
   const dispatched = queue.dispatch(); assert.match(dispatched[0]!, /HANDOFF/, JSON.stringify(queue.find(incoming.id)));
   const answer = queue.all().find(x => x.m.to === "alice@a")!.m;
-  const env = peer.envelope(answer, NOW); assert.equal(env.message.replyTo, orig.id);
+  const env = peer.envelope(answer, peer.fingerprint(peer.remote("a").publicKey), NOW); assert.equal(env.message.replyTo, orig.id);
   await peer.push({ now: NOW, post: async (_url, bytes, headers) => {
     use(a); const r = peer.receive(bytes, headers, NOW); use(b); return { status: r.status, text: JSON.stringify(r.body) };
   } });
@@ -171,7 +172,7 @@ test("push fails a dead relay claim once without posting it before claiming open
 
 for (const mode of ["throw", "503", "429", "invalid success"]) test(`relay retries ${mode}, skips backoff and fails on eighth attempt`, async () => {
   const { a } = pair(); use(a); const m = send(); let calls = 0, now = NOW;
-  const post: peer.Post = async () => { calls++; if (mode === "throw") throw new Error("offline"); return mode === "invalid success" ? { status: 200, text: '{"protocol":"govern-peer/1","id":"x","extra":1}' } : { status: Number(mode), text: "busy" }; };
+  const post: peer.Post = async () => { calls++; if (mode === "throw") throw new Error("offline"); return mode === "invalid success" ? { status: 200, text: JSON.stringify({ protocol: peer.PROTOCOL, id: "x", extra: 1 }) } : { status: Number(mode), text: "busy" }; };
   for (let attempt = 1; attempt <= 8; attempt++) {
     await peer.push({ now, post });
     const hit = queue.find(m.id)!;
@@ -235,7 +236,7 @@ test("relay max, oldest first, translated replyTo only for target peer, and dupl
   const m = send({ replyTo: local.id }); const second = send(); let calls = 0;
   // Give the ordering a deterministic tie breaker independent of random message ids.
   m.created = new Date(NOW - 1000).toISOString(); write(join(queue.QUEUE(), "open", `${m.id}.json`), JSON.stringify(m));
-  await peer.push({ max: 1, now: NOW, post: async (_url, bytes) => { calls++; assert.equal(JSON.parse(bytes.toString()).message.replyTo, undefined); return { status: 200, text: '{"protocol":"govern-peer/1","id":"remote","duplicate":true}' }; } });
+  await peer.push({ max: 1, now: NOW, post: async (_url, bytes) => { calls++; assert.equal(JSON.parse(bytes.toString()).message.replyTo, undefined); return { status: 200, text: JSON.stringify({ protocol: peer.PROTOCOL, id: "remote", duplicate: true }) }; } });
   assert.equal(calls, 1); assert.equal(queue.find(m.id)?.state, "done"); assert.equal(queue.find(second.id)?.state, "open");
 });
 
@@ -297,5 +298,5 @@ for (const [fileName, value, path] of [
 });
 test("relay does not forward replyTo from a different peer", () => {
   const { a } = pair(); use(a); const parent = send({ to: "alice", from: "codex@c", remote: { peer: "c", id: "foreign-id" } });
-  assert.equal(peer.envelope(send({ replyTo: parent.id }), NOW).message.replyTo, undefined);
+  assert.equal(peer.envelope(send({ replyTo: parent.id }), peer.fingerprint(peer.remote("b").publicKey), NOW).message.replyTo, undefined);
 });
