@@ -1,0 +1,18 @@
+{
+  "version": 1,
+  "revision": 2,
+  "name": "pn",
+  "description": "A small checked process with an owner gate and a coordinator gate",
+  "stages": [
+    { "name": "plan", "check": "planned", "requires": "check" },
+    { "name": "build", "check": "built", "requires": "check" },
+    { "name": "review" },
+    { "name": "ship" }
+  ],
+  "gates": [
+    { "name": "plan-review", "stage": "plan", "owner": "coordinator" },
+    { "name": "go", "stage": "plan", "needs": ["plan-review"] },
+    { "name": "ship-ok", "stage": "ship" }
+  ],
+  "setup": [{ "commands": { "planned": ["true"], "built": ["false"] } }]
+}
