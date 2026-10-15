@@ -159,11 +159,22 @@ export function verifyAction(device: Device, body: Buffer, signature: string | u
   return a;
 }
 
-/** Carries out a verified action as the device's person, under the lane's transaction. */
+/** Execute a verified action while serializing its commit with device revocation.
+ * @param device - The device whose signature was verified.
+ * @param a - The verified action.
+ * @param body - The signed request bytes to record with an approval.
+ * @param signature - The verified signature to record with an approval.
+ * @returns Nothing after the action and its audit entry are persisted.
+ * @throws {@link Forbidden} If the device was revoked or removed before the commit.
+ * @throws {@link GovernError} If the lane or action is invalid.
+ */
 export function perform(device: Device, a: Action, body: Buffer, signature: string): void {
   const slug = slugOf(a.lane);
   if (!existsSync(stateFile(slug))) throw new NotFound(`no lane ${slug}`);
-  transaction(slug, () => {
+  // Acquire the lane first: a request waiting for it must not block revocation.
+  transaction(slug, () => locked(() => {
+    if (!devices().some((d) => d.id === device.id && !d.revokedAt))
+      throw new Forbidden("this device is no longer paired (revoked or removed)");
     const p = load(slug);
     if (a.action === "approve") {
       const gates = processOf(p).gates;
@@ -180,7 +191,7 @@ export function perform(device: Device, a: Action, body: Buffer, signature: stri
       save(p);
       appendLedger(p.slug, { kind: "alert-ack", id: a.alert, by: device.person, device: device.id });
     }
-  });
+  }));
   audit({ kind: a.action, device: device.id, lane: slug, ...(a.action === "approve" ? { gate: a.gate } : { alert: a.alert }) });
 }
 

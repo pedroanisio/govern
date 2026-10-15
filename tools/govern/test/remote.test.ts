@@ -35,14 +35,14 @@ function setup(): Env {
 const stateOf = (e: Env, slug = "r1"): Project => JSON.parse(readFileSync(join(e.projects, slug, "govern.json"), "utf8"));
 
 /** Runs `f` with GOVERN_REPO pointing at the workspace and a server listening on a free loopback port. */
-async function serving(e: Env, f: (base: string) => Promise<void>, o: Parameters<typeof remoteServer>[0] = {}): Promise<void> {
+async function serving(e: Env, f: (base: string, server: Server) => Promise<void>, o: Parameters<typeof remoteServer>[0] = {}): Promise<void> {
   const old = process.env.GOVERN_REPO;
   process.env.GOVERN_REPO = e.root;
   const server: Server = remoteServer({ streamIntervalMs: 50, pingMs: 1000, ...o });
   await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
   const addr = server.address();
   assert.ok(addr && typeof addr === "object");
-  try { await f(`http://127.0.0.1:${addr.port}`); } finally {
+  try { await f(`http://127.0.0.1:${addr.port}`, server); } finally {
     server.closeAllConnections();
     await new Promise<void>((r) => server.close(() => r()));
     if (old === undefined) delete process.env.GOVERN_REPO; else process.env.GOVERN_REPO = old;
@@ -173,6 +173,47 @@ test("a signed approval records the owner's words with the device as their sourc
     assert.equal(led[0].source.kind, "device");
     // the stored lane still parses: the brief reads it
     assert.match(govern(e, ["brief", "r1"]).out, /final ✓/);
+  });
+});
+
+test("revocation rejects signed actions whose headers arrived before their body", { timeout: 15000 }, async (t) => {
+  const e = setup();
+  const p = stateOf(e);
+  p.alerts = [{ id: "a-1", stage: "draft", kind: "due", at: new Date().toISOString(), message: "draft is due" }];
+  write(join(e.projects, "r1", "govern.json"), JSON.stringify(p));
+  await serving(e, async (base, server) => {
+    for (const fields of [
+      { action: "approve", lane: "r1", gate: "final", quote: "approved before revocation" },
+      { action: "ack", lane: "r1", alert: "a-1" },
+    ]) {
+      const phone = await pairPhone(base);
+      const signed = action(phone, fields);
+      // The server's handler runs first, so this barrier confirms it has authenticated the headers.
+      const received = new Promise<void>((resolve) => server.once("request", () => resolve()));
+      const req = request(`${base}/v1/actions`, { method: "POST", signal: t.signal, headers: {
+        ...auth(phone), "Govern-Signature": signed.sig, "Content-Length": Buffer.byteLength(signed.body),
+      } });
+      const response = new Promise<{ status: number | undefined; body: string }>((resolve, reject) => {
+        req.once("response", (res) => {
+          let body = "";
+          res.setEncoding("utf8");
+          res.on("data", (chunk) => { body += chunk; });
+          res.once("end", () => resolve({ status: res.statusCode, body }));
+          res.once("error", reject);
+        });
+        req.once("error", reject);
+      });
+      req.flushHeaders();
+      await received;
+      revoke(phone.id);
+      req.end(signed.body);
+      const result = await response;
+      assert.equal(result.status, 403, result.body);
+      assert.match(JSON.parse(result.body).error, /revoked|no longer paired/);
+    }
+    assert.equal(stateOf(e).approvals.final, undefined);
+    assert.equal(stateOf(e).alerts![0]!.acknowledgedAt, undefined);
+    assert.deepEqual(jsonl(join(e.projects, "r1", "govern", "ledger.jsonl")), []);
   });
 });
 
