@@ -108,7 +108,7 @@ data class AlertView(
 data class NoteView(val at: String, val stage: String, val text: String)
 
 @Serializable
-data class LedgerView(val t: String, val kind: String, val text: String)
+data class LedgerView(val t: String, val kind: String, val text: String, val summary: String? = null, val tone: String? = null)
 
 @Serializable
 data class HumanTaskView(val stage: String, val assignee: String?, val completedBy: String?)

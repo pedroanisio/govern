@@ -257,11 +257,11 @@ class AppModel @JvmOverloads constructor(app: Application, private val clock: ja
                 fun publish() {
                     if (selected.value != host.id) return
                     val entries = details.flatMap { lane ->
-                        lane.decisions.map { ActivityEntry(lane.slug, it.t, it.kind, "${it.by}: ${it.quote}") } +
-                        lane.ledger.map { ActivityEntry(lane.slug, it.t, it.kind, it.text) } +
-                            lane.notes.map { ActivityEntry(lane.slug, it.at, "", it.text) }
+                        lane.decisions.map { ActivityEntry(lane.slug, it.t, it.kind, "", "${it.by}: ${it.quote}") } +
+                        lane.ledger.map { ActivityEntry(lane.slug, it.t, it.kind, it.text, it.summary, it.tone) } +
+                            lane.notes.map { ActivityEntry(lane.slug, it.at, "", it.text, it.text) }
                     } + state(host.id)?.desk?.lanes.orEmpty().mapNotNull { lane ->
-                        lane.lastNote?.let { ActivityEntry(lane.slug, it.at, "", it.text) }
+                        lane.lastNote?.let { ActivityEntry(lane.slug, it.at, "", it.text, it.text) }
                     }
                     _activity.value = entries.distinct().sortedByDescending { it.at }.take(200)
                 }

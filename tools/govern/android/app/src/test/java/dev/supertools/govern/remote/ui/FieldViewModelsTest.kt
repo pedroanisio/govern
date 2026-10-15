@@ -8,6 +8,66 @@ import java.time.Instant
 import java.time.ZoneOffset
 
 class FieldViewModelsTest {
+    @Test fun countPillsAndBadges() {
+        assertEquals("00", countPill(0)); assertEquals("02", countPill(2)); assertEquals("100", countPill(100))
+        assertFalse(showDecisionBadge(0)); assertTrue(showDecisionBadge(2))
+    }
+    @Test fun checksChooseAllFailedOrNone() {
+        assertEquals(ChecksLine.NONE, checksLine(0, 0, 0))
+        assertEquals(ChecksLine.ALL, checksLine(3, 3, 0))
+        assertEquals(ChecksLine.FAILED, checksLine(2, 3, 1))
+        assertEquals(ChecksLine.PARTIAL, checksLine(2, 3, 0))
+    }
+    @Test fun gateSubtitleAndShortJobId() {
+        assertEquals("publish gate · review", gateSubtitle("publish", "review", "%1\$s gate · %2\$s"))
+        assertEquals("abcdefgh", shortJobId("abcdefghijkl")); assertEquals("12", shortJobId("12"))
+    }
+    @Test fun activityFallbackHidesJsonAndMapsTone() {
+        assertEquals("Job", activitySummary(ActivityEntry("a", "", "job", "{secret}"), "Command set"))
+        assertEquals("Check", activitySummary(ActivityEntry("a", "", "check", "{}"), "Command set"))
+        assertEquals("Command set", activitySummary(ActivityEntry("a", "", "cmd-set", "{}"), "Command set"))
+        assertEquals("Started", activitySummary(ActivityEntry("a", "", "job", "{}", "Started"), "Command set"))
+        assertEquals(ActivityTone.INFO, activityTone("unknown")); assertEquals(ActivityTone.INFO, activityTone(null))
+        assertEquals(ActivityTone.OK, activityTone("ok")); assertEquals(ActivityTone.FAILED, activityTone("failed"))
+        assertEquals(ActivityTone.RUNNING, activityTone("running"))
+    }
+    @Test fun activityFallbackCanBeLocalizedAndLiveControlRequiresBoth() {
+        assertEquals("Verificação", activitySummary(ActivityEntry("a", "", "check", "{}"), "Comando", "Job", "Verificação"))
+        assertEquals("Job", activitySummary(ActivityEntry("a", "", "job", "{}"), "Comando", "Job", "Verificação"))
+        assertTrue(showLiveControl(Link.Live, true))
+        assertFalse(showLiveControl(Link.Live, false))
+        assertFalse(showLiveControl(Link.Connecting, true))
+        assertEquals("OK", jobStatus("ok"))
+    }
+
+    @Test fun activityDaysAndTimesUseInjectedZoneAndNow() {
+        val now = Instant.parse("2026-10-14T02:30:00Z")
+        val zone = java.time.ZoneId.of("America/Sao_Paulo")
+        val entry = ActivityEntry("a", "2026-10-14T02:00:00Z", "job", "{}")
+        assertEquals("23:00", activityTime(entry.at, zone))
+        val groups = activityGroups(listOf(entry.copy(at = "2026-10-12T03:00:00Z"), entry), now, zone)
+        assertEquals(listOf(ActivityDay.TODAY, ActivityDay.YESTERDAY), groups.map { it.day })
+        assertEquals(ActivityDay.DATE, activityGroups(listOf(entry.copy(at = "2026-10-01T03:00:00Z")), now, zone).single().day)
+    }
+    @Test fun malformedActivityTimesAreGroupedLastInsteadOfCrashing() {
+        val now = Instant.parse("2026-10-14T12:00:00Z")
+        val good = ActivityEntry("a", "2026-10-14T11:00:00Z", "job", "{}")
+        val groups = activityGroups(listOf(good.copy(at = "undefined"), good, good.copy(at = "")), now, ZoneOffset.UTC)
+        assertEquals(listOf(ActivityDay.TODAY, ActivityDay.UNDATED), groups.map { it.day })
+        assertNull(groups.last().date)
+        assertEquals(2, groups.last().entries.size)
+        assertEquals("--:--", activityTime("undefined", ZoneOffset.UTC))
+        assertEquals("11:00", activityTime(good.at, ZoneOffset.UTC))
+    }
+    @Test fun bannersHideLiveAndPreserveCachedStates() {
+        assertEquals(LinkBanner.NONE, linkBanner(Link.Live, true))
+        assertEquals(LinkBanner.CONNECTING, linkBanner(Link.Connecting, false))
+        assertEquals(LinkBanner.RETRYING, linkBanner(Link.Retrying(2, "reason"), false))
+        assertEquals(LinkBanner.OFFLINE, linkBanner(Link.Stopped("reason"), false))
+        for (link in listOf(Link.Connecting, Link.Retrying(2, "reason"), Link.Stopped("reason")))
+            assertEquals(LinkBanner.CACHED, linkBanner(link, true))
+    }
+
     private val lane = WireJson.decodeFromString<LaneDetail>(javaClass.getResource("/fixtures/lane.json")!!.readText())
     private val session = WireJson.decodeFromString<SessionDetail>(javaClass.getResource("/fixtures/session.json")!!.readText())
 

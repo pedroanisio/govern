@@ -12,6 +12,13 @@ class ModelTest {
     private fun fixture(name: String): String =
         javaClass.classLoader!!.getResource("fixtures/$name")!!.readText()
 
+    @Test fun ledgerSummaryAndToneAreOptional() {
+        val old = WireJson.decodeFromString<LedgerView>("""{"t":"now","kind":"job","text":"{}"}""")
+        assertNull(old.summary); assertNull(old.tone)
+        val human = WireJson.decodeFromString<LedgerView>("""{"t":"now","kind":"job","text":"{}","summary":"Job started","tone":"running"}""")
+        assertEquals("Job started", human.summary); assertEquals("running", human.tone)
+    }
+
     @Test
     fun deskFixtureParses() {
         val d = parseWire<Desk>("desk", fixture("desk.json"))
