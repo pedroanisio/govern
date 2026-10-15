@@ -107,13 +107,17 @@ private fun Main(model: AppModel, state: HostState, confirm: Confirm) {
         NavigationBar(windowInsets = WindowInsets(0, 0, 0, 0)) {
             tabs.forEachIndexed { index, label ->
                 NavigationBarItem(selected = index == tab, onClick = { model.closeSession(); model.closeLane(); tab = index },
-                    icon = { Icon(painterResource(icons[index]), contentDescription = null) },
+                    icon = { BadgedBox(badge = {
+                        val count = pendingDecisions(hosts).size
+                        if (index == 2 && showDecisionBadge(count)) Badge { Text(count.toString()) }
+                    }) { Icon(painterResource(icons[index]), contentDescription = null) } },
                     label = { Text(stringResource(label)) })
             }
         }
     }) { pad ->
         Column(Modifier.padding(pad)) {
-            TopAppBar(windowInsets = WindowInsets(0, 0, 0, 0), title = { Column {
+            TopAppBar(windowInsets = WindowInsets(0, 0, 0, 0), title = { Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Icon(painterResource(R.drawable.ic_govern), contentDescription = null, tint = androidx.compose.ui.graphics.Color.Unspecified, modifier = Modifier.size(32.dp))
                 Text(stringResource(R.string.wordmark))
                 Text(stringResource(R.string.field_label), style = MaterialTheme.typography.labelSmall)
             } }, actions = {
@@ -143,12 +147,12 @@ private fun Main(model: AppModel, state: HostState, confirm: Confirm) {
 
 @Composable
 private fun StatusBanner(state: HostState, at: String? = null) {
-    val live = state.link == Link.Live
-    val cached = state.desk != null || at != null
-    val label = when {
-        live -> stringResource(R.string.live)
-        cached -> stringResource(R.string.cached_at, at ?: state.desk!!.at)
-        state.link == Link.Connecting -> stringResource(R.string.connecting)
+    val banner = linkBanner(state.link, state.desk != null || at != null)
+    if (banner == LinkBanner.NONE) return
+    val label = when (banner) {
+        LinkBanner.CACHED -> stringResource(R.string.cached_at, at ?: state.desk!!.at)
+        LinkBanner.CONNECTING -> stringResource(R.string.connecting)
+        LinkBanner.RETRYING -> (state.link as Link.Retrying).let { stringResource(R.string.retrying, it.seconds, it.reason) }
         else -> stringResource(R.string.offline)
     }
     Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp)) {
@@ -157,7 +161,7 @@ private fun StatusBanner(state: HostState, at: String? = null) {
         }
 
         when (val link = state.link) {
-            is Link.Retrying -> Text(stringResource(R.string.retrying, link.seconds, link.reason), style = MaterialTheme.typography.bodySmall)
+            is Link.Retrying -> if (banner == LinkBanner.CACHED) Text(stringResource(R.string.retrying, link.seconds, link.reason), style = MaterialTheme.typography.bodySmall)
             is Link.Stopped -> Text(link.reason, style = MaterialTheme.typography.bodySmall)
             else -> Unit
         }
@@ -199,13 +203,9 @@ private fun ActivityScreen(state: HostState, model: AppModel) {
     LaunchedEffect(state.host.id, state.desk?.at, state.link == Link.Live) { model.loadActivity() }
     LazyColumn(contentPadding = PaddingValues(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
         if (entries.isEmpty()) item { Empty(R.string.no_activity) }
-        items(entries) { entry ->
-            Card(Modifier.fillMaxWidth().clickable { model.openLane(entry.lane) }) {
-                Column(Modifier.padding(12.dp)) {
-                    Text(stringResource(R.string.activity_location, entry.at, entry.lane), style = MaterialTheme.typography.labelSmall)
-                    Text(stringResource(R.string.ledger_entry, entry.kind, entry.text), style = FieldCode)
-                }
-            }
+        activityGroups(entries, model.now(), java.time.ZoneId.systemDefault()).forEach { group ->
+            item { ActivityDayHeading(group) }
+            items(group.entries) { entry -> ActivityRow(entry) { model.openLane(entry.lane) } }
         }
     }
 }
@@ -268,7 +268,10 @@ private fun LaneScreen(lane: LaneDetail, state: HostState, model: AppModel, conf
             if (lane.notes.isNotEmpty()) item { Section(stringResource(R.string.notes)) }
             items(lane.notes.reversed()) { Text(stringResource(R.string.note_entry, it.at, it.stage, it.text)) }
             if (lane.ledger.isNotEmpty()) item { Section(stringResource(R.string.ledger)) }
-            items(lane.ledger.reversed()) { Text(stringResource(R.string.log_entry, it.t, it.kind, it.text), style = FieldCode) }
+            activityGroups(lane.ledger.map { ActivityEntry(lane.slug, it.t, it.kind, it.text, it.summary, it.tone) }, model.now(), java.time.ZoneId.systemDefault()).forEach { group ->
+                item { ActivityDayHeading(group) }
+                items(group.entries) { ActivityRow(it) }
+            }
         }
     }
 }
@@ -299,5 +302,34 @@ private fun TelemetryView(t: Telemetry) {
         t.machines.forEach { Text(stringResource(R.string.machine_row, it.lane, it.time, it.money.orEmpty())) }
         if (t.allowances.isNotEmpty()) Section(stringResource(R.string.allowances))
         t.allowances.forEach { Text(it, style = FieldCode) }
+    }
+}
+
+@Composable
+private fun ActivityDayHeading(group: ActivityGroup) {
+    Text(when (group.day) {
+        ActivityDay.TODAY -> stringResource(R.string.today)
+        ActivityDay.YESTERDAY -> stringResource(R.string.yesterday)
+        ActivityDay.DATE -> group.date!!.format(java.time.format.DateTimeFormatter.ofLocalizedDate(java.time.format.FormatStyle.MEDIUM))
+        ActivityDay.UNDATED -> stringResource(R.string.undated)
+    }, style = MaterialTheme.typography.titleSmall)
+}
+
+@Composable
+private fun ActivityRow(entry: ActivityEntry, open: (() -> Unit)? = null) {
+    val tone = when (activityTone(entry.tone)) {
+        ActivityTone.OK -> FieldSuccess
+        ActivityTone.FAILED -> MaterialTheme.colorScheme.error
+        ActivityTone.RUNNING -> FieldWarning
+        ActivityTone.INFO -> MaterialTheme.colorScheme.onSurfaceVariant
+    }
+    Card(Modifier.fillMaxWidth().then(if (open != null) Modifier.clickable(onClick = open) else Modifier)) {
+        Row(Modifier.padding(12.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            Surface(Modifier.padding(top = 6.dp).size(8.dp), shape = androidx.compose.foundation.shape.CircleShape, color = tone) {}
+            Column {
+                Text(activitySummary(entry, stringResource(R.string.command_set), stringResource(R.string.activity_job), stringResource(R.string.activity_check)), style = MaterialTheme.typography.bodyMedium)
+                Text(stringResource(R.string.activity_location, activityTime(entry.at, java.time.ZoneId.systemDefault()), entry.lane), style = MaterialTheme.typography.labelSmall)
+            }
+        }
     }
 }

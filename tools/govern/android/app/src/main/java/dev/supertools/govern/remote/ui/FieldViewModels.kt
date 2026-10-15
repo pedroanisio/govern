@@ -74,7 +74,7 @@ sealed interface Link {
 }
 
 data class HostState(val host: Host, val desk: Desk? = null, val link: Link = Link.Connecting, val cachedLanes: Map<String, CachedLane> = emptyMap())
-data class ActivityEntry(val lane: String, val at: String, val kind: String, val text: String)
+data class ActivityEntry(val lane: String, val at: String, val kind: String, val text: String, val summary: String? = null, val tone: String? = null)
 
 data class PendingDecision(val host: Host, val lane: LaneSummary, val gate: GateView)
 
@@ -92,3 +92,56 @@ fun overview(hosts: List<HostState>): Overview = Overview(hosts.sumOf { it.desk?
     pendingDecisions(hosts).size, hosts.count { it.link == Link.Live }, hosts.count { it.link != Link.Live })
 fun sessionRows(hosts: List<HostState>): List<SessionRow> = hosts.flatMap { host -> host.desk?.sessions.orEmpty().map { SessionRow(host, it) } }
     .sortedByDescending { it.session.updatedAt }
+
+fun countPill(count: Int): String = count.toString().padStart(2, '0')
+fun showDecisionBadge(count: Int): Boolean = count > 0
+enum class ChecksLine { NONE, ALL, FAILED, PARTIAL }
+fun checksLine(passed: Int, total: Int, failed: Int): ChecksLine = when {
+    total == 0 -> ChecksLine.NONE
+    failed > 0 -> ChecksLine.FAILED
+    passed == total -> ChecksLine.ALL
+    else -> ChecksLine.PARTIAL
+}
+fun gateSubtitle(gate: String, stage: String, format: String): String = String.format(format, gate, stage)
+fun shortJobId(id: String): String = id.take(8)
+enum class ActivityTone { OK, FAILED, RUNNING, INFO }
+fun activityTone(tone: String?): ActivityTone = when (tone) {
+    "ok" -> ActivityTone.OK
+    "failed" -> ActivityTone.FAILED
+    "running" -> ActivityTone.RUNNING
+    else -> ActivityTone.INFO
+}
+fun activitySummary(entry: ActivityEntry, commandSet: String, job: String = "Job", check: String = "Check"): String = entry.summary ?: when (entry.kind) {
+    "job" -> job
+    "check" -> check
+    "cmd-set" -> commandSet
+    else -> entry.kind.replace('-', ' ').replaceFirstChar { it.titlecase() }
+}
+enum class ActivityDay { TODAY, YESTERDAY, DATE, UNDATED }
+/** date is null only for the UNDATED group: entries whose time the server sent malformed. */
+data class ActivityGroup(val date: java.time.LocalDate?, val day: ActivityDay, val entries: List<ActivityEntry>)
+private fun instantOrNull(at: String): Instant? = try { Instant.parse(at) } catch (_: java.time.format.DateTimeParseException) { null }
+fun activityGroups(entries: List<ActivityEntry>, now: Instant, zone: java.time.ZoneId): List<ActivityGroup> {
+    val today = now.atZone(zone).toLocalDate()
+    return entries.map { it to instantOrNull(it.at) }.sortedByDescending { it.second }
+        .groupBy { it.second?.atZone(zone)?.toLocalDate() }
+        .map { (date, rows) -> ActivityGroup(date, when (date) {
+            null -> ActivityDay.UNDATED
+            today -> ActivityDay.TODAY
+            today.minusDays(1) -> ActivityDay.YESTERDAY
+            else -> ActivityDay.DATE
+        }, rows.map { it.first }) }
+}
+fun activityTime(at: String, zone: java.time.ZoneId): String =
+    instantOrNull(at)?.let { java.time.format.DateTimeFormatter.ofPattern("HH:mm").format(it.atZone(zone)) } ?: "--:--"
+enum class LinkBanner { NONE, CACHED, CONNECTING, RETRYING, OFFLINE }
+fun linkBanner(link: Link, cached: Boolean): LinkBanner = when {
+    link == Link.Live -> LinkBanner.NONE
+    cached -> LinkBanner.CACHED
+    link == Link.Connecting -> LinkBanner.CONNECTING
+    link is Link.Retrying -> LinkBanner.RETRYING
+    else -> LinkBanner.OFFLINE
+}
+
+fun showLiveControl(link: Link, control: Boolean): Boolean = link == Link.Live && control
+fun jobStatus(status: String): String = status.uppercase(Locale.ROOT)

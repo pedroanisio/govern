@@ -10,6 +10,10 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.border
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -50,22 +54,40 @@ fun OperationScreen(hosts: List<HostState>, model: AppModel, decide: (PendingDec
             }
         }
         item {
-            Text(stringResource(R.string.host_counts, overview.online, overview.offline), style = MaterialTheme.typography.labelLarge)
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                Text(stringResource(R.string.hosts_label), style = MaterialTheme.typography.labelLarge)
+                Text(stringResource(R.string.host_counts, overview.online, overview.offline), style = MaterialTheme.typography.labelSmall)
+            }
             Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 hosts.forEach { state ->
-                    AssistChip(onClick = { model.selectHost(state.host.id) }, label = {
-                        Text(stringResource(R.string.host_chip, if (state.link == Link.Live) "●" else "○", state.host.name,
-                            pluralStringResource(if (state.link == Link.Live) R.plurals.session_count else R.plurals.cached_count,
-                                state.desk?.sessions?.size ?: 0, state.desk?.sessions?.size ?: 0)))
-                    })
+                    Card(Modifier.widthIn(min = 104.dp).clickable { model.selectHost(state.host.id) }) {
+                        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                            Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
+                                Surface(Modifier.size(6.dp), shape = CircleShape, color = if (state.link == Link.Live) FieldSuccess else MaterialTheme.colorScheme.onSurfaceVariant) {}
+                                Text(state.host.name, style = MaterialTheme.typography.titleSmall)
+                            }
+                            Text(if (state.link == Link.Live) pluralStringResource(R.plurals.session_count, state.desk?.sessions?.size ?: 0, state.desk?.sessions?.size ?: 0)
+                                else stringResource(R.string.cached), style = MaterialTheme.typography.bodySmall)
+                        }
+                    }
                 }
             }
         }
         item { NeedsHeading(overview.decisions) }
         items(pendingDecisions(hosts), key = { "${it.host.id}/${it.lane.slug}/${it.gate.name}" }) { decision ->
-            DecisionCard(decision, hosts.first { it.host.id == decision.host.id }, model) { decide(decision) }
+            DecisionCard(decision, hosts.first { it.host.id == decision.host.id }, model, hosts.size > 1) { decide(decision) }
         }
-        item { Text(stringResource(R.string.all_sessions, overview.sessions), style = MaterialTheme.typography.titleLarge) }
+        item { Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+            Text(stringResource(R.string.sessions), style = MaterialTheme.typography.titleLarge)
+            Text(stringResource(R.string.all_sessions, overview.sessions), style = MaterialTheme.typography.labelLarge)
+        } }
+        if (overview.sessions == 0) item { Card(Modifier.fillMaxWidth()) {
+            Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(stringResource(R.string.no_sessions), style = MaterialTheme.typography.titleMedium)
+                Text(stringResource(R.string.no_sessions_hint))
+                Button(model::beginSession, enabled = hosts.any { it.link == Link.Live }) { Text(stringResource(R.string.new_session)) }
+            }
+        } }
         items(sessionRows(hosts), key = { "${it.host.host.id}/${it.session.id}" }) { row ->
             Card(Modifier.fillMaxWidth().clickable { model.openSession(row.host.host, row.session) }) {
                 Row(Modifier.padding(16.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -100,34 +122,59 @@ fun FieldDecisionsScreen(hosts: List<HostState>, model: AppModel, open: (Pending
         item { NeedsHeading(pending.size) }
         if (pending.isEmpty()) item { Text(stringResource(R.string.no_decisions)) }
         items(pending, key = { "${it.host.id}/${it.lane.slug}/${it.gate.name}" }) { decision ->
-            DecisionCard(decision, hosts.first { it.host.id == decision.host.id }, model) { open(decision) }
+            DecisionCard(decision, hosts.first { it.host.id == decision.host.id }, model, hosts.size > 1) { open(decision) }
         }
     }
 }
 
 @Composable
 private fun NeedsHeading(count: Int) {
-    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
         Text(stringResource(R.string.needs_you), style = MaterialTheme.typography.titleMedium)
-        Badge { Text(count.toString()) }
+        Surface(shape = CircleShape, color = DecisionLime, contentColor = DecisionGreen) { Text(countPill(count), Modifier.padding(horizontal = 12.dp, vertical = 4.dp)) }
     }
 }
 
 @Composable
-private fun DecisionCard(decision: PendingDecision, state: HostState, model: AppModel, open: () -> Unit) {
-    Card(Modifier.fillMaxWidth(), colors = CardDefaults.cardColors(containerColor = DecisionGreen, contentColor = DecisionLime)) {
-        Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Text(stringResource(R.string.ready_review), style = MaterialTheme.typography.labelMedium)
-            Text(decision.lane.title, style = MaterialTheme.typography.titleLarge)
-            Text(stringResource(R.string.release_gate, decision.gate.name))
-            Text(stringResource(R.string.passed_checks, decision.lane.checkSummary.passed, decision.lane.checkSummary.total))
-            val detail = state.cachedLanes[decision.lane.slug]?.detail
-            val preview = latestArtifact(detail?.artifacts.orEmpty().filter { it.mediaType.startsWith("image/") || it.mediaType.startsWith("video/") })
-            preview?.let { ArtifactPreview(state, decision.lane.slug, it, model) }
-            if (state.link != Link.Live) Text(stringResource(R.string.cached_at, state.desk?.at.orEmpty()))
-            Button(open, colors = ButtonDefaults.buttonColors(containerColor = DecisionLime, contentColor = DecisionGreen)) { Text(stringResource(R.string.review_decision)) }
+private fun DecisionCard(decision: PendingDecision, state: HostState, model: AppModel, showHost: Boolean, open: () -> Unit) {
+    Card(Modifier.fillMaxWidth(), colors = CardDefaults.cardColors(containerColor = DecisionGreen, contentColor = Color.White)) {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                Text(stringResource(R.string.ready_review), color = DecisionLime, style = MaterialTheme.typography.labelMedium)
+                if (showHost) Text(state.host.name, style = MaterialTheme.typography.labelSmall)
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                Column(Modifier.weight(1f)) {
+                    Text(decision.lane.title, style = MaterialTheme.typography.titleLarge)
+                    Text(gateSubtitle(decision.gate.name, decision.lane.stage, stringResource(R.string.gate_subtitle)), style = MaterialTheme.typography.bodySmall)
+                }
+                val detail = state.cachedLanes[decision.lane.slug]?.detail
+                latestArtifact(detail?.artifacts.orEmpty().filter { it.mediaType.startsWith("image/") || it.mediaType.startsWith("video/") })?.let {
+                    ArtifactPreview(state, decision.lane.slug, it, model, Modifier.size(64.dp).clip(RoundedCornerShape(8.dp)))
+                }
+            }
+            ChecksSummary(decision.lane.checkSummary)
+            Button(open, modifier = Modifier.fillMaxWidth(), colors = ButtonDefaults.buttonColors(containerColor = DecisionLime, contentColor = DecisionGreen)) { Text(stringResource(R.string.review_decision)) }
         }
     }
+}
+
+@Composable
+private fun ChecksSummary(checks: CheckSummary) {
+    val choice = checksLine(checks.passed, checks.total, checks.failed)
+    val text = androidx.compose.ui.text.buildAnnotatedString {
+        append(stringResource(when (choice) {
+            ChecksLine.NONE -> R.string.no_checks
+            ChecksLine.ALL -> R.string.passed_checks
+            else -> R.string.partial_checks
+        }, checks.passed, checks.total))
+        if (choice == ChecksLine.FAILED) {
+            pushStyle(androidx.compose.ui.text.SpanStyle(color = MaterialTheme.colorScheme.error))
+            append(stringResource(R.string.failed_checks, checks.failed))
+            pop()
+        }
+    }
+    Text(text, style = MaterialTheme.typography.bodySmall)
 }
 
 @Composable
@@ -144,16 +191,29 @@ fun SessionScreen(detail: SessionDetail, lane: LaneDetail?, state: HostState, mo
             TextButton({ model.closeSession(); model.closeLane() }) { Text(stringResource(R.string.back)) }
             Text(session.title, style = MaterialTheme.typography.headlineMedium)
             Text(stringResource(R.string.session_breadcrumb, state.host.name, session.engine, session.id), style = FieldCode)
-            if (control) Text(stringResource(R.string.authorized_control), style = MaterialTheme.typography.labelMedium)
+            if (showLiveControl(state.link, control)) Surface(shape = CircleShape, color = MaterialTheme.colorScheme.surfaceVariant) {
+                Row(Modifier.padding(horizontal = 12.dp, vertical = 6.dp), horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Surface(Modifier.size(6.dp), shape = CircleShape, color = FieldSuccess) {}
+                    Text(stringResource(R.string.live_control), style = MaterialTheme.typography.labelMedium)
+                }
+            }
             TextButton({ model.refreshSession(); model.refreshLane() }, enabled = state.link == Link.Live) { Text(stringResource(R.string.refresh)) }
         }
         if (lane != null) {
             item {
-                Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                    stageSteps(lane).forEach { step ->
-                        Text(stringResource(R.string.stage_step, when (step.state) { StageState.DONE -> "✓"; StageState.CURRENT -> "●"; StageState.NEXT -> "○" }, step.name),
-                            color = if (step.state == StageState.CURRENT) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
-                            fontWeight = if (step.state == StageState.CURRENT) FontWeight.Bold else FontWeight.Normal)
+                Row(Modifier.fillMaxWidth()) {
+                    stageSteps(lane).forEachIndexed { index, step ->
+                        Column(Modifier.weight(1f), horizontalAlignment = Alignment.CenterHorizontally) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                HorizontalDivider(Modifier.weight(1f), color = if (index == 0) Color.Transparent else MaterialTheme.colorScheme.outlineVariant)
+                                Surface(Modifier.size(28.dp).border(2.dp, if (step.state == StageState.CURRENT) DecisionLime else DecisionGreen, CircleShape),
+                                    shape = CircleShape, color = if (step.state == StageState.DONE) DecisionGreen else MaterialTheme.colorScheme.surface) {
+                                    Box(contentAlignment = Alignment.Center) { if (step.state == StageState.DONE) Text("✓", color = DecisionLime) }
+                                }
+                                HorizontalDivider(Modifier.weight(1f), color = if (index == lane.stages.lastIndex) Color.Transparent else MaterialTheme.colorScheme.outlineVariant)
+                            }
+                            Text(step.name, style = MaterialTheme.typography.labelSmall, fontWeight = if (step.state == StageState.CURRENT) FontWeight.Bold else FontWeight.Normal)
+                        }
                     }
                 }
                 Text(lane.stage, style = MaterialTheme.typography.titleLarge)
@@ -164,7 +224,7 @@ fun SessionScreen(detail: SessionDetail, lane: LaneDetail?, state: HostState, mo
                 item {
                     Card(colors = CardDefaults.cardColors(containerColor = DecisionGreen, contentColor = DecisionLime)) {
                         Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                            Text(stringResource(R.string.job_heading, job.id, job.status), style = FieldCode)
+                            Text(stringResource(R.string.job_heading, shortJobId(job.id), jobStatus(job.status)), style = FieldCode)
                             Text(job.name, style = MaterialTheme.typography.titleMedium)
                             job.progress?.let { progress ->
                                 Text(stringResource(R.string.job_progress, progress.done, progress.total))
@@ -178,10 +238,12 @@ fun SessionScreen(detail: SessionDetail, lane: LaneDetail?, state: HostState, mo
             }
         }
         detail.messages.lastOrNull()?.let { last -> item {
+            Card(Modifier.fillMaxWidth()) { Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Text(stringResource(R.string.last_message), style = MaterialTheme.typography.labelLarge)
             Text(stringResource(R.string.message_age, session.engine, ageMinutes(last.at, model.now())))
             if (unverified(last)) Text(stringResource(R.string.unverified), color = MaterialTheme.colorScheme.error)
             SelectionContainer { Text(last.text) }
+            } }
         } }
         detail.runs.lastOrNull()?.let { run -> item {
             Text(stringResource(R.string.run_state, run.id, run.state), style = FieldCode)
@@ -202,10 +264,10 @@ fun SessionScreen(detail: SessionDetail, lane: LaneDetail?, state: HostState, mo
                 enabled = enabled && message.trim().isNotEmpty()) { Text(stringResource(R.string.send)) }
         }
         if (lane != null) item {
-            Row {
-                TextButton({ lane.jobs.firstOrNull()?.let { model.openLog(lane.slug, it.id) } }, enabled = lane.jobs.isNotEmpty()) { Text(stringResource(R.string.logs)) }
-                TextButton({ model.showArtifacts(true) }) { Text(stringResource(R.string.artifacts)) }
-                TextButton({ model.closeSession() }) { Text(stringResource(R.string.more_actions)) }
+            Row(Modifier.fillMaxWidth()) {
+                TextButton({ lane.jobs.firstOrNull()?.let { model.openLog(lane.slug, it.id) } }, enabled = lane.jobs.isNotEmpty(), modifier = Modifier.weight(1f)) { Text(stringResource(R.string.logs)) }
+                TextButton({ model.showArtifacts(true) }, modifier = Modifier.weight(1f)) { Text(stringResource(R.string.artifacts)) }
+                TextButton({ model.closeSession() }, modifier = Modifier.weight(1f)) { Text(stringResource(R.string.more_actions)) }
             }
         }
     }
@@ -228,9 +290,11 @@ fun DecisionScreen(lane: LaneDetail, gateName: String, state: HostState, model: 
         if (artifact != null) item { ArtifactCard(lane.slug, artifact, state, model, confirm, true) }
         item { Text(stringResource(R.string.evidence_count, lane.checkSummary.passed, lane.checkSummary.total), style = MaterialTheme.typography.titleLarge) }
         items(evidenceRows(lane)) { evidence ->
-            OutlinedButton({ evidence.job?.let { model.openLog(lane.slug, it) } }, enabled = evidence.job != null && state.link == Link.Live) {
-                Text(stringResource(R.string.evidence_row, if (evidence.passed) "✓" else "✕", evidence.stage, evidence.name))
-            }
+            ListItem(modifier = Modifier.clickable(enabled = evidence.job != null && state.link == Link.Live) { evidence.job?.let { model.openLog(lane.slug, it) } },
+                headlineContent = { Text(stringResource(R.string.evidence_row, evidence.stage, evidence.name)) },
+                leadingContent = { Text(if (evidence.passed) "✓" else "✕", color = if (evidence.passed) FieldSuccess else MaterialTheme.colorScheme.error) },
+                trailingContent = { Text("→") })
+            HorizontalDivider()
         }
         item {
             Text(stringResource(R.string.record_decision), style = MaterialTheme.typography.titleLarge)
@@ -252,13 +316,14 @@ fun DecisionScreen(lane: LaneDetail, gateName: String, state: HostState, model: 
 private fun ArtifactCard(slug: String, artifact: ArtifactView, state: HostState, model: AppModel, confirm: Confirm, review: Boolean) {
     Card(Modifier.fillMaxWidth()) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            if (review) ArtifactPreview(state, slug, artifact, model)
             Text(stringResource(if (review) R.string.artifact_lane_version else R.string.artifact_version, if (review) slug else stringResource(R.string.artifact_label), artifact.version), style = MaterialTheme.typography.labelLarge)
             artifact.title?.let { Text(it, style = MaterialTheme.typography.titleLarge) }
             artifact.caption?.let { Text(it) }
             Text(artifact.name)
             Text(stringResource(R.string.artifact_metadata, artifact.bytes, artifact.mediaType), style = FieldCode)
             Text(stringResource(R.string.artifact_sha, shortDigest(artifact.sha256)), style = FieldCode)
-            ArtifactPreview(state, slug, artifact, model)
+            if (!review) ArtifactPreview(state, slug, artifact, model)
             if (reviewedBy(artifact, state.host.person)) Text(stringResource(R.string.reviewed_you))
             Button({ model.openArtifact(slug, artifact, review, confirm) }, enabled = state.link == Link.Live) {
                 Text(stringResource(if (artifact.mediaType.startsWith("video/")) R.string.open_video else R.string.open_file))
@@ -268,7 +333,7 @@ private fun ArtifactCard(slug: String, artifact: ArtifactView, state: HostState,
 }
 
 @Composable
-private fun ArtifactPreview(state: HostState, slug: String, artifact: ArtifactView, model: AppModel) {
+private fun ArtifactPreview(state: HostState, slug: String, artifact: ArtifactView, model: AppModel, modifier: Modifier = Modifier.fillMaxWidth().height(220.dp)) {
     if (!artifact.mediaType.startsWith("image/") && !artifact.mediaType.startsWith("video/")) return
     var bitmap by remember(state.host.id, slug, artifact.sha256) { mutableStateOf<ImageBitmap?>(null) }
     LaunchedEffect(state.host.id, slug, artifact.sha256, state.link == Link.Live) {
@@ -290,7 +355,12 @@ private fun ArtifactPreview(state: HostState, slug: String, artifact: ArtifactVi
         } catch (e: kotlinx.coroutines.CancellationException) { throw e }
         catch (e: Exception) { model.report(model.describe(e)) }
     }
-    bitmap?.let { Image(it, contentDescription = artifact.title ?: artifact.name, modifier = Modifier.fillMaxWidth().heightIn(max = 220.dp)) }
+    Surface(modifier, shape = RoundedCornerShape(8.dp), color = MaterialTheme.colorScheme.surfaceVariant) {
+        Box(contentAlignment = Alignment.Center) {
+            bitmap?.let { Image(it, contentDescription = artifact.title ?: artifact.name, modifier = Modifier.fillMaxSize(), contentScale = ContentScale.Crop) }
+                ?: Text(stringResource(R.string.artifact_label), style = MaterialTheme.typography.labelSmall)
+        }
+    }
 }
 
 @Composable

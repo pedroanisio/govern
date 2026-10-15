@@ -151,3 +151,21 @@ review identity, session status precedence, cross-host counts, scope, initials, 
 injected-clock expiry boundary. Decision eligibility also covers live state, busy state, scope, owner and gate
 dependencies. `AppModelContractTest` checks the Application constructor required by Android’s default ViewModel factory
 while retaining clock injection. Device rendering, authentication and external viewer dispatch require Android testing.
+
+
+FIELD uses the light deep-green/lime palette from the design.
+FIELD screen refinements: Operation has compact host cards, a pending-decision count,
+64dp decision thumbnails, and an empty sessions action. The header includes the
+govern mark; Decisions navigation carries a pending-count badge. Live links no
+longer occupy a global banner; connecting, retrying, offline and cached states
+remain visible. Sessions show stage dots, a compact job ID, last-message card,
+queue-delivery hint and equal footer actions. Decision evidence uses log-linked
+list rows, with the artifact preview above its metadata and full-width actions.
+
+`LedgerView` accepts optional nullable `summary` and `tone` fields (default null
+for older servers). Activity and lane ledger rows show a human summary, tone dot,
+local HH:mm and lane, grouped by local day. Missing summaries hide ledger JSON
+and display only the event kind; notes and decisions retain their human text.
+Tones are `ok`, `failed`, `running`, or `info`; unknown/missing tones use info.
+Pure presentation helpers cover counts, checks, subtitles, link banners, activity
+dates/times, fallbacks, tones, and job IDs with unit tests.
