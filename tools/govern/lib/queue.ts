@@ -183,7 +183,7 @@ export function forward(ref: string, by: string, to: string, routed = false): Me
   const o = openMessage(ref);
   const keep = o.profile && getProfile(o.profile).engine === to ? o.profile : undefined;
   const t = resolveTarget(to, { write: o.access === "write", ...(keep ? { profile: keep } : {}) });
-  const copy = send({ project: o.project, task: o.task, kind: o.kind, from: o.from, to, summary: o.summary, body: o.body, files: o.files, access: t.access, ...(t.profile ? { profile: t.profile } : {}), ...(o.lane ? { lane: o.lane } : {}), forwardedFrom: o.id, ...(routed ? { routed: true } : {}) });
+  const copy = send({ project: o.project, task: o.task, kind: o.kind, from: o.from, to, summary: o.summary, body: o.body, files: o.files, access: t.access, ...(t.profile ? { profile: t.profile } : {}), ...(o.lane ? { lane: o.lane } : {}), ...(o.verification ? { verification: o.verification } : {}), forwardedFrom: o.id, ...(routed ? { routed: true } : {}) });
   close(o.id, by, `forwarded to ${to} as ${copy.id}`);
   return copy;
 }
@@ -224,7 +224,9 @@ export function prompt(m: Message, maxChars = charLimit("GOVERN_QUEUE_MAX_INLINE
     "Do not start other agents, do not message other sessions, do not publish anything. Facts must come from files you open; say what you could not verify.",
     brief,
     `Thread (oldest first):`,
-    ...t.map((x) => `--- ${x.id} [${x.kind}] from ${x.from} to ${x.to}: ${x.summary}\n${x.body}`),
+    ...t.map((x) => x.verification?.state === "unverified"
+      ? `--- ${x.id} [${x.kind}] from ${x.from} to ${x.to}: [Host: unverified reply withheld because its content check failed. Inspect it with govern task show ${x.id}.]`
+      : `--- ${x.id} [${x.kind}] from ${x.from} to ${x.to}: ${x.summary}\n${x.body}`),
     files.length ? `Files named by the message:\n${files.join("\n")}` : "",
     `Answer with JSON only: {"kind": one of ${REPLY_KINDS.join("|")}, "summary": one line of at most ${SUMMARY_MAX} characters, "body": the full answer}. Use BLOCKED when you cannot do it, saying exactly what is missing.`,
   ].filter(Boolean).join("\n");
@@ -392,10 +394,11 @@ function runConfigured(def: RunnerDef, m: Message, p: string, timeoutSec: number
   const [bin, ...args] = argv;
   if (bin === undefined) return { error: `runner ${m.to} has an empty argv in ${join(QUEUE(), "config.json")}` };
   const r = spawnSync(bin, args, { cwd, input: p, encoding: "utf8", timeout: timeoutSec * 1000, maxBuffer: 64 << 20, env: childEnv() });
-  if (def.format === "json-result") return claudeResult(r.stdout, r.status, r.stderr, r.error);
-  if (r.error) return { error: r.error.message };
-  if (r.status !== 0) return { text: r.stdout, error: `${m.to} exit ${r.status}: ${clip(r.stderr ?? "", 300)}` };
-  return { text: r.stdout };
+  // A process that started may have spent money even when it returns no usable usage (timeout, signal or bad JSON).
+  // Only a spawn failure, with no child PID, establishes that execution cost nothing.
+  const result: RunOut = def.format === "json-result" ? claudeResult(r.stdout, r.status, r.stderr) : { text: r.stdout };
+  const error = r.error ? r.error.message : r.status !== 0 ? `${m.to} exit ${r.status ?? r.signal}: ${clip(r.stderr ?? "", 300)}` : result.error;
+  return { ...result, ...(error ? { error } : {}), ...(r.pid > 0 && result.usage?.costUsd == null ? { spendUnknown: true } : {}) };
 }
 
 /** Who hears that a task was refused: the sender, or the owner when the sender is itself a runner. */
@@ -458,6 +461,10 @@ export function dispatch(o: { max?: number; only?: string; timeoutSec?: number }
       move(m, "claimed", "failed");
       return `${m.id} → ${m.to}: refused: ${why} · to ${stop.to} ${stop.id}`;
     };
+    if (m.verification?.state === "unverified") {
+      lines.push(refuse(undefined, `unverified reply: ${m.verification.reason ?? "content check failed"}; inspect it with govern task show ${m.id}`));
+      continue;
+    }
     const prof = m.profile ?? defaultProfile(m, reg);
     if (prof !== undefined && !configuredRunner(m.to) && !reg.profiles.has(prof)) { lines.push(refuse(prof, `profile ${prof} does not exist (have: ${[...reg.profiles.keys()].join(", ")})`)); continue; }
     const sealed = prof !== undefined && !configuredRunner(m.to) ? getProfile(prof, reg) : undefined;
@@ -486,11 +493,17 @@ export function dispatch(o: { max?: number; only?: string; timeoutSec?: number }
     const cwd = existsSync(folder) ? folder : repo();
     let r: RunOut;
     const cap = allowances.reservedUsd(taskId); // the reservation is a cap, not a hint
+    let started = false;
     try {
+      const input = prompt(m, maxInline);
+      started = true;
       r = sealed
-        ? runSealed(reg, sealed, cwd, prompt(m, maxInline), o.timeoutSec ?? dispatchTimeout(), { lastMessage: join(QUEUE(), "claimed", `${m.id}.reply.txt`), schema: REPLY_SCHEMA, ...(cap !== undefined ? { maxBudgetUsd: cap } : {}) })
-        : runConfigured(def as RunnerDef, m, prompt(m, maxInline), o.timeoutSec ?? dispatchTimeout());
-    } catch (e) { allowances.release(taskId); throw e; }
+        ? runSealed(reg, sealed, cwd, input, o.timeoutSec ?? dispatchTimeout(), { lastMessage: join(QUEUE(), "claimed", `${m.id}.reply.txt`), schema: REPLY_SCHEMA, ...(cap !== undefined ? { maxBudgetUsd: cap } : {}) })
+        : runConfigured(def as RunnerDef, m, input, o.timeoutSec ?? dispatchTimeout());
+    } catch (e) {
+      if (!started) allowances.release(taskId);
+      r = { error: `${started ? "runner failed" : "task preparation failed"}: ${e instanceof Error ? e.message : String(e)}`, spendUnknown: started };
+    }
     allowances.settle(taskId, usdOf(r, sealed?.model));
     const reply = r.error ? { error: r.error } : parseReply(r.text);
     const seconds = Math.round((Date.now() - t0) / 1000);
