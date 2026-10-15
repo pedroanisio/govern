@@ -74,8 +74,11 @@ export function promptFiles(processName?: string): { name: string; file: string 
   }
   return [...seen].map(([name, file]) => ({ name, file })).sort((a, b) => a.name.localeCompare(b.name));
 }
+/** The front matter keys a prompt may set; govern.ts and ask() read each of them. */
+export const PROMPT_KEYS = ["description", "effort", "model", "repairs", "rules", "schema"] as const;
 /** Read prompt `name` from the first of `dirs` that has `<name>.md`, splitting its `---` front matter into meta; fails
- *  on a bad name, a missing prompt, or a `repairs` value that is not a whole number. */
+ *  on a bad name, a missing prompt, a front matter line that is not `key: value` or names a key outside PROMPT_KEYS
+ *  (a misspelt `schema:` would otherwise drop the check silently), or a `repairs` value that is not a whole number. */
 export function readPrompt(name: string, dirs: string[]): PromptFile {
   if (!/^[a-z0-9-]+$/.test(name)) fail(`bad prompt name: ${name}`);
   const dir = dirs.find((d) => existsSync(join(d, `${name}.md`)));
@@ -84,7 +87,14 @@ export function readPrompt(name: string, dirs: string[]): PromptFile {
   const text = readFileSync(f, "utf8");
   const m = /^---\n([\s\S]*?)\n---\n/.exec(text);
   const meta = emptyRecord<string>();
-  for (const l of (m?.[1] ?? "").split("\n")) { const i = l.indexOf(":"); if (i > 0) meta[l.slice(0, i).trim()] = l.slice(i + 1).trim(); }
+  for (const [n, l] of (m?.[1] ?? "").split("\n").entries()) {
+    if (l.trim() === "") continue;
+    const i = l.indexOf(":");
+    if (i <= 0) fail(`${f}: front matter line ${n + 1} is not "key: value" (got ${JSON.stringify(l)})`);
+    const key = l.slice(0, i).trim();
+    if (!(PROMPT_KEYS as readonly string[]).includes(key)) fail(`${f}: unknown front matter key ${JSON.stringify(key)} (known: ${PROMPT_KEYS.join(", ")})`);
+    meta[key] = l.slice(i + 1).trim();
+  }
   // ask() loops 1 + repairs times and an ask with no call has no errors: a repairs value that is not a whole number 0 or
   // more would make zero calls and pass as verified, so it is refused here.
   if (meta.repairs !== undefined && !/^\d+$/.test(meta.repairs)) fail(`${f}: repairs must be a whole number, 0 or more (got ${JSON.stringify(meta.repairs)})`);

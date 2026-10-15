@@ -9,7 +9,7 @@ import { join, resolve } from "node:path";
 import { HERE, present } from "./helpers.ts";
 import { COMMANDS, ENGINES } from "../govern.ts";
 import { BUILTIN_RUNNERS, MAX_FILES_CHARS } from "../lib/queue.ts";
-import { MAX_INLINE } from "../lib/codex.ts";
+import { MAX_INLINE, PROMPT_KEYS } from "../lib/codex.ts";
 import { LEGACY_PROFILES } from "../lib/caps.ts";
 import { CONFIG_FILE, DOT_DEFAULTS, DOT_DIR } from "../lib/workspace.ts";
 import { parseArgs, GovernError, type FlagSpec } from "../lib/util.ts";
@@ -215,12 +215,13 @@ test("the number check catches a stale number, a vanished sentence and a unit mi
   assert.throws(() => codeNumber("govern.ts", /no such (\d+) literal anywhere/), /matches nothing/);
 });
 
-test("drift: SKILL.md names exactly the prompt front matter keys the code reads", () => {
+test("drift: SKILL.md names exactly the prompt front matter keys readPrompt accepts, and the code reads each of them", () => {
   const read = new Set<string>();
   for (const f of ["govern.ts", "lib/codex.ts"]) for (const m of src(f).matchAll(/(?<!import\.)\bmeta\.([a-z]+)\b/g)) read.add(m[1] ?? "");
   const m = present(/a front matter \(([^)]*)\)/.exec(flat("SKILL.md")) ?? undefined, "SKILL.md's front matter key list");
   const named = new Set([...(m[1] ?? "").matchAll(/`([a-z]+)`/g)].map((x) => x[1] ?? ""));
-  assert.deepEqual([...named].sort(), [...read].sort());
+  assert.deepEqual([...named].sort(), [...PROMPT_KEYS].sort());
+  assert.deepEqual([...read].sort(), [...PROMPT_KEYS].sort());
 });
 
 // ---- (c) example commands -------------------------------------------------------------------------------------------

@@ -321,6 +321,29 @@ test("ask: a prompt whose repairs is not a whole number 0 or more is refused bef
   assert.equal(govern(e, ["ask", slug, "free"], { GOVERN_PROMPTS: prompts, FAKE_CODEX_SCRIPTS: reply(e, "free", { said: "hi" }) }).code, 0);
 });
 
+test("ask: a prompt whose front matter has an unknown key or a line that is not key: value is refused before calling codex", () => {
+  const { e, slug } = video();
+  const prompts = join(e.root, "prompts");
+  const cases: [string, RegExp][] = [
+    ["schmea: free.schema.json", /free\.md: unknown front matter key "schmea" \(known: description, effort, model, repairs, rules, schema\)/],
+    ["Schema: free.schema.json", /free\.md: unknown front matter key "Schema"/],
+    ["__proto__: x", /free\.md: unknown front matter key "__proto__"/],
+    ["constructor: x", /free\.md: unknown front matter key "constructor"/],
+    ["effort high", /free\.md: front matter line 1 is not "key: value" \(got "effort high"\)/],
+  ];
+  for (const [line, want] of cases) {
+    write(join(prompts, "free.md"), `---\n${line}\n---\nSay something as JSON.\n`);
+    const r = govern(e, ["ask", slug, "free"], { GOVERN_PROMPTS: prompts, FAKE_CODEX_SCRIPTS: reply(e, "free", { said: "hi" }) });
+    assert.equal(r.code, 2, `${line}: ${r.out}`);
+    assert.match(r.err, want);
+  }
+  assert.equal(jsonl(join(e.root, "argv.log")).length, 0, "codex was never called");
+  assert.equal(ledger(e, slug).some((x) => x.kind === "ask"), false, "no ask is recorded");
+  write(join(prompts, "free.md"), "---\ndescription: say hi\n\neffort: low\n---\nSay something as JSON.\n");
+  const ok = govern(e, ["ask", slug, "free"], { GOVERN_PROMPTS: prompts, FAKE_CODEX_SCRIPTS: reply(e, "free", { said: "hi" }) });
+  assert.equal(ok.code, 0, ok.err + ok.out);
+});
+
 test("work: both segment entries name the manual in force (skillSha of tools/govern/SKILL.md)", () => {
   const { e, slug } = video();
   const skill = sha256(readFileSync(join(HERE, "..", "SKILL.md")));
