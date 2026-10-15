@@ -654,13 +654,17 @@ function cmdTask(a: Args): void {
   }
   if (sub === "show") {
     const hit = queue.find(a._[2] ?? "") ?? fail(`no message ${a._[2]}`);
-    for (const m of queue.thread(hit!.m)) out(`--- ${m.id} [${m.kind}] ${m.from}→${m.to} ${m.created}${m.profile ? `\nprofile: ${m.profile}${m.lane ? ` · lane ${m.lane}` : ""}` : ""}\n${m.summary}\n${m.body}${m.files.length ? `\nfiles: ${m.files.join(", ")}` : ""}${m.verification ? `\n${verdict(m.verification)}` : ""}${m.result ? `\nresult: ${JSON.stringify(m.result)}` : ""}`);
+    for (const m of queue.thread(hit!.m)) out(`--- ${m.id} [${m.kind}] ${m.from}→${m.to} ${m.created}${m.profile ? `\nprofile: ${m.profile}${m.lane ? ` · lane ${m.lane}` : ""}` : ""}\n${m.summary}\n${m.body}${m.files.length ? `\nfiles: ${m.files.join(", ")}` : ""}${m.verification ? `\n${verdict(m.verification)}` : ""}${m.claim ? `\nclaim: ${JSON.stringify(m.claim)} (${queue.claimState(m)})` : ""}${m.result ? `\nresult: ${JSON.stringify(m.result)}` : ""}`);
     return;
   }
   if (sub === "inbox") return cmdInbox(a);
   if (sub === "close") {
     const m = queue.close(a._[2] ?? "", requireAs(opt(a, "as")), opt(a, "note"));
     return out(`closed ${m.id}`);
+  }
+  if (sub === "reclaim") {
+    const m = queue.reclaim(a._[2] ?? "", requireAs(opt(a, "as")), opt(a, "note") ?? "");
+    return out(`reclaimed ${m.id} → failed · notice ${m.result!.reply}`);
   }
   if (sub === "reply") {
     const bodyFile = opt(a, "body-file"), b = opt(a, "body");
@@ -839,7 +843,7 @@ const SECTIONS: readonly (readonly [title: string, notes?: readonly string[]])[]
 
 /** How long a provider command (start, stop, list) may run when --timeout is not given. */
 const REAP_TIMEOUT = 120;
-const TASK_SUBS = "govern task send|list|show|inbox|close|reply|forward|dispatch|install-service (govern help)";
+const TASK_SUBS = "govern task send|list|show|inbox|close|reclaim|reply|forward|dispatch|install-service (govern help)";
 
 export const COMMANDS: readonly Cmd[] = [
   {name:'conversation',section:0,footer:false,subs:CONVERSATION_SUBS,noSub:'govern conversation create|list|show|history|send|run|cancel|recover|context|events|close (govern help)'},
@@ -1023,15 +1027,16 @@ export const COMMANDS: readonly Cmd[] = [
         lines: [["--to auto|codex|claude|grok|owner|<session> --project P --task T --kind TASK --summary S (--body B | --body-file F)\n" +
           "[--file REPO-RELATIVE-PATH]… [--reply-to ID] [--write | --profile P] [--lane SLUG] [--from NAME] [--estimate-usd N]", "--to must be a runner, a profile, owner or a LIVE session name;\n--profile P (govern caps) seals the run to P's capabilities; --lane names the lane whose gate authorises a spend, publish or push profile;\n--estimate-usd N: what the run is expected to cost, reserved against a matching allowance (govern allow)"]], run: cmdTask },
       list: { flags: { value: ["to", "state", "project"] }, lines: [["[--to X] [--state open|claimed|done|failed] [--project P]", "the queue's messages; a dispatcher reply ends with [checked], [unverified] or [shape only] (content check, declared per profile, in queue config.json checks, or built in for REVIEW)"]], run: cmdTask },
-      show: { lines: [["<id>", "a message and its thread; a dispatcher reply also shows its check (checked, UNVERIFIED with the reason, or shape only)"]], run: cmdTask },
+      show: { lines: [["<id>", "a message and its thread, claim holder and result; a dispatcher reply also shows its check (checked, UNVERIFIED with the reason, or shape only)"]], run: cmdTask },
       inbox: { flags: { value: ["as"], bool: ["all", "hook"] },
         lines: [["[--as NAME] [--all] [--hook]", "open messages for NAME (default: GOVERN_AS, else this session);\n--hook is silent when empty"]], run: cmdTask },
       close: { flags: { value: ["as", "note"] }, lines: [["<id> [--as NAME] [--note T]", "close a message addressed to NAME"]], run: cmdTask },
+      reclaim: { flags: { value: ["as", "note"] }, lines: [["<id> --note T [--as NAME]", "fail an abandoned claimed message after inspecting its effects; refuses a live holder, records who and why, charges unknown spend as reserved and sends a BLOCKED notice"]], run: cmdTask },
       forward: { flags: { value: ["to", "as"] }, lines: [["<id> --to NAME [--as NAME]", "pass a message on to another recipient"]], run: cmdTask },
       reply: { flags: { value: ["kind", "summary", "body", "body-file", "as"] },
         lines: [["<id> --kind K --summary S (--body B | --body-file F) [--as NAME]", "answer the sender, then close <id>"]], run: cmdTask },
       dispatch: { flags: { value: ["max", "only", "interval", "reap-every"], bool: ["loop"] },
-        lines: [["[--max N] [--only codex|claude|grok] [--loop --interval 30 [--reap-every S]]", "run the open messages addressed to runners; --reap-every lists each resource's tagged instances\nevery S seconds into state for the desk (off by default; lists only, never stops a machine)"]], run: cmdTask },
+        lines: [["[--max N] [--only codex|claude|grok] [--loop --interval 30 [--reap-every S]]", "first fail dead claims (unknown spend charged as reserved), then run open messages addressed to runners;\n--reap-every lists each resource's tagged instances\nevery S seconds into state for the desk (off by default; lists only, never stops a machine)"]], run: cmdTask },
       "install-service": { flags: { value: ["interval", "reap-every"] }, lines: [["[--interval 30] [--reap-every S]", "a user systemd service running dispatch --loop"]], run: cmdTask },
     } },
 

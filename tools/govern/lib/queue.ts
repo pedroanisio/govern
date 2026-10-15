@@ -15,6 +15,7 @@ import { repo, projectsDir, queueDir, expandPlaceholders } from "./workspace.ts"
 import * as allowances from "./allowances.ts";
 import * as jobs from "./jobs.ts";
 import { cost } from "./usage.ts";
+import { identity, live, withMutex } from "./locks.ts";
 import { prepareGrokHome, syncBackAuth } from "./grokhome.ts";
 import { parseEvents, execArgs, validate, type Usage } from "./codex.ts";
 import { type CheckDef, configChecks, declared, verify, type Verification } from "./replycheck.ts";
@@ -84,6 +85,8 @@ export interface Message {
   forwardedFrom?: string;
   /** On a reply the dispatcher filed: whether a content check ran on it and passed (lib/replycheck.ts). Absent on a message no check was asked of. */
   verification?: Verification;
+  /** The process that took this message, regardless of which service claimed it. */
+  claim?: { by: string; pid: number; start: string; at: string };
   result?: { profile?: string; profileHash?: string; closedBy?: string; note?: string; agent: string; ok: boolean; usage?: Usage & { costUsd?: number }; turns?: number; seconds: number; reply?: string; error?: string };
 }
 
@@ -206,7 +209,78 @@ function move(m: Message, from: State, to: State): boolean {
   mkdirSync(dir(to), { recursive: true });
   try { renameSync(join(dir(from), `${m.id}.json`), join(dir(to), `${m.id}.json`)); return true; } catch { return false; }
 }
-const save = (m: Message, s: State) => writeFileSync(join(dir(s), `${m.id}.json`), JSON.stringify(m, null, 2) + "\n");
+const save = (m: Message, s: State) => {
+  const path = join(dir(s), `${m.id}.json`), tmp = `${path}.tmp-${process.pid}`;
+  writeFileSync(tmp, JSON.stringify(m, null, 2) + "\n");
+  renameSync(tmp, path);
+};
+
+/** Serialize claim ownership changes and recovery, including the rename-to-record gap. */
+const claimGuard = <T>(f: () => T): T => withMutex(join(QUEUE(), ".claims"), f);
+
+/** Atomically take an open message, then record the process responsible for its run. */
+export function claim(m: Message, by: string): boolean {
+  return claimGuard(() => {
+    const me = identity(process.pid) ?? fail("cannot identify the claiming process");
+    if (!move(m, "open", "claimed")) return false;
+    m.claim = { by, pid: process.pid, start: me.start, at: nowIso() };
+    save(m, "claimed");
+    return true;
+  });
+}
+
+/** A start time is required: a pid alone cannot establish ownership after pid reuse. */
+export function claimState(m: Message): "live" | "dead" | "unknown" {
+  if (!m.claim || !m.claim.start) return "unknown";
+  return live(m.claim) ? "live" : "dead";
+}
+
+/** Under the claim guard; never retry a run whose external effects and spend are unknown. */
+function failClaim(m: Message, by: string, note?: string): Message {
+  const error = m.claim ? `${m.claim.by} died during the run` : "unknown holder; run interrupted";
+  const to = LEGACY_OWNER(m);
+  m.result = { agent: m.to, ok: false, seconds: 0, error, closedBy: by, ...(note ? { note } : {}) };
+  save(m, "claimed");
+  if (!move(m, "claimed", "failed")) fail(`message ${m.id} could not be moved to failed`);
+  allowances.settle(`task:${m.id}`, {});
+  const notice = send({ project: m.project, task: m.task, kind: "BLOCKED", from: "dispatcher", to,
+    summary: clip(`${m.to}: ${error}`, 200),
+    body: `${m.id}: ${error}. External effects may already have occurred; inspect them before sending a new task. Spend is unknown and charged as reserved.${note ? `\nReclaimed by ${by}: ${note}` : ""}`,
+    files: [], replyTo: m.id, access: "read-only" });
+  m.result.reply = notice.id;
+  save(m, "failed");
+  return m;
+}
+
+/** Fail claims of dead processes, for every claimer. Unknown holders are listed for explicit recovery. */
+export function reclaimDead(): string[] {
+  return claimGuard(() => {
+    const lines: string[] = [];
+    for (const { state, m } of all()) {
+      if (state !== "claimed") continue;
+      const holder = claimState(m);
+      if (holder === "live") continue;
+      if (holder === "unknown") {
+        lines.push(`${m.id}: unknown holder; inspect effects, then govern task reclaim ${m.id} --note "<why>"`);
+        continue;
+      }
+      failClaim(m, "dispatcher");
+      lines.push(`${m.id}: ${m.result!.error} · failed · notice ${m.result!.reply}`);
+    }
+    return lines;
+  });
+}
+
+/** Explicit recovery after checking external effects; a live holder can never be released this way. */
+export function reclaim(ref: string, by: string, note: string): Message {
+  if (!note.trim()) fail("task reclaim requires --note explaining what was checked");
+  return claimGuard(() => {
+    const hit = find(ref) ?? fail(`no message ${ref}`);
+    if (hit.state !== "claimed") fail(`message ${hit.m.id} is not claimed (it is ${hit.state})`);
+    if (claimState(hit.m) === "live") fail(`message ${hit.m.id} has a live holder (${hit.m.claim!.by})`);
+    return failClaim(hit.m, by, note);
+  });
+}
 
 // ---------------------------------------------------------------- the prompt one session gets
 
@@ -461,7 +535,7 @@ const dispatchTimeout = (): number => { const n = Number(process.env.GOVERN_QUEU
 
 /** Run every open message addressed to a runner, oldest first, at most `max`. Returns what happened, one line each. */
 export function dispatch(o: { max?: number; only?: string; timeoutSec?: number } = {}): string[] {
-  const lines: string[] = [];
+  const lines = reclaimDead();
   const cfg = config();
   // The whole config is checked before any message is claimed or any paid session runs.
   const fromConfig = cfg.checks ?? {};
@@ -473,7 +547,7 @@ export function dispatch(o: { max?: number; only?: string; timeoutSec?: number }
   const todo = all().filter((x) => x.state === "open" && names.includes(x.m.to) && (!o.only || x.m.to === o.only))
     .slice(0, o.max ?? Infinity);
   for (const { m } of todo) {
-    if (!move(m, "open", "claimed")) continue; // another dispatcher took it
+    if (!claim(m, "dispatcher")) continue; // another claimer took it
     const used = threadRuns(m);
     if (used >= maxRuns) {
       const stop = send({ project: m.project, task: m.task, kind: "BLOCKED", from: "dispatcher", to: "owner", summary: `thread reached maxRuns ${maxRuns}`, body: `${m.id} (${m.kind} from ${m.from} to ${m.to}) was not run: its thread already used ${used} dispatched run(s), the limit in ${join(QUEUE(), "config.json")} (maxRuns, default 4). Decide whether it goes on: send it again yourself, or close it.`, files: [], replyTo: m.id, access: "read-only" });
@@ -511,8 +585,15 @@ export function dispatch(o: { max?: number; only?: string; timeoutSec?: number }
     try {
       held = allowances.reserve(limits, { ...(laneOf(m) ? { lane: laneOf(m)! } : {}), ...(prof ? { profile: prof } : {}) },
         { id: taskId, label: `task ${m.id}`, ...(m.estimateUsd !== undefined ? { usd: m.estimateUsd } : {}) }, jobs.settleDead);
-    } catch (e) { move(m, "claimed", "open"); throw e; } // never left claimed: nobody would run it
+    } catch (e) {
+      delete m.claim;
+      save(m, "claimed");
+      move(m, "claimed", "open");
+      throw e;
+    } // never left claimed: nobody would run it
     if (held) {
+      delete m.claim;
+      save(m, "claimed");
       move(m, "claimed", "open");
       lines.push(`${m.id} → ${m.to}: held: ${held.text.replaceAll("\n", " · ")}`);
       tellHold(m, held);

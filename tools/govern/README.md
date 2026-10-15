@@ -36,7 +36,11 @@ workspace can add its own or override these.
 
 **Jobs.** Long jobs run detached with `govern run --bg`, and `govern wait`
 blocks on them with no model in the loop. The task queue (`govern task …`)
-carries messages between agents.
+carries messages between agents. Dispatch recovers claims whose recorded process
+has died into `failed/`, with a BLOCKED notice and unknown spend charged as
+reserved. Runs are never retried automatically. Desk identifies dead or unknown
+holders; after checking effects, release an abandoned claim with
+`govern task reclaim <id> --note "<what you checked>"` (live holders are refused).
 
 **Conversations.** `govern conversation` owns durable history, serialized turns, streamed progress, cancellation and explicit restart recovery across agent harnesses. Business state and approvals remain in their cases.
 

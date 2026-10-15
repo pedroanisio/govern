@@ -86,8 +86,11 @@ export function desk(): { text: string; failed: number; lanes: number } {
   L.push("", tuningState());
   let runners: readonly string[] = queue.BUILTIN_RUNNERS;
   try { runners = queue.plainRunners(); } catch (e) { L.push(`queue: config error — ${e instanceof Error ? e.message : String(e)}`); }
-  const perRunner = runners.map((r) => `${r}: ${count("open", r)} waiting, ${count("claimed", r)} running`);
+  const claims = msgs.filter((x) => x.state === "claimed").map(({ m }) => ({ m, holder: queue.claimState(m) }));
+  const perRunner = runners.map((r) => `${r}: ${count("open", r)} waiting, ${claims.filter((x) => x.m.to === r && x.holder === "live").length} running`);
   L.push("", `QUEUE  ${perRunner.join(" · ")} · failed: ${count("failed")} · ${dispatcherState()}`);
+  for (const { m, holder } of claims) if (holder !== "live")
+    L.push(`  ${m.id}: ${holder} holder${holder === "dead" ? ` (${m.claim!.by})` : ""} · inspect: govern task show ${m.id}${holder === "unknown" ? ` · recover: govern task reclaim ${m.id} --note "<why>"` : " · recovered on next dispatch"}`);
   if (bad) L.push(`unverified replies: ${bad}  · their content is kept but no check passed: govern task show <id>`);
   // ---- profiles with work queued or a check on record
   const reg = registry();

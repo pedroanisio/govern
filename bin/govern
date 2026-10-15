@@ -40,7 +40,7 @@
 #                      (--body B | --body-file F) [--file PATH]... [--reply-to ID] [--write | --profile P]
 #                      [--lane SLUG] [--from NAME] [--estimate-usd N]
 #     govern task list [--to X] [--state S] [--project P]  |  show ID  |  inbox [--as NAME] [--all] [--hook]
-#     govern task close ID [--as NAME] [--note T]  |  forward ID --to NAME [--as NAME]
+#     govern task close ID [--as NAME] [--note T]  |  reclaim ID --note T [--as NAME]  |  forward ID --to NAME [--as NAME]
 #     govern task reply ID --kind K --summary S (--body B | --body-file F) [--as NAME]
 #     govern task dispatch [--max N] [--only RUNNER] [--loop --interval S [--reap-every S]]  |  install-service [--interval S] [--reap-every S]
 # DESCRIPTION
@@ -74,7 +74,8 @@
 #     reply that fails verification is kept whole in QUEUE/failed/<id>.reply.txt, named in the BLOCKED notice. A
 #     session is NOT woken: it reads its mail with `task inbox` (or a UserPromptSubmit hook running
 #     `task inbox --hook`), answers with `reply`, and `close`s or `forward`s what is not for it. NAME defaults to
-#     GOVERN_AS, else the registered session found up this process's parent chain.
+#     GOVERN_AS, else the registered session found up this process's parent chain. `task reclaim` releases an abandoned
+#     claim after checking its external effects and spend, recording the required --note and notifying the owner.
 # OPTIONS
 #     --adapter A             conversation create: trusted named NDJSON adapter from conversationAdapters in workspace config
 #     --max-context-chars N    conversation create: maximum assembled context characters (default 64000, at most 1000000); checkpoint rather than truncate
@@ -143,8 +144,9 @@
 #     --stage S               check, advance, recover: check: the stage --set applies to, or the active stage to check; advance: the
 #                             active stage to move on from (a lane with parallel stages)
 #     --accept                check: the owner accepts that stage's flagged check changes (with --quote)
-#     --note T                conversation recover, advance, task close: conversation recover: why (required); advance: the evidence that a stage with no check is done (also recorded
-#                             as a decision); task close: a note recorded with the close
+#     --note T                conversation recover, advance, task close, task reclaim: conversation recover: why (required); advance: the evidence that a stage with no check is done (also recorded
+#                             as a decision); task close: a note recorded with the close; task reclaim: what was checked
+#                             before releasing an abandoned claim
 #     --after X               conversation events, dep: conversation events: N, the event number to read after (default 0);
 #                             dep: LANE[:STAGE], the lane this one waits on (all of it, or past STAGE)
 #     --bg                    conversation send, conversation run, run, slice: run detached and print the job id; wait with `govern wait`
@@ -190,7 +192,7 @@
 #     --questions F           decide ask: the JSON file of typed questions (choice, score, noul)
 #     --purpose P             decide ask: the name the decision is recorded under (default ask)
 #     --json                  decide ask: print the whole decision as JSON
-#     --as NAME               human-inbox, human, task inbox, task close, task forward, task reply, remote pair: who you are;
+#     --as NAME               human-inbox, human, task inbox, task close, task reclaim, task forward, task reply, remote pair: who you are;
 #                             human, human-inbox: a process person, refused unless this OS account is mapped to it; task:
 #                             default GOVERN_AS, else this session; remote pair: the person the device approves as (owner)
 #     --all                   task inbox, remote confirm: task inbox: messages in every state, not only open ones; remote
