@@ -37,7 +37,7 @@ export type Answer =
   | { type: "choice"; choice: string; confidence: number; probabilities: Record<string, number> }
   | { type: "score"; score: number; confidence: number; level: string; probabilities: Record<string, number> }
   | { type: "noul"; p: number };
-export interface Decision { model: string; answers: Record<string, Answer>; usage: { input: number; output: number } }
+export interface Decision { model: string; answers: Record<string, Answer>; usage?: { input?: number; output?: number } }
 
 const atLeast2 = <T>(s: Shape<T>, size: (v: T) => number, what: string): Shape<T> => (v, p) => {
   const x = s(v, p);
@@ -69,33 +69,48 @@ export const TASK_QUESTIONS: Questions = {
 
 const unit = (v: unknown, where: string): number =>
   typeof v === "number" && v >= 0 && v <= 1 ? v : bad(`${where} should be between 0 and 1, got ${JSON.stringify(v)}`);
-const probs = (v: unknown, where: string): Record<string, number> => {
-  if (!v || typeof v !== "object") bad(`${where} should be an object`);
-  return Object.fromEntries(Object.entries(v as object).map(([k, x]) => [k, unit(x, `${where}.${k}`)]));
+const probability: Shape<number> = (v, p) => unit(v, p);
+const probabilities: Shape<Record<string, number>> = (v, p) => {
+  const x = record(probability)(v, p);
+  return Object.keys(x).length ? x : reject(p, "needs at least one probability");
 };
+const tokenCount: Shape<number> = (v, p) =>
+  typeof v === "number" && Number.isFinite(v) && v >= 0 ? v : reject(p, "must be a non-negative number");
+const REPLY = obj({ model: str, answers: record(obj({ type: str }, {
+  choice: str, score: probability, confidence: probability, probabilities, legend: record(str), noul: probability,
+})) }, { usage: obj({}, { input_tokens: tokenCount, output_tokens: tokenCount }) });
 function bad(msg: string): never { fail(`TypeSafe's reply: ${msg}`); }
 
-/** The reply checked against the questions asked: every question answered, with its own type, in range. */
+/** The reply checked against exactly the questions asked: every answer has its own type and valid probabilities. */
 export function checkAnswers(questions: Questions, raw: unknown): Decision {
-  const r = raw as { model?: unknown; answers?: Record<string, any>; usage?: { input_tokens?: unknown; output_tokens?: unknown } } | null;
-  if (!r || typeof r !== "object") bad("not an object");
-  if (typeof r.model !== "string") bad("missing model");
+  const r = check("TypeSafe's reply", raw, REPLY);
+  for (const name of Object.keys(r.answers))
+    if (!Object.hasOwn(questions, name)) bad(`answers.${name}: question was not asked`);
   const answers: Record<string, Answer> = {};
   for (const [name, q] of Object.entries(questions)) {
-    const a = r.answers?.[name];
-    if (!a || typeof a !== "object") bad(`no answer for ${name}`);
+    const a = r.answers[name];
+    if (!a) bad(`no answer for ${name}`);
     if (a.type !== q.type) bad(`${name} should be a ${q.type} answer, got ${a.type}`);
-    if (q.type === "choice") {
-      if (!Object.hasOwn(q.criteria, a.choice)) bad(`${name} chose ${a.choice}, not one of ${Object.keys(q.criteria).join(", ")}`);
-      answers[name] = { type: "choice", choice: a.choice, confidence: unit(a.confidence, `${name}.confidence`), probabilities: probs(a.probabilities, `${name}.probabilities`) };
-    } else if (q.type === "score") {
-      const p = probs(a.probabilities, `${name}.probabilities`);
-      const top = q.criteria.reduce((best, _, i) => ((p[String(i)] ?? 0) > (p[String(best)] ?? 0) ? i : best), 0);
-      answers[name] = { type: "score", score: unit(a.score, `${name}.score`), confidence: unit(a.confidence, `${name}.confidence`), level: q.criteria[top]!, probabilities: p };
+    if (q.type === "choice" || q.type === "score") {
+      const p = a.probabilities;
+      if (!p) bad(`${name}.probabilities: missing`);
+      const keys = q.type === "choice" ? Object.keys(q.criteria) : q.criteria.map((_, i) => String(i));
+      for (const k of Object.keys(p))
+        if (!keys.includes(k)) bad(`${name}.probabilities.${k}: not one of ${keys.join(", ")}`);
+      if (q.type === "choice") {
+        if (a.choice === undefined || !Object.hasOwn(q.criteria, a.choice)) bad(`${name}.choice chose ${a.choice}, not one of ${keys.join(", ")}`);
+        answers[name] = { type: "choice", choice: a.choice, confidence: unit(a.confidence, `${name}.confidence`), probabilities: p };
+      } else {
+        const top = Object.keys(p).reduce((best, k) => p[k]! > p[best]! ? k : best);
+        answers[name] = { type: "score", score: unit(a.score, `${name}.score`), confidence: unit(a.confidence, `${name}.confidence`), level: q.criteria[Number(top)]!, probabilities: p };
+      }
     } else answers[name] = { type: "noul", p: unit(a.noul, `${name}.noul`) };
   }
-  const n = (v: unknown) => (typeof v === "number" && v >= 0 ? v : 0);
-  return { model: r.model, answers, usage: { input: n(r.usage?.input_tokens), output: n(r.usage?.output_tokens) } };
+  const usage = r.usage === undefined ? undefined : {
+    ...(r.usage.input_tokens === undefined ? {} : { input: r.usage.input_tokens }),
+    ...(r.usage.output_tokens === undefined ? {} : { output: r.usage.output_tokens }),
+  };
+  return { model: r.model, answers, ...(usage === undefined ? {} : { usage }) };
 }
 
 // --- the call ---

@@ -79,6 +79,59 @@ test("answers are checked against the questions asked and normalised", () => {
   broken((x) => { delete x.model; }, /model/);
 });
 
+const reply = () => ({ model: "jev-test", usage: { input_tokens: 12, output_tokens: 3 }, answers: {
+  kind: { type: "choice", choice: "edit", confidence: 1, probabilities: { edit: 1, review: 0 } },
+  difficulty: { type: "score", score: 0.5, confidence: 0.9, probabilities: { 0: 0, 1: 1, 2: 0 } },
+  mechanical: { type: "noul", noul: 0.7 } } });
+
+for (const [name, patch, field] of [
+  ["answers to unasked questions", (x: any) => { x.answers.unasked = { type: "noul", noul: 1 }; }, /answers.*unasked/],
+  ["empty choice probabilities", (x: any) => { x.answers.kind.probabilities = {}; }, /kind\.probabilities/],
+  ["unknown choice probability keys", (x: any) => { x.answers.kind.probabilities.lookup = 0.5; }, /kind\.probabilities.*lookup/],
+  ["empty score probabilities", (x: any) => { x.answers.difficulty.probabilities = {}; }, /difficulty\.probabilities/],
+  ["unknown score probability keys", (x: any) => { x.answers.difficulty.probabilities["3"] = 1; }, /difficulty\.probabilities.*3/],
+  ["noncanonical score probability keys", (x: any) => { x.answers.difficulty.probabilities["01"] = 1; }, /difficulty\.probabilities.*01/],
+  ["extra answer fields", (x: any) => { x.answers.kind.explanation = "trust me"; }, /kind\.explanation/],
+  ["extra top-level fields", (x: any) => { x.explanation = "trust me"; }, /explanation/],
+  ["array probabilities", (x: any) => { x.answers.difficulty.probabilities = [1]; }, /difficulty\.probabilities/],
+  ["non-object usage", (x: any) => { x.usage = null; }, /usage/],
+  ["extra usage fields", (x: any) => { x.usage.total_tokens = 15; }, /usage.*total_tokens/],
+] as const) {
+  test(`answers refuse ${name}`, () => {
+    const x = reply(); patch(x);
+    assert.throws(() => checkAnswers(check("q.json", QFILE, QUESTIONS), x),
+      (e: unknown) => e instanceof GovernError && field.test(e.message));
+  });
+}
+
+for (const field of ["input_tokens", "output_tokens"] as const) {
+  test(`answers refuse invalid usage.${field}`, () => {
+    for (const value of ["lots", -1, null, NaN, Infinity]) {
+      const x = reply(); Object.assign(x.usage, { [field]: value });
+      assert.throws(() => checkAnswers(check("q.json", QFILE, QUESTIONS), x),
+        (e: unknown) => e instanceof GovernError && e.message.includes(`usage.${field}`));
+    }
+  });
+}
+
+test("answers omit unknown usage and preserve known zero token counts", () => {
+  const q = check("q.json", QFILE, QUESTIONS);
+  const x: any = reply(); delete x.usage;
+  assert.equal(Object.hasOwn(checkAnswers(q, x), "usage"), false);
+  x.usage = {};
+  assert.deepEqual(checkAnswers(q, x).usage, {});
+  x.usage = { input_tokens: 0 };
+  assert.deepEqual(checkAnswers(q, x).usage, { input: 0 });
+  x.usage = { output_tokens: 0 };
+  assert.deepEqual(checkAnswers(q, x).usage, { output: 0 });
+});
+
+test("score levels come only from supplied valid probability keys", () => {
+  const x: any = reply(); x.answers.difficulty.probabilities = { 2: 0 };
+  const a = checkAnswers(check("q.json", QFILE, QUESTIONS), x).answers.difficulty;
+  assert.equal(a?.type === "score" && a.level, "Hard");
+});
+
 test("calibration: Brier score and expected calibration error over 10 bins", () => {
   const c = calibration([{ p: 0.9, y: 1 }, { p: 0.9, y: 0 }, { p: 0.1, y: 0 }, { p: 0.1, y: 0 }]);
   assert.equal(c.n, 4);
@@ -115,6 +168,23 @@ test("decide ask posts the state and questions with the key as a bearer token, p
   assert.equal(j.code, 0, j.err);
   assert.equal(JSON.parse(j.out).answers.kind.choice, "edit");
   assert.equal(present(jsonl(log)[1], "second request").body.model, "jev-1.13.0");
+});
+
+test("decide ask omits unknown usage from JSON output and recorded decisions", async () => {
+  const { e, replyFile } = await env();
+  const body: any = reply(); delete body.usage;
+  write(replyFile, JSON.stringify({ status: 200, body }));
+  const args = ["decide", "ask", "--questions", questions(e), "--state", "x", "--json"];
+  const r = govern(e, args);
+  assert.equal(r.code, 0, r.err);
+  assert.equal(Object.hasOwn(JSON.parse(r.out), "usage"), false);
+  assert.equal(Object.hasOwn(present(decisions(e)[0], "decision"), "usage"), false);
+  body.usage = { input_tokens: 0 };
+  write(replyFile, JSON.stringify({ status: 200, body }));
+  const partial = govern(e, args);
+  assert.equal(partial.code, 0, partial.err);
+  assert.deepEqual(JSON.parse(partial.out).usage, { input: 0 });
+  assert.deepEqual(present(decisions(e)[1], "partial decision").usage, { input: 0 });
 });
 
 test("decide ask takes the state from a file, refuses an empty or oversized one, and needs exactly one of --state/--state-file", async () => {
