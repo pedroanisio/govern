@@ -568,7 +568,9 @@ function cmdManual(a: Args): void {
 
 function cmdPublish(a: Args): void {
   const p = load(a._[1]);
-  const missing = (["final", "publish"] as const).filter((g) => !gateApproved(p, processOf(p).gates.find(x=>x.name===g)!));
+  const pr = processOf(p), absent = (["final", "publish"] as const).filter((g) => !pr.gates.some((x) => x.name === g));
+  if (absent.length) fail(`${p.slug}: govern publish is for a lane whose process has the gates final and publish; process "${pr.name}" has no ${absent.join(", ")} gate`);
+  const missing = (["final", "publish"] as const).filter((g) => !gateApproved(p, pr.gates.find((x) => x.name === g)));
   if (missing.length) fail(`${p.slug}: no owner approval recorded for: ${missing.join(", ")} (govern approve ${p.slug} <gate> --quote "…")`);
   const vpkg = resolveFile(p, "vpkg"), release = resolveFile(p, "release");
   if (!vpkg) fail(`${p.slug}: name the filed package first: govern file ${p.slug} vpkg ../../packages/<file>.vpkg.zip`);
