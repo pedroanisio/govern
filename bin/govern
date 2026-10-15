@@ -233,6 +233,8 @@
 #     · GOVERN_TYPESAFE_URL (https://api.typesafe.ai).
 #     Webhooks: GOVERN_WEBHOOK_TOKEN (event-listen bearer token; at least 16 characters, configured securely).
 #     Test and diagnostic: GOVERN_NOW (the allowances clock) · GOVERN_PROC=ps (read the process table with ps).
+#     Coverage: ST_VAR (npm run coverage writes V8 profiles and coverage.json under $ST_VAR/out/govern/coverage;
+#     default <repo>/var) · NODE_V8_COVERAGE (set by npm run coverage so every child node process writes its profile).
 #     Set for what govern runs: GOVERN_JOB_ID, GOVERN_JOB_DIR (every job; slice and up read GOVERN_JOB_DIR to find the
 #     job they run in) · GOVERN_TAG, GOVERN_LANE, GOVERN_RESOURCE, GOVERN_COUNT, GOVERN_ID (a resource's up, down and
 #     list commands) · GOVERN_PIECES, GOVERN_OUT, GOVERN_TAG, GOVERN_PIECE, GOVERN_ID (a slice recipe's steps)

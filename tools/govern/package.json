@@ -5,6 +5,7 @@
   "description": "govern CLI: run by Node type stripping, type-checked by tsc (devDependencies only)",
   "scripts": {
     "typecheck": "tsc -p tsconfig.json",
+    "coverage": "node --disable-warning=ExperimentalWarning scripts/coverage.ts",
     "test": "node --disable-warning=ExperimentalWarning --test 'test/*.test.ts'"
   },
   "devDependencies": {

@@ -64,6 +64,31 @@ launcher. `tsc` is a dev dependency used only for type checking.
 `make lint` type-checks it, and `make test` runs the suites in [test/](test/).
 Both need `npm ci --ignore-scripts --prefix tools/govern`, or `make ts-deps`.
 
+From this directory, `npm run coverage`
+runs the same suite with V8 coverage inherited by child Node processes. It prints
+`govern.ts` and every `lib/**/*.ts` file sorted by branch percentage, with line
+percentages and uncovered branch locations (`file:line`). The JSON has per-file
+`lines` and `branches` counts/percentages and `uncoveredBranchLines` (1-based,
+deduplicated). Coverage is reported without a threshold; the command exits
+nonzero if the suite fails.
+
+Branches are distinct non-root V8 block ranges within each function with
+`isBlockCoverage=true`; function-entry ranges contribute to lines only. A block
+omitted by another profile inherits its innermost enclosing range's count, and
+coverage in any process wins. Lines count nonblank source lines, covered when
+any nonblank span executes; nested zero-count ranges override their parents
+within a profile. These are V8 blocks, rather than source-level decision arms.
+Unobserved files have zero covered lines and a null branch percentage (printed
+as `unobserved`); observed files without branch ranges report 100%.
+
+Output defaults to `<repo-root>/var/out/govern/coverage`, under the self-ignoring
+`var/` directory. Set `ST_VAR` to relocate it to `$ST_VAR/out/govern/coverage`.
+Without `--json`, the report goes to `coverage.json` in that directory;
+`npm run coverage -- --json /path/to/report.json` overrides only the report path.
+Each run keeps its raw profiles in a fresh `v8-*` subdirectory of the output
+directory. Directories use mode 700 and files use mode 600. Profile collection
+requires normal process exit; a forcibly killed process may leave no profile.
+
 Documentation:
 
 - The manpage is the `MANPAGE` block in [bin/govern](../../bin/govern). Read it
