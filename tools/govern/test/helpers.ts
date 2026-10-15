@@ -152,7 +152,7 @@ export const NOW = Date.parse("2026-10-15T12:00:00.000Z"), DAY = 86400_000;
 export const use = (e: Env) => { process.env = childEnv(e); };
 export const lower = (h: Headers = {}) => Object.fromEntries(Object.entries(h).map(([k, v]) => [k.toLowerCase(), v]));
 export const ROUTES: Record<string, (b: Buffer, h: Headers, now: number) => peer.Response> = {
-  "/v1/peer/deliver": peer.receive, "/v1/peer/directory": peer.serveDirectory, "/v1/peer/telemetry": peer.serveTelemetry, "/v1/mesh/join": mesh.serveJoin, "/v1/mesh/sync": mesh.serveSync,
+  "/v1/peer/deliver": peer.receive, "/v1/peer/directory": peer.serveDirectory, "/v1/peer/telemetry": peer.serveTelemetry, "/v1/peer/lanes": peer.serveLanes, "/v1/peer/process": peer.serveProcess, "/v1/mesh/join": mesh.serveJoin, "/v1/mesh/sync": mesh.serveSync,
 };
 /** An in-process network: each origin is a host's workspace; a call runs the route there at `clock()`. */
 export function network(hosts: Record<string, Env>, clock = () => NOW, tap?: (u: string, b: Buffer, h: Headers) => void): peer.Post {
