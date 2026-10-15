@@ -62,16 +62,38 @@ button.copy.copy-bad { background: var(--crit); color: var(--panel); }
 button.copy.addr { color: var(--muted); margin-left: 6px; }
 .two { display: grid; gap: 16px; }
 @media (min-width: 980px) { .two { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); } }
+
+nav.tabs { display: flex; gap: 4px; }
+nav.tabs button { font: inherit; font-size: 13px; padding: 4px 12px; border: 1px solid var(--line); border-radius: 99px; background: var(--chip); color: var(--ink); cursor: pointer; }
+nav.tabs button[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: var(--bg); }
+.view[hidden] { display: none !important; }
+.strip { display: flex; gap: 3px; flex-wrap: wrap; min-width: 120px; }
+.strip i { width: 14px; height: 14px; border-radius: 3px; background: var(--chip); border: 1px solid var(--line); display: inline-block; }
+.strip i.done { background: var(--ok); border-color: var(--ok); } .strip i.current { background: var(--accent); border-color: var(--accent); }
+.strip i.blocked { background: var(--crit); border-color: var(--crit); }
+.st-running { color: var(--accent); } .st-waiting-on-owner, .st-waiting-on-coordinator { color: var(--warn); } .st-blocked-by-check { color: var(--crit); font-weight: 600; }
+.st-idle { color: var(--muted); } .st-done { color: var(--ok); }
+tr.pick { cursor: pointer; } tr.pick:hover td { background: var(--chip); } tr.picked td { background: var(--chip); }
+.diagram { overflow: auto; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); margin-top: 10px; max-height: 80vh; }
+.diagram svg { display: block; height: auto; min-width: 1100px; width: 100%; }
+.diagram .bp-pill { cursor: pointer; }
+.crumb { display: flex; gap: 10px; align-items: baseline; flex-wrap: wrap; margin-top: 10px; }
+.crumb button, .pickers button { font: inherit; padding: 3px 10px; border: 1px solid var(--line); border-radius: 6px; background: var(--chip); color: var(--ink); cursor: pointer; }
+.pickers { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-bottom: 4px; }
+.pickers select { font: inherit; padding: 5px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--ink); }
+.unknown { color: var(--muted); font-style: italic; }
 </style>
 </head>
 <body>
 <header>
   <h1>Command center</h1>
   <span class="meta">click a host or agent name to copy it</span>
+  <nav class="tabs" aria-label="Views"><button type="button" data-view="overview" aria-pressed="true">Overview</button><button type="button" data-view="projects" aria-pressed="false">Projects</button><button type="button" data-view="processes" aria-pressed="false">Processes</button></nav>
   <span class="meta" id="mesh">loading…</span>
   <span class="status" id="status"></span>
 </header>
 <main>
+<div class="view" id="view-overview" style="display:grid;gap:16px;min-width:0">
   <section><h2>Federation</h2><div class="kpis" id="kpis"></div></section>
   <section><h2>Alerts</h2><div id="alerts"></div></section>
   <section><h2>Hosts</h2><div class="hosts" id="hosts"></div></section>
@@ -88,6 +110,26 @@ button.copy.addr { color: var(--muted); margin-left: 6px; }
     </div>
     <div class="table"><table><thead><tr><th>When</th><th>Host</th><th>State</th><th>Kind</th><th>From → to</th><th>Project / task</th><th>Summary</th></tr></thead><tbody id="messages"></tbody></table></div>
   </section>
+</div>
+<div class="view" id="view-projects" hidden>
+  <section>
+    <h2>Projects</h2>
+    <div class="filters">
+      <input id="pq" type="search" placeholder="Search lane, title, process, stage" aria-label="Search lanes">
+      <select id="phost" aria-label="Host"><option value="">All hosts</option></select>
+      <select id="pstatus" aria-label="Status"><option value="">All statuses</option><option>running</option><option>waiting-on-owner</option><option>waiting-on-coordinator</option><option>blocked-by-check</option><option>idle</option><option>done</option></select>
+    </div>
+    <div class="table"><table><thead><tr><th>Host</th><th>Lane</th><th>Process</th><th>Stage</th><th>Progress</th><th>Status</th><th>Gates</th><th>Last check</th><th>Jobs</th><th>Active</th></tr></thead><tbody id="lanes"></tbody></table></div>
+    <div id="laneview"></div>
+  </section>
+</div>
+<div class="view" id="view-processes" hidden>
+  <section>
+    <h2>Processes</h2>
+    <div class="table"><table><thead><tr><th>Process</th><th>Revision</th><th>Stages</th><th>Gates</th><th>Hosts and lanes</th></tr></thead><tbody id="procs"></tbody></table></div>
+    <div id="procview"></div>
+  </section>
+</div>
 </main>
 <script>
 "use strict";
@@ -185,8 +227,124 @@ async function refresh() {
   } catch (e) { $("status").textContent = "update failed: " + e.message; $("status").className = "status err"; return; }
   $("status").className = "status";
 }
+
+// ---- views: Projects (every host's lanes) and Processes (live BPMN) ----
+let live = { lanes: null, processes: null };
+let current = "overview", picked = null, shown = null;
+const ago = iso => { const s = Math.max(0, (Date.now() - Date.parse(iso)) / 1000); return s < 90 ? "now" : s < 5400 ? Math.round(s / 60) + "m" : s < 129600 ? Math.round(s / 3600) + "h" : Math.round(s / 86400) + "d"; };
+function show(view) {
+  current = view;
+  for (const b of document.querySelectorAll("nav.tabs button")) b.setAttribute("aria-pressed", String(b.dataset.view === view));
+  for (const v of document.querySelectorAll(".view")) v.hidden = v.id !== "view-" + view;
+  if (view === "overview") return;
+  drawProjects(); drawProcesses(); redraw();
+}
+for (const b of document.querySelectorAll("nav.tabs button")) b.addEventListener("click", () => show(b.dataset.view));
+const api = path => fetch(path, { headers: { Authorization: "Bearer " + token }, cache: "no-store" });
+/** The SVG at `path` as a node of this page (parsed as XML, scripts and handlers dropped), or an error text. */
+async function diagram(path) {
+  const r = await api(path);
+  if (!r.ok) { let m = r.status; try { m = (await r.json()).error || m; } catch (e) { /* keep the status */ } throw new Error(m); }
+  const doc = new DOMParser().parseFromString(await r.text(), "image/svg+xml");
+  if (doc.querySelector("parsererror")) throw new Error("the diagram did not parse");
+  for (const n of doc.querySelectorAll("script, foreignObject")) n.remove();
+  for (const n of doc.querySelectorAll("*")) for (const a of [...n.attributes]) if (/^on/i.test(a.name)) n.removeAttribute(a.name);
+  return document.importNode(doc.documentElement, true);
+}
+const lanePath = (host, slug) => `/api/process/lane.svg?host=${encodeURIComponent(host)}&lane=${encodeURIComponent(slug)}`;
+const processPath = (name, host, hash) => `/api/process/${encodeURIComponent(name)}.svg?host=${encodeURIComponent(host)}&hash=${hash}`;
+async function drawInto(box, path, title, back) {
+  const head = el("div", { class: "crumb" }, el("b", {}, title), ...(back ? [el("button", { type: "button" }, back.label)] : []));
+  if (back) head.lastChild.addEventListener("click", back.run);
+  const body = el("div", { class: "diagram" }, el("div", { class: "none", style: "padding:12px" }, "drawing…"));
+  box.replaceChildren(head, body);
+  try {
+    const svg = await diagram(path);
+    body.replaceChildren(svg);
+    for (const pill of svg.querySelectorAll(".bp-pill[data-lane]")) pill.addEventListener("click", () => openLane(shown.host, pill.getAttribute("data-lane"), "process"));
+  } catch (e) { body.replaceChildren(el("div", { class: "err", style: "padding:12px" }, "cannot draw: " + e.message)); }
+}
+const lastCheck = l => l.checks.filter(c => c.ok !== undefined && c.at).sort((a, b) => b.at.localeCompare(a.at))[0];
+function laneRow(h, l) {
+  const gates = l.gates, approved = gates.filter(g => g.decision === "approved").length, pending = gates.filter(g => g.decision === "pending");
+  const lc = lastCheck(l);
+  return el("tr", { class: "pick" + (picked && picked.host === h && picked.slug === l.slug ? " picked" : ""), "data-key": h + "/" + l.slug },
+    el("td", {}, h), el("td", { class: "mono" }, l.slug, ...(l.title && l.title !== l.slug ? [el("div", { class: "none" }, l.title)] : [])),
+    el("td", {}, `${l.process.name} r${l.process.revision}`),
+    el("td", {}, `${l.stage} (${l.stageIndex}/${l.stageTotal})`),
+    el("td", {}, el("span", { class: "strip", title: l.stages.map(x => x.name + ": " + x.mark).join("\n") }, ...l.stages.map(x => el("i", { class: x.mark })))),
+    el("td", { class: "st-" + l.status }, l.status, ...(l.waitingOn.length ? [el("div", { class: "none" }, "on " + l.waitingOn.join(", "))] : [])),
+    el("td", {}, `${approved}/${gates.length}`, ...(pending.length ? [el("div", { class: "none" }, "pending: " + pending.map(g => g.name).join(", "))] : [])),
+    el("td", {}, lc ? el("span", { class: lc.ok ? "" : "err" }, `${lc.command} ${lc.ok ? "✓" : "✗"} ${ago(lc.at)}`) : "—"),
+    el("td", { class: "num" }, l.jobs.length || ""),
+    el("td", { class: "nowrap" }, ago(l.lastActivity)));
+}
+function drawProjects() {
+  const hostSel = $("phost"), keep = hostSel.value;
+  if (!live.lanes) { $("lanes").replaceChildren(el("tr", {}, el("td", { colspan: "10", class: "none" }, "loading…"))); return; }
+  hostSel.replaceChildren(el("option", { value: "" }, "All hosts"), ...live.lanes.hosts.map(h => el("option", { value: h.host }, h.host)));
+  hostSel.value = keep;
+  const q = $("pq").value.toLowerCase(), host = hostSel.value, status = $("pstatus").value, out = [];
+  for (const h of live.lanes.hosts) {
+    if (host && h.host !== host) continue;
+    if (h.unknown || !h.ok) {
+      if (!status && !q) out.push(el("tr", {}, el("td", {}, h.host), el("td", { class: "unknown", colspan: "9" }, h.unknown ? "lanes unknown: this host's govern does not report lanes yet" : "lanes unknown: " + (h.error || "no answer"))));
+      continue;
+    }
+    for (const r of live.lanes.lanes.filter(x => x.host === h.host)) {
+      const l = r.lane;
+      if (status && l.status !== status) continue;
+      if (q && ![l.slug, l.title, l.process.name, l.stage, l.status].join(" ").toLowerCase().includes(q)) continue;
+      const row = laneRow(h.host, l);
+      row.addEventListener("click", () => openLane(h.host, l.slug, "projects"));
+      out.push(row);
+    }
+    if (h.omitted) out.push(el("tr", {}, el("td", {}, h.host), el("td", { class: "unknown", colspan: "9" }, `${h.omitted} more lanes not sent (the answer is size limited; finished and least recently active are left out)`)));
+    if (h.unreadable) out.push(el("tr", {}, el("td", {}, h.host), el("td", { class: "err", colspan: "9" }, `${h.unreadable} lanes could not be read on that host (govern status shows which)`)));
+  }
+  rows($("lanes"), out, "No lanes match.", 10);
+}
+function openLane(host, slug, from) {
+  picked = { host, slug }; shown = { host, slug, from, ...(from === "process" && shown && shown.process ? { process: shown.process } : {}) };
+  show(from === "process" ? "processes" : "projects");
+}
+function drawProcesses() {
+  if (!live.processes) { $("procs").replaceChildren(el("tr", {}, el("td", { colspan: "5", class: "none" }, "loading…"))); return; }
+  const out = live.processes.processes.map(p => {
+    const cell = el("td", {});
+    for (const h of p.hosts) {
+      const b = el("button", { type: "button", title: "draw this process with the lanes of " + h.host }, `${h.host}: ${h.lanes}` + (h.lanes ? ` (${h.running} running, ${h.waiting} waiting, ${h.blocked} blocked)` : ""));
+      b.addEventListener("click", ev => { ev.stopPropagation(); openProcess(p, h.host); });
+      cell.append(b, " ");
+    }
+    for (const h of live.processes.hosts.filter(x => x.unknown)) cell.append(el("span", { class: "unknown" }, `${h.host}: unknown `));
+    return el("tr", {}, el("td", { class: "mono" }, p.name, ...(p.description ? [el("div", { class: "none" }, p.description)] : [])), el("td", {}, "r" + p.revision), el("td", { class: "num" }, p.stages), el("td", { class: "num" }, p.gates), cell);
+  });
+  rows($("procs"), out, "No processes reported.", 5);
+}
+function openProcess(p, host) { shown = { process: p, host }; picked = null; show("processes"); redraw(); }
+/** Draw whatever is open again from the latest data; the diagrams are drawn by the center, so they are always the live state. */
+function redraw() {
+  if (current === "projects" && picked && shown && shown.slug) drawInto($("laneview"), lanePath(shown.host, shown.slug), `${shown.slug} on ${shown.host}`, { label: "close", run: () => { picked = null; shown = null; drawProjects(); redraw(); } });
+  else if (current === "projects") $("laneview").replaceChildren(el("div", { class: "none", style: "margin-top:10px" }, "Select a lane to see where it stands in its process."));
+  if (current === "processes") {
+    if (shown && shown.slug) drawInto($("procview"), lanePath(shown.host, shown.slug), `${shown.slug} on ${shown.host}`, { label: "back to the process", run: () => { shown = shown.process ? { process: shown.process, host: shown.host } : null; picked = null; redraw(); } });
+    else if (shown && shown.process) drawInto($("procview"), processPath(shown.process.name, shown.host, shown.process.hash), `${shown.process.name} r${shown.process.revision} on ${shown.host}`, null);
+    else $("procview").replaceChildren(el("div", { class: "none", style: "margin-top:10px" }, "Pick a host on a process to draw it with that host's lanes; click a lane in the diagram to see its progress."));
+  }
+}
+async function refreshLive() {
+  try {
+    const [l, p] = await Promise.all([api("/api/lanes"), api("/api/processes")]);
+    if (!l.ok || !p.ok) throw new Error((await (l.ok ? p : l).json()).error || "refused");
+    live = { lanes: await l.json(), processes: await p.json() };
+  } catch (e) { live = { lanes: live.lanes, processes: live.processes }; return; }
+  if (current !== "overview") { drawProjects(); drawProcesses(); redraw(); }
+}
+for (const id of ["pq", "phost", "pstatus"]) $(id).addEventListener("input", drawProjects);
 for (const id of ["q", "fhost", "fstate"]) $(id).addEventListener("input", renderMessages);
-refresh(); setInterval(refresh, 15000);
+const tick = () => { refresh(); if (token) refreshLive(); };
+tick(); setInterval(tick, 15000);
 </script>
 </body>
 </html>
