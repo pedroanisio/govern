@@ -6,8 +6,9 @@ import { generateKeyPairSync, sign, randomBytes, type KeyObject } from "node:cry
 import { readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { request } from "node:http";
+import { spawn } from "node:child_process";
 import type { Server } from "node:http";
-import { makeEnv, govern, write, jsonl, asSession, type Env } from "./helpers.ts";
+import { makeEnv, govern, write, jsonl, asSession, childEnv, type Env } from "./helpers.ts";
 import { remoteServer, createPairing, revoke, PAIR_ATTEMPTS, MAX_STREAMS } from "../lib/remote.ts";
 import { PROTOCOL } from "../lib/remote-view.ts";
 import { encode, render } from "../lib/qr.ts";
@@ -86,6 +87,41 @@ test("health answers without a token; every other route needs a paired device's 
     assert.equal((await fetch(`${base}/v1/desk`, { headers: { Authorization: "Bearer not-a-token" } })).status, 401);
     assert.equal((await fetch(`${base}/v1/lane?slug=r1`)).status, 401);
   });
+});
+
+test("malformed request targets return 400 without terminating the remote server", { timeout: 15000 }, async (t) => {
+  const e = setup();
+  const module = new URL("../lib/remote.ts", import.meta.url).href;
+  const child = spawn(process.execPath, ["--input-type=module", "--eval", `
+    import { remoteServer } from ${JSON.stringify(module)};
+    const server = remoteServer();
+    server.listen(0, "127.0.0.1", () => process.send(server.address().port));
+  `], { env: childEnv(e), stdio: ["ignore", "ignore", "pipe", "ipc"] });
+  let errors = "";
+  child.stderr!.on("data", (chunk) => { errors += chunk; });
+  const closed = new Promise<void>((resolve) => child.once("close", () => resolve()));
+  t.after(async () => { child.kill(); await closed; });
+  const port = await new Promise<number>((resolve, reject) => {
+    child.once("message", (port) => resolve(Number(port)));
+    child.once("error", reject);
+    child.once("exit", (code) => reject(new Error(`server exited ${code}: ${errors}`)));
+  });
+  for (const path of ["http://[", "//[", "http://example.test:bad/v1/health"]) {
+    const response = await new Promise<{ status: number | undefined; body: string }>((resolve, reject) => {
+      const req = request({ host: "127.0.0.1", port, path, signal: t.signal }, (res) => {
+        let body = "";
+        res.setEncoding("utf8");
+        res.on("data", (chunk) => { body += chunk; });
+        res.on("end", () => resolve({ status: res.statusCode, body }));
+        res.on("error", reject);
+      });
+      req.on("error", reject);
+      req.end();
+    });
+    assert.equal(response.status, 400, `${path}: ${response.body}\n${errors}`);
+    assert.match(JSON.parse(response.body).error, /request.*url|request.*target/i);
+    assert.equal((await fetch(`http://127.0.0.1:${port}/v1/health`, { signal: t.signal })).status, 200);
+  }
 });
 
 test("a code pairs one device; wrong codes count and void it; a used or missing code pairs nothing", async () => {

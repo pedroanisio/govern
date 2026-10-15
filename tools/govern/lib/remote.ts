@@ -223,7 +223,12 @@ export function remoteServer(o: ServeOptions = {}): Server {
       res.writeHead(status, { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store" });
       res.end(JSON.stringify(value));
     };
-    const url = new URL(req.url ?? "/", "http://govern.invalid");
+    let url: URL;
+    try { url = new URL(req.url ?? "/", "http://govern.invalid"); }
+    catch {
+      req.resume();
+      return reply(400, { error: "invalid request URL" });
+    }
     const route = `${req.method} ${url.pathname}`;
     const bearer = /^Bearer (\S+)$/.exec(req.headers.authorization ?? "")?.[1];
     const device = bearer ? deviceOfToken(bearer) : undefined;
