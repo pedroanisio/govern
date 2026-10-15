@@ -54,9 +54,11 @@ for those names, so keep them narrow.
 
 `govern mesh sync` renews this host's 30-day certificate, refreshes the member list and revocations from the
 registrar, and discovers agents on every member. `govern task dispatch --loop` syncs every ten minutes, so a running
-dispatcher never lets its certificate lapse. `govern mesh sync --url URL` moves this host to a new public address;
-other members follow at their next sync. `govern mesh status` (also bare `govern mesh`) shows the mesh, this host's
-certificate, its grants and every member.
+dispatcher renews while the registrar is reachable. Mesh failures are logged without stopping the loop, and
+discovery still runs after a failed sync. `govern mesh sync --url URL` moves this host to a new public address;
+other members learn the registrar address from its signed member certificate at their next successful sync.
+Keep the old registrar address reachable until members have synced. `govern mesh status` (also bare `govern mesh`)
+shows the mesh, this host's certificate, its grants and every member.
 
 `govern mesh revoke b` on the registrar removes a member. Members that sync refuse it at once; a member that never
 syncs refuses it when its certificate lapses, at most 30 days later. A revoked member's own sync fails.
@@ -73,8 +75,11 @@ govern agents register --project p --alias reviewer --description "reviews claim
 ```
 
 The name must be the calling session's own (`--as` must match it); runner, profile and govern names are refused,
-because only the owner grants runs. A stable registration lasts `--ttl` seconds (default 12 hours, at most seven
-days); registering again refreshes it and replaces its aliases, projects and description.
+because only the owner grants runs. An unnamed session may choose an unused name or use `--ephemeral`; a name
+or alias belonging to a live session can be registered only by that session. If a registered name or alias later
+becomes reserved, the registration is no longer advertised or granted mailbox access. A stable registration lasts
+`--ttl` seconds (default 12 hours, at most seven days); registering again refreshes it and replaces its aliases,
+projects and description.
 
 An **ephemeral** name suits a short task or a sub-agent that should not be reachable afterwards:
 
@@ -159,8 +164,8 @@ telemetry (critical), an expired certificate (critical), a certificate expiring 
 hour old, a stopped dispatcher, failed or retrying deliveries, failed runs and unverified replies. `--json` prints the
 whole view.
 
-`govern center serve [--port 5004]` shows the same view in a browser, refreshed every 15 seconds, with search and host
-and state filters over the messages. It binds 127.0.0.1 only and prints its address with an access token in the URL
+`govern center serve [--port 5004] [--host 127.0.0.1]` shows the same view in a browser, refreshed every 15 seconds, with search and host
+and state filters over the messages. It binds the selected loopback host (127.0.0.1 by default) and prints its address with an access token in the URL
 fragment; the token lasts while that process runs. The page is served openly, but its data (`/api/state`) requires the
 token as a bearer header, and every request must name a loopback host, so a page on another site cannot read it
 through a rebound DNS name. A view is reused for ten seconds, so several open tabs do not multiply requests to hosts.
@@ -224,7 +229,8 @@ host. Run the server on each host to receive replies as well as requests. The ph
 | `POST /v1/mesh/sync` | Signed by a live member | Mesh snapshot, signed by the mesh key |
 
 Every other route returns 404, and the mesh routes return 404 on a host that is not the registrar. All responses are
-JSON with `Cache-Control: no-store`. Bodies over 262144 bytes return 413 before authentication. Receiving a request is
+JSON with `Cache-Control: no-store`. Request bodies over 262144 bytes return 413 before authentication; outbound
+response reads abort past the same limit and report a transport failure. Receiving a request is
 bounded by a 30-second request timeout and a 10-second header timeout; sending, by a 15-second timeout.
 
 ### Identity and state

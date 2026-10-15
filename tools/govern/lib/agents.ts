@@ -36,8 +36,8 @@ export function alive(a: Agent, now: number, known = sessions()): boolean {
   const same = known.filter(s => s.name === a.name);
   return !same.length || same.some(s => isAlive(s.pid, s.procStart));
 }
-/** Every standing registration at `now`. */
-export const live = (now = Date.now()): Agent[] => { const known = sessions(); return load().filter(a => alive(a, now, known)); };
+/** Every standing registration at `now` whose names are still available for mailboxes. */
+export const live = (now = Date.now()): Agent[] => { const known = sessions(), blocked = new Set(reserved()); return load().filter(a => !names(a).some(n => blocked.has(n)) && alive(a, now, known)); };
 /** The standing agent that answers to `n` (its name or an alias), or undefined. */
 export const resolve = (n: string, now = Date.now()): Agent | undefined => live(now).find(a => names(a).includes(n));
 

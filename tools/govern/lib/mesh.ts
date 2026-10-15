@@ -99,7 +99,8 @@ function apply(meshName: string, mesh: { publicKey: string; url: string }, snap:
   const me = identity(), self = verifyCert(snap.cert, mesh.publicKey, now);
   if (self.publicKey !== me.publicKey || self.name !== me.name) fail("mesh: the registrar certified another host");
   const members = snap.members.map(c => verifyCert(c, mesh.publicKey, now)).filter(m => !snap.revoked.includes(fingerprint(m.publicKey)));
-  const s: Member = { version: 1, mesh: { name: meshName, ...mesh, registrar: snap.registrar }, cert: snap.cert, members, revoked: snap.revoked, syncedAt: new Date(now).toISOString(), policy: { ...policy, observers: policy.observers ?? [snap.registrar] } };
+  const registrar = members.find(m => m.name === snap.registrar) ?? fail("mesh: snapshot missing registrar certificate");
+  const s: Member = { version: 1, mesh: { name: meshName, ...mesh, url: registrar.url, registrar: snap.registrar }, cert: snap.cert, members, revoked: snap.revoked, syncedAt: new Date(now).toISOString(), policy: { ...policy, observers: policy.observers ?? [snap.registrar] } };
   write(MEMBER_FILE, check(file(MEMBER_FILE), s, MEMBER)); return s;
 }
 /** The registrar refreshes its own member state from its table: it never calls itself over HTTP. */

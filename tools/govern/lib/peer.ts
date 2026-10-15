@@ -127,8 +127,9 @@ export function receive(bytes: Buffer, headers: Headers, now = Date.now()): Resp
   if (m.replyTo && (!parent || !(parseAddress(parent.to)?.peer === sender.name || parent.remote?.peer === sender.name))) return error(400, "$.message.replyTo: must name a message exchanged with this peer");
   // An answer to a message this host sent the sender reaches that message's local author without a grant, so a
   // conversation either side starts runs both ways. It never starts a run: a runner or profile author needs a grant.
-  const answering = !!parent && parseAddress(parent.to)?.peer === sender.name && parent.from === m.to && parent.project === m.project && !queue.runners().includes(m.to);
-  const agent = agents.resolve(m.to, now);
+  const runnable = queue.runners().includes(m.to) || !!queue.resolveTarget(m.to, { write: false }).profile;
+  const answering = !!parent && parseAddress(parent.to)?.peer === sender.name && parent.from === m.to && parent.project === m.project && !runnable;
+  const agent = !runnable && !agents.reserved().includes(m.to) ? agents.resolve(m.to, now) : undefined;
   if (!answering) {
     if (!covers(sender.projects, m.project)) return error(403, "project not allowed");
     if (!sender.allow.includes(m.to) && !(agent && covers(agent.projects, m.project))) return error(403, "recipient not allowed");

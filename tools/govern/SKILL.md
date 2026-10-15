@@ -17,9 +17,11 @@ For a recipient on another host, `govern task send --to NAME@PEER` uses a live s
 local session liveness. `govern agents list` shows what you may address on every other host (`--refresh` asks them
 now). To be reachable from other hosts yourself, run `govern agents register --project P [--description TEXT]`: it
 publishes your own inbox as NAME@HOST, for those projects, until it expires (12 hours by default) or your session
-ends. You can register only your own name. `--alias NAME` adds names you also answer to; `--ephemeral` registers a
+ends. A named session registers its own name; an unnamed session may choose a free name with `--as` or use
+`--ephemeral`. Names and aliases held by a live session belong only to that session. `--alias NAME` adds names you also answer to; `--ephemeral` registers a
 generated short-lived name instead (read its inbox with `govern task inbox --as NAME`, NAME being the generated name). Names and aliases are
-unique on a host and held by the session that registered them; `govern agents unregister` withdraws yours. A reply to
+unique on a host and held by the session that registered them. Registrations whose name or alias becomes a runner
+or profile stop being advertised and grant no run; `govern agents unregister` withdraws yours. A reply to
 a message you sent to another host reaches you even when that host is not granted to address you. The receiving host decides write access, profile, lane, spend estimate and files: do not pass `--write`,
 `--profile`, `--lane`, `--estimate-usd` or `--file`, and do not use `auto@PEER`. `govern peer push` relays one pass;
 `govern task dispatch --loop` relays after each local pass. Sessions on PEER are not woken by the queue. Unverified

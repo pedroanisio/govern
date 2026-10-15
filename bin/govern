@@ -45,7 +45,7 @@
 #     govern mesh create --name MESH --url URL --project P... [--allow NAME]... [--observer HOST]...  |  mesh invite [--host NAME] [--ttl S]
 #     govern mesh join CODE --url URL --project P... [--allow NAME]... [--observer HOST]...  |  mesh sync [--url URL]  |  mesh status
 #     govern mesh policy --project P... [--allow NAME]... [--observer HOST]...  |  mesh revoke HOST
-#     govern center [show] [--json]  |  center serve [--port 5004]
+#     govern center [show] [--json]  |  center serve [--port 5004] [--host 127.0.0.1]
 #     govern agents list [--refresh]  |  agents unregister [NAME] [--as NAME]
 #     govern agents register --project P... [--as NAME | --ephemeral] [--alias NAME]... [--description TEXT] [--ttl S]
 #     govern task send --to codex|claude|grok|RUNNER|PROFILE|auto|owner|SESSION|NAME@PEER --project P --task T --kind K --summary S
@@ -101,7 +101,7 @@
 #     agents list shows what this host may address on every other host. Mesh create, invite, join, policy, revoke and
 #     sync --url require the owner's terminal. The command center (center) shows every federated host's dispatcher,
 #     queue, relay, 24 h runs and spend, agents and latest messages, with alerts; each member answers only the observers
-#     its owner names (--observer; default the registrar). center serve shows it on 127.0.0.1 behind a printed token.
+#     its owner names (--observer; default the registrar). center serve shows it on the selected loopback host (default 127.0.0.1) behind a printed token.
 # OPTIONS
 #     --adapter A             conversation create: trusted named NDJSON adapter from conversationAdapters in workspace config
 #     --max-context-chars N    conversation create: maximum assembled context characters (default 64000, at most 1000000); checkpoint rather than truncate

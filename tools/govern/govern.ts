@@ -715,21 +715,27 @@ function cmdTask(a: Args): void {
     let lastTune = 0, lastReap = 0, lastSync = 0;
     const reapEvery = secondsOpt(a, "reap-every");
     const tick = async () => {
-      once();
-      if (mesh.state() && Date.now() - lastSync >= MESH_SYNC_MS) {
-        lastSync = Date.now();
-        try { await mesh.sync(); for (const h of await peer.discover()) if (!h.ok) out(`[mesh] ${h.host}: ${h.error}`); }
-        catch (e) { out(`[mesh] sync failed: ${(e as Error).message}`); }
-      }
       try {
-        if (peer.remotes().length) for (const line of await peer.push({ max })) out(`[peer] ${line}`);
-      } catch (e) { out(`[peer] failed: ${(e as Error).message}`); }
-      if (reapEvery && Date.now() - lastReap >= reapEvery * 1000) {
-        lastReap = Date.now();
-        try { for (const r of reaping.scan([], REAP_TIMEOUT)) out(`[reap] ${r.resource}: ${r.status === "ok" ? `${r.orphans.length} with no job` : r.why}`); } catch (e) { out(`[reap] failed: ${(e as Error).message}`); }
-      }
-      if (Date.now() - lastTune > 3600e3) { lastTune = Date.now(); try { out(`[tune] ${tune()}`); } catch (e) { out(`[tune] failed: ${(e as Error).message}`); } }
-      setTimeout(tick, secs * 1000);
+        once();
+        try {
+          if (mesh.state() && Date.now() - lastSync >= MESH_SYNC_MS) {
+            lastSync = Date.now();
+            try { await mesh.sync(); }
+            catch (e) { out(`[mesh] sync failed: ${(e as Error).message}`); }
+            try { for (const h of await peer.discover()) if (!h.ok) out(`[mesh] ${h.host}: ${h.error}`); }
+            catch (e) { out(`[mesh] discovery failed: ${(e as Error).message}`); }
+          }
+        } catch (e) { out(`[mesh] failed: ${(e as Error).message}`); }
+        try {
+          if (peer.remotes().length) for (const line of await peer.push({ max })) out(`[peer] ${line}`);
+        } catch (e) { out(`[peer] failed: ${(e as Error).message}`); }
+        if (reapEvery && Date.now() - lastReap >= reapEvery * 1000) {
+          lastReap = Date.now();
+          try { for (const r of reaping.scan([], REAP_TIMEOUT)) out(`[reap] ${r.resource}: ${r.status === "ok" ? `${r.orphans.length} with no job` : r.why}`); } catch (e) { out(`[reap] failed: ${(e as Error).message}`); }
+        }
+        if (Date.now() - lastTune > 3600e3) { lastTune = Date.now(); try { out(`[tune] ${tune()}`); } catch (e) { out(`[tune] failed: ${(e as Error).message}`); } }
+      } catch (e) { out(`[dispatch] failed: ${(e as Error).message}`); }
+      finally { setTimeout(tick, secs * 1000); }
     };
     tick();
     return;
@@ -858,7 +864,7 @@ async function cmdPeer(a: Args): Promise<void> {
 
 /** Mesh membership and grants change who may cause runs here, so every change but a plain sync is the owner's. */
 async function cmdMesh(a: Args): Promise<void> {
-  const sub = a._[1];
+  const sub = a._[1] ?? "status";
   if (sub !== "status" && !(sub === "sync" && opt(a, "url") === undefined) && origin().kind !== "terminal")
     fail("manage the mesh from the owner's own terminal: mesh grants authorize runs on this host", 1);
   const policy = () => ({ allow: many(a, "allow"), projects: many(a, "project"), ...(many(a, "observer").length ? { observers: many(a, "observer") } : {}) });
@@ -909,6 +915,10 @@ async function cmdAgents(a: Args): Promise<void> {
       return out(agents.unregister(n, holder.owner) ? `unregistered ${n}` : `${n} was not registered`);
     }
     const ephemeral = flag(a, "ephemeral");
+    const { liveSessions } = await import("./lib/sessions.ts");
+    const claimed = [...(!ephemeral ? [asked ?? self] : []), ...many(a, "alias")];
+    for (const n of claimed) if (liveSessions().some(s => s.name === n && s.pid !== cs?.pid))
+      fail(`${n} belongs to another live session: only that session may register its name or alias`);
     const r = agents.register({ ...holder, ...(ephemeral ? { ephemeral } : { name: asked ?? self ?? fail("cannot tell which agent this is: pass --as NAME, set GOVERN_AS, or use --ephemeral") }),
       aliases: many(a, "alias"), projects: many(a, "project"), description: opt(a, "description"), ttlSeconds: secondsOpt(a, "ttl") });
     const host = peer.identity().name;
@@ -943,7 +953,7 @@ async function cmdCenter(a: Args): Promise<void> {
   peer.identity();
   const token = center.newToken(), server = center.centerServer({ token });
   server.on("error", e => { process.stderr.write(`center: ${e.message}\n`); process.exitCode = 1; });
-  server.listen(port, "127.0.0.1", () => out(`govern command center: http://127.0.0.1:${port}/#token=${token}\n(the token lasts while this process runs; keep the address private)`));
+  server.listen(port, host, () => out(`govern command center: http://${host.includes(":") ? `[${host}]` : host}:${port}/#token=${token}\n(the token lasts while this process runs; keep the address private)`));
 }
 
 /** The text of the user service: every Environment= and the ExecStart binary quoted, and the state folders of this shell passed on. */
@@ -1222,7 +1232,7 @@ export const COMMANDS: readonly Cmd[] = [
   { name: "center", section: 6, footer: false, defaultSub: "show", noSub: "govern center show|serve (PEERS.md)",
     subs: {
       show: { flags: { bool: ["json"] }, lines: [["[--json]", "the command center: every federated host's health, alerts, agents, 24 h spend and latest messages"]], run: cmdCenter },
-      serve: { flags: { value: ["host", "port"] }, lines: [["[--port 5004] [--host 127.0.0.1]", "the command center in a browser on 127.0.0.1, refreshed every 15 s; prints the address with its access token"]], run: cmdCenter },
+      serve: { flags: { value: ["host", "port"] }, lines: [["[--port 5004] [--host 127.0.0.1]", "the command center in a browser on the selected loopback host, refreshed every 15 s; prints the address with its access token"]], run: cmdCenter },
     } },
   { name: "caps", section: 6, flags: { bool: ["check"] },
     lines: [["", "the capabilities and profiles a queued agent can run under, with each profile's last self-test"],

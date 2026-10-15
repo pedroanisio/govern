@@ -147,9 +147,25 @@ export function signedJson(status: number, body: Record<string, unknown>, privat
 export const TIMEOUT_MS = 15000;
 /** One HTTP POST; injected in tests. `headers` are the response headers, lowercased. */
 export type Post = (url: string, bytes: Buffer, headers: Headers, timeoutMs: number) => Promise<{ status: number; text: string; headers?: Headers }>;
-/** The real transport: fetch, with redirects refused and the timeout enforced. */
+/** The real transport: fetch, with redirects refused, the timeout enforced and responses capped at MAX_BODY bytes. */
 export const postFetch: Post = async (u, bytes, headers, timeoutMs) => {
-  const r = await fetch(u, { method: "POST", body: new Uint8Array(bytes), headers: { ...headers, "Content-Type": "application/json" }, signal: AbortSignal.timeout(timeoutMs), redirect: "error" });
+  const controller = new AbortController();
+  const r = await fetch(u, { method: "POST", body: new Uint8Array(bytes), headers: { ...headers, "Content-Type": "application/json" }, signal: AbortSignal.any([controller.signal, AbortSignal.timeout(timeoutMs)]), redirect: "error" });
   const out: Headers = {}; r.headers.forEach((v, k) => { out[k] = v; });
-  return { status: r.status, text: await r.text(), headers: out };
+  const chunks: Uint8Array[] = [], reader = r.body?.getReader();
+  let size = 0;
+  if (reader) try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      size += value.byteLength;
+      if (size > MAX_BODY) {
+        controller.abort();
+        try { await reader.cancel(); }
+        finally { fail(`peer response exceeds ${MAX_BODY} bytes`); }
+      }
+      chunks.push(value);
+    }
+  } finally { reader.releaseLock(); }
+  return { status: r.status, text: Buffer.concat(chunks, size).toString("utf8"), headers: out };
 };
