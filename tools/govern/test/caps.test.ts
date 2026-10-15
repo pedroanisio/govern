@@ -129,6 +129,10 @@ test("codex profiles keep the old sandbox mapping; a profile's -c settings and a
   assert.ok(present(cx, "cx").includes("sandbox_workspace_write.network_access=false"));
   assert.equal(present(cx, "cx")[present(cx, "cx").indexOf("--add-dir") + 1], "/tmp/scratch");
   assert.ok(!present(ro, "ro").includes("--add-dir"));
+  // the prompt names every folder the sandbox lets the session write, so the model does not refuse a granted add-dir
+  const prompts = readFileSync(join(e.root, "stdin.log"), "utf8").trim().split("\n").map((l) => JSON.parse(l) as string);
+  assert.match(present(prompts[1], "rw prompt"), new RegExp(`You may change files under ${join(e.projects, "film")} only\\.`));
+  assert.match(present(prompts[2], "cx prompt"), new RegExp(`You may change files under ${join(e.projects, "film")} and /tmp/scratch only\\.`));
 });
 
 // ---------------------------------------------------------------- profiles on tasks

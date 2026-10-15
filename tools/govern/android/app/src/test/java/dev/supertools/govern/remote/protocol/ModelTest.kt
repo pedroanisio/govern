@@ -12,12 +12,25 @@ class ModelTest {
     private fun fixture(name: String): String =
         javaClass.classLoader!!.getResource("fixtures/$name")!!.readText()
 
+    @Test fun ledgerSummaryAndToneAreOptional() {
+        val old = WireJson.decodeFromString<LedgerView>("""{"t":"now","kind":"job","text":"{}"}""")
+        assertNull(old.summary); assertNull(old.tone)
+        val human = WireJson.decodeFromString<LedgerView>("""{"t":"now","kind":"job","text":"{}","summary":"Job started","tone":"running"}""")
+        assertEquals("Job started", human.summary); assertEquals("running", human.tone)
+    }
+
     @Test
     fun deskFixtureParses() {
         val d = parseWire<Desk>("desk", fixture("desk.json"))
         assertTrue(speaks(d.protocol))
         val lane = d.lanes.single()
         assertEquals("r1", lane.slug)
+        assertEquals(1, lane.checkSummary.passed)
+        assertEquals("owner", d.viewer.person)
+        assertNull(d.viewer.lanes)
+        assertTrue(d.host.isNotEmpty())
+        assertEquals("chat", d.sessions.single().id)
+        assertTrue(d.engines.contains("codex-read"))
         assertEquals(LaneState.OPEN, lane.state)
         assertEquals(listOf("final", "publish"), lane.gates.map { it.name })
         assertTrue(lane.gates[0].approved)
@@ -25,6 +38,7 @@ class ModelTest {
         assertEquals(41000L, d.telemetry.tokens.single().input)
         assertEquals(0.12, d.telemetry.tokens.single().usd, 1e-9)
         assertEquals("broken", d.unreadable.single().slug)
+        assertEquals("broken-chat", d.unreadableSessions.single().id)
         assertEquals(4242, d.telemetry.dispatcher!!.pid)
     }
 
@@ -36,6 +50,27 @@ class ModelTest {
         assertEquals(3, l.data.size)
         assertEquals("alice", l.humanTasks.single().assignee)
         assertEquals("a-1", l.alerts.single().id)
+        assertEquals(2, l.artifacts.single().version)
+        assertEquals("owner", l.artifacts.single().reviews.single().person)
+        assertEquals(1, l.checks.size)
+        assertEquals("ok", l.jobs.single().status)
+        assertEquals("chat", l.sessions.single().id)
+    }
+
+    @Test
+    fun sessionAndJobFixturesParse() {
+        val s = parseWire<SessionDetail>("session", fixture("session.json"))
+        assertEquals("chat", s.session.id)
+        assertEquals("transport-only", s.messages.last().verification)
+        assertNull(s.messages.first().verification)
+        assertEquals("completed", s.runs.last().state)
+        val j = parseWire<JobDetail>("job", fixture("job.json"))
+        assertEquals("r1", j.lane)
+        assertEquals("ok", j.job.status)
+        assertEquals(listOf("second"), j.log.takeLast(1))
+        assertThrows(ProtocolException::class.java) {
+            parseWire<SessionDetail>("session", fixture("session.json").replaceFirst("\"runs\"", "\"extra\": true, \"runs\""))
+        }
     }
 
     @Test
@@ -56,10 +91,10 @@ class ModelTest {
 
     @Test
     fun versions() {
-        assertTrue(speaks("govern-remote/1"))
-        assertTrue(speaks("govern-remote/1.2"))
-        assertFalse(speaks("govern-remote/2"))
-        assertFalse(speaks("govern-remote/10"))
+        assertTrue(speaks("govern-remote/2"))
+        assertTrue(speaks("govern-remote/2.2"))
+        assertFalse(speaks("govern-remote/3"))
+        assertFalse(speaks("govern-remote/20"))
         assertFalse(speaks("other/1"))
     }
 }

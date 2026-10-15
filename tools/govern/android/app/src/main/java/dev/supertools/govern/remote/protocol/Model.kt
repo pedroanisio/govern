@@ -5,11 +5,11 @@ import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonElement
 
-// The wire types of govern-remote/1 (tools/govern/REMOTE.md), mirrored from tools/govern/lib/remote-view.ts.
+// The wire types of govern-remote/2 (tools/govern/REMOTE.md), mirrored from tools/govern/lib/remote-view.ts.
 // The parser refuses unknown fields: the field set of a protocol major version is closed, and a server that sends more
 // speaks another version.
 
-const val PROTOCOL_MAJOR = "govern-remote/1"
+const val PROTOCOL_MAJOR = "govern-remote/2"
 
 /** The JSON codec of the protocol: strict (unknown keys and lenient syntax refused), explicit nulls kept. */
 val WireJson: Json = Json {
@@ -31,7 +31,7 @@ data class Health(val protocol: String, val at: String)
 data class PairRequest(val code: String, val name: String, val publicKey: String)
 
 @Serializable
-data class PairResponse(val protocol: String, val deviceId: String, val person: String, val token: String)
+data class PairResponse(val protocol: String, val deviceId: String, val person: String, val token: String, val host: String)
 
 @Serializable
 data class ErrorBody(val error: String)
@@ -45,6 +45,9 @@ data class GateView(
     val approved: Boolean,
     val approvedAt: String?,
     val needs: List<String>,
+    val approvedBy: String?,
+    val quote: String?,
+    val artifact: ArtifactRef?,
 )
 
 @Serializable
@@ -73,6 +76,7 @@ data class LaneSummary(
     val working: Working?,
     val lastNote: LastNote?,
     val lastJob: LastJob?,
+    val checkSummary: CheckSummary,
 )
 
 @Serializable
@@ -85,6 +89,10 @@ enum class LaneState {
 
 @Serializable
 data class LaneError(val slug: String, val error: String)
+
+/** A conversation the server could not read; only unscoped devices receive them. */
+@Serializable
+data class SessionError(val id: String, val error: String)
 
 @Serializable
 data class AlertView(
@@ -100,7 +108,7 @@ data class AlertView(
 data class NoteView(val at: String, val stage: String, val text: String)
 
 @Serializable
-data class LedgerView(val t: String, val kind: String, val text: String)
+data class LedgerView(val t: String, val kind: String, val text: String, val summary: String? = null, val tone: String? = null)
 
 @Serializable
 data class HumanTaskView(val stage: String, val assignee: String?, val completedBy: String?)
@@ -122,6 +130,7 @@ data class LaneDetail(
     val working: Working?,
     val lastNote: LastNote?,
     val lastJob: LastJob?,
+    val checkSummary: CheckSummary,
     val stages: List<String>,
     val exit: String?,
     val check: String?,
@@ -131,6 +140,11 @@ data class LaneDetail(
     val alerts: List<AlertView>,
     val notes: List<NoteView>,
     val ledger: List<LedgerView>,
+    val checks: List<CheckView>,
+    val jobs: List<JobView>,
+    val artifacts: List<ArtifactView>,
+    val sessions: List<SessionSummary>,
+    val decisions: List<DecisionView>,
 )
 
 @Serializable
@@ -169,15 +183,79 @@ data class Desk(
     val lanes: List<LaneSummary>,
     val unreadable: List<LaneError>,
     val telemetry: Telemetry,
+    val sessions: List<SessionSummary>,
+    val unreadableSessions: List<SessionError>,
+    val engines: List<String>,
+    val viewer: Viewer,
+    val host: String,
 )
 
 @Serializable
-data class ActionResult(val ok: Boolean, val lane: LaneDetail)
+data class ActionResult(val ok: Boolean, val lane: LaneDetail?, val session: SessionDetail?)
 
 /** Parses `text` as a `T`, or throws ProtocolException naming what was being read. */
 inline fun <reified T> parseWire(what: String, text: String): T =
     try {
         WireJson.decodeFromString<T>(text)
     } catch (e: IllegalArgumentException) {
-        throw ProtocolException("the server's $what is not govern-remote/1: ${e.message}", e)
+        throw ProtocolException("the server's $what is not govern-remote/2: ${e.message}", e)
     }
+
+@Serializable
+data class CheckSummary(val passed: Int, val failed: Int, val total: Int)
+
+@Serializable
+data class ArtifactRef(val name: String, val sha256: String)
+
+@Serializable
+data class ArtifactReview(val person: String, val device: String, val at: String)
+
+@Serializable
+data class ArtifactView(
+    val name: String, val version: Int, val bytes: Long, val sha256: String, val modifiedAt: String,
+    val mediaType: String, val title: String?, val caption: String?, val reviews: List<ArtifactReview>,
+)
+
+@Serializable
+data class Viewer(val person: String, val device: String, val lanes: List<String>?)
+
+@Serializable
+data class MessageView(
+    val id: String, val role: String, val at: String, val text: String, val runId: String?, val verification: String?,
+)
+
+@Serializable
+data class SessionSummary(
+    val id: String, val title: String, val lane: String?, val engine: String, val state: String,
+    val updatedAt: String, val needsDecision: Boolean, val lastMessage: MessageView?,
+)
+
+@Serializable
+data class CheckView(val stage: String, val name: String, val ok: Boolean, val exit: Int?, val at: String, val job: String?)
+
+@Serializable
+data class Progress(val done: Int, val total: Int, val failed: Int)
+
+@Serializable
+data class JobView(
+    val id: String, val name: String, val status: String, val start: String, val end: String?,
+    val seconds: Double?, val exit: Int?, val progress: Progress?,
+)
+
+@Serializable
+data class DecisionView(
+    val t: String, val kind: String, val gate: String, val by: String, val quote: String,
+    val device: String?, val artifact: ArtifactRef?,
+)
+
+@Serializable
+data class RunView(
+    val id: String, val state: String, val createdAt: String, val startedAt: String?, val endedAt: String?,
+    val verification: String?, val error: String?,
+)
+
+@Serializable
+data class SessionDetail(val protocol: String, val session: SessionSummary, val messages: List<MessageView>, val runs: List<RunView>)
+
+@Serializable
+data class JobDetail(val protocol: String, val lane: String, val job: JobView, val argv: List<String>, val log: List<String>)

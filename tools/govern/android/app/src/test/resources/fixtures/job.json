@@ -1,0 +1,22 @@
+{
+  "protocol": "govern-remote/2",
+  "lane": "r1",
+  "job": {
+    "id": "20261014T201201Z-test",
+    "name": "test",
+    "status": "ok",
+    "start": "2026-10-14T20:12:01.359Z",
+    "end": null,
+    "seconds": 0,
+    "exit": 0,
+    "progress": null
+  },
+  "argv": [
+    "printf",
+    "first\nsecond\n"
+  ],
+  "log": [
+    "first",
+    "second"
+  ]
+}

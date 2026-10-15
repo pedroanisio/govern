@@ -3,6 +3,7 @@ package dev.supertools.govern.remote.protocol
 import java.io.BufferedReader
 import java.io.IOException
 import java.io.InputStreamReader
+import java.io.OutputStream
 import java.net.HttpURLConnection
 import java.net.URL
 import java.net.URLEncoder
@@ -18,18 +19,20 @@ import javax.net.ssl.X509TrustManager
 /** A refusal by the server: its HTTP status and the error text it sent. */
 class ServerException(val status: Int, message: String) : Exception(message)
 
+data class ArtifactDownload(val bytes: Long, val sha256: String, val mediaType: String)
+
 /** Where the server is and how this device proves itself: the bearer token (absent before pairing) and an optional pin. */
 data class Endpoint(val baseUrl: String, val token: String?, val pin: String?)
 
 /**
- * The HTTP client of govern-remote/1 (REMOTE.md). Blocking calls: run them off the main thread.
+ * The HTTP client of govern-remote/2 (REMOTE.md). Blocking calls: run them off the main thread.
  * With a pin, the server's certificate must hash (SHA-256) to it, and the system trust store is not consulted: that is what
  * makes a self-signed certificate safe to use. Without one, the system trust store and hostname checks apply.
  */
 class GovernClient(private val endpoint: Endpoint, private val connectTimeoutMs: Int = 10_000, private val readTimeoutMs: Int = 20_000) {
 
     fun health(): Health = parseWire<Health>("health", call("GET", "/v1/health", auth = false)).also {
-        if (!speaks(it.protocol)) throw ProtocolException("the server speaks ${it.protocol}; this app speaks govern-remote/1")
+        if (!speaks(it.protocol)) throw ProtocolException("the server speaks ${it.protocol}; this app speaks govern-remote/2")
     }
 
     fun pair(code: String, name: String, publicKeyBase64: String): PairResponse {
@@ -37,9 +40,56 @@ class GovernClient(private val endpoint: Endpoint, private val connectTimeoutMs:
         return parseWire("pairing reply", call("POST", "/v1/pair", body = body, auth = false))
     }
 
+    fun requestPairing(name: String, publicKey: String, lanes: List<String>? = null): PairRequestCreated {
+        val body = WireJson.encodeToString(PairRequestBody.serializer(), PairRequestBody(name, publicKey, lanes)).toByteArray(Charsets.UTF_8)
+        return parseWire("pairing request", call("POST", "/v1/pair/request", body = body, auth = false))
+    }
+
+    fun pollPairing(id: String, secret: String): PairRequestStatus = parseWire("pairing status",
+        call("GET", "/v1/pair/request?id=" + URLEncoder.encode(id, Charsets.UTF_8), auth = false,
+            headers = mapOf("Govern-Pair-Secret" to secret)))
+
+    fun cancelPairing(id: String, secret: String): PairCancelled {
+        val body = WireJson.encodeToString(PairCancel.serializer(), PairCancel(id, secret)).toByteArray(Charsets.UTF_8)
+        return parseWire("pairing cancellation", call("POST", "/v1/pair/cancel", body = body, auth = false))
+    }
+
     fun desk(): Desk = parseWire("desk", call("GET", "/v1/desk"))
 
     fun lane(slug: String): LaneDetail = parseWire("lane", call("GET", "/v1/lane?slug=" + URLEncoder.encode(slug, Charsets.UTF_8)))
+
+    fun session(id: String, messages: Int = 20): SessionDetail =
+        parseWire("session", call("GET", "/v1/session?id=${URLEncoder.encode(id, Charsets.UTF_8)}&messages=$messages"))
+
+    fun job(lane: String, id: String, lines: Int = 100): JobDetail =
+        parseWire("job", call("GET", "/v1/job?lane=${URLEncoder.encode(lane, Charsets.UTF_8)}&id=${URLEncoder.encode(id, Charsets.UTF_8)}&lines=$lines"))
+
+    /** Streams into the caller's sink without closing it. Use the bytes only after digest verification succeeds. */
+    fun artifact(lane: String, name: String, sink: OutputStream): ArtifactDownload {
+        val c = open("GET", "/v1/artifact?lane=${URLEncoder.encode(lane, Charsets.UTF_8)}&name=${URLEncoder.encode(name, Charsets.UTF_8)}", true, readTimeoutMs)
+        try {
+            val status = c.responseCode
+            if (status != 200) throw failure(c, status)
+            val expected = c.getHeaderField("Govern-Artifact-Sha256")
+            if (expected == null || !Regex("[0-9a-f]{64}").matches(expected)) throw ProtocolException("artifact has no valid SHA-256 header")
+            val hash = MessageDigest.getInstance("SHA-256")
+            var bytes = 0L
+            c.inputStream.use { input ->
+                val buffer = ByteArray(65536)
+                while (true) {
+                    val n = input.read(buffer)
+                    if (n < 0) break
+                    sink.write(buffer, 0, n)
+                    hash.update(buffer, 0, n)
+                    bytes += n
+                }
+            }
+            val actual = hash.digest().joinToString("") { "%02x".format(it) }
+            if (actual != expected) throw ProtocolException("artifact SHA-256 differs from the server header")
+            if (c.contentLengthLong >= 0 && bytes != c.contentLengthLong) throw ProtocolException("artifact length differs from the server header")
+            return ArtifactDownload(bytes, actual, c.contentType ?: "application/octet-stream")
+        } finally { c.disconnect() }
+    }
 
     fun act(action: SignedAction): ActionResult =
         parseWire("action reply", call("POST", "/v1/actions", body = action.body, headers = mapOf("Govern-Signature" to action.signatureBase64)))

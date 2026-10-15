@@ -1,0 +1,7 @@
+{
+  "protocol": "govern-remote/1",
+  "deviceId": "d-0123456789ab",
+  "person": "owner",
+  "token": "test-token",
+  "host": "host-test"
+}

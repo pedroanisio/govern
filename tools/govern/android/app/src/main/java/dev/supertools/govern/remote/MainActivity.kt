@@ -28,7 +28,7 @@ class MainActivity : ComponentActivity() {
         // The stream runs while the app is on screen; it is not a background service.
         lifecycleScope.launch {
             repeatOnLifecycle(Lifecycle.State.STARTED) {
-                if (model.paired.value != null) model.startStream()
+                model.startStream()
                 try { kotlinx.coroutines.awaitCancellation() } finally { model.stopStream() }
             }
         }
@@ -51,7 +51,9 @@ class MainActivity : ComponentActivity() {
      * person confirms with a strong biometric or the device credential. Nothing is signed or sent on cancel.
      */
     private fun confirm(title: String, summary: String, body: ByteArray, done: String) {
-        val signature = try { DeviceKey.signature() } catch (e: Exception) { model.report(AppModel.describe(e)); return }
+        val host = model.selectedHost() ?: return
+        if (!model.isLive(host.id)) { model.report(getString(R.string.live_required)); return }
+        val signature = try { DeviceKey.signature(host.keyAlias) } catch (e: Exception) { model.report(model.describe(e)); return }
         val prompt = BiometricPrompt.Builder(this)
             .setTitle(title)
             .setDescription(summary)
@@ -60,16 +62,16 @@ class MainActivity : ComponentActivity() {
         prompt.authenticate(BiometricPrompt.CryptoObject(signature), CancellationSignal(), mainExecutor,
             object : BiometricPrompt.AuthenticationCallback() {
                 override fun onAuthenticationSucceeded(result: BiometricPrompt.AuthenticationResult) {
-                    val s = result.cryptoObject?.signature ?: return model.report("the confirmation returned no signature")
+                    val s = result.cryptoObject?.signature ?: return model.report(getString(R.string.no_signature))
                     try {
                         s.update(body)
-                        model.send(SignedAction(body, s.sign()), done)
+                        model.send(host, SignedAction(body, s.sign()), done)
                     } catch (e: Exception) {
-                        model.report(AppModel.describe(e))
+                        model.report(model.describe(e))
                     }
                 }
                 override fun onAuthenticationError(errorCode: Int, errString: CharSequence) {
-                    model.report("not sent: $errString")
+                    model.report(getString(R.string.not_sent, errString))
                 }
             })
     }

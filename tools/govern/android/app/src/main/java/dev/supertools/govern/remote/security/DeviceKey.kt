@@ -16,24 +16,24 @@ import java.util.Base64
  */
 object DeviceKey {
     private const val STORE = "AndroidKeyStore"
-    private const val ALIAS = "govern-remote-device"
+    const val LEGACY_ALIAS = "govern-remote-device"
 
     private fun keyStore(): KeyStore = KeyStore.getInstance(STORE).apply { load(null) }
 
     /** Creates a fresh key (any earlier one is deleted: pairing again replaces the device's identity). StrongBox when present. */
-    fun create(): String {
+    fun create(alias: String = LEGACY_ALIAS): String {
         val ks = keyStore()
-        if (ks.containsAlias(ALIAS)) ks.deleteEntry(ALIAS)
+        if (ks.containsAlias(alias)) ks.deleteEntry(alias)
         try {
-            generate(strongBox = true)
+            generate(alias, strongBox = true)
         } catch (e: StrongBoxUnavailableException) {
-            generate(strongBox = false)
+            generate(alias, strongBox = false)
         }
-        return publicKeyBase64()
+        return publicKeyBase64(alias)
     }
 
-    private fun generate(strongBox: Boolean) {
-        val spec = KeyGenParameterSpec.Builder(ALIAS, KeyProperties.PURPOSE_SIGN)
+    private fun generate(alias: String, strongBox: Boolean) {
+        val spec = KeyGenParameterSpec.Builder(alias, KeyProperties.PURPOSE_SIGN)
             .setAlgorithmParameterSpec(ECGenParameterSpec("secp256r1"))
             .setDigests(KeyProperties.DIGEST_SHA256)
             .setUserAuthenticationRequired(true)
@@ -45,21 +45,21 @@ object DeviceKey {
     }
 
     /** The public key as base64 DER SubjectPublicKeyInfo, the form the server's pairing endpoint takes. */
-    fun publicKeyBase64(): String {
-        val cert = keyStore().getCertificate(ALIAS) ?: throw IllegalStateException("no device key: pair this device first")
+    fun publicKeyBase64(alias: String = LEGACY_ALIAS): String {
+        val cert = keyStore().getCertificate(alias) ?: throw IllegalStateException("no device key: pair this device first")
         return Base64.getEncoder().encodeToString(cert.publicKey.encoded)
     }
 
-    fun exists(): Boolean = keyStore().containsAlias(ALIAS)
+    fun exists(alias: String = LEGACY_ALIAS): Boolean = keyStore().containsAlias(alias)
 
     /** A Signature ready for one ECDSA-SHA256 signature; it works only after the person confirms it in BiometricPrompt. */
-    fun signature(): Signature {
-        val key = keyStore().getKey(ALIAS, null) as? PrivateKey ?: throw IllegalStateException("no device key: pair this device first")
+    fun signature(alias: String = LEGACY_ALIAS): Signature {
+        val key = keyStore().getKey(alias, null) as? PrivateKey ?: throw IllegalStateException("no device key: pair this device first")
         return Signature.getInstance("SHA256withECDSA").apply { initSign(key) }
     }
 
-    fun delete() {
+    fun delete(alias: String = LEGACY_ALIAS) {
         val ks = keyStore()
-        if (ks.containsAlias(ALIAS)) ks.deleteEntry(ALIAS)
+        if (ks.containsAlias(alias)) ks.deleteEntry(alias)
     }
 }

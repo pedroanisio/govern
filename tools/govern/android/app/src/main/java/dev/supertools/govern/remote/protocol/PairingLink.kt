@@ -3,8 +3,10 @@ package dev.supertools.govern.remote.protocol
 import java.net.URI
 import java.net.URLDecoder
 
-/** What `govern remote pair --url` prints: govern-remote://pair?url=…&code=…[&pin=…]. */
-data class PairingLink(val url: String, val code: String, val pin: String?)
+/** A code link uses the original pairing flow; an absent code requests pairing, optionally for one lane. */
+data class PairingLink(val url: String, val code: String, val pin: String?, val lane: String? = null) {
+    val requestPairing: Boolean get() = code.isEmpty()
+}
 
 /** What a pairing link opened from outside the app (a scanned QR code) does: it fills the pairing form, which the person
  *  still reads and submits; it never pairs on its own. Refused while this device is paired, and when it does not parse. */
@@ -47,7 +49,13 @@ object PairingLinks {
             k to v
         }
         val url = q["url"] ?: throw IllegalArgumentException("the pairing link has no url")
-        val code = q["code"] ?: throw IllegalArgumentException("the pairing link has no code")
-        return PairingLink(serverUrl(url), code, q["pin"]?.let(::pin))
+        val code = q["code"]
+        require(code == null || code.isNotBlank()) { "the pairing link has an empty code" }
+        val lane = q["lane"]?.let { raw ->
+            val parts = raw.split('/').filter { it != "." }
+            require(!raw.startsWith('/') && parts.isNotEmpty() && parts.none { it.isEmpty() || it == ".." }) { "the pairing link has an invalid lane" }
+            parts.joinToString("/")
+        }
+        return PairingLink(serverUrl(url), code ?: "", q["pin"]?.let(::pin), lane)
     }
 }

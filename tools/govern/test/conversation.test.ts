@@ -489,6 +489,8 @@ test("declared profile output checks must pass before an assistant reply is comm
 });
 test("cancellation arriving during final verification cannot race into a committed reply", async () => {
   const e = setup();
+  // The check holds until the test releases it, so the cancel always lands while it runs (bounded at 60 s).
+  const release = join(e.root, "release-check");
   write(
     join(e.root, "PALS-Notes/capabilities/checked.json"),
     JSON.stringify({
@@ -499,7 +501,7 @@ test("cancellation arriving during final verification cannot race into a committ
           engine: "codex",
           capabilities: ["read"],
           selfTest: "optional",
-          check: { argv: [process.execPath, "-e", "setTimeout(()=>{},2000)"], label: "slow check" }
+          check: { argv: [process.execPath, "-e", `const f=${JSON.stringify(release)},end=Date.now()+60000;const t=setInterval(()=>{if(require("fs").existsSync(f)){clearInterval(t)}else if(Date.now()>end){process.exit(1)}},20)`], label: "held check" }
         }
       ]
     })
@@ -510,6 +512,7 @@ test("cancellation arriving during final verification cannot race into a committ
   const w = worker(e);
   await until(e, (s) => s.runs[0].candidate === "ok");
   ok(e, ["cancel", "chat", input.run.id]);
+  write(release, "");
   await w.done;
   assert.equal(state(e).runs[0].state, "cancelled");
   assert.equal(state(e).messages.filter((m: any) => m.role === "assistant").length, 0);
