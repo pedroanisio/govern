@@ -114,12 +114,12 @@ test("the agents list shows every live session once, beside registered agents an
     { host: "c", self: false, registrar: false, ok: false, error: "offline" },
   ]);
   assert.deepEqual(rows, [
-    { host: "a", address: "ana@a (qa)", kind: "stable", reach: "p, q", until: iso(NOW) },
-    { host: "a", address: "e-k3v9q2mz@a", kind: "ephemeral", reach: "p", until: iso(NOW + 1) },
-    { host: "a", address: "bob@a", kind: "session", reach: "this host only" },
-    { host: "a", address: "codex @a", kind: "runners", reach: "as granted" },
-    { host: "b", address: "cy@b", kind: "session", reach: "this host only" },
-    { host: "b", address: "codex, grok @b", kind: "runners", reach: "as granted" },
+    { host: "a", names: ["ana", "qa"], address: "ana@a (qa)", kind: "stable", reach: "p, q", until: iso(NOW) },
+    { host: "a", names: ["e-k3v9q2mz"], address: "e-k3v9q2mz@a", kind: "ephemeral", reach: "p", until: iso(NOW + 1) },
+    { host: "a", names: ["bob"], address: "bob@a", kind: "session", reach: "this host only" },
+    { host: "a", names: ["codex"], address: "codex @a", kind: "runners", reach: "as granted" },
+    { host: "b", names: ["cy"], address: "cy@b", kind: "session", reach: "this host only" },
+    { host: "b", names: ["codex", "grok"], address: "codex, grok @b", kind: "runners", reach: "as granted" },
   ], "a registered session is listed once, as registered; an unreachable host lists nothing");
   const text = center.render({ at: iso(NOW), hosts: [], peers: [], alerts: [], messages: [], agents: rows });
   for (const s of ["bob@a  session  this host only", "ana@a (qa)  stable  p, q  until " + iso(NOW), "codex, grok @b  runners  as granted"]) assert.ok(text.includes(s), s);
@@ -146,6 +146,8 @@ test("the dashboard serves its page openly and its data only with the token, to 
   try {
     const page = await get(port, "/");
     assert.equal(page.status, 200); assert.match(page.body, /<title>govern command center<\/title>/);
+    assert.match(page.body, /navigator\.clipboard\.writeText/, "host ids, agent names and addresses copy on click");
+    for (const s of ['copy(host,', 'copy(n,', 'copy(`${r.names[0]}@${r.host}`']) assert.ok(page.body.includes(s), s);
     assert.match(String(page.headers["content-security-policy"]), /default-src 'none'/); assert.equal(page.headers["cache-control"], "no-store");
     assert.equal((await get(port, "/api/state")).status, 401);
     assert.equal((await get(port, "/api/state", { Authorization: "Bearer wrong" })).status, 401);

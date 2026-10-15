@@ -17,8 +17,8 @@ export interface View {
   alerts: Alert[]; messages: (Recent & { host: string })[]; agents: AgentRow[];
 }
 /** One line of the agents list. `reach` says who can address it: a registered agent's projects (from other hosts too),
- *  "this host only" for a live session that has not registered, "as granted" for runners. */
-export interface AgentRow { host: string; address: string; kind: string; reach: string; until?: string; description?: string }
+ *  "this host only" for a live session that has not registered, "as granted" for runners. `names` are what a sender on `host` types: the agent's name then its aliases, or each runner. */
+export interface AgentRow { host: string; names: string[]; address: string; kind: string; reach: string; until?: string; description?: string }
 
 /** Every agent on every reporting host: its registered agents, then its live sessions that hold no registration under
  *  their own name (each listed once), then its runners. A host without telemetry lists nothing; its alert says why. */
@@ -27,9 +27,9 @@ export function agentRows(hosts: HostView[]): AgentRow[] {
     const t = h.telemetry; if (!t) return [];
     const registered = new Set(t.agents.registered.map(a => a.name));
     return [
-      ...t.agents.registered.map(a => ({ host: h.host, address: `${a.name}@${h.host}` + (a.aliases.length ? ` (${a.aliases.join(", ")})` : ""), kind: a.kind, reach: a.projects.join(", "), until: a.expires, ...(a.description ? { description: a.description } : {}) })),
-      ...t.agents.sessions.filter(n => !registered.has(n)).map(n => ({ host: h.host, address: `${n}@${h.host}`, kind: "session", reach: "this host only" })),
-      ...(t.agents.runners.length ? [{ host: h.host, address: `${t.agents.runners.join(", ")} @${h.host}`, kind: "runners", reach: "as granted" }] : []),
+      ...t.agents.registered.map(a => ({ host: h.host, names: [a.name, ...a.aliases], address: `${a.name}@${h.host}` + (a.aliases.length ? ` (${a.aliases.join(", ")})` : ""), kind: a.kind, reach: a.projects.join(", "), until: a.expires, ...(a.description ? { description: a.description } : {}) })),
+      ...t.agents.sessions.filter(n => !registered.has(n)).map(n => ({ host: h.host, names: [n], address: `${n}@${h.host}`, kind: "session", reach: "this host only" })),
+      ...(t.agents.runners.length ? [{ host: h.host, names: t.agents.runners, address: `${t.agents.runners.join(", ")} @${h.host}`, kind: "runners", reach: "as granted" }] : []),
     ];
   });
 }

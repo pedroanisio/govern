@@ -55,6 +55,11 @@ td.mono, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; fo
 .filters input, .filters select { font: inherit; padding: 5px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--ink); }
 .filters input { flex: 1 1 200px; }
 .err { color: var(--crit); }
+button.copy { font: inherit; color: inherit; background: none; border: 0; border-radius: 4px; padding: 0 2px; margin: 0; cursor: copy; }
+button.copy:hover, button.copy:focus-visible { background: var(--chip); outline: 1px solid var(--line); }
+button.copy.copied { background: var(--ok); color: var(--panel); }
+button.copy.copy-bad { background: var(--crit); color: var(--panel); }
+button.copy.addr { color: var(--muted); margin-left: 6px; }
 .two { display: grid; gap: 16px; }
 @media (min-width: 980px) { .two { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); } }
 </style>
@@ -62,6 +67,7 @@ td.mono, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; fo
 <body>
 <header>
   <h1>Command center</h1>
+  <span class="meta">click a host or agent name to copy it</span>
   <span class="meta" id="mesh">loading…</span>
   <span class="status" id="status"></span>
 </header>
@@ -94,6 +100,18 @@ function el(tag, attrs, ...kids) {
   for (const k of kids) e.append(k instanceof Node ? k : document.createTextNode(String(k)));
   return e;
 }
+/** Copy `text`; the clipboard API needs a secure context, which loopback is, and the textarea route covers older browsers. */
+async function copy(text, btn) {
+  let ok = true;
+  try { await navigator.clipboard.writeText(text); }
+  catch { const t = el("textarea", { readonly: "" }, text); document.body.append(t); t.select(); ok = document.execCommand("copy"); t.remove(); }
+  btn.classList.add(ok ? "copied" : "copy-bad"); setTimeout(() => btn.classList.remove("copied", "copy-bad"), 1200);
+  $("status").textContent = ok ? `copied ${text}` : `copy failed, select it instead: ${text}`;
+}
+function cb(label, title, onClick, cls) { const b = el("button", { type: "button", class: cls ? "copy " + cls : "copy", title, "aria-label": title }, label); b.addEventListener("click", () => onClick(b)); return b; }
+const hostChip = host => cb(host, `Copy host id ${host}`, b => copy(host, b));
+const nameChip = n => cb(n, `Copy name ${n}`, b => copy(n, b));
+const join = (list, sep) => list.flatMap((x, i) => i ? [sep, x] : [x]);
 const usd = n => "$" + n.toFixed(2);
 const tok = n => n >= 1e6 ? (n / 1e6).toFixed(1) + "M" : n >= 1e3 ? Math.round(n / 1e3) + "k" : String(n);
 const when = iso => { const d = new Date(iso); return d.toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }); };
@@ -119,7 +137,7 @@ function render(v) {
   $("alerts").replaceChildren(...(v.alerts.length ? v.alerts.map(a => el("div", { class: "alert " + a.level }, el("span", { class: "lvl" }, a.level), el("span", {}, el("b", {}, a.host), ": ", a.message))) : [el("div", { class: "none" }, "Nothing needs attention.")]));
   $("hosts").replaceChildren(...v.hosts.map(h => {
     const t = h.telemetry;
-    const head = el("h3", {}, el("span", { class: "dot" + (h.ok ? "" : " down") }), h.host, ...(h.self ? [el("span", { class: "tag" }, "this host")] : []), ...(h.registrar ? [el("span", { class: "tag" }, "registrar")] : []));
+    const head = el("h3", {}, el("span", { class: "dot" + (h.ok ? "" : " down") }), hostChip(h.host), ...(h.self ? [el("span", { class: "tag" }, "this host")] : []), ...(h.registrar ? [el("span", { class: "tag" }, "registrar")] : []));
     if (!t) return el("div", { class: "host" }, head, el("div", { class: "err" }, h.error || "unreachable"));
     const dl = el("dl", {});
     for (const [k, val] of [
@@ -133,7 +151,10 @@ function render(v) {
     ]) dl.append(el("dt", {}, k), el("dd", {}, val));
     return el("div", { class: "host" }, head, dl);
   }));
-  const agents = v.agents.map(r => el("tr", {}, el("td", { class: "mono", title: r.description || "" }, r.address), el("td", {}, r.kind), el("td", {}, r.reach), el("td", {}, r.until ? when(r.until) : r.kind === "session" ? "live" : "—")));
+  const agents = v.agents.map(r => el("tr", {}, el("td", { class: "mono", title: r.description || "" }, ...(r.kind === "runners"
+    ? [...join(r.names.map(nameChip), ", "), " @", hostChip(r.host)]
+    : [nameChip(r.names[0]), "@", hostChip(r.host), ...(r.names.length > 1 ? [" (", ...join(r.names.slice(1).map(nameChip), ", "), ")"] : []),
+       cb("⧉", `Copy address ${r.names[0]}@${r.host}`, b => copy(`${r.names[0]}@${r.host}`, b), "addr")])), el("td", {}, r.kind), el("td", {}, r.reach), el("td", {}, r.until ? when(r.until) : r.kind === "session" ? "live" : "—")));
   rows($("agents"), agents, "No agents reported.", 4);
   const spend = v.hosts.flatMap(h => Object.entries(h.telemetry ? h.telemetry.byAgent : {}).map(([a, r]) =>
     el("tr", {}, el("td", {}, h.host), el("td", { class: "mono" }, a), el("td", { class: "num" }, r.count), el("td", { class: "num" }, r.failed), el("td", { class: "num" }, usd(r.costUsd)), el("td", { class: "num" }, `${tok(r.input)} / ${tok(r.output)}`))));
