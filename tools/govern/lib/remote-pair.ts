@@ -18,6 +18,9 @@ export interface PairRequestBody { name: string; publicKey: string; lanes?: stri
 const hash = (s: string) => createHash("sha256").update(s).digest();
 const same = (a: string, b: string) => timingSafeEqual(hash(a), hash(b));
 const save = (rs: PairRequest[]) => writeState("requests.json", rs);
+// One minute past expiry gives phones time to poll a final state without retaining completed requests indefinitely.
+const PAIR_REQUEST_RETENTION_MS = 60_000;
+const MAX_STORED_PAIR_REQUESTS = 128;
 
 /** The 6-digit code the phone and the owner's terminal both show for request `id`, derived from its id, the phone's
  *  public key and the certificate pin, so a request swapped in transit shows a different code. */
@@ -27,14 +30,15 @@ export function comparisonCode(id: string, publicKey: string, pin?: string | nul
 
 /** Expire an undelivered confirmation too: no recoverable token survives its delivery window, and its device is revoked. */
 function current(now: Clock): PairRequest[] {
-  const rs = readState<PairRequest[]>("requests.json", []), undelivered: string[] = [];
+  const rs = readState<PairRequest[]>("requests.json", []), undelivered: string[] = [], time = now();
   let changed = false;
-  for (const r of rs) if ((r.state === "waiting" || r.sealed) && Date.parse(r.expires) <= now()) {
+  for (const r of rs) if ((r.state === "waiting" || r.sealed) && Date.parse(r.expires) <= time) {
     if (r.sealed && r.deviceId) undelivered.push(r.deviceId);
     r.state = "expired"; delete r.sealed; changed = true;
   }
-  if (changed) { revokeUndelivered(undelivered, now()); save(rs); }
-  return rs;
+  const kept = rs.filter(r => r.state === "waiting" || r.sealed || time < Date.parse(r.expires) + PAIR_REQUEST_RETENTION_MS);
+  if (changed || kept.length !== rs.length) { revokeUndelivered(undelivered, time); save(kept); }
+  return kept;
 }
 const find = (rs: PairRequest[], id: string): PairRequest => {
   const r = rs.find((r) => r.id === id);
@@ -68,13 +72,14 @@ function unseal(s: Sealed): string {
 
 /** Open a phone-initiated pairing request for `body`'s device name, public key and optional lanes, valid for 5 minutes;
  *  returns its id and the one-time secret the phone polls with. Fails with BadRequest on bad input and TooMany beyond 32
- *  open requests, or 2 from one client address. */
+ *  open requests, 2 from one client address, or 128 stored requests across all states. */
 export function requestPairing(body: PairRequestBody, o: { pin?: string | null; now?: Clock; address?: string } = {}) {
   if (!body.name.trim() || body.name.length > 80) throw new BadRequest("name must be 1..80 characters");
   p256(body.publicKey);
   const lanes = lanesOf(body.lanes), now = o.now ?? Date.now;
   return locked(() => {
     const rs = current(now);
+    if (rs.length >= MAX_STORED_PAIR_REQUESTS) throw new TooMany(`at most ${MAX_STORED_PAIR_REQUESTS} stored pairing requests`);
     const open = rs.filter(r => r.state === "waiting" || r.sealed), address = o.address ?? "unknown";
     if (open.length >= 32) throw new TooMany("at most 32 open pairing requests");
     if (open.filter(r => (r.address ?? "unknown") === address).length >= 2) throw new TooMany("at most 2 open pairing requests per client address");
@@ -128,12 +133,12 @@ export function pollPairing(id: string, secret: string, now: Clock = Date.now) {
   });
 }
 
-/** Cancel waiting request `id` for the phone holding `secret` (idempotent once cancelled). Fails with Forbidden on a
- *  wrong secret, and with GovernError when the request was confirmed, refused or expired. */
+/** Cancel and remove waiting request `id` for the phone holding `secret`. Fails with NotFound on an unknown or
+ *  cancelled request, Forbidden on a wrong secret, and GovernError when confirmed, refused or expired. */
 export function cancelPairing(id: string, secret: string, now: Clock = Date.now) {
   return locked(() => {
     const rs = current(now), r = find(rs, id); authenticate(r, secret);
-    if (r.state !== "cancelled") { waiting(r); r.state = "cancelled"; save(rs); }
+    waiting(r); save(rs.filter(request => request.id !== id));
     return { protocol: PROTOCOL, state: "cancelled" as const };
   });
 }

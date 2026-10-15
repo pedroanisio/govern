@@ -5,7 +5,7 @@ import { createHash, generateKeyPairSync, sign } from "node:crypto";
 import { readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { makeEnv, govern, write, asSession } from "./helpers.ts";
-import { remoteServer, devices, scoped, Forbidden, BadRequest, createPairing, pair, deviceOfToken } from "../lib/remote.ts";
+import { remoteServer, devices, scoped, Forbidden, BadRequest, NotFound, createPairing, pair, deviceOfToken } from "../lib/remote.ts";
 import { comparisonCode, requestPairing, pollPairing, confirmPairing, cancelPairing, refusePairing, requests, TooMany } from "../lib/remote-pair.ts";
 import { deskView, laneSummary, PROTOCOL } from "../lib/remote-view.ts";
 import { create, load } from "../lib/project.ts";
@@ -85,7 +85,8 @@ test("wrong comparison refuses permanently; cancellation, expiry and 32 open req
   assert.equal(pollPairing(r.id, r.secret, now).state, "refused");
   assert.throws(() => confirmPairing(r.id, comparisonCode(r.id, publicKey, null), { now }));
   const c = make(); cancelPairing(c.id, c.secret, now);
-  assert.equal(pollPairing(c.id, c.secret, now).state, "cancelled");
+  assert.throws(() => pollPairing(c.id, c.secret, now), NotFound);
+  assert.equal((await poll(base, c.id, c.secret)).status, 404);
   const refused = make(); refusePairing(refused.id, now);
   assert.equal(pollPairing(refused.id, refused.secret, now).state, "refused");
   const expired = make(); clock.now += 300_000;
@@ -96,6 +97,64 @@ test("wrong comparison refuses permanently; cancellation, expiry and 32 open req
   clock.now += 300_000;
   assert.equal(requests(now).length, 0);
   assert.equal((await post(base, "/v1/pair/request", { name: "fresh", publicKey })).status, 201);
+}));
+
+test("500 request cancel cycles from one address never refuse and leave no stored requests", async () => local((e) => {
+  const now = () => Date.parse("2026-10-14T20:00:00Z"), publicKey = publicOf(key());
+  const file = join(e.root, "PALS-Notes/govern-state/remote/requests.json");
+  for (let i = 0; i < 500; i++) {
+    const r = requestPairing({ name: "phone", publicKey }, { now, address: "one-client" });
+    assert.equal(cancelPairing(r.id, r.secret, now).state, "cancelled");
+    assert.deepEqual(JSON.parse(readFileSync(file, "utf8")), []);
+    assert.throws(() => pollPairing(r.id, r.secret, now), NotFound);
+    assert.throws(() => cancelPairing(r.id, r.secret, now), NotFound);
+  }
+}));
+
+test("final pairing states stay pollable through retention and disappear at its boundary", async () => local((e) => {
+  let time = Date.parse("2026-10-14T20:00:00Z");
+  const now = () => time, publicKey = publicOf(key());
+  let address = 0;
+  const make = () => requestPairing({ name: "phone", publicKey }, { now, address: String(address++) });
+  const refused = make(); refusePairing(refused.id, now);
+  const expired = make(), delivered = make(), undelivered = make();
+  const confirm = (r: ReturnType<typeof make>) => confirmPairing(r.id, comparisonCode(r.id, publicKey), { now, all: true });
+  const paired = confirm(delivered);
+  assert.ok(pollPairing(delivered.id, delivered.secret, now).token);
+  const pending = confirm(undelivered);
+  time += 359_999;
+  for (const [r, state] of [[refused, "refused"], [expired, "expired"],
+    [delivered, "confirmed"], [undelivered, "expired"]] as const) {
+    const status = pollPairing(r.id, r.secret, now);
+    assert.equal(status.state, state); assert.equal(status.token, null);
+  }
+  assert.ok(devices().find(d => d.id === pending.id)?.revokedAt);
+  time++;
+  for (const r of [refused, expired, delivered, undelivered])
+    assert.throws(() => pollPairing(r.id, r.secret, now), NotFound);
+  assert.deepEqual(JSON.parse(readFileSync(join(e.root, "PALS-Notes/govern-state/remote/requests.json"), "utf8")), []);
+  assert.equal(devices().find(d => d.id === paired.id)?.revokedAt, undefined);
+  const late = make(), lateDevice = confirm(late);
+  time += 360_000;
+  requests(now);
+  assert.ok(devices().find(d => d.id === lateDevice.id)?.revokedAt, "pruning still revokes an undelivered device");
+}));
+
+test("stored pairing request cap returns HTTP 429 even with open capacity", async () => workspace(async (e, base, clock) => {
+  const now = () => clock.now, publicKey = publicOf(key());
+  for (let i = 0; i < 127; i++) {
+    const r = requestPairing({ name: "phone", publicKey }, { now });
+    refusePairing(r.id, now);
+  }
+  assert.equal((await post(base, "/v1/pair/request", { name: "last", publicKey })).status, 201);
+  const denied = await post(base, "/v1/pair/request", { name: "over cap", publicKey });
+  assert.equal(denied.status, 429);
+  assert.match((await denied.json() as { error: string }).error, /128 stored pairing requests/);
+  const file = join(e.root, "PALS-Notes/govern-state/remote/requests.json");
+  assert.equal(JSON.parse(readFileSync(file, "utf8")).length, 128);
+  clock.now += 360_000;
+  assert.equal((await post(base, "/v1/pair/request", { name: "fresh", publicKey })).status, 201);
+  assert.equal(JSON.parse(readFileSync(file, "utf8")).length, 1);
 }));
 
 test("scope filters every lane-bearing desk field without changing the cache and denies reads and actions", async () => workspace(async (e, base, clock) => {
@@ -184,7 +243,7 @@ test("pairing state transitions validate secrets, seal once, expire and share de
   assert.equal(pollPairing(wrong.id, wrong.secret, now).state, "refused");
   assert.throws(() => confirm(wrong));
   const cancel = make(); cancelPairing(cancel.id, cancel.secret, now);
-  assert.equal(pollPairing(cancel.id, cancel.secret, now).state, "cancelled");
+  assert.throws(() => pollPairing(cancel.id, cancel.secret, now), NotFound);
   assert.throws(() => confirm(cancel));
   const refuse = make(); refusePairing(refuse.id, now);
   assert.equal(pollPairing(refuse.id, refuse.secret, now).state, "refused");

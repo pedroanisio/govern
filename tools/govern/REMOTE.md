@@ -84,7 +84,7 @@ For phone-initiated pairing, `govern remote link --url URL [--tls-cert F] [--lan
 A link without `code` selects request pairing; the existing `code=` link selects the original flow. The phone sends its
 name, P-256 public key and optional lanes to `POST /v1/pair/request`. The reply contains a random request id, a random
 32-byte base64url secret, the host name, and an expiry five minutes later. Only the secret's SHA-256 is stored.
-At most 32 requests globally and 2 per client socket address may await confirmation or token delivery; another request returns 429. Forwarded address headers are not used. Expiry, cancellation, refusal and token delivery release capacity.
+At most 32 requests globally and 2 per client socket address may await confirmation or token delivery; another request returns 429. Forwarded address headers are not used. Expiry, cancellation, refusal and token delivery release open-request capacity. A separate cap of 128 stored requests across all states also returns 429. Final states (refused, expired, or confirmed with the token delivered) remain pollable until one minute after their five-minute expiry, then are removed on the next pairing operation. This retention gives the phone time to read the final state while bounding storage. Cancelled requests are removed immediately, so request/cancel loops do not consume stored-request capacity.
 
 The phone and terminal independently compute a six-digit comparison code:
 
@@ -102,8 +102,8 @@ A wrong code permanently refuses the request. `govern remote refuse ID` also ref
 
 Polls use `GET /v1/pair/request?id=ID` with `Govern-Pair-Secret`; cancellation uses `POST /v1/pair/cancel {id, secret}`.
 Both compare the secret hash in constant time. The states are `waiting`, `confirmed`, `refused`, `expired`, and
-`cancelled`. Cancellation accepts waiting requests (and is idempotent for cancelled requests); other terminal states
-return 409. A confirmed token is delivered by the first authenticated poll only; subsequent polls return `token: null`.
+`cancelled` (returned only by cancellation). Cancellation accepts waiting requests and removes them immediately;
+polling or cancelling the id afterwards returns NotFound (404). Other terminal states return 409. A confirmed token is delivered by the first authenticated poll only; subsequent polls return `token: null`.
 The token is generated at confirmation and held AES-256-GCM sealed until delivery. An undelivered confirmation expires
 at the request's original deadline: its sealed token is deleted and the device made at confirmation is revoked (audit
 `revoked`, reason "pairing token never delivered"). Expiry is applied on the next pairing operation.
@@ -256,7 +256,7 @@ ActionResult fixtures are in `android/app/src/test/resources/fixtures/action-res
 Errors are `{error}` with a status that says who must act: 400 for a malformed request, 401 for a missing, unknown or
 revoked token, 403 when the request does not prove itself (signature, clock, nonce or pairing code), 404 for an unknown
 lane, session, job, artifact or route, 409 when the lane's state refuses the action (a gate that needs another first, a gate owned by someone
-else, an alert already acknowledged), 413 for a body over 64 KiB or an artifact over 32 MiB, 429 above 8 open streams globally or 2 per device, or 32 open pairing requests globally or 2 per client address, and 500 with
+else, an alert already acknowledged), 413 for a body over 64 KiB or an artifact over 32 MiB, 429 above 8 open streams globally or 2 per device, or 32 open pairing requests globally, 2 per client address, or 128 stored pairing requests across all states, and 500 with
 `{error: "internal error"}` for an unexpected server fault, whose detail is not sent. Stream capacity is released on close.
 The token is checked before the route: every request other than `GET /v1/health`, `POST /v1/pair`, `POST /v1/pair/request`,
 `GET /v1/pair/request` and `POST /v1/pair/cancel` without a valid token gets 401, even on a path that does not exist, so
