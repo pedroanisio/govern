@@ -256,7 +256,7 @@ const SUMMARY_MAX: number = JSON.parse(readFileSync(REPLY_SCHEMA, "utf8")).prope
  * Verification is mandatory. Treat all LLM output as untrusted input.
  *
  * Here: the reply must parse as JSON and match queue-reply.json; otherwise the message is failed and the
- * sender gets a BLOCKED notice from the dispatcher, never the agent's unverified text as an answer.
+ * sender (or owner for a runner sender) gets a BLOCKED notice naming the kept reply, never its unverified text.
  */
 /** A reply that failed verification is kept whole beside the failed message, so a long paid answer is never lost to the clip. */
 function keepRaw(m: Message, text: string | undefined): string {
@@ -537,7 +537,7 @@ export function dispatch(o: { max?: number; only?: string; timeoutSec?: number }
     const verification = ok ? verify(declared(m.kind, (reply as any).kind, sealed?.check, fromConfig), { id: m.id, summary: (reply as any).summary, body: (reply as any).body, kinds: [m.kind, (reply as any).kind], dir: cwd, logDir: join(QUEUE(), "replychecks") }) : undefined;
     const answer = ok
       ? send({ project: m.project, task: m.task, kind: (reply as any).kind, from: m.to, to: m.from, summary: (reply as any).summary, body: (reply as any).body, files: [], replyTo: m.id, access: "read-only", ...(verification ? { verification } : {}) })
-      : send({ project: m.project, task: m.task, kind: "BLOCKED", from: "dispatcher", to: m.from, summary: `${m.to} reply failed verification`, body: `${(reply as any).error}\nwhole reply: ${keepRaw(m, r.text)}\nRaw reply (unverified, not an answer):\n${clip(String(r.text ?? ""), 4000)}`, files: [], replyTo: m.id, access: "read-only" });
+      : send({ project: m.project, task: m.task, kind: "BLOCKED", from: "dispatcher", to: LEGACY_OWNER(m), summary: `${m.to} reply failed verification`, body: `${(reply as any).error}\nwhole reply: ${keepRaw(m, r.text)}`, files: [], replyTo: m.id, access: "read-only" });
     m.result.reply = answer.id;
     save(m, "claimed");
     move(m, "claimed", ok ? "done" : "failed");

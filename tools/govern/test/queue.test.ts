@@ -76,7 +76,7 @@ test("an unverified reply fails the message and the sender gets a BLOCKED notice
   assert.match(list, /failed\s+TASK/);
   assert.match(list, /open\s+BLOCKED\s+dispatcher→owner \[film\/check\] codex reply failed verification/);
   const id = present(list.split("\n").find((l) => /BLOCKED/.test(l))?.split(" ")[0], "the BLOCKED reply's id");
-  assert.match(govern(e, ["task", "show", id]).out, /reply is not JSON[\s\S]*unverified, not an answer/);
+  assert.match(govern(e, ["task", "show", id]).out, /reply is not JSON[\s\S]*whole reply: .*\.reply\.txt/);
 });
 
 test("dispatch runs claude -p with read-only tools, outside this session's env, and reads its usage", () => {

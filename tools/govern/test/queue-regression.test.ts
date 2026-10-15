@@ -68,6 +68,41 @@ test("checked replies still dispatch, but rejected ancestors are withheld from r
   assert.match(prompt, /Use this new instruction/);
 });
 
+test("a malformed reply notifies the owner and never reaches its runner sender's later prompts", () => {
+  const e = reviewQueue("unused");
+  e.env.GOVERN_QUEUE_TIMEOUT_SEC = "2";
+  const raw = "UNVERIFIED-RAW-MARKER: this is not JSON\n";
+  const bad = write(join(e.root, "bad.cjs"), `process.stdout.write(${JSON.stringify(raw)});`);
+  const cfg = JSON.parse(readFileSync(join(e.root, "queue/config.json"), "utf8"));
+  cfg.runners.bad = { argv: [process.execPath, bad] };
+  write(join(e.root, "queue/config.json"), JSON.stringify(cfg));
+  send(e, "bad", ["--from", "consumer"]);
+  ok(e, ["task", "dispatch"]);
+  ok(e, ["task", "dispatch"]);
+  assert.equal(existsSync(join(e.root, "consumed.txt")), false, "a malformed reply must never launch its runner sender");
+  const notice = present(messages(e, "open").find((m) => m.kind === "BLOCKED"), "failure notice");
+  assert.equal(notice.to, "owner");
+  send(e, "consumer", ["--reply-to", notice.id, "--body", "Continue with this instruction"]);
+  ok(e, ["task", "dispatch"]);
+  const prompt = readFileSync(join(e.root, "consumed.txt"), "utf8");
+  assert.doesNotMatch(prompt, /UNVERIFIED-RAW-MARKER/);
+  assert.match(prompt, /Continue with this instruction/);
+});
+
+test("a malformed reply notice names the kept file without copying raw text and retains the whole reply", () => {
+  const e = setup();
+  const raw = "RAW-START-SECRET\n" + "RAW-MIDDLE-SECRET".repeat(400) + "\nRAW-END-SECRET\n";
+  const bad = write(join(e.root, "bad.cjs"), `process.stdout.write(${JSON.stringify(raw)});`);
+  write(join(e.root, "queue/config.json"), JSON.stringify({ runners: { bad: { argv: [process.execPath, bad] } } }));
+  send(e, "bad");
+  ok(e, ["task", "dispatch"]);
+  const failed = present(messages(e, "failed")[0], "failed task");
+  const notice = present(messages(e, "open").find((m) => m.kind === "BLOCKED"), "failure notice");
+  const kept = join(e.root, "queue", "failed", `${failed.id}.reply.txt`);
+  assert.equal(notice.body, `reply is not JSON\nwhole reply: ${kept}`);
+  assert.equal(readFileSync(kept, "utf8"), raw);
+});
+
 for (const format of ["text", "json-result"] as const) {
   for (const mode of ["timeout", "nonzero", "signal", "missing"] as const) {
     test(`configured ${format} runner ${mode}: unknown spending is charged, failure before spawn is free`, () => {
