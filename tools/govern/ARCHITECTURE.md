@@ -203,7 +203,7 @@ The measurement side:
   `GOVERN_LANE` recorded for the session (`<state>/session-lanes.json`), the session's working directory, a queue run's
   project. `usage.ts` applies it to the transcripts, keeping each recent transcript's parsed calls in
   `<state>/transcript-index.json`; both index files are parsed strictly and rebuilt when missing or malformed. The
-  `govern hook session-start` hook opens a segment by the same rules, and the desk and `govern usage` list what maps to
+  `govern hook session-start` hook opens a segment by the same rules and `hook session-end` closes it when the session ends, and the desk and `govern usage` list what maps to
   no lane (UNATTRIBUTED).
 - In a pilot recorded in SKILL.md, the same fact-check took 56k tokens and 29 s on Codex, against 122k tokens, 67 s
   and $0.83 on `claude -p`.

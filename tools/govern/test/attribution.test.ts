@@ -10,6 +10,7 @@ const lane = (e: Env, slug: string, kind = "ops") => assert.equal(govern(e, ["ne
 const hookIn = (sid: string, cwd: string) => JSON.stringify({ session_id: sid, cwd, hook_event_name: "SessionStart", source: "startup" });
 const start = (e: Env, sid: string, cwd: string, env: Record<string, string> = {}) => govern(e, ["hook", "session-start"], env, hookIn(sid, cwd));
 const stop = (e: Env, sid: string) => govern(e, ["hook", "stop"], {}, JSON.stringify({ session_id: sid, stop_hook_active: false, hook_event_name: "Stop" }));
+const end = (e: Env, sid: string, reason?: string) => govern(e, ["hook", "session-end"], {}, JSON.stringify({ session_id: sid, hook_event_name: "SessionEnd", ...(reason ? { reason } : {}) }));
 const iso = (t: number) => new Date(t).toISOString();
 const LANE = "ops/film";
 
@@ -145,33 +146,64 @@ test("GOVERN_LANE wins over the folder, is recorded for the session, and opens t
   // a finished lane gets no segment
 });
 
-test("hook stop closes a hook-opened segment after its usual behaviour; a segment the session opened itself, or a malformed openedBy, stays open", () => {
+test("hook stop closes nothing: a stop event leaves a hook-opened segment open", () => {
   const e = makeEnv();
   lane(e, LANE);
   start(e, "S1", join(e.projects, LANE));
-  const s = stop(e, "S1");
-  assert.equal(s.code, 0, s.err);
-  const last = ledger(e, LANE).at(-1);
-  assert.deepEqual([last.kind, last.session, last.closedBy], ["done", "S1", "hook"]);
   const n = ledger(e, LANE).length;
-  assert.equal(stop(e, "S1").code, 0); // closed already: nothing more
+  for (let i = 0; i < 3; i++) assert.equal(stop(e, "S1").code, 0); // one per response
   assert.equal(ledger(e, LANE).length, n);
-  // the session's own `govern work`
+  assert.equal(ledger(e, LANE).some((x) => x.kind === "done"), false);
+});
+
+test("hook session-end closes the segment the session-start hook opened, prints nothing, and a second call changes nothing", () => {
+  const e = makeEnv();
+  lane(e, LANE);
+  start(e, "S1", join(e.projects, LANE));
+  const s = end(e, "S1");
+  assert.equal(s.code, 0, s.err);
+  assert.equal(s.out, "");
+  const last = ledger(e, LANE).at(-1);
+  assert.deepEqual([last.kind, last.engine, last.session, last.closedBy], ["done", "claude", "S1", "hook"]);
+  const n = ledger(e, LANE).length;
+  assert.equal(end(e, "S1").code, 0);
+  assert.equal(ledger(e, LANE).length, n);
+  // reason present or not, the close is the same
+  start(e, "S3", join(e.projects, LANE));
+  assert.equal(end(e, "S3", "logout").code, 0);
+  assert.equal(ledger(e, LANE).at(-1).closedBy, "hook");
+});
+
+test("hook session-end leaves a segment opened by govern work, or with a malformed openedBy, alone", () => {
+  const e = makeEnv();
+  lane(e, LANE);
   govern(e, ["work", LANE, "doing"], { CLAUDE_CODE_SESSION_ID: "S2" });
   const m = ledger(e, LANE).length;
-  assert.equal(stop(e, "S2").code, 0);
+  assert.equal(end(e, "S2").code, 0);
   assert.equal(ledger(e, LANE).length, m);
-  // openedBy of the wrong type or value is no hook-opened segment
   const lf = join(e.projects, LANE, "govern", "ledger.jsonl");
   for (const [i, bad] of [7, "Hook", null, ["hook"], { by: "hook" }].entries()) {
     writeFileSync(lf, readFileSync(lf, "utf8") + JSON.stringify({ t: iso(Date.now() + i), slug: LANE, kind: "work", stage: "plan", engine: "claude", session: `B${i}`, openedBy: bad }) + "\n");
     const k = ledger(e, LANE).length;
-    assert.equal(stop(e, `B${i}`).code, 0);
+    assert.equal(end(e, `B${i}`).code, 0);
     assert.equal(ledger(e, LANE).length, k, `openedBy ${JSON.stringify(bad)} stays open`);
   }
 });
 
-test("hook stop still refuses while the check fails, and then closes nothing", () => {
+test("hook session-end with no matching session, no session id or malformed stdin exits 0 and writes nothing", () => {
+  const e = makeEnv();
+  lane(e, LANE);
+  start(e, "S1", join(e.projects, LANE));
+  const n = ledger(e, LANE).length;
+  for (const input of ["", "not json", "[]", "null", JSON.stringify({ session_id: 5 }), JSON.stringify({ reason: "other" }), JSON.stringify({ session_id: "nobody", reason: "other" })]) {
+    const r = govern(e, ["hook", "session-end"], {}, input);
+    assert.equal(r.code, 0, r.err);
+    assert.equal(r.out, "");
+  }
+  assert.equal(ledger(e, LANE).length, n);
+});
+
+test("hook stop still refuses while the check fails, and writes no done entry", () => {
   const e = makeEnv();
   lane(e, LANE);
   govern(e, ["cmd", LANE, "gate", "--", "node", "-e", "process.exit(1)"]);
@@ -304,4 +336,6 @@ test("govern install-skill prints the SessionStart hook line to add", () => {
   const r = govern(e, ["install-skill", join(e.root, "skills")]);
   assert.equal(r.code, 0, r.err);
   assert.match(r.out, /SessionStart.*govern hook session-start/);
+  assert.match(r.out, /Stop.*govern hook stop/);
+  assert.match(r.out, /SessionEnd.*govern hook session-end/);
 });

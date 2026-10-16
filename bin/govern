@@ -23,7 +23,7 @@
 #     govern alerts SLUG [--ack ID]  |  subprocess SLUG STAGE  |  recover SLUG --action retry|compensated --quote Q
 #     govern bpmn PROCESS|SLUG [--svg FILE] [--scene FILE] [--png FILE] [--width N --height N] [--static]
 #     govern process list|show NAME  |  process pin SLUG  |  process migrate SLUG --map JSON --quote Q  |  check SLUG [--set CMD --stage S]  |  check SLUG STAGE --accept --quote Q
-#     govern advance SLUG [--stage STAGE] [--note EVIDENCE]  |  dep SLUG [--after LANE[:STAGE]] [--rm LANE]  |  hook stop|session-start
+#     govern advance SLUG [--stage STAGE] [--note EVIDENCE]  |  dep SLUG [--after LANE[:STAGE]] [--rm LANE]  |  hook stop|session-start|session-end
 #     govern run SLUG CMD [--bg] [--on RESOURCE [--override-resource]] [--estimate HOURS] [-- ARGS]  |  allow NAME --extra N --quote "…" [--by OWNER]  |  resources [NAME]  |  wait SLUG [JOB] [--timeout S]  |  jobs SLUG  |  kill SLUG [JOB]
 #     govern slice SLUG RECIPE [--machines N] [--estimate HOURS] [--bg]
 #     govern up RESOURCE [--lane SLUG] [--count N] [--timeout S]  |  down TAG|ID [--forget] [--timeout S]  |  reap [RESOURCE] [--yes] [--timeout S]
@@ -79,8 +79,10 @@
 #     is behind. `work` to a later stage holds every stage it skips to the same rules (a failing check, an open
 #     gate or a pending dependency refuses it, exit 2); going back is always allowed. `dep` refuses a cycle.
 #     `hook stop` is a Claude Code Stop hook: while the session's lane has a failing check it refuses
-#     the stop (exit 2, the check's log as the reason), at most 3 times per work segment; when it lets the
-#     session stop it closes a work segment the SessionStart hook opened. `hook session-start` is a Claude Code
+#     the stop (exit 2, the check's log as the reason), at most 3 times per work segment;
+#     it closes nothing (Stop fires after every response). `hook session-end` is the SessionEnd hook: it closes the
+#     work segment the SessionStart hook opened for the session (a `done` entry with closedBy "hook"), leaves one opened
+#     by `work` alone, prints nothing and always exits 0. `hook session-start` is a Claude Code
 #     SessionStart hook (`install-skill` prints the line to add): a session working in a lane's folder (or below it,
 #     or in a folder the lane's govern.json names under {repo}), or started with GOVERN_LANE=SLUG, gets a work
 #     segment on the lane's current stage (ledger `work` entry with openedBy "hook"), one line names it, and it

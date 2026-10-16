@@ -425,18 +425,30 @@ function openSegment(sid: string): { slug: string; at: number; t: string; stage:
 }
 
 /** Claude Code Stop hook. Exit 2 (stderr = the reason) keeps the session working while its lane's stage check fails;
- *  3 refusals per work segment at most. When the stop is allowed it closes a segment the SessionStart hook opened.
- *  Silent and exit 0 on anything else, including its own errors. */
+ *  3 refusals per work segment at most. It closes nothing: Stop fires after every response, a segment lasts a session
+ *  (see `hook session-end`). Silent and exit 0 on anything else, including its own errors. */
 function cmdHook(a: Args): void {
   if (a._[1] === "session-start") return hookSessionStart();
-  if (a._[1] !== "stop") fail("govern hook stop|session-start");
+  if (a._[1] === "session-end") return hookSessionEnd();
+  if (a._[1] !== "stop") fail("govern hook stop|session-start|session-end");
   try {
     const sid = String(JSON.parse(readFileSync(0, "utf8")).session_id ?? "");
     if (!sid) return;
     const hit = openSegment(sid);
     if (!hit) return;
-    if (stopRefused(hit.slug, hit.entries.slice(hit.at + 1), sid)) return;
-    if (hit.hookOpened) appendLedger(hit.slug, { kind: "done", engine: "claude", session: sid, closedBy: "hook" });
+    stopRefused(hit.slug, hit.entries.slice(hit.at + 1), sid);
+  } catch { process.exitCode = 0; }
+}
+
+/** Claude Code SessionEnd hook: closes the work segment the SessionStart hook opened for the session (a `done` entry with
+ *  closedBy "hook"). A segment opened by `govern work` is left alone. Prints nothing; never fails. */
+function hookSessionEnd(): void {
+  try {
+    const j: unknown = JSON.parse(readFileSync(0, "utf8"));
+    const sid = j && typeof j === "object" && !Array.isArray(j) ? (j as Record<string, unknown>)["session_id"] : undefined;
+    if (typeof sid !== "string" || !sid) return;
+    const hit = openSegment(sid);
+    if (hit?.hookOpened) appendLedger(hit.slug, { kind: "done", engine: "claude", session: sid, closedBy: "hook" });
   } catch { process.exitCode = 0; }
 }
 
@@ -1186,10 +1198,11 @@ export const COMMANDS: readonly Cmd[] = [
   {name:'recover',section:1,flags:{value:['stage','action','quote']},lines:[["<slug> [--stage S] --action retry|compensated --quote Q","human recovery: reset exhausted retries, or confirm compensation after investigating an uncertain result"]],run:cmdRecover},
   { name: "dep", section: 1, flags: { value: ["after", "rm"] },
     lines: [["<slug> [--after <lane>[:<stage>]] [--rm <lane>]", "this lane waits on another (all of it, or past a stage)"]], run: cmdDep },
-  { name: "hook", section: 1, footer: false, noSub: "govern hook stop|session-start",
+  { name: "hook", section: 1, footer: false, noSub: "govern hook stop|session-start|session-end",
     subs: {
-      stop: { lines: [["", "Claude Code Stop hook: keeps a session on its lane until the stage's check passes (3 tries); closes a segment\nthe SessionStart hook opened"]], run: cmdHook },
+      stop: { lines: [["", "Claude Code Stop hook: keeps a session on its lane until the stage's check passes (3 tries); closes nothing"]], run: cmdHook },
       "session-start": { lines: [["", "Claude Code SessionStart hook: a session working in a lane's folder (or with GOVERN_LANE=<slug>) gets a work\nsegment on the lane's current stage; silent when no lane matches"]], run: cmdHook },
+      "session-end": { lines: [["", "Claude Code SessionEnd hook: closes the work segment the SessionStart hook opened for the session; silent"]], run: cmdHook },
     } },
 
   { name: "run", section: 2, flags: { bool: ["bg", "override-resource"], value: ["on", "estimate"] },
@@ -1288,7 +1301,7 @@ export const COMMANDS: readonly Cmd[] = [
       }
       const sha = installSkill(SKILL, dest);
       out(`installed ${dest} (sha256 ${sha}); refresh it with govern install-skill after editing tools/govern/SKILL.md`);
-      out("add to the hooks of your Claude Code settings so every session on a lane is measured by where it works: SessionStart → govern hook session-start (and Stop → govern hook stop)");
+      out("add to the hooks of your Claude Code settings so every session on a lane is measured by where it works: SessionStart → govern hook session-start, Stop → govern hook stop, SessionEnd → govern hook session-end");
     } },
 
   { name: "task", section: 6, noSub: TASK_SUBS,
