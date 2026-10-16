@@ -1,0 +1,9 @@
+services:
+  govern-site:
+    build:
+      context: ..
+      dockerfile: site/Dockerfile
+      args:
+        SITE_COMMIT: ${SITE_COMMIT:-unknown}
+    ports:
+      - "8080:80"
