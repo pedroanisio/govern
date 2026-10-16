@@ -186,7 +186,7 @@ const STATED: readonly Stated[] = [
   { what: "the most shadow mode delays a send (its timeout plus the child's kill grace)",
     code: () => (codeNumber("lib/decide.ts", /SHADOW_TIMEOUT_MS = (\d+);/) + codeNumber("lib/decide.ts", /timeout: timeoutMs \+ (\d+),/)) / 1000,
     docs: [["SKILL.md", /delays it by at most about (\d+) seconds/]] },
-  { what: "the legacy profiles", code: () => LEGACY_PROFILES.length, docs: [["SKILL.md", /except the (\w+) legacy ones/]] },
+  { what: "the legacy profiles", code: () => LEGACY_PROFILES.length, docs: [["SKILL.md", /not even the (\w+) legacy ones/]] },
   { what: "a conversation turn's default limit", code: () => codeNumber("lib/conversation.ts", /o\.timeoutSeconds \?\? (\d+)/),
     docs: [["MANPAGE", /conversation create: a turn's limit \(default (\d+)/]] },
   { what: "a conversation turn's longest limit", code: () => codeNumber("lib/conversation.ts", /\["timeout", timeoutSeconds, (\d+)\]/),

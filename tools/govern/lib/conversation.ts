@@ -477,7 +477,7 @@ export function claim(id: string): { session: Conversation; run: Run } | undefin
       const reg = registry(),
         p = getProfile(s.adapter.name, reg);
       if (profileHash(reg, p) !== s.adapter.hash) fail("conversation profile changed; create a new conversation");
-      const problem = guardProblem(reg, p, s.lane, !!s.lane, s.lane ?? s.id) || checkProblem(queueDir(), reg, p);
+      const problem = guardProblem(reg, p, s.lane, !!s.lane, s.lane ?? s.id) || checkProblem(queueDir(), reg, p, true);
       if (problem) fail(problem, 1);
     }
     r.state = "running";

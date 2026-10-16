@@ -18,6 +18,11 @@ All notable changes to govern are documented here, following Keep a Changelog.
 - Work segments record `referenceSha` (sha256 of REFERENCE.md) beside `skillSha` (sha256 of SKILL.md).
 - The desk's tuning line shows `manual ≈ N tokens`.
 - A runner now runs one message at a time across all dispatchers unless the queue's `concurrency` says otherwise.
+- No profile runs unchecked: the six built-in profiles lose their exemption, and the dispatcher runs `caps --check` itself, once per profile hash, for a message whose profile has no passing check of its current definition. A failed check holds the message and sends the sender one BLOCKED notice. `selfTest: "optional"` is kept, with one meaning: a capability with no probe does not fail the check.
+- Codex runs with a private `CODEX_HOME` (`GOVERN_CODEX_HOME`, default `<state>/codex-home`) holding a link to the login and a minimal `config.toml`, instead of inheriting `~/.codex`.
+- `govern caps` shows `not run`, `stale (profile changed)` and `failed` as distinct check states; `govern caps --check --all` checks every profile without a current passing check.
+- `task send` refuses a message that asks for file changes when its profile cannot write (exit 2); `--read-only` overrides it and records `readOnlyConfirmed`.
+- `task show` and `desk` print `bound: N turns · T s` for a running or recorded Grok run.
 
 ### Added
 
@@ -37,6 +42,7 @@ All notable changes to govern are documented here, following Keep a Changelog.
 ### Fixed
 
 - A finished lane prints `finished` in `govern status` and `govern desk`, never `finished  active <stage>`.
+- The negative probe of a self-test asks for a capability the profile really lacks: a profile holding `wt-edit` no longer fails with `not-edit leaked`; with none to ask for the record says `negative: none applicable`.
 
 ## [0.1.0] - 2026-10-15
 

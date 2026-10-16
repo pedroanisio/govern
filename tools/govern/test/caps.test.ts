@@ -295,14 +295,15 @@ const MINE = (probe: Record<string, unknown> | undefined, selfTest: "required" |
   capabilities: [{ name: "mine", description: "a custom grant", call: "Read", claude: { allow: ["Read"] }, effect: "read", ...(probe ? { probe } : {}) }],
   profiles: [{ name: "mine-only", engine: "claude", capabilities: ["mine"], selfTest }] });
 
-test("codex profiles are labelled not sealed in the listing, the detail and nowhere on claude profiles", () => {
+test("codex profiles say they run in a private CODEX_HOME and what remains open, in the listing and the detail, and never that they inherit ~/.codex", () => {
   const e = env();
   const list = govern(e, ["caps"]).out;
-  assert.match(list, /^  codex-write .*not sealed \(inherits ~\/\.codex\)/m);
-  assert.match(list, /^  codex-read .*not sealed \(inherits ~\/\.codex\)/m);
-  assert.doesNotMatch(list, /^  (claude-read|claude-write|researcher) .*not sealed/m);
-  assert.match(govern(e, ["caps", "codex-read"]).out, /^codex: .*not sealed \(inherits ~\/\.codex\)/m);
-  assert.doesNotMatch(govern(e, ["caps", "researcher"]).out, /not sealed/);
+  assert.match(list, /^  codex-write .*private CODEX_HOME \(login only\); not closed: AGENTS\.md/m);
+  assert.match(list, /^  codex-read .*private CODEX_HOME \(login only\); not closed: AGENTS\.md/m);
+  assert.doesNotMatch(list, /inherits ~\/\.codex|not sealed \(inherits/);
+  assert.doesNotMatch(list, /^  (claude-read|claude-write|researcher) .*(not sealed|CODEX_HOME)/m);
+  assert.match(govern(e, ["caps", "codex-read"]).out, /^codex: .*private CODEX_HOME \(login only\)/m);
+  assert.doesNotMatch(govern(e, ["caps", "researcher"]).out, /not sealed|CODEX_HOME/);
 });
 
 test("an explicitly set GOVERN_CAPABILITIES that does not exist is an error; an unset one keeps the default", () => {
@@ -397,23 +398,34 @@ test("govern verifies a write probe on disk, whatever the model claims", () => {
   assert.equal(honest.code, 0, honest.out);
 });
 
-test("the dispatcher refuses a profile whose definition changed since its last passing check, and one never checked when a check is required", () => {
+test("the dispatcher checks a profile that has no passing check of its current definition by itself, once per hash, and refuses it after a failure", () => {
   const e = env();
+  e.env.GOVERN_TEST_UNCHECKED = "1"; // helpers.ts: no seeded records, so the dispatcher's own check runs
   write(join(e.root, "caps", "p.json"), JSON.stringify({ version: 1, profiles: [{ name: "lookup", engine: "claude", capabilities: ["read"] }] }));
-  // never checked, check required
+  // never checked: the dispatcher runs the two probes itself, then the task
   send(e, ["--to", "lookup"]);
-  assert.match(govern(e, ["task", "dispatch"], { FAKE_CLAUDE_RESULT: ANSWER }).out, /→ lookup: refused: profile lookup has not passed a self-test; run govern caps --check lookup/);
-  assert.equal(govern(e, ["caps", "--check", "lookup"], { FAKE_CLAUDE_SCRIPT: script(e, "p", [ok("read", "NONCE"), no("edit")]) }).code, 0);
+  const passing = script(e, "p", [ok("read", "NONCE"), no("edit"), { result: ANSWER }]);
+  assert.match(govern(e, ["task", "dispatch"], { FAKE_CLAUDE_SCRIPT: passing }).out, /→ lookup: ACK/);
+  assert.equal(jsonl(join(e.root, "claude.log")).length, 3, "two probes and the run");
+  assert.equal(checks(e, "lookup").ok, true);
+  // the definition changes: the record is older than it, and the next message is checked again; this time the probes fail
+  write(join(e.root, "caps", "p.json"), JSON.stringify({ version: 1, profiles: [{ name: "lookup", engine: "claude", model: "opus", capabilities: ["read"] }] }));
+  assert.match(govern(e, ["caps", "lookup"]).out, /check: stale \(profile changed\)/);
+  send(e, ["--to", "lookup"]);
+  const held = govern(e, ["task", "dispatch"], { FAKE_CLAUDE_RESULT: ANSWER }).out;
+  assert.match(held, /→ lookup: held: the self-test of profile lookup failed \(read, not-edit\); fix the grant and run govern caps --check lookup/);
+  assert.equal(readdirSync(join(e.root, "queue", "open")).filter((f) => f.endsWith(".json") && f.includes("-lookup-")).length, 1, "the message stays open");
+  assert.equal(jsonl(join(e.root, "claude.log")).length, 3 + 2, "the two probes of the new check; the task did not run");
+  assert.match(govern(e, ["task", "list", "--to", "owner"]).out, /BLOCKED.*held: the self-test of profile lookup failed/);
+  // one automatic check per hash: another message, and the held one, are refused without a re-run
+  send(e, ["--to", "lookup"]);
+  const again = govern(e, ["task", "dispatch"], { FAKE_CLAUDE_RESULT: ANSWER }).out;
+  assert.equal([...again.matchAll(/→ lookup: refused: the last self-test of profile lookup failed \(read, not-edit\); fix the grant and run govern caps --check lookup/g)].length, 2, again);
+  assert.equal(jsonl(join(e.root, "claude.log")).length, 5, "no further check");
+  // the owner's own re-run of the check releases the profile
+  assert.equal(govern(e, ["caps", "--check", "lookup"], { FAKE_CLAUDE_SCRIPT: script(e, "p2", [ok("read", "NONCE"), no("edit")]) }).code, 0);
   send(e, ["--to", "lookup"]);
   assert.match(govern(e, ["task", "dispatch"], { FAKE_CLAUDE_RESULT: ANSWER }).out, /→ lookup: ACK/);
-  // the definition changes: the record is older than it
-  write(join(e.root, "caps", "p.json"), JSON.stringify({ version: 1, profiles: [{ name: "lookup", engine: "claude", model: "opus", capabilities: ["read"] }] }));
-  assert.match(govern(e, ["caps", "lookup"]).out, /check: stale/);
-  send(e, ["--to", "lookup"]);
-  assert.match(govern(e, ["task", "dispatch"], { FAKE_CLAUDE_RESULT: ANSWER }).out, /→ lookup: refused: profile lookup changed since its last self-test; run govern caps --check lookup/);
-  // the same applies to a built-in profile that has a record, and the legacy four need none
-  send(e, ["--to", "claude"]);
-  assert.match(govern(e, ["task", "dispatch"], { FAKE_CLAUDE_RESULT: ANSWER }).out, /→ claude: ACK/);
 });
 
 test("the check works for codex profiles through the same sealed runner", () => {

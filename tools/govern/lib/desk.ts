@@ -104,6 +104,7 @@ export function desk(): { text: string; failed: number; lanes: number } {
   const limitOf = (r: string): number => { try { return queue.runnerLimit(r); } catch { return 1; } }; // a bad config is already reported above
   const perRunner = runners.map((r) => `${r}: ${count("open", r)} waiting, running ${claims.filter((x) => x.m.to === r && x.holder === "live").length}/${limitOf(r)}`);
   L.push("", `QUEUE  ${perRunner.join(" · ")} · failed: ${count("failed")} (govern task triage) · ${dispatcherState()} · ${repliesToday(day)}`);
+  for (const { m, holder } of claims) if (holder === "live" && queue.grokBound(m)) L.push(`  ${m.id}: running · ${queue.grokBound(m)}`);
   for (const { m, holder } of claims) if (holder !== "live")
     L.push(`  ${m.id}: ${holder} holder${holder === "dead" ? ` (${m.claim!.by})` : ""} · inspect: govern task show ${m.id}${holder === "unknown" ? ` · recover: govern task reclaim ${m.id} --note "<why>"` : " · recovered on next dispatch"}`);
   if (bad) L.push(`unverified replies: ${bad}  · their content is kept but no check passed: govern task show <id>`);

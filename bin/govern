@@ -35,7 +35,7 @@
 #     govern remote link [--url URL] [--tls-cert F] [--lane S] [--no-qr]  |  remote requests  |  remote refuse ID
 #     govern remote confirm ID --code NNNNNN [--lane S]... [--all] [--person P]
 #     govern remote serve [--host H] [--port 5002] [--tls-cert F --tls-key F]
-#     govern caps [PROFILE]  |  caps --check PROFILE
+#     govern caps [PROFILE]  |  caps --check PROFILE  |  caps --check --all
 #     govern decide ask --questions F (--state S | --state-file F) [--purpose P] [--json]  |  decide report
 #     govern help [COMMAND]  |  help --topics  |  COMMAND --help  |  manual [PROCESS | --full | --size]  |  install-skill [SKILLS-DIR] [--check] [--replace]
 #     govern peer id [--name N]
@@ -51,7 +51,7 @@
 #     govern agents list [--refresh]  |  agents unregister [NAME] [--as NAME]
 #     govern agents register --project P... [--as NAME | --ephemeral] [--alias NAME]... [--description TEXT] [--ttl S]
 #     govern task send --to codex|claude|grok|RUNNER|PROFILE|auto|owner|SESSION|NAME@PEER --project P --task T --kind K --summary S
-#                      (--body B | --body-file F) [--file PATH]... [--reply-to ID] [--write | --profile P]
+#                      (--body B | --body-file F) [--file PATH]... [--reply-to ID] [--write | --profile P | --read-only]
 #                      [--lane SLUG] [--from NAME] [--estimate-usd N] [--timeout S] [--check NAME]... [--verify -- ARGV...]
 #     govern task list [--to X] [--state S] [--project P]  |  show ID  |  inbox [--as NAME] [--all] [--hook]
 #     govern task triage [--all] [--project P] [--to X] [--json]  |  retry ID --note T [--to X] [--write | --profile P] [--timeout S]
@@ -125,6 +125,13 @@
 #     project folder) after the other checks: [checked: verify (exit 0)] only on exit 0, else [unverified] with the
 #     exit code and the last 12 lines under QUEUE/replychecks/. `desk` counts the day's replies: checked, shape only,
 #     unverified, repaired.
+#     No profile runs unchecked: for a message whose profile has no passing self-test of its current definition the dispatcher runs `caps --check`
+#     itself, once per profile hash; a failed check holds the message (open) and sends the sender one BLOCKED notice, and later messages on
+#     that hash are refused until `caps --check P` passes. A codex run gets a private CODEX_HOME (GOVERN_CODEX_HOME, default the state
+#     folder's codex-home): the login and a minimal config.toml, not ~/.codex. `task send` refuses (exit 2) a message to a profile that cannot write
+#     whose summary or body asks for file changes (an edit verb within six words of file, test, module, function, branch, commit, .ts, .py or .md);
+#     --write or --profile P with a write profile fixes it, --read-only sends it and records readOnlyConfirmed. `task show` and `desk` print
+#     `bound: N turns · T s` for a running or recorded grok run: grok has no dollar cap, so that is its only limit.
 #     Standard host setup includes task install-service and its printed enable command. --system previews a system
 #     unit with current User=; --system --write requires root, otherwise prints the refusal and unit, never escalates.
 #     Peer delivery uses signed HTTP behind a TLS tunnel (PEERS.md). Peer add and revoke require the owner's
@@ -247,7 +254,7 @@
 #     --since DATE            usage: count only work segments and machine time from YYYY-MM-DD on
 #     --check                 install-skill, caps, task send: install-skill: install nothing, exit 1 when SKILLS-DIR/govern is
 #                             missing, a copy, a link elsewhere or has a stale SKILL.md; caps: self-test a profile's grants in a
-#                             sealed session; task send: NAME, a content check on the reply (repeatable; file-refs, commit-refs,
+#                             sealed session (--all: every profile without a current passing check); task send: NAME, a content check on the reply (repeatable; file-refs, commit-refs,
 #                             claims-cited, or one the profile or config.json defines)
 #     --verify                task send: run the command after -- in the project folder once the reply is filed and the checks
 #                             pass; the reply is [checked] only on exit 0
@@ -265,6 +272,7 @@
 #     --from NAME             task send: local sender without @ (default: the registered session up the parent chain); only receive() files a remote sender
 #     --write                 task send, task retry, task install-service: task send, task retry: let the runner change files in the project folder
 #                             (default: read-only; retry: as the original); task install-service with --system: write only as root, otherwise print refusal and unit
+#     --read-only             task send: send a message that matches the write rule to a profile that cannot write, and record readOnlyConfirmed
 #     --profile P             conversation create, task send, task retry: seal the run to profile P's capabilities (govern caps); conversation
 #                             create: default codex-read unless --adapter is given; task send, task retry: not with --write
 #     --estimate-usd N        conversation send, task send: what the run is expected to cost, reserved against a matching allowance
@@ -288,9 +296,9 @@
 #                             agents: must be this session's own name;
 #                             human, human-inbox: a process person, refused unless this OS account is mapped to it; task:
 #                             default GOVERN_AS, else this session; remote pair: the person the device approves as (owner)
-#     --all                   task triage, task inbox, remote confirm: task triage: also replies marked unverified in done/; task inbox: messages in every state, not only open ones; remote
+#     --all                   task triage, task inbox, remote confirm, caps: task triage: also replies marked unverified in done/; task inbox: messages in every state, not only open ones; remote
 #                             confirm: grant the device every lane. With no requested lanes, choose --lane SLUG
-#                             (repeatable) or --all; confirmation never grants every lane implicitly
+#                             (repeatable) or --all; confirmation never grants every lane implicitly; caps --check: every profile without a current passing check
 #     --hook                  task inbox: the UserPromptSubmit hook form, silent when empty
 #     --max N                 task dispatch, peer push: run at most N messages
 #     --only E                task dispatch: only messages to that runner (codex, claude, grok or a queue config runner)
@@ -323,7 +331,9 @@
 #     (~/.claude/projects) · GOVERN_CODEX_SESSIONS (~/.codex/sessions) · GOVERN_CLAUDE_SETTINGS (~/.claude/settings.json,
 #     read and written by tune) · GOVERN_GROK_SESSIONS (else the sessions of govern's grok home and of the user's)
 #     · GOVERN_GROK_HOME (govern's private grok home; default $XDG_STATE_HOME, else ~/.local/state, /govern/grok-home)
-#     · GROK_HOME (the user's grok home, where the login is read from; default ~/.grok).
+#     · GROK_HOME (the user's grok home, where the login is read from; default ~/.grok) · GOVERN_CODEX_HOME (govern's private
+#     codex home; default $XDG_STATE_HOME, else ~/.local/state, /govern/codex-home) · CODEX_HOME (the user's codex home, where
+#     the login is read from; default ~/.codex).
 #     Programs: SCENE_RENDER (the scene-render engine bpmn --png runs) · GOVERN_CODEX_BIN (codex) · GOVERN_CLAUDE_BIN (claude) · GOVERN_GROK_BIN (grok) · GOVERN_PYTHON (python3;
 #     fills {python}).
 #     Limits and models: GOVERN_CTX_WARN (150000) · GOVERN_TARGET_CTX (150000, tune) · GOVERN_MAX_INLINE (60000, ask)

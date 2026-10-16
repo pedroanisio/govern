@@ -10,17 +10,19 @@ import { tmpdir, homedir } from "node:os";
 import { existsSync, statSync, mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync, appendFileSync } from "node:fs";
 import { join, resolve, dirname, relative } from "node:path";
 import { fileURLToPath } from "node:url";
-import { fail, stamp, nowIso, clip, charLimit } from "./util.ts";
+import { fail, stamp, nowIso, clip, charLimit, writeJson } from "./util.ts";
 import { repo, projectsDir, queueDir, config as workspaceConfig, expandPlaceholders } from "./workspace.ts";
 import * as allowances from "./allowances.ts";
 import * as jobs from "./jobs.ts";
 import { cost } from "./usage.ts";
 import { identity, live, withMutex } from "./locks.ts";
 import { prepareGrokHome, syncBackAuth } from "./grokhome.ts";
+import { prepareCodexHome, syncBackCodexAuth } from "./codexhome.ts";
 import { parseEvents, execArgs, validate, type Usage } from "./codex.ts";
 import { type CheckDef, type ConfigChecks, configChecks, declared, verify, resolveNamed, checkNames, verifyDeclared, type Verification } from "./replycheck.ts";
 import { obj, arr, str, posInt, record, literal, parseFile, keyPath, type Shape } from "./shape.ts";
-import { registry, getProfile, writes, guardProblem, checkProblem, profileHash, claudeArgs, codexSpec, grokArgs, LEGACY_PROFILES, type Profile, type Registry } from "./caps.ts";
+import { checkProfile } from "./capcheck.ts";
+import { registry, getProfile, writes, guardProblem, checkProblem, checkState, readCheck, checkFile, failing, profileHash, claudeArgs, codexSpec, grokArgs, LEGACY_PROFILES, type Profile, type Registry } from "./caps.ts";
 
 import * as agents from "./agents.ts";
 import { liveSessions } from "./sessions.ts";
@@ -96,6 +98,8 @@ export interface Message {
   access: "read-only" | "write";
   /** The capability profile the session runs under (govern caps); absent for an owner, a session or a config.json runner. */
   profile?: string;
+  /** Sent with --read-only: the sender confirmed that the task needs no file changes although its text matches the write rule (lib/writeask.ts). */
+  readOnlyConfirmed?: boolean;
   /** The lane whose gates authorise a profile with a spend, publish or push capability (default: the project, when it is a lane). */
   lane?: string;
   /** What the run is expected to cost in model dollars (--estimate-usd): reserved against a matching allowance. */
@@ -639,10 +643,17 @@ export function runSealed(reg: Registry, prof: Profile, cwd: string, p: string, 
   const spec = codexSpec(reg, prof);
   const model = o.model ?? prof.model;
   const args = execArgs({ cwd, lastMessage: o.lastMessage, effort: o.effort ?? process.env.GOVERN_QUEUE_CODEX_EFFORT ?? "medium", sandbox: spec.sandbox, config: spec.config, addDirs: spec.addDirs, ...(o.schema ? { schema: o.schema } : {}), ...(model ? { model } : {}) });
-  const r = spawnSync(process.env.GOVERN_CODEX_BIN ?? "codex", args, { input: p, encoding: "utf8", timeout: timeoutSec * 1000, maxBuffer: 64 << 20, env: childEnv() });
+  const r = spawnSync(process.env.GOVERN_CODEX_BIN ?? "codex", args, { input: p, encoding: "utf8", timeout: timeoutSec * 1000, maxBuffer: 64 << 20, env: codexEnv(prepareCodexHome()) });
+  try { syncBackCodexAuth(); } catch { /* the login stays where codex left it */ }
   const ev = parseEvents(r.stdout ?? "");
   const text = existsSync(o.lastMessage) ? readFileSync(o.lastMessage, "utf8") : ev.message;
   return { text, usage: ev.usage, turns: ev.turns, error: r.error ? r.error.message : r.status !== 0 ? `codex exit ${r.status}: ${clip(ev.errors[0] ?? r.stderr ?? "", 300)}` : undefined };
+}
+
+/** The environment half of a codex seal: CODEX_HOME is govern's own (lib/codexhome.ts: the login and a minimal config, nothing else), so the
+ *  user's config.toml (project trust, MCP servers, instructions), plugins and skills are not found. */
+export function codexEnv(home: string): NodeJS.ProcessEnv {
+  return { ...childEnv(), CODEX_HOME: home };
 }
 
 /** The environment half of a grok seal. HOME is a private empty folder, so the user's skills (~/.agents), plugins and Claude settings
@@ -663,6 +674,17 @@ const grokMaxTurns = (): string => {
   const n = Number(process.env.GOVERN_GROK_MAX_TURNS);
   return String(Number.isInteger(n) && n > 0 ? n : 25);
 };
+
+/** The only limit on a grok run, for a message that is running or has a recorded run: `bound: N turns · T s` (grok has no dollar cap).
+ *  Undefined for any other message. N is the --max-turns the run gets, T the dispatch timeout. */
+export function grokBound(m: Message): string | undefined {
+  if (!m.claim && !m.result) return undefined;
+  try {
+    const reg = registry(), name = m.result?.profile ?? m.profile ?? defaultProfile(m, reg);
+    if (!name || reg.profiles.get(name)?.engine !== "grok") return undefined;
+  } catch { return undefined; }
+  return `bound: ${grokMaxTurns()} turns · ${dispatchTimeout()} s`;
+}
 
 /** One sealed `grok --prompt-file` run with private homes.
  * ARCHITECTURAL REQUIREMENT: LLMs will always produce some form of error.
@@ -797,10 +819,57 @@ export function usdOf(r: RunOut, model: string | undefined): allowances.Actual {
 }
 
 /** Tell the allowance's decision owner, once per situation, that a task is held and how to release it. */
-function tellHold(m: Message, h: allowances.Refusal): void {
-  const summary = clip(`held: ${h.text.split("\n")[0]}`, 200);
+function tellHold(m: Message, h: allowances.Refusal): void { noticeHold(m, h.owner, h.text); }
+function noticeHold(m: Message, to: string, text: string): void {
+  const summary = clip(`held: ${text.split("\n")[0]}`, 200);
   if (all().some((x) => x.m.from === "dispatcher" && x.m.kind === "BLOCKED" && x.m.replyTo === m.id && x.m.summary === summary)) return;
-  send({ project: m.project, task: m.task, kind: "BLOCKED", from: "dispatcher", to: h.owner, summary, body: `${m.id} (${m.kind} from ${m.from} to ${m.to}) was not run and stays open.\n${h.text}`, files: [], replyTo: m.id, access: "read-only" });
+  send({ project: m.project, task: m.task, kind: "BLOCKED", from: "dispatcher", to, summary, body: `${m.id} (${m.kind} from ${m.from} to ${m.to}) was not run and stays open.\n${text}`, files: [], replyTo: m.id, access: "read-only" });
+}
+
+/** Take the lock of one automatic self-test (one folder per profile hash under <queue>/checks/): the release function, or undefined while
+ *  a live dispatcher holds it. A lock whose holder is gone is taken over. */
+function takeCheckLock(dir: string): (() => void) | undefined {
+  mkdirSync(dirname(dir), { recursive: true });
+  for (let i = 0; i < 2; i++) {
+    try {
+      mkdirSync(dir);
+      writeFileSync(join(dir, "owner.json"), JSON.stringify({ pid: process.pid, ...(identity(process.pid) ?? {}) }));
+      return () => rmSync(dir, { recursive: true, force: true });
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code !== "EEXIST") throw e;
+      let owner: { pid: number; start?: string } | undefined;
+      try { owner = JSON.parse(readFileSync(join(dir, "owner.json"), "utf8")); } catch { /* being written, or damaged */ }
+      if (owner ? live(owner) : Date.now() - statSync(dir).mtimeMs < 60_000) return undefined;
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }
+  return undefined;
+}
+
+/** Why a message to `prof` must wait for its self-test (undefined: it has a record of the current definition, passing or not, or this call just made one that passed).
+ *  A profile with no current record is checked here, once per profile hash, under a lock; a failed check is a record, so the next message on that hash is refused
+ *  by checkProblem without a re-run. The check is `govern caps --check`: one probe per capability in a sealed session, verified by capcheck.ts.
+ * ARCHITECTURAL REQUIREMENT: LLMs will always produce some form of error.
+ * Absence of output verification is a design defect, not a runtime bug.
+ * All LLM output must be treated as untrusted and validated explicitly.
+ * Here: checkProfile parses every probe reply strictly and verifies it against ground truth; an error is recorded as a failed check, never a pass.
+ */
+export function ensureChecked(reg: Registry, prof: Profile): { text: string; tell: boolean } | undefined {
+  const hash = profileHash(reg, prof), q = QUEUE();
+  const state = () => checkState(readCheck(q, prof.name), hash);
+  if (state() === "passed" || state() === "failed") return undefined;
+  const release = takeCheckLock(join(q, "checks", `${prof.name}.${hash.slice(0, 16)}.lock`));
+  if (!release) return { text: `profile ${prof.name} is being self-tested by another dispatcher; the message runs once that check passes`, tell: false };
+  try {
+    if (state() === "passed" || state() === "failed") return undefined; // another dispatcher finished while this one waited for the lock
+    let rec;
+    try { rec = checkProfile(q, reg, prof.name); } catch (e) {
+      rec = { version: 1 as const, profile: prof.name, hash, at: nowIso(), model: "none", ok: false, results: [{ capability: "(self-test)", status: "error" as const, evidence: e instanceof Error ? e.message : String(e) }] };
+      writeJson(checkFile(q, prof.name), rec);
+    }
+    if (rec.ok) return undefined;
+    return { text: `the self-test of profile ${prof.name} failed (${failing(rec.results, prof).join(", ")}); fix the grant and run govern caps --check ${prof.name}`, tell: true };
+  } finally { release(); }
 }
 
 /** How long one dispatched run may take: GOVERN_QUEUE_TIMEOUT_SEC, else 900 s. */
@@ -929,7 +998,17 @@ function runClaimed(m: Message, pass: Pass, o: DispatchOpts): string[] {
   const sealed = prof !== undefined && !configuredRunner(m.to) ? getProfile(prof, reg) : undefined;
   if (!sealed && !cfg.runners?.[m.to]) return refuse(undefined, `${m.to} has no profile and no runner in ${join(QUEUE(), "config.json")}`);
   if (sealed) {
-    const why = guardProblem(reg, sealed, laneOf(m), m.lane !== undefined, m.project) ?? checkProblem(QUEUE(), reg, sealed);
+    const guard = guardProblem(reg, sealed, laneOf(m), m.lane !== undefined, m.project);
+    if (guard) return refuse(sealed.name, guard);
+    const wait = ensureChecked(reg, sealed);
+    if (wait) {
+      delete m.claim;
+      save(m, "claimed");
+      move(m, "claimed", "open");
+      if (wait.tell) noticeHold(m, LEGACY_OWNER(m), wait.text);
+      return [`${m.id} → ${m.to}: held: ${wait.text}`];
+    }
+    const why = checkProblem(QUEUE(), reg, sealed);
     if (why) return refuse(sealed.name, why);
   }
   // Checked before the reservation, so a refused message holds nothing.

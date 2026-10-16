@@ -49,6 +49,7 @@ govern task send --to codex --project <slug> --task <name> --kind TASK --summary
 - Every reply carries one of three marks: `[checked: …]` (a content check passed), `[unverified]` (the check failed or could not run: read the reply yourself before acting on it) and `[shape only]` (no check exists for the kind: it proves the form only).
 - Ask for checks: `--check commit-refs|claims-cited|file-refs` and `--verify -- <test command>` make govern verify the reply (every HANDOFF's commits are checked anyway); a reply that does not parse gets one repair call before it fails (`[repaired]`).
 - `--timeout S` sets one run's limit; `govern task triage` lists failed tasks with the cause, and `govern task retry <id> --note "<what was fixed>"` resends one (never automatic). One dispatcher runs up to `--parallel N` at once, never more than a runner's `concurrency`.
+- No profile runs unchecked: the dispatcher self-tests a profile once per definition before its first run (`govern caps --check`). A message that asks for file changes is refused for a read profile: add `--write`, or `--read-only` to confirm it needs no edits.
 - **Never message other sessions and never start subagents** (no Agent tool, no Workflow). Sessions are not woken by the queue.
 
 ## The owner's gates

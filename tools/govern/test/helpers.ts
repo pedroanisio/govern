@@ -10,6 +10,8 @@ import { fileURLToPath } from "node:url";
 import * as peer from "../lib/peer.ts";
 import * as mesh from "../lib/mesh.ts";
 import * as queue from "../lib/queue.ts";
+import { registry, readCheck, checkState, checkFile, profileHash, capsOf } from "../lib/caps.ts";
+import { writeJson } from "../lib/util.ts";
 import { type Headers } from "../lib/peer-id.ts";
 
 export const HERE = dirname(fileURLToPath(import.meta.url));
@@ -107,7 +109,27 @@ export function childEnv(e: Env, env: Record<string, string> = {}): NodeJS.Proce
   return base;
 }
 
+/** The dispatcher runs a profile only after a passing self-test of its current definition (it runs the check itself when there is none, with the
+ *  fake binaries the tests use, which cannot answer probes). Tests that exercise something else give every "optional" profile that has no
+ *  record a passing one first, in the workspace of process.env. A test of the self-test itself sets GOVERN_TEST_UNCHECKED=1 in its Env. */
+export function seedChecks(): void {
+  if (process.env.GOVERN_TEST_UNCHECKED) return;
+  try {
+    const reg = registry(), q = queue.QUEUE();
+    for (const p of reg.profiles.values()) {
+      const rec = readCheck(q, p.name), hash = profileHash(reg, p);
+      if (p.selfTest !== "optional" || rec === "unreadable" || checkState(rec, hash) !== "none") continue;
+      writeJson(checkFile(q, p.name), { version: 1, profile: p.name, hash, at: "2026-10-16T00:00:00.000Z", model: "seeded", ok: true, results: capsOf(reg, p).map((c) => ({ capability: c.name, status: "ok", evidence: "seeded by the test helper" })) });
+    }
+  } catch { /* no workspace or a broken capabilities folder: the dispatcher reports it */ }
+}
+
 export function govern(e: Env, args: string[], env: Record<string, string> = {}, input?: string) {
+  if (args[0] === "task" && args[1] === "dispatch") {
+    const back = process.env;
+    process.env = childEnv(e, env);
+    try { seedChecks(); } finally { process.env = back; }
+  }
   const r = spawnSync(process.execPath, ["--disable-warning=ExperimentalWarning", GOVERN, ...args], { env: childEnv(e, env), encoding: "utf8", timeout: 60000, ...(input !== undefined ? { input } : {}) });
   return { code: r.status, out: r.stdout, err: r.stderr };
 }
@@ -179,5 +201,5 @@ export async function trio() {
   use(b); await mesh.sync({ post, now: () => NOW });
   return { a, b, c, hosts, post };
 }
-export const task = (to: string, extra: Partial<queue.Message> = {}) => queue.send({ project: "p", task: "t", kind: "TASK", from: "alice", to, summary: "check this", body: "evidence", files: [], access: "read-only", ...extra });
+export const task = (to: string, extra: Partial<queue.Message> = {}) => { seedChecks(); return queue.send({ project: "p", task: "t", kind: "TASK", from: "alice", to, summary: "check this", body: "evidence", files: [], access: "read-only", ...extra }); };
 

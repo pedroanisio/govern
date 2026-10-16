@@ -13,6 +13,7 @@ import { load } from "./project.ts";
 import { projectsDir, capabilitiesDir } from "./workspace.ts";
 import { processOf } from "./process.ts";
 import { CHECK, type CheckDef } from "./replycheck.ts";
+import { CODEX_PARTIAL } from "./codexhome.ts";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const BUILTIN = resolve(HERE, "..", "capabilities");
@@ -65,7 +66,8 @@ export interface Profile {
   name: string; description: string; engine: "claude" | "codex" | "grok"; model?: string; capabilities: string[];
   /** Absolute path of the MCP config the sealed Claude session loads (none by default). */
   mcpConfig?: string;
-  /** "required" (default): the dispatcher refuses the profile until a self-test of its current definition passes. */
+  /** Whatever the value, the dispatcher runs a profile only after a self-test of its current definition passed (it runs the check itself when there is none).
+   *  "optional" means only that a capability with no probe does not fail the check. */
   selfTest: "required" | "optional";
   /** The check run against this profile's queue replies (lib/replycheck.ts); it does not change what the profile may do, so it is not in the self-test hash. */
   check?: CheckDef;
@@ -250,9 +252,32 @@ export function guardProblem(reg: Registry, p: Profile, lane: string | undefined
 // ---------------------------------------------------------------- self-test records
 
 export interface ProbeResult { capability: string; status: "ok" | "refused" | "error" | "invalid" | "untested" | "leaked"; evidence: string }
-export interface CheckRecord { version: 1; profile: string; hash: string; at: string; model: string; ok: boolean; results: ProbeResult[] }
+/** negative: "none applicable" when the profile lacks no capability the negative probe could ask for (every tool of every absent capability is already granted, or the engine has no per-tool grant). */
+export interface CheckRecord { version: 1; profile: string; hash: string; at: string; model: string; ok: boolean; results: ProbeResult[]; negative?: "none applicable" }
 const RECORD = obj({ version: literal(1), profile: str, hash: str, at: str, model: str, ok: (v, p) => (typeof v === "boolean" ? v : reject(p, "must be true or false")),
-  results: arr(obj({ capability: str, status: literal("ok", "refused", "error", "invalid", "untested", "leaked"), evidence: str })) });
+  results: arr(obj({ capability: str, status: literal("ok", "refused", "error", "invalid", "untested", "leaked"), evidence: str })) }, { negative: literal("none applicable") });
+
+/** Whether Claude allow pattern `a` is already granted by `held`: the same pattern, or the bare tool (`Bash`, `Bash(*)`) that includes it. */
+const coveredBy = (a: string, held: Set<string>): boolean => {
+  const tool = a.replace(/\(.*$/, "");
+  return held.has(a) || held.has(tool) || held.has(`${tool}(*)`);
+};
+/** The capability the negative probe asks a session of `p` to use: one the profile lacks, with a probe, that the engine can honour and
+ *  whose Claude allow patterns (grok: tools) are not all granted already by the capabilities it holds, so a refusal is possible.
+ *  Undefined when there is none (codex has no per-tool grant). */
+export function negativeCandidate(reg: Registry, p: Profile): Capability | undefined {
+  const held = new Set(p.capabilities);
+  const rest = [...reg.caps.values()].filter((c) => !held.has(c.name) && c.probe);
+  if (p.engine === "claude") {
+    const granted = new Set(capsOf(reg, p).flatMap((c) => c.claude.allow));
+    return rest.find((c) => c.claude.allow.length > 0 && c.claude.allow.some((a) => !coveredBy(a, granted)));
+  }
+  if (p.engine === "grok") {
+    const granted = new Set(capsOf(reg, p).flatMap((c) => c.grok?.tools ?? []));
+    return rest.find((c) => c.grok && c.grok.tools.some((t) => !granted.has(t)));
+  }
+  return undefined;
+}
 /** Where a profile's self-test record lives: <queueDir>/checks/<profile>.json. */
 export const checkFile = (queueDir: string, profile: string) => join(queueDir, "checks", `${profile}.json`);
 /** The last record of a profile; undefined when none, "unreadable" when it is not a valid record (never trusted). */
@@ -270,20 +295,19 @@ export function checkState(rec: CheckRecord | "unreadable" | undefined, hash: st
   if (!rec || rec === "unreadable") return "none";
   return rec.hash !== hash ? "stale" : rec.ok ? "passed" : "failed";
 }
-/** Why the dispatcher refuses `p` on the strength of its self-test record (or undefined: it may run). */
-export function checkProblem(queueDir: string, reg: Registry, p: Profile): string | undefined {
+/** Why the dispatcher refuses `p` on the strength of its self-test record (or undefined: it may run). Every profile needs a passing record of its
+ *  current hash, whatever its selfTest; `legacyOptional` (conversations only) keeps the older rule that lets an "optional" profile with no record run. */
+export function checkProblem(queueDir: string, reg: Registry, p: Profile, legacyOptional = false): string | undefined {
   const rec = readCheck(queueDir, p.name), hash = profileHash(reg, p), st = checkState(rec, hash);
   const run = `run govern caps --check ${p.name}`;
   if (st === "failed") return `the last self-test of profile ${p.name} failed (${failing((rec as CheckRecord).results, p).join(", ")}); fix the grant and ${run}`;
   if (st === "stale") return `profile ${p.name} changed since its last self-test; ${run}`;
-  if (st === "none" && (p.selfTest === "required" || rec === "unreadable")) return `profile ${p.name} has not passed a self-test${rec === "unreadable" ? " (its record is unreadable)" : ""}; ${run}`;
+  if (st === "none" && (!legacyOptional || p.selfTest === "required" || rec === "unreadable")) return `profile ${p.name} has not passed a self-test${rec === "unreadable" ? " (its record is unreadable)" : ""}; ${run}`;
   return undefined;
 }
 
 // ---------------------------------------------------------------- text
 
-/** A codex session is limited by its sandbox and -c settings only: it still reads the user's ~/.codex config. */
-const NOT_SEALED = "not sealed (inherits ~/.codex)";
 const codexLine = (reg: Registry, p: Profile): string => {
   const missing = capsOf(reg, p).filter((c) => !c.codex).map((c) => c.name);
   if (missing.length) return `not available on codex (${missing.join(", ")})`;
@@ -300,6 +324,9 @@ const grokLine = (reg: Registry, p: Profile): string => {
   return `--tools ${s.tools.join(",")} · --permission-mode ${s.acceptEdits ? "acceptEdits" : "dontAsk"}${s.allow.length ? ` · ${s.allow.map((a) => `--allow ${a}`).join(" ")}` : ""} · ${s.deny.map((d) => `--deny ${d}`).join(" ")}`;
 };
 
+/** How a check state reads in `govern caps`: a changed definition is told apart from one never checked and from one that failed. */
+export const checkWord = (st: CheckState): string => st === "none" ? "not run" : st === "stale" ? "stale (profile changed)" : st;
+
 /** The `govern caps` listing: each capability (effect, engines, description), each profile (engine, capabilities,
  *  self-test state, seal caveats, untested capabilities), then a warning per queue runner in `shadowing`. */
 export function listText(reg: Registry, queueDir: string, shadowing: string[]): string {
@@ -309,7 +336,7 @@ export function listText(reg: Registry, queueDir: string, shadowing: string[]): 
   for (const p of reg.profiles.values()) {
     const st = checkState(readCheck(queueDir, p.name), profileHash(reg, p));
     const untested = capsOf(reg, p).filter((c) => !c.probe).map((c) => c.name);
-    L.push(`  ${p.name.padEnd(14)} ${p.engine.padEnd(7)} ${p.capabilities.join("+").padEnd(22)} check: ${st === "none" ? (p.selfTest === "required" ? "not run (required)" : "not run") : st}${p.engine === "codex" ? `  ${NOT_SEALED}` : p.engine === "grok" ? `  ${GROK_PARTIAL}` : ""}${untested.length ? `  UNTESTED: ${untested.join(", ")}` : ""}`);
+    L.push(`  ${p.name.padEnd(14)} ${p.engine.padEnd(7)} ${p.capabilities.join("+").padEnd(22)} check: ${checkWord(st)}${p.engine === "codex" ? `  ${CODEX_PARTIAL}` : p.engine === "grok" ? `  ${GROK_PARTIAL}` : ""}${untested.length ? `  UNTESTED: ${untested.join(", ")}` : ""}`);
   }
   for (const n of shadowing) L.push(`warning: the queue's config.json runner "${n}" shadows the built-in profile ${n} (it runs unsealed)`);
   return L.join("\n");
@@ -327,12 +354,13 @@ export function showText(reg: Registry, queueDir: string, p: Profile): string {
     if (extra.length) L.push(`             ${extra.join(" · ")}`);
   }
   L.push(`claude: --allowedTools ${claudeSpec(reg, p).allow.join(" ")}${claudeSpec(reg, p).acceptEdits ? " · --permission-mode acceptEdits" : ""} · --setting-sources "" · --strict-mcp-config${p.mcpConfig ? ` · --mcp-config ${p.mcpConfig}` : " (no MCP servers)"}`);
-  L.push(`codex: ${codexLine(reg, p)}${p.engine === "codex" ? ` · ${NOT_SEALED}` : ""}`);
+  L.push(`codex: ${codexLine(reg, p)}${p.engine === "codex" ? ` · ${CODEX_PARTIAL}` : ""}`);
   L.push(`grok: ${grokLine(reg, p)}${p.engine === "grok" ? ` · private HOME and GROK_HOME (login only) · GROK_(CLAUDE|CURSOR)_(AGENTS|HOOKS|MCPS|RULES|SKILLS)_ENABLED=0 GROK_MEMORY=0 · ${GROK_PARTIAL}` : ""}`);
   L.push(`classes: ${classesOf(reg, p).join(", ")}`);
   const secrets = [...new Set(caps.flatMap((c) => c.secrets))];
   L.push(`secrets: ${secrets.length ? `${secrets.join(", ")} (names only)` : "(none)"}`);
   L.push(`reply check: ${p.check ? p.check.argv.join(" ") : "(none: the reply kind decides; govern task send --help)"}`);
-  L.push(`check: ${st}${rec && rec !== "unreadable" ? ` (${rec.at}, ${rec.model})` : ""}`);
+  L.push(`check: ${checkWord(st)}${rec && rec !== "unreadable" ? ` (${rec.at}, ${rec.model})` : ""}`);
+  if (rec && rec !== "unreadable" && rec.negative) L.push(`negative: ${rec.negative}`);
   return L.join("\n");
 }
