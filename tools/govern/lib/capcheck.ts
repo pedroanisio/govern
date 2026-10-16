@@ -23,7 +23,7 @@ import { spawnSync } from "node:child_process";
 import { obj, str, literal, check, ShapeError } from "./shape.ts";
 import { nowIso, writeJson } from "./util.ts";
 import { runSealed } from "./queue.ts";
-import { checkFile, failing, getProfile, capsOf, profileHash, type CheckRecord, type ProbeResult, type Registry, type Capability, type Profile } from "./caps.ts";
+import { checkFile, failing, negativeCandidate, getProfile, capsOf, profileHash, type CheckRecord, type ProbeResult, type Registry, type Capability, type Profile } from "./caps.ts";
 
 const PROBE_SCHEMA = fileURLToPath(new URL("../schemas/probe-reply.json", import.meta.url));
 const EVIDENCE_MAX = 2000;
@@ -116,14 +116,12 @@ export function checkProfile(queueDir: string, reg: Registry, profile: string, t
   const root = join(queueDir, "checks", prof.name, `run-${nowIso().replace(/[-:.]/g, "")}-${randomBytes(3).toString("hex")}`);
   const pm = prof.engine === "claude" ? model : prof.engine === "grok" ? (model === "default" ? "" : model) : prof.model ?? "";
   const results = capsOf(reg, prof).map((c) => probeOne(reg, prof, c, join(root, c.name), pm, timeoutSec));
-  // Negative probe (claude and grok; codex has no per-tool grant to deny): one capability the profile lacks, that the engine can
-  // honour and that has a probe, asked for, must be refused.
-  const held = new Set(prof.capabilities);
-  const absent = prof.engine === "claude" ? [...reg.caps.values()].find((c) => !held.has(c.name) && c.probe && c.claude.allow.length > 0)
-    : prof.engine === "grok" ? [...reg.caps.values()].find((c) => !held.has(c.name) && c.probe && c.grok) : undefined;
+  // Negative probe (claude and grok; codex has no per-tool grant to deny): one capability the profile lacks, whose tools no held
+  // capability grants (caps.ts negativeCandidate), asked for, must be refused. When none exists the record says so; it is never a leak.
+  const absent = negativeCandidate(reg, prof);
   if (absent) results.push(probeAbsent(reg, prof, absent, join(root, `not-${absent.name}`), pm, timeoutSec));
   rmSync(join(queueDir, "checks", prof.name), { recursive: true, force: true });
-  const rec: CheckRecord = { version: 1, profile: prof.name, hash: profileHash(reg, prof), at: nowIso(), model, ok: failing(results, prof).length === 0, results };
+  const rec: CheckRecord = { version: 1, profile: prof.name, hash: profileHash(reg, prof), at: nowIso(), model, ok: failing(results, prof).length === 0, results, ...(absent ? {} : { negative: "none applicable" as const }) };
   writeJson(checkFile(queueDir, prof.name), rec);
   return rec;
 }

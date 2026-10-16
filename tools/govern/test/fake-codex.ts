@@ -4,11 +4,17 @@
 //   FAKE_CODEX_STDIN_OUT  append the stdin text (one JSON string per call) to this file
 //   FAKE_CODEX_SCRIPTS    comma-separated JSONL files, one per successive call (counter in FAKE_CODEX_COUNTER)
 //   FAKE_CODEX_EXIT       exit code (default 0)
+//   FAKE_CODEX_HOME_OUT   append {home, files, config, authIsLink} (JSON) describing the CODEX_HOME the child saw
 // The text of the last agent_message is also written to the file after -o, like codex exec does.
-import { appendFileSync, readFileSync, writeFileSync, existsSync } from "node:fs";
+import { appendFileSync, readFileSync, writeFileSync, existsSync, readdirSync, lstatSync } from "node:fs";
 
 const argv = process.argv.slice(2);
 if (process.env.FAKE_CODEX_ARGV_OUT) appendFileSync(process.env.FAKE_CODEX_ARGV_OUT, JSON.stringify(argv) + "\n");
+if (process.env.FAKE_CODEX_HOME_OUT) {
+  const home = process.env.CODEX_HOME ?? "";
+  const auth = existsSync(home) ? lstatSync(`${home}/auth.json`, { throwIfNoEntry: false }) : undefined;
+  appendFileSync(process.env.FAKE_CODEX_HOME_OUT, JSON.stringify({ home, files: existsSync(home) ? readdirSync(home).sort() : null, config: existsSync(`${home}/config.toml`) ? readFileSync(`${home}/config.toml`, "utf8") : null, authIsLink: auth?.isSymbolicLink() ?? null }) + "\n");
+}
 const chunks: Buffer[] = [];
 process.stdin.on("data", (c) => chunks.push(c as Buffer));
 process.stdin.on("end", () => {

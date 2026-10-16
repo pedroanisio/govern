@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { generateKeyPairSync } from "node:crypto";
-import { makeEnv, childEnv, reply, write, jsonl } from "./helpers.ts";
+import { makeEnv, childEnv, reply, write, jsonl, seedChecks } from "./helpers.ts";
 import * as peer from "../lib/peer.ts";
 import * as queue from "../lib/queue.ts";
 import { stateDir } from "../lib/workspace.ts";
@@ -71,7 +71,7 @@ test("two hosts round trip through dispatch and relay preserves thread and local
   assert.equal(incoming.access, "read-only"); assert.equal(incoming.lane, undefined); assert.equal(incoming.estimateUsd, undefined);
   assert.match(queue.prompt(incoming), /from alice@a \(another host\)/);
   process.env.FAKE_CODEX_SCRIPTS = reply(b, "answer", { kind: "HANDOFF", summary: "checked", body: "answer" });
-  const dispatched = queue.dispatch(); assert.match(dispatched[0]!, /HANDOFF/, JSON.stringify(queue.find(incoming.id)));
+  seedChecks(); const dispatched = queue.dispatch(); assert.match(dispatched[0]!, /HANDOFF/, JSON.stringify(queue.find(incoming.id)));
   const answer = queue.all().find(x => x.m.to === "alice@a")!.m;
   const env = peer.envelope(answer, peer.fingerprint(peer.remote("a").publicKey), NOW); assert.equal(env.message.replyTo, orig.id);
   await peer.push({ now: NOW, post: async (_url, bytes, headers) => {

@@ -252,6 +252,7 @@ test("--write gives the runner write access; replies thread back to the original
 test("two dispatchers never run the same message (claim is an atomic rename)", () => {
   const e = env();
   govern(e, ["task", "send", "--to", "codex", "--project", "film", "--task", "a", "--summary", "one"]);
+  govern(e, ["task", "dispatch", "--max", "0"]); // records the profile's self-test (helpers.ts seedChecks), so both dispatchers go straight to the claim
   const s = reply(e, "ok", answer);
   const { spawn } = require("node:child_process");
   return Promise.all([0, 1].map(() => new Promise<string>((res) => {

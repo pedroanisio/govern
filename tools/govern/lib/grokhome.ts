@@ -24,17 +24,26 @@ export function prepareGrokHome(): string {
   const dir = grokHome(), auth = join(dir, "auth.json"), real = join(realGrokHome(), "auth.json");
   mkdirSync(dir, { recursive: true, mode: 0o700 });
   chmodSync(dir, 0o700);
-  const st = lstatSync(auth, { throwIfNoEntry: false });
-  if (st && !(st.isSymbolicLink() && readlinkSync(auth) === real)) rmSync(auth, { force: true });
-  if (existsSync(real) && !lstatSync(auth, { throwIfNoEntry: false })) symlinkSync(real, auth);
+  linkLogin(auth, real);
   writeFileSync(join(dir, "config.toml"), GROK_CONFIG_TOML, { mode: 0o600 });
   return dir;
 }
 
+/** Make `auth` a link to the real login `real` (when there is one); a copy (0600) when the link cannot be made. A stale or foreign `auth` is replaced. */
+export function linkLogin(auth: string, real: string): void {
+  const st = lstatSync(auth, { throwIfNoEntry: false });
+  if (st && !(st.isSymbolicLink() && readlinkSync(auth) === real)) rmSync(auth, { force: true });
+  if (existsSync(real) && !lstatSync(auth, { throwIfNoEntry: false })) {
+    try { symlinkSync(real, auth); } catch { copyFileSync(real, auth); chmodSync(auth, 0o600); }
+  }
+}
+
 /** After a run: when grok replaced the linked auth.json by a regular file (a token refresh written by rename), that file is the
  *  fresh login. It goes back to the real path (0600, atomic) when it is newer than the real one, and the link is restored. */
-export function syncBackAuth(): void {
-  const dir = grokHome(), auth = join(dir, "auth.json"), real = join(realGrokHome(), "auth.json");
+export function syncBackAuth(): void { syncBackLogin(join(grokHome(), "auth.json"), join(realGrokHome(), "auth.json")); }
+
+/** The same for any private home: `auth` is the private home's login file, `real` the user's. */
+export function syncBackLogin(auth: string, real: string): void {
   const st = lstatSync(auth, { throwIfNoEntry: false });
   if (!st || st.isSymbolicLink() || !st.isFile()) return;
   const cur = statSync(real, { throwIfNoEntry: false });

@@ -32,7 +32,8 @@ import * as reaping from "./lib/reap.ts";
 import * as qr from "./lib/qr.ts";
 import * as slicing from "./lib/slice.ts";
 import * as allowances from "./lib/allowances.ts";
-import { registry, getProfile, listText, showText, failing } from "./lib/caps.ts";
+import { registry, getProfile, listText, showText, failing, writes, readCheck, checkState, profileHash } from "./lib/caps.ts";
+import { asksForChanges, WRITE_RULE } from "./lib/writeask.ts";
 import { checkProfile } from "./lib/capcheck.ts";
 import { tune, chooseRunner } from "./lib/tune.ts";
 import { verifyQuote, origin, GROK_MARKERS } from "./lib/approval.ts";
@@ -649,6 +650,17 @@ function localTaskName(name: string, option: string): string {
   return name;
 }
 
+/** Refuse (exit 2) a message to a profile with no write capability whose summary or body asks for file changes (lib/writeask.ts). */
+function writeRefusal(profile: string, summary: string, body: string): void {
+  const reg = registry(), p = getProfile(profile, reg);
+  if (writes(reg, p)) return;
+  const hit = asksForChanges(`${summary}\n${body}`);
+  if (!hit) return;
+  const writer = [...reg.profiles.values()].find((x) => x.engine === p.engine && writes(reg, x));
+  fail(`profile ${p.name} cannot change files, but the message asks for it (rule: ${WRITE_RULE}; matched "${hit.verb}" and "${hit.object}"). ` +
+    `Fix: add --write (or --profile ${writer ? writer.name : "<a write profile>"}) so the task can edit, or --read-only to send it as it is and confirm it needs no edits`);
+}
+
 function cmdTask(a: Args): void {
   const sub = a._[1];
   if (sub === "send") {
@@ -656,14 +668,19 @@ function cmdTask(a: Args): void {
     const body = bodyFile ? readFileSync(bodyFile, "utf8") : opt(a, "body") ?? "";
     const { to, routed } = recipient(opt(a, "to") ?? "");
     const address = peer.parseAddress(to);
-    if (address && (flag(a, "write") || ["profile", "lane", "estimate-usd"].some(k => opt(a, k) !== undefined) || many(a, "file").length))
+    if (address && (flag(a, "write") || flag(a, "read-only") || ["profile", "lane", "estimate-usd"].some(k => opt(a, k) !== undefined) || many(a, "file").length))
       fail("the receiving host decides write access, profile, lane, estimate and files; these options cannot be sent to a peer");
     const t = address ? { access: "read-only" as const } : queue.resolveTarget(to, { write: flag(a, "write"), profile: opt(a, "profile") });
+    const readOnly = flag(a, "read-only");
+    if (readOnly && flag(a, "write")) fail("--read-only and --write contradict each other");
+    const summary = opt(a, "summary") ?? "";
+    if (!address && t.profile && !readOnly) writeRefusal(t.profile, summary, body);
     const lane = opt(a, "lane"), estimateUsd = amountOpt(a, "estimate-usd");
     const m = queue.send({
+      ...(readOnly && t.profile && !address ? { readOnlyConfirmed: true } : {}),
       ...(t.profile ? { profile: t.profile } : {}), ...(lane ? { lane } : {}),
       project: opt(a, "project") ?? "", task: opt(a, "task") ?? "", kind: opt(a, "kind") ?? "TASK", from: localTaskName(opt(a, "from") ?? resolveAs() ?? fail("cannot tell who is sending (no parent process is a registered Claude Code session): pass --from NAME"), "--from"),
-      to, ...(routed ? { routed: true } : {}), summary: opt(a, "summary") ?? "", body, files: many(a, "file"), replyTo: opt(a, "reply-to"),
+      to, ...(routed ? { routed: true } : {}), summary, body, files: many(a, "file"), replyTo: opt(a, "reply-to"),
       access: t.access, ...(estimateUsd !== undefined ? { estimateUsd } : {}),
     });
     out(`queued ${m.id} (${m.kind} to ${m.to}${m.profile && (m.profile !== `${m.to}-read` || opt(a, "profile")) && m.profile !== m.to ? `, profile ${m.profile}` : ""})`);
@@ -678,7 +695,7 @@ function cmdTask(a: Args): void {
   }
   if (sub === "show") {
     const hit = queue.find(a._[2] ?? "") ?? fail(`no message ${a._[2]}`);
-    for (const m of queue.thread(hit!.m)) out(`--- ${m.id} [${m.kind}] ${m.from}→${m.to} ${m.created}${m.profile ? `\nprofile: ${m.profile}${m.lane ? ` · lane ${m.lane}` : ""}` : ""}\n${m.summary}\n${m.body}${m.files.length ? `\nfiles: ${m.files.join(", ")}` : ""}${m.verification ? `\n${verdict(m.verification)}` : ""}${m.claim ? `\nclaim: ${JSON.stringify(m.claim)} (${queue.claimState(m)})` : ""}${m.result ? `\nresult: ${JSON.stringify(m.result)}` : ""}`);
+    for (const m of queue.thread(hit!.m)) out(`--- ${m.id} [${m.kind}] ${m.from}→${m.to} ${m.created}${m.profile ? `\nprofile: ${m.profile}${m.lane ? ` · lane ${m.lane}` : ""}` : ""}${queue.grokBound(m) ? `\n${queue.grokBound(m)}` : ""}\n${m.summary}\n${m.body}${m.files.length ? `\nfiles: ${m.files.join(", ")}` : ""}${m.verification ? `\n${verdict(m.verification)}` : ""}${m.claim ? `\nclaim: ${JSON.stringify(m.claim)} (${queue.claimState(m)})` : ""}${m.result ? `\nresult: ${JSON.stringify(m.result)}` : ""}`);
     return;
   }
   if (sub === "inbox") return cmdInbox(a);
@@ -1249,9 +1266,9 @@ export const COMMANDS: readonly Cmd[] = [
 
   { name: "task", section: 6, noSub: TASK_SUBS,
     subs: {
-      send: { flags: { value: ["to", "project", "task", "kind", "summary", "body", "body-file", "reply-to", "from", "profile", "lane", "estimate-usd"], multi: ["file"], bool: ["write"] },
+      send: { flags: { value: ["to", "project", "task", "kind", "summary", "body", "body-file", "reply-to", "from", "profile", "lane", "estimate-usd"], multi: ["file"], bool: ["write", "read-only"] },
         lines: [["--to auto|codex|claude|grok|owner|<session> --project P --task T --kind TASK --summary S (--body B | --body-file F)\n" +
-          "[--file REPO-RELATIVE-PATH]… [--reply-to ID] [--write | --profile P] [--lane SLUG] [--from NAME] [--estimate-usd N]", "--to must be a runner, a profile, owner, a LIVE session name or NAME@PEER;\nremote recipients require a live peer; the receiving host decides write access, profile, lane, estimate and files;\n--from must be a local name without @; only receive() files a remote sender;\n--profile P (govern caps) seals the run to P's capabilities; --lane names the lane whose gate authorises a spend, publish or push profile;\n--estimate-usd N: what the run is expected to cost, reserved against a matching allowance (govern allow)"]], run: cmdTask },
+          "[--file REPO-RELATIVE-PATH]… [--reply-to ID] [--write | --profile P | --read-only] [--lane SLUG] [--from NAME] [--estimate-usd N]", "--to must be a runner, a profile, owner, a LIVE session name or NAME@PEER;\nremote recipients require a live peer; the receiving host decides write access, profile, lane, estimate and files;\n--from must be a local name without @; only receive() files a remote sender;\n--profile P (govern caps) seals the run to P's capabilities; --read-only sends a message that asks for file changes to a profile that cannot write (it is refused otherwise: use --write or a write profile); --lane names the lane whose gate authorises a spend, publish or push profile;\n--estimate-usd N: what the run is expected to cost, reserved against a matching allowance (govern allow)"]], run: cmdTask },
       list: { flags: { value: ["to", "state", "project"] }, lines: [["[--to X] [--state open|claimed|done|failed] [--project P]", "the queue's messages; a dispatcher reply ends with [checked], [unverified] or [shape only] (content check, declared per profile, in queue config.json checks, or built in for REVIEW)"]], run: cmdTask },
       show: { lines: [["<id>", "a message and its thread, claim holder and result; a dispatcher reply also shows its check (checked, UNVERIFIED with the reason, or shape only)"]], run: cmdTask },
       inbox: { flags: { value: ["as"], bool: ["all", "hook"] },
@@ -1297,18 +1314,28 @@ export const COMMANDS: readonly Cmd[] = [
       serve: { flags: { value: ["host", "port"], bool: ["new-token"] }, lines: [["[--port 5004] [--host 127.0.0.1] [--new-token]", "the command center in a browser on the selected loopback host, refreshed every 15 s; prints the address with its access token, which is kept in the private state so the address survives restarts (--new-token replaces it)"]], run: cmdCenter },
       url: { flags: { value: ["host", "port"] }, lines: [["[--port 5004] [--host 127.0.0.1]", "print the command center's address with its access token without starting a server (creates the token when absent)"]], run: cmdCenter },
     } },
-  { name: "caps", section: 6, flags: { bool: ["check"] },
+  { name: "caps", section: 6, flags: { bool: ["check", "all"] },
     lines: [["", "the capabilities and profiles a queued agent can run under, with each profile's last self-test"],
       ["<profile>", "its permission patterns, Codex mapping, side-effect classes and secret names"],
-      ["--check <profile>", "self-test the grants: one probe per capability in a sealed session (haiku), recorded with the profile's hash;\nthe dispatcher refuses a profile whose last check failed or predates its definition.\nAlso one negative probe (a capability the profile lacks must be refused); a capability with no probe is untested and fails a required check"]],
+      ["--check <profile>", "self-test the grants: one probe per capability in a sealed session (haiku), recorded with the profile's hash;\nthe dispatcher refuses a profile whose last check failed, and runs the check itself (once per profile hash) for one with none or a stale one.\nAlso one negative probe (a capability the profile lacks, whose tools no held capability grants, must be refused; none applicable is recorded as such); a capability with no probe is untested and fails a required check"],
+      ["--check --all", "run the check for every profile that has no current passing one (never checked, changed since, or failed); the list shows them as not run, stale (profile changed) or failed"]],
     run: (a) => {
       const reg = registry(), name = a._[1];
+      if (flag(a, "all") && !flag(a, "check")) fail("--all goes with --check: govern caps --check --all");
       if (flag(a, "check")) {
-        const rec = checkProfile(queue.QUEUE(), reg, name ?? fail("govern caps --check <profile>"));
-        for (const r of rec.results) out(`  ${r.capability.padEnd(10)} ${r.status === "invalid" ? "" : `${r.status.padEnd(8)} `}${r.evidence}`.trimEnd());
-        const bad = failing(rec.results, getProfile(name!, reg));
-        out(bad.length ? `${rec.profile}: check FAILED (${bad.join(", ")})` : `${rec.profile}: check passed (${rec.results.length} probe${rec.results.length === 1 ? "" : "s"})`);
-        if (bad.length) process.exitCode = 1;
+        if (flag(a, "all") && name) fail("govern caps --check --all takes no profile name");
+        const todo = flag(a, "all") ? [...reg.profiles.values()].filter((p) => checkState(readCheck(queue.QUEUE(), p.name), profileHash(reg, p)) !== "passed").map((p) => p.name)
+          : [name ?? fail("govern caps --check <profile> (or --all)")];
+        if (!todo.length) out("every profile has a current passing check");
+        for (const n of todo) {
+          const rec = checkProfile(queue.QUEUE(), reg, n);
+          if (todo.length > 1) out(`${n}:`);
+          for (const r of rec.results) out(`  ${r.capability.padEnd(10)} ${r.status === "invalid" ? "" : `${r.status.padEnd(8)} `}${r.evidence}`.trimEnd());
+          if (rec.negative) out(`  negative: ${rec.negative}`);
+          const bad = failing(rec.results, getProfile(n, reg));
+          out(bad.length ? `${rec.profile}: check FAILED (${bad.join(", ")})` : `${rec.profile}: check passed (${rec.results.length} probe${rec.results.length === 1 ? "" : "s"})`);
+          if (bad.length) process.exitCode = 1;
+        }
         return;
       }
       // With no workspace there is no queue, hence no self-test records and no runner overrides: list the built-in profiles alone.
