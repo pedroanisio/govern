@@ -47,6 +47,7 @@ govern task send --to codex --project <slug> --task <name> --kind TASK --summary
 - `--to` is a runner (`codex`, `claude`, `grok`), a profile, `auto`, `owner`, a live session name or `NAME@PEER` on another host. Prefer `codex` for checks. `--write` lets the runner change files in the project folder; the default is read-only. For `NAME@PEER` pass none of `--write`, `--profile`, `--lane`, `--estimate-usd`, `--file`.
 - Your mail: `govern task inbox`. Answer with `govern task reply <id> --kind ACK|REVIEW|HANDOFF|BLOCKED|… --summary … --body …`; `govern task close <id> --note …` when nothing needs saying. Read replies once, when the owner asks or the work needs them, never in a loop. Do not send as `owner`; the owner has no inbox.
 - Every reply carries one of three marks: `[checked: …]` (a content check passed), `[unverified]` (the check failed or could not run: read the reply yourself before acting on it) and `[shape only]` (no check exists for the kind: it proves the form only).
+- Ask for checks: `--check commit-refs|claims-cited|file-refs` and `--verify -- <test command>` make govern verify the reply (every HANDOFF's commits are checked anyway); a reply that does not parse gets one repair call before it fails (`[repaired]`).
 - **Never message other sessions and never start subagents** (no Agent tool, no Workflow). Sessions are not woken by the queue.
 
 ## The owner's gates

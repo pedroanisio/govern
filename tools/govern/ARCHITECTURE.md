@@ -211,7 +211,10 @@ A session does not message other sessions or start subagents. It sends a request
 `grok`). The session runs under the capability profile named for it, and it receives only the message, its thread and
 the named files. The reply must be JSON of a known kind (ACK, REVIEW, HANDOFF, BLOCKED and so on). It is checked by the
 content checks that both the task's kind and the reply's kind select, and it is then filed back to the sender. A reply
-that fails verification reaches the sender as BLOCKED. A thread that reaches `maxRuns` (default 4) goes to the owner.
+that fails verification reaches the sender as BLOCKED, but only after one bounded repair call: a run that exited 0 with
+text that does not parse is re-sent to the same engine, sealed to `read`, to be wrapped as a valid reply with the same
+content (`queue.ts`). The sender can add checks with `--check NAME` and a command with `--verify`; `replycheck.ts`
+resolves the names and `checks/` holds the built-ins (file-refs, commit-refs, claims-cited). A thread that reaches `maxRuns` (default 4) goes to the owner.
 
 ## Decisions and their trade-offs
 

@@ -52,7 +52,7 @@
 #     govern agents register --project P... [--as NAME | --ephemeral] [--alias NAME]... [--description TEXT] [--ttl S]
 #     govern task send --to codex|claude|grok|RUNNER|PROFILE|auto|owner|SESSION|NAME@PEER --project P --task T --kind K --summary S
 #                      (--body B | --body-file F) [--file PATH]... [--reply-to ID] [--write | --profile P]
-#                      [--lane SLUG] [--from NAME] [--estimate-usd N]
+#                      [--lane SLUG] [--from NAME] [--estimate-usd N] [--check NAME]... [--verify -- ARGV...]
 #     govern task list [--to X] [--state S] [--project P]  |  show ID  |  inbox [--as NAME] [--all] [--hook]
 #     govern task close ID [--as NAME] [--note T]  |  reclaim ID --note T [--as NAME]  |  forward ID --to NAME [--as NAME]
 #     govern task reply ID --kind K --summary S (--body B | --body-file F) [--as NAME]
@@ -100,6 +100,20 @@
 #     Remote mail belongs to the relay. Expiry records closedBy=govern and a reason, visible in the center, and sends
 #     a NOTICE only to a known sender. Claude receives --json-schema and returns structured_output; parseReply still
 #     validates every envelope, and malformed replies are kept whole without coercion.
+#     A run that exits 0 with text that does not parse gets ONE repair call before it fails: the same engine and profile
+#     sealed to `read` only, its cheapest model (Claude haiku, at most 0.25 USD; Codex low effort), 120 s, the raw text
+#     in the prompt, "nothing added, nothing removed"; the repaired reply must keep the original's words and goes
+#     through parseReply and the content checks. The result, the ledger and `task show` record it ("envelope repaired
+#     by one <engine> call"; `task list` shows [repaired]); a repair that fails keeps QUEUE/failed/<id>.reply.txt and
+#     .repair.txt. A run that failed otherwise (nonzero exit, timeout, is_error) is never repaired.
+#     Reply checks: HANDOFF replies are checked by default (every commit they name must exist in the project's git
+#     repository; a reply naming none stays [shape only]). `task send --check NAME` adds a check, resolved from the
+#     profile's capabilities file `checks`, QUEUE/config.json `checks.named`, then the built-ins (file-refs,
+#     commit-refs, claims-cited: every id of the --file ledger {"claims": [{"id": ...}]} must appear in the reply);
+#     an unknown NAME is refused (exit 2). `task send --verify -- ARGV...` has govern run ARGV (no shell, 600 s, in the
+#     project folder) after the other checks: [checked: verify (exit 0)] only on exit 0, else [unverified] with the
+#     exit code and the last 12 lines under QUEUE/replychecks/. `desk` counts the day's replies: checked, shape only,
+#     unverified, repaired.
 #     Standard host setup includes task install-service and its printed enable command. --system previews a system
 #     unit with current User=; --system --write requires root, otherwise prints the refusal and unit, never escalates.
 #     Peer delivery uses signed HTTP behind a TLS tunnel (PEERS.md). Peer add and revoke require the owner's
@@ -217,8 +231,12 @@
 #     --effort E              ask: low, medium or high
 #     --model M               ask: the Codex model
 #     --since DATE            usage: count only work segments and machine time from YYYY-MM-DD on
-#     --check                 install-skill, caps: install-skill: install nothing, exit 1 when SKILLS-DIR/govern is missing,
-#                             a copy, a link elsewhere or has a stale SKILL.md; caps: self-test a profile's grants in a sealed session
+#     --check                 install-skill, caps, task send: install-skill: install nothing, exit 1 when SKILLS-DIR/govern is
+#                             missing, a copy, a link elsewhere or has a stale SKILL.md; caps: self-test a profile's grants in a
+#                             sealed session; task send: NAME, a content check on the reply (repeatable; file-refs, commit-refs,
+#                             claims-cited, or one the profile or config.json defines)
+#     --verify                task send: run the command after -- in the project folder once the reply is filed and the checks
+#                             pass; the reply is [checked] only on exit 0
 #     --to X                  human, task send, task list, task forward: human delegate: the person the task goes to; send:
 #                             codex, claude, grok, a queue config runner, a profile, auto, owner or a live session; list: only messages to X; forward:
 #                             the new recipient
@@ -293,6 +311,7 @@
 #     fills {python}).
 #     Limits and models: GOVERN_CTX_WARN (150000) · GOVERN_TARGET_CTX (150000, tune) · GOVERN_MAX_INLINE (60000, ask)
 #     · GOVERN_QUEUE_MAX_INLINE (40000) · GOVERN_QUEUE_CLAUDE_MODEL (sonnet) · GOVERN_QUEUE_CODEX_EFFORT (medium)
+#     · GOVERN_QUEUE_REPAIR (1; 0 turns off the one envelope-repair call) · GOVERN_QUEUE_REPAIR_EFFORT (low, codex repair)
 #     · GOVERN_CAPS_CHECK_MODEL (haiku, caps --check) · GOVERN_GROK_CHECK_MODEL (the profile's model, caps --check)
 #     · GOVERN_QUEUE_GROK_MODEL (grok's default) · GOVERN_GROK_MAX_TURNS (25; grok has no dollar cap)
 #     · GOVERN_QUEUE_TIMEOUT_SEC (900, one dispatched run); holderless claims fail after twice this, at least 3600 s.
@@ -307,7 +326,7 @@
 #     Set for what govern runs: GOVERN_JOB_ID, GOVERN_JOB_DIR (every job; slice and up read GOVERN_JOB_DIR to find the
 #     job they run in) · GOVERN_TAG, GOVERN_LANE, GOVERN_RESOURCE, GOVERN_COUNT, GOVERN_ID (a resource's up, down and
 #     list commands) · GOVERN_PIECES, GOVERN_OUT, GOVERN_TAG, GOVERN_PIECE, GOVERN_ID (a slice recipe's steps)
-#     · GOVERN_REPLY_FILE (a reply check). task install-service writes PATH, GOVERN_REPO and GOVERN_QUEUE into
+#     · GOVERN_REPLY_FILE (a reply check) · GOVERN_TASK_FILES (a reply check: the task's attached files, a JSON array of paths). task install-service writes PATH, GOVERN_REPO and GOVERN_QUEUE into
 #     the unit, and GOVERN_STATE and GOVERN_PROJECTS when they are set; a queued run drops CLAUDECODE and the other
 #     CLAUDE_CODE_ variables. A sealed grok run (a queued one, or a conversation worker on grok) gets HOME (a private
 #     empty folder), GROK_HOME (govern's private grok home), GROK_MEMORY=0 and

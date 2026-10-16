@@ -634,7 +634,7 @@ function wakeNote(m: queue.Message): void {
 /** `rowLine` shows the reply mark after the summary. */
 const rowLine = ({ state, m }: { state: string; m: queue.Message }) => {
   const u = m.result?.usage;
-  return `${m.id} ${state.padEnd(7)} ${m.kind.padEnd(8)} ${m.from}→${m.to} [${m.project}/${m.task}] ${clip(m.summary, 70)}${m.verification ? ` ${tag(m.verification)}` : ""}${u ? ` · ${kTok(u.input)} in, ${kTok(u.output)} out, ${m.result!.seconds}s` : ""}`;
+  return `${m.id} ${state.padEnd(7)} ${m.kind.padEnd(8)} ${m.from}→${m.to} [${m.project}/${m.task}] ${clip(m.summary, 70)}${m.verification ? ` ${tag(m.verification)}` : ""}${m.repaired || m.result?.repaired ? " [repaired]" : ""}${m.check ? ` [check: ${m.check.join(", ")}]` : ""}${u ? ` · ${kTok(u.input)} in, ${kTok(u.output)} out, ${m.result!.seconds}s` : ""}`;
 };
 
 function cmdInbox(a: Args): void {
@@ -669,15 +669,17 @@ function cmdTask(a: Args): void {
     const body = bodyFile ? readFileSync(bodyFile, "utf8") : opt(a, "body") ?? "";
     const { to, routed } = recipient(opt(a, "to") ?? "");
     const address = peer.parseAddress(to);
-    if (address && (flag(a, "write") || ["profile", "lane", "estimate-usd"].some(k => opt(a, k) !== undefined) || many(a, "file").length))
-      fail("the receiving host decides write access, profile, lane, estimate and files; these options cannot be sent to a peer");
+    if (address && (flag(a, "write") || flag(a, "verify") || ["profile", "lane", "estimate-usd"].some(k => opt(a, k) !== undefined) || many(a, "file").length || many(a, "check").length))
+      fail("the receiving host decides write access, profile, lane, estimate, files and checks; these options cannot be sent to a peer");
+    const checks = [...new Set(many(a, "check"))], verifyArgv = flag(a, "verify") ? a._.slice(2) : [];
+    if (flag(a, "verify") && !verifyArgv.length) fail("--verify needs the command after --: govern task send … --verify -- npm test");
     const t = address ? { access: "read-only" as const } : queue.resolveTarget(to, { write: flag(a, "write"), profile: opt(a, "profile") });
     const lane = opt(a, "lane"), estimateUsd = amountOpt(a, "estimate-usd");
     const m = queue.send({
       ...(t.profile ? { profile: t.profile } : {}), ...(lane ? { lane } : {}),
       project: opt(a, "project") ?? "", task: opt(a, "task") ?? "", kind: opt(a, "kind") ?? "TASK", from: localTaskName(opt(a, "from") ?? resolveAs() ?? fail("cannot tell who is sending (no parent process is a registered Claude Code session): pass --from NAME"), "--from"),
       to, ...(routed ? { routed: true } : {}), summary: opt(a, "summary") ?? "", body, files: many(a, "file"), replyTo: opt(a, "reply-to"),
-      access: t.access, ...(estimateUsd !== undefined ? { estimateUsd } : {}),
+      access: t.access, ...(estimateUsd !== undefined ? { estimateUsd } : {}), ...(checks.length ? { check: checks } : {}), ...(verifyArgv.length ? { verify: verifyArgv } : {}),
     });
     out(`queued ${m.id} (${m.kind} to ${m.to}${m.profile && (m.profile !== `${m.to}-read` || opt(a, "profile")) && m.profile !== m.to ? `, profile ${m.profile}` : ""})`);
     jev.shadowTask(m);
@@ -691,7 +693,7 @@ function cmdTask(a: Args): void {
   }
   if (sub === "show") {
     const hit = queue.find(a._[2] ?? "") ?? fail(`no message ${a._[2]}`);
-    for (const m of queue.thread(hit!.m)) out(`--- ${m.id} [${m.kind}] ${m.from}→${m.to} ${m.created}${m.profile ? `\nprofile: ${m.profile}${m.lane ? ` · lane ${m.lane}` : ""}` : ""}\n${m.summary}\n${m.body}${m.files.length ? `\nfiles: ${m.files.join(", ")}` : ""}${m.verification ? `\n${verdict(m.verification)}` : ""}${m.claim ? `\nclaim: ${JSON.stringify(m.claim)} (${queue.claimState(m)})` : ""}${m.result ? `\nresult: ${JSON.stringify(m.result)}` : ""}`);
+    for (const m of queue.thread(hit!.m)) out(`--- ${m.id} [${m.kind}] ${m.from}→${m.to} ${m.created}${m.profile ? `\nprofile: ${m.profile}${m.lane ? ` · lane ${m.lane}` : ""}` : ""}\n${m.summary}\n${m.body}${m.files.length ? `\nfiles: ${m.files.join(", ")}` : ""}${m.check ? `\ncheck: ${m.check.join(", ")}` : ""}${m.verify ? `\nverify: ${m.verify.join(" ")}` : ""}${queue.repairOf(m) ? `\nenvelope repaired by one ${queue.repairOf(m)!.engine} call` : ""}${m.verification ? `\n${verdict(m.verification)}` : ""}${m.claim ? `\nclaim: ${JSON.stringify(m.claim)} (${queue.claimState(m)})` : ""}${m.result ? `\nresult: ${JSON.stringify(m.result)}` : ""}`);
     return;
   }
   if (sub === "inbox") return cmdInbox(a);
@@ -1273,11 +1275,12 @@ export const COMMANDS: readonly Cmd[] = [
 
   { name: "task", section: 6, noSub: TASK_SUBS,
     subs: {
-      send: { flags: { value: ["to", "project", "task", "kind", "summary", "body", "body-file", "reply-to", "from", "profile", "lane", "estimate-usd"], multi: ["file"], bool: ["write"] },
+      send: { flags: { value: ["to", "project", "task", "kind", "summary", "body", "body-file", "reply-to", "from", "profile", "lane", "estimate-usd"], multi: ["file", "check"], bool: ["write", "verify"] },
         lines: [["--to auto|codex|claude|grok|owner|<session> --project P --task T --kind TASK --summary S (--body B | --body-file F)\n" +
-          "[--file REPO-RELATIVE-PATH]… [--reply-to ID] [--write | --profile P] [--lane SLUG] [--from NAME] [--estimate-usd N]", "--to must be a runner, a profile, owner, a LIVE session name or NAME@PEER;\nremote recipients require a live peer; the receiving host decides write access, profile, lane, estimate and files;\n--from must be a local name without @; only receive() files a remote sender;\n--profile P (govern caps) seals the run to P's capabilities; --lane names the lane whose gate authorises a spend, publish or push profile;\n--estimate-usd N: what the run is expected to cost, reserved against a matching allowance (govern allow)"]], run: cmdTask },
-      list: { flags: { value: ["to", "state", "project"] }, lines: [["[--to X] [--state open|claimed|done|failed] [--project P]", "the queue's messages; a dispatcher reply ends with [checked], [unverified] or [shape only] (content check, declared per profile, in queue config.json checks, or built in for REVIEW)"]], run: cmdTask },
-      show: { lines: [["<id>", "a message and its thread, claim holder and result; a dispatcher reply also shows its check (checked, UNVERIFIED with the reason, or shape only)"]], run: cmdTask },
+          "[--file REPO-RELATIVE-PATH]… [--reply-to ID] [--write | --profile P] [--lane SLUG] [--from NAME] [--estimate-usd N]\n" +
+          "[--check NAME]… [--verify -- ARGV…]", "--check NAME: a content check on the reply besides the kind's (profile capabilities file `checks`, queue config.json `checks.named`, or built in: file-refs, commit-refs, claims-cited);\nan unknown NAME is refused (exit 2); all must pass for [checked]; claims-cited needs --file LEDGER.json ({\"claims\":[{\"id\":…}]}) and requires every id in the reply;\n--verify -- ARGV…: after the reply is filed and the checks pass govern runs ARGV (no shell, 600 s) in the project folder; [checked: verify (exit 0)] only on exit 0, else [unverified] with the exit code and the last 12 lines (queue/replychecks/);\nHANDOFF replies are checked by default: every commit they name must exist in the project's git repository;\nGOVERN_QUEUE_REPAIR=0 turns off the one envelope-repair call a run whose reply does not parse gets (read-only, cheapest model, 120 s);\n--to must be a runner, a profile, owner, a LIVE session name or NAME@PEER;\nremote recipients require a live peer; the receiving host decides write access, profile, lane, estimate and files;\n--from must be a local name without @; only receive() files a remote sender;\n--profile P (govern caps) seals the run to P's capabilities; --lane names the lane whose gate authorises a spend, publish or push profile;\n--estimate-usd N: what the run is expected to cost, reserved against a matching allowance (govern allow)"]], run: cmdTask },
+      list: { flags: { value: ["to", "state", "project"] }, lines: [["[--to X] [--state open|claimed|done|failed] [--project P]", "the queue's messages; a dispatcher reply ends with [checked], [unverified] or [shape only] (content check, declared per profile, in queue config.json checks, built in for REVIEW and HANDOFF, or chosen by the sender with --check / --verify), then [repaired] when its envelope needed the one repair call; a task shows [check: NAME]"]], run: cmdTask },
+      show: { lines: [["<id>", "a message and its thread, claim holder and result; a dispatcher reply also shows its check (checked, UNVERIFIED with the reason, or shape only); a task shows its check: and verify: and \"envelope repaired by one <engine> call\" when it was"]], run: cmdTask },
       inbox: { flags: { value: ["as"], bool: ["all", "hook"] },
         lines: [["[--as NAME] [--all] [--hook]", "open messages for NAME (default: GOVERN_AS, else this session);\n--hook is silent when empty"]], run: cmdTask },
       close: { flags: { value: ["as", "note"] }, lines: [["<id> [--as NAME] [--note T]", "close a message addressed to NAME"]], run: cmdTask },

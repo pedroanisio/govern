@@ -173,7 +173,7 @@ test("a grok run whose usage is missing or incomplete settles as reserved, never
     const e = env();
     const spent = budget(e);
     govern(e, ["task", "send", "--to", "grok", "--project", "film", "--task", "t", "--summary", name]);
-    const r = govern(e, ["task", "dispatch"], { FAKE_GROK_NOUSAGE: mode, FAKE_GROK_RESULT: JSON.stringify({ kind: "ACK", summary: "s", body: "b" }), ...extra });
+    const r = govern(e, ["task", "dispatch"], { FAKE_GROK_NOUSAGE: mode, FAKE_GROK_RESULT: JSON.stringify({ kind: "ACK", summary: "all done", body: "b" }), ...extra });
     assert.equal(r.code, 0, r.err);
     assert.equal(present(spent()[0], "a spent row").actual, 2, `${name}: charged as reserved`);
     const led = jsonl(join(e.root, "queue", "ledger.jsonl"))[0];
@@ -183,7 +183,8 @@ test("a grok run whose usage is missing or incomplete settles as reserved, never
   const e = env();
   const spent = budget(e);
   govern(e, ["task", "send", "--to", "grok", "--project", "film", "--task", "t", "--summary", "ok"]);
-  govern(e, ["task", "dispatch"], { FAKE_GROK_RESULT: JSON.stringify({ kind: "ACK", summary: "s", body: "b" }) });
+  // a valid summary (3 characters or more): an invalid one would cost the one envelope-repair call as well
+  govern(e, ["task", "dispatch"], { FAKE_GROK_RESULT: JSON.stringify({ kind: "ACK", summary: "all done", body: "b" }) });
   assert.equal(present(spent()[0], "a spent row").actual, 0.0123);
 });
 

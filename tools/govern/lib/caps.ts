@@ -8,7 +8,7 @@ import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { fail, sha256 } from "./util.ts";
-import { obj, arr, str, literal, check, reject, parseFile } from "./shape.ts";
+import { obj, arr, str, literal, check, reject, parseFile, record } from "./shape.ts";
 import { load } from "./project.ts";
 import { projectsDir, capabilitiesDir } from "./workspace.ts";
 import { processOf } from "./process.ts";
@@ -69,6 +69,8 @@ export interface Profile {
   selfTest: "required" | "optional";
   /** The check run against this profile's queue replies (lib/replycheck.ts); it does not change what the profile may do, so it is not in the self-test hash. */
   check?: CheckDef;
+  /** The named reply checks of the capabilities file that defines this profile (`checks` there); a sender picks one with `--check NAME`. */
+  checks?: Record<string, CheckDef>;
   file: string;
 }
 /** The six profiles the fixed access levels (--to claude|codex|grok, with or without --write) became. */
@@ -92,7 +94,8 @@ const CAP = obj(
   { codex: CODEX, grok: GROK, resource: str, cost: str, secrets: arr(secretName), gate: ident, probe: PROBE });
 const PROFILE = obj({ name: ident, engine: literal("claude", "codex", "grok"), capabilities: arr(ident, { nonEmpty: true }) },
   { description: str, model: str, mcpConfig: str, selfTest: literal("required", "optional"), check: CHECK });
-const FILE = obj({ version: literal(1) }, { capabilities: arr(CAP), profiles: arr(PROFILE) });
+/** `checks`: named reply checks, for the profiles this file defines; a sender picks one with `govern task send --check NAME`. */
+const FILE = obj({ version: literal(1) }, { capabilities: arr(CAP), profiles: arr(PROFILE), checks: record(CHECK) });
 
 export const extraDir = capabilitiesDir;
 
@@ -118,7 +121,7 @@ function readDir(dir: string): { caps: Capability[]; profiles: Profile[] } {
     }
     for (const p of v.profiles ?? []) {
       if (RESERVED.includes(p.name)) fail(`${file}: profile name "${p.name}" is reserved (it is a runner or recipient)`);
-      profiles.push({ ...p, description: p.description ?? "", selfTest: p.selfTest ?? "required", ...(p.mcpConfig ? { mcpConfig: resolve(dirname(file), p.mcpConfig) } : {}), file });
+      profiles.push({ ...p, description: p.description ?? "", selfTest: p.selfTest ?? "required", ...(v.checks ? { checks: v.checks } : {}), ...(p.mcpConfig ? { mcpConfig: resolve(dirname(file), p.mcpConfig) } : {}), file });
     }
   }
   return { caps, profiles };
