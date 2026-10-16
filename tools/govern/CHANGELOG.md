@@ -26,6 +26,8 @@ All notable changes to govern are documented here, following Keep a Changelog.
 
 ### Added
 
+- Website content covering govern's purpose, concepts, roadmap, setup, lanes, queue, full command reference, peers, remote devices, business processes and architecture.
+
 - `govern help --topics` lists the reference documents with their paths.
 - `govern manual --full` prints the core manual followed by REFERENCE.md; `govern manual --size` prints the bytes and approximate tokens (bytes / 3.6) of both.
 - A run that exits 0 with a reply that does not parse gets one repair call (same engine and profile, `read` only, cheapest model, 120 s) before it fails; the task, the ledger and `task show` record it, `task list` shows `[repaired]`, and a failed repair keeps `.reply.txt` and `.repair.txt`. `GOVERN_QUEUE_REPAIR=0` turns it off.
