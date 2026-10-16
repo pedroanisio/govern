@@ -1,6 +1,6 @@
 import { gateApproved } from './business.ts';
 // The owner's one screen: every lane, the owner's inbox, the queue and today's tokens. Reads files only: no model,
-// no transcript scan (that is `govern usage`).
+// transcript scan beyond today's transcripts, which an index keeps parsed (the full report is `govern usage`).
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { readJsonl, kTok, clip } from "./util.ts";
@@ -14,6 +14,7 @@ import * as allowances from "./allowances.ts";
 import { machineSummary, machineEntries, stateDir } from "./resources.ts";
 import { deskLines } from "./reap.ts";
 import { deskLines as sliceLines } from "./slice.ts";
+import { deskUsage, unattributedLines, type Stray } from "./usage.ts";
 
 const ago = (iso: string) => {
   const m = Math.round((Date.now() - Date.parse(iso)) / 60000);
@@ -100,12 +101,27 @@ export function desk(): { text: string; failed: number; lanes: number } {
     return { p, n, st };
   }).filter((x) => x.n || x.st !== "none");
   if (byProfile.length) L.push("", `PROFILES  ${byProfile.map(({ p, n, st }) => `${p.name}: ${n} queued${st === "none" ? "" : `, check ${st}`}`).join(" · ")}`);
-  // ---- tokens today (queue runs and codex asks; chat sessions: govern usage)
+  // ---- tokens today (queue runs, codex asks, and chat sessions attributed to a lane)
   const byLane = tokensOn(slugs, day);
-  L.push("", `TOKENS TODAY (queue runs and codex asks; chat sessions: govern usage)`);
+  const partly = new Set<string>();
+  let stray: Stray[] = [], attributed = new Set<string>(), chatNote = "";
+  try {
+    const u = deskUsage(day);
+    stray = u.stray; attributed = u.attributed;
+    for (const [lane, c] of u.chat) {
+      const x = byLane.get(lane) ?? { calls: 0, input: 0, output: 0, usd: 0 };
+      x.calls += c.calls; x.input += c.input; x.output += c.output; x.usd += c.usd;
+      byLane.set(lane, x);
+      if (c.partly) partly.add(lane);
+    }
+  } catch (e) { chatNote = `  chat sessions unreadable: ${(e as Error).message}`; }
+  L.push("", "TOKENS TODAY (queue runs, codex asks and chat sessions attributed to a lane by segment, GOVERN_LANE or folder; a run is a queue run or a model call)");
   if (!byLane.size) L.push("  (none)");
   for (const [lane, x] of [...byLane].sort((a, b) => b[1].input - a[1].input))
-    L.push(`  ${lane.padEnd(40)} ${String(x.calls).padStart(3)} runs ${kTok(x.input).padStart(7)} in ${kTok(x.output).padStart(6)} out${x.usd ? `  $${x.usd.toFixed(2)}` : ""}`);
+    L.push(`  ${lane.padEnd(40)} ${String(x.calls).padStart(3)} runs ${kTok(x.input).padStart(7)} in ${kTok(x.output).padStart(6)} out${x.usd ? `  $${x.usd.toFixed(2)}` : ""}${partly.has(lane) ? "  (partly unsegmented)" : ""}`);
+  if (chatNote) L.push(chatNote);
+  // ---- sessions that belong to no lane, and lanes with work and no session
+  L.push("", ...unattributedLines(stray, attributed));
   // ---- machines today (jobs run on resources: seconds, and money where the price is by time)
   L.push("", "MACHINES TODAY (jobs on resources and locally; seconds held, money where time-priced)");
   const rows2 = slugs.flatMap((s) => {
