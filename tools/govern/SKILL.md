@@ -74,6 +74,7 @@ govern task send --to codex --project <slug> --task <name> --kind TASK --summary
 
 ## Where the rest is
 
+- `govern install-skill [<skills dir>]` links `<skills dir>/govern` to this folder (a symlink, never a copy; `--replace` removes a real directory first; `--check` verifies).
 - `govern help <command>`: flags and rules of one command. `govern help --topics`: the documents below with their paths.
 - `govern manual --full`: this manual plus [REFERENCE.md](REFERENCE.md), the detailed rules (workspace, checks, resources, allowances, runners, capabilities, environment variables). `govern manual --size` prints the sizes.
 - [BUSINESS.md](BUSINESS.md): typed case data, routes, human tasks, quorum. [LIFECYCLE.md](LIFECYCLE.md): timers, events, recovery, subprocesses. [ITERATION.md](ITERATION.md): loops and branching. [CONVERSATIONS.md](CONVERSATIONS.md): persistent conversations. [REMOTE.md](REMOTE.md): phone and devices. [PEERS.md](PEERS.md): other hosts and mesh.

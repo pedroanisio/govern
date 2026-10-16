@@ -1253,19 +1253,22 @@ export const COMMANDS: readonly Cmd[] = [
     } },
   { name: "manual", section: 5, footer: false, flags: { bool: ["full", "size"] },
     lines: [["[<process> | --full | --size]", "the AI's core manual (SKILL.md), or the manual of one process's kind of work;\n--full adds REFERENCE.md; --size prints the bytes and approximate tokens (bytes / 3.6) of both"]], run: cmdManual },
-  { name: "install-skill", section: 5, footer: false, flags: { bool: ["check"] },
-    lines: [["[<skills dir>] [--check]", "install SKILL.md as the govern skill (default: the repo's .claude/skills), atomically and\n" +
-      "read back by sha256; --check installs nothing and exits 1 when the installed copy is missing or differs"]],
+  { name: "install-skill", section: 5, footer: false, flags: { bool: ["check", "replace"] },
+    lines: [["[<skills dir>] [--check] [--replace]", "link <skills dir>/govern (default: the repo's .claude/skills) to the tool's tracked folder (tools/govern:\n" +
+      "SKILL.md and REFERENCE.md), never a copy; a real directory or file there is refused unless --replace;\n" +
+      "--check installs nothing and exits 1 when the entry is missing, a copy, a link elsewhere or has a stale SKILL.md"]],
     run: (a) => {
-      const dest = join(a._[1] ?? join(repo(), ".claude", "skills"), "govern", "SKILL.md");
+      const skills = a._[1] ?? join(repo(), ".claude", "skills");
+      const dest = join(skills, "govern");
       if (flag(a, "check")) {
-        const drift = skillDrift(SKILL, dest);
+        if (flag(a, "replace")) fail("govern install-skill --check installs nothing; --replace belongs to the install");
+        const drift = skillDrift(HERE, skills);
         if (drift) fail(drift, 1);
-        out(`${dest} is current (sha256 ${sha256File(SKILL)})`);
+        out(`${dest} is a link to ${HERE}; SKILL.md is current (sha256 ${sha256File(SKILL)}), REFERENCE.md sha256 ${sha256File(REFERENCE)}`);
         return;
       }
-      const sha = installSkill(SKILL, dest);
-      out(`installed ${dest} (sha256 ${sha}); refresh it with govern install-skill after editing tools/govern/SKILL.md`);
+      const did = installSkill(HERE, skills, flag(a, "replace"));
+      out(`${did}: ${dest} -> ${HERE} (SKILL.md sha256 ${sha256File(SKILL)}, REFERENCE.md sha256 ${sha256File(REFERENCE)}); edits to tools/govern/SKILL.md show at once, there is nothing to refresh`);
     } },
 
   { name: "task", section: 6, noSub: TASK_SUBS,

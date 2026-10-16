@@ -1,102 +1,152 @@
-// install-skill: an atomic, read-back-verified copy of SKILL.md, and --check that says whether the installed copy is current.
+// install-skill: <skills dir>/govern is a symbolic link to the tool's tracked folder, never a copy; --check says whether it is.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { createHash } from "node:crypto";
-import { readFileSync, readdirSync, writeFileSync, existsSync, mkdirSync, statSync } from "node:fs";
-import { join } from "node:path";
+import { readFileSync, readdirSync, existsSync, lstatSync, readlinkSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
+import { join, resolve } from "node:path";
 import { makeEnv, govern, tempDir, write, HERE } from "./helpers.ts";
 import { installSkill, skillDrift } from "../lib/skill.ts";
 import { GovernError } from "../lib/util.ts";
 
-const SRC = join(HERE, "..", "SKILL.md");
-const sha = (b: string | Buffer) => createHash("sha256").update(b).digest("hex");
+const TOOL = resolve(HERE, "..");
 const e = makeEnv();
+const isLink = (p: string) => lstatSync(p, { throwIfNoEntry: false })?.isSymbolicLink() === true;
 
-test("install-skill installs SKILL.md byte for byte, leaves no temp file, and --check passes on it", () => {
+test("install-skill on a fresh dir creates a symlink to the tool folder, and --check passes on it", () => {
   const dir = tempDir("skills");
+  const link = join(dir, "govern");
   const r = govern(e, ["install-skill", dir]);
   assert.equal(r.code, 0, r.err);
-  const dest = join(dir, "govern", "SKILL.md");
-  assert.equal(sha(readFileSync(dest)), sha(readFileSync(SRC)));
-  assert.match(r.out, new RegExp(`installed ${dest} \\(sha256 ${sha(readFileSync(SRC))}\\)`));
-  assert.deepEqual(readdirSync(join(dir, "govern")), ["SKILL.md"], "only the installed file is left in the destination");
+  assert.ok(isLink(link), "the entry is a symlink, not a copy");
+  assert.equal(realpathSync(link), realpathSync(TOOL));
+  assert.equal(readFileSync(join(link, "SKILL.md"), "utf8"), readFileSync(join(TOOL, "SKILL.md"), "utf8"));
+  assert.ok(existsSync(join(link, "REFERENCE.md")), "the reference is beside the core");
+  assert.match(r.out, /^installed: /);
+  assert.deepEqual(readdirSync(dir), ["govern"], "nothing else is created");
   const c = govern(e, ["install-skill", dir, "--check"]);
   assert.equal(c.code, 0, c.err);
-  assert.match(c.out, new RegExp(`${dest} is current \\(sha256 ${sha(readFileSync(SRC))}\\)`));
+  assert.ok(c.out.includes(`${link} is a link to`), c.out);
+  assert.match(c.out, /SKILL\.md is current \(sha256 [0-9a-f]{64}\), REFERENCE\.md sha256 [0-9a-f]{64}/);
 });
 
-test("install-skill --check on a stale copy exits 1 naming both paths and both sha256s", () => {
+test("install-skill creates the skills dir when it is missing", () => {
+  const dir = join(tempDir("skills"), "deep", "skills");
+  const r = govern(e, ["install-skill", dir]);
+  assert.equal(r.code, 0, r.err);
+  assert.ok(isLink(join(dir, "govern")));
+});
+
+test("install-skill with a correct link already there leaves it alone (exit 0, already installed)", () => {
   const dir = tempDir("skills");
-  const dest = write(join(dir, "govern", "SKILL.md"), "an old manual\n");
-  const c = govern(e, ["install-skill", dir, "--check"]);
+  symlinkSync(TOOL, join(dir, "govern"), "dir");
+  const r = govern(e, ["install-skill", dir]);
+  assert.equal(r.code, 0, r.err);
+  assert.match(r.out, /^already installed: /);
+  assert.equal(readlinkSync(join(dir, "govern")), TOOL);
+  assert.deepEqual(readdirSync(dir), ["govern"]);
+});
+
+test("install-skill replaces a link that points elsewhere, leaving no temp link", () => {
+  const dir = tempDir("skills");
+  const other = tempDir("other");
+  symlinkSync(other, join(dir, "govern"), "dir");
+  const r = govern(e, ["install-skill", dir]);
+  assert.equal(r.code, 0, r.err);
+  assert.match(r.out, /^replaced a link elsewhere: /);
+  assert.equal(realpathSync(join(dir, "govern")), realpathSync(TOOL));
+  assert.deepEqual(readdirSync(dir), ["govern"]);
+  assert.deepEqual(readdirSync(other), [], "the old target is untouched");
+});
+
+test("install-skill replaces a dangling link", () => {
+  const dir = tempDir("skills");
+  symlinkSync(join(dir, "no-such-folder"), join(dir, "govern"), "dir");
+  assert.equal(govern(e, ["install-skill", dir]).code, 0);
+  assert.equal(realpathSync(join(dir, "govern")), realpathSync(TOOL));
+});
+
+test("install-skill refuses a real directory (exit 1, naming it and the fix) and changes nothing; --replace removes it and links", () => {
+  const dir = tempDir("skills");
+  const link = join(dir, "govern");
+  write(join(link, "SKILL.md"), "an old copy\n");
+  const sibling = write(join(dir, "other-skill", "SKILL.md"), "not govern's\n");
+  const r = govern(e, ["install-skill", dir]);
+  assert.equal(r.code, 1);
+  assert.ok(r.err.includes(`${link} is a directory, not a link to`), r.err);
+  assert.match(r.err, /install-skill --replace/);
+  assert.doesNotMatch(r.err, /\n\s+at /, "no stack trace");
+  assert.equal(readFileSync(join(link, "SKILL.md"), "utf8"), "an old copy\n", "the copy is left alone");
+  const f = govern(e, ["install-skill", dir, "--replace"]);
+  assert.equal(f.code, 0, f.err);
+  assert.match(f.out, /^replaced a copy: /);
+  assert.ok(isLink(link));
+  assert.equal(readFileSync(sibling, "utf8"), "not govern's\n", "nothing outside <skills dir>/govern is touched");
+});
+
+test("install-skill refuses a plain file at the entry, and --replace replaces it", () => {
+  const dir = tempDir("skills");
+  const link = write(join(dir, "govern"), "a file\n");
+  const r = govern(e, ["install-skill", dir]);
+  assert.equal(r.code, 1);
+  assert.ok(r.err.includes(`${link} is a file, not a link to`), r.err);
+  assert.equal(govern(e, ["install-skill", dir, "--replace"]).code, 0);
+  assert.ok(isLink(link));
+});
+
+test("install-skill --check on each state: missing, a copy, a link elsewhere, a stale sha", () => {
+  const missing = tempDir("skills");
+  let c = govern(e, ["install-skill", missing, "--check"]);
   assert.equal(c.code, 1);
-  assert.match(c.err, /differs/);
-  assert.ok(c.err.includes(`${dest} sha256 ${sha("an old manual\n")}`), c.err);
-  assert.ok(c.err.includes(`${SRC} sha256 ${sha(readFileSync(SRC))}`), c.err);
-  assert.equal(readFileSync(dest, "utf8"), "an old manual\n", "--check changes nothing");
-});
+  assert.ok(c.err.includes(`${join(missing, "govern")} is missing`), c.err);
+  assert.match(c.err, /run govern install-skill/);
+  assert.equal(existsSync(join(missing, "govern")), false, "--check installs nothing");
 
-test("install-skill --check with nothing installed exits 1 naming the missing path and the source's sha256", () => {
-  const dir = tempDir("skills");
-  const dest = join(dir, "govern", "SKILL.md");
-  const c = govern(e, ["install-skill", dir, "--check"]);
+  const copy = tempDir("skills");
+  write(join(copy, "govern", "SKILL.md"), readFileSync(join(TOOL, "SKILL.md"), "utf8"));
+  c = govern(e, ["install-skill", copy, "--check"]);
   assert.equal(c.code, 1);
-  assert.ok(c.err.includes(`${dest} is missing`), c.err);
-  assert.ok(c.err.includes(`${SRC} sha256 ${sha(readFileSync(SRC))}`), c.err);
-  assert.equal(existsSync(dest), false, "--check installs nothing");
+  assert.ok(c.err.includes(`${join(copy, "govern")} is a directory (a copy), not a link to`), c.err);
+  assert.match(c.err, /--replace/);
+  assert.ok(!isLink(join(copy, "govern")), "--check changes nothing");
+
+  const elsewhere = tempDir("skills");
+  const other = tempDir("other");
+  write(join(other, "SKILL.md"), "somebody else's\n");
+  symlinkSync(other, join(elsewhere, "govern"), "dir");
+  c = govern(e, ["install-skill", elsewhere, "--check"]);
+  assert.equal(c.code, 1);
+  assert.ok(c.err.includes(`${join(elsewhere, "govern")} is a link elsewhere: it points to ${other}`), c.err);
+  assert.equal(readlinkSync(join(elsewhere, "govern")), other, "--check changes nothing");
+
+  const dangling = tempDir("skills");
+  symlinkSync(join(dangling, "gone"), join(dangling, "govern"), "dir");
+  c = govern(e, ["install-skill", dangling, "--check"]);
+  assert.equal(c.code, 1);
+  assert.match(c.err, /is a link elsewhere/);
 });
 
-test("install: a write that does not read back as the source fails loudly and never replaces the installed copy", () => {
-  const dir = tempDir("skills");
-  const src = write(join(dir, "src.md"), "the new manual\n");
-  const dest = write(join(dir, "govern", "SKILL.md"), "the old manual\n");
-  const corrupt = (p: string, b: Buffer) => writeFileSync(p, b.subarray(0, 4));
-  assert.throws(() => installSkill(src, dest, { writeFile: corrupt }), (err: unknown) => {
-    assert.ok(err instanceof GovernError);
-    assert.equal(err.code, 1);
-    assert.match(err.message, new RegExp(`read back sha256 ${sha("the ")}, expected ${sha("the new manual\n")}`));
-    return true;
-  });
-  assert.equal(readFileSync(dest, "utf8"), "the old manual\n", "the installed copy is untouched");
-  assert.deepEqual(readdirSync(join(dir, "govern")), ["SKILL.md"], "the temp file is removed");
+test("an edit to the tracked SKILL.md is live through the link, and skillDrift stays null", () => {
+  const tool = tempDir("tool");
+  write(join(tool, "SKILL.md"), "the manual\n");
+  const skills = tempDir("skills");
+  assert.equal(installSkill(tool, skills), "installed");
+  assert.equal(installSkill(tool, skills), "already installed");
+  assert.equal(skillDrift(tool, skills), null);
+  writeFileSync(join(tool, "SKILL.md"), "changed\n");
+  assert.equal(readFileSync(join(skills, "govern", "SKILL.md"), "utf8"), "changed\n");
+  assert.equal(skillDrift(tool, skills), null);
 });
 
-test("install: a destination that does not read back as the source after the rename fails loudly", () => {
+test("installSkill and skillDrift on a tool folder without SKILL.md are a GovernError, exit 1, naming it, and create nothing", () => {
   const dir = tempDir("skills");
-  const src = write(join(dir, "src.md"), "the new manual\n");
-  const dest = join(dir, "govern", "SKILL.md");
-  const badRename = (_from: string, to: string) => writeFileSync(to, "something else\n");
-  assert.throws(() => installSkill(src, dest, { rename: badRename }), (err: unknown) => {
-    assert.ok(err instanceof GovernError);
-    assert.equal(err.code, 1);
-    assert.ok(err.message.includes(`${dest}: read back sha256 ${sha("something else\n")}, expected ${sha("the new manual\n")}`), err.message);
-    return true;
-  });
-  assert.deepEqual(readdirSync(join(dir, "govern")), ["SKILL.md"], "the temp file is removed");
-});
-
-test("install-skill and --check with a directory where SKILL.md goes exit 1 naming it, with no stack trace, and change nothing", () => {
-  const dir = tempDir("skills");
-  const dest = join(dir, "govern", "SKILL.md");
-  mkdirSync(dest, { recursive: true });
-  for (const args of [["install-skill", dir], ["install-skill", dir, "--check"]]) {
-    const r = govern(e, args);
-    assert.equal(r.code, 1, `${args.join(" ")}: ${r.err}`);
-    assert.ok(r.err.includes(`${dest} is a directory, not a file`), r.err);
-    assert.doesNotMatch(r.err, /\n\s+at /, "no stack trace");
-    assert.ok(statSync(dest).isDirectory(), "the directory is left alone");
-    assert.deepEqual(readdirSync(join(dir, "govern")), ["SKILL.md"], "no temp file is left");
+  const tool = tempDir("tool");
+  for (const run of [() => installSkill(tool, dir), () => skillDrift(tool, dir)]) {
+    assert.throws(run, (err: unknown) => err instanceof GovernError && err.code === 1 && err.message.includes(`${tool} has no SKILL.md`));
   }
+  assert.equal(existsSync(join(dir, "govern")), false);
 });
 
-test("install-skill and --check with a missing (or non-file) source are a GovernError, exit 1, naming the source", () => {
-  const dir = tempDir("skills");
-  const dest = join(dir, "govern", "SKILL.md");
-  for (const src of [join(dir, "no-such-SKILL.md"), dir]) {
-    for (const [what, run] of [["install", () => installSkill(src, dest)], ["--check", () => skillDrift(src, dest)]] as const) {
-      assert.throws(run, (err: unknown) => err instanceof GovernError && err.code === 1 && err.message.includes(`source ${src} is missing or not a file`),
-        `${what} with source ${src}`);
-    }
-  }
-  assert.equal(existsSync(join(dir, "govern")), false, "nothing is created");
+test("install-skill --check --replace is a usage error", () => {
+  const r = govern(e, ["install-skill", tempDir("skills"), "--check", "--replace"]);
+  assert.equal(r.code, 2);
+  assert.match(r.err, /--check installs nothing/);
 });
