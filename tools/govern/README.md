@@ -48,6 +48,8 @@ holders; after checking effects, release an abandoned claim with
 
 **Conversations.** `govern conversation` owns durable history, serialized turns, streamed progress, cancellation and explicit restart recovery across agent harnesses. Business state and approvals remain in their cases.
 
+**Website.** [site/](site/README.md) holds the static site generator, theme and Docker deploy files for the govern website: Markdown pages in, plain HTML out, no runtime dependencies. Build it with `node --disable-warning=ExperimentalWarning tools/govern/site/build.ts` from the repository root.
+
 **Workspaces.** A `.govern/` folder in the working directory or above it makes
 that folder a govern workspace. `govern init` creates one.
 
