@@ -12,17 +12,17 @@
   <assets>
     <text id="t-1" text="The dev process: plan, build, test, review, done" width="2100" height="90" size="56" color="var(--ink)" align="start" verticalAlign="middle" lineHeight="1.2" wrap="word" font="DejaVu Sans" weight="700"/>
     <text id="t-3" text="plan" width="300" height="70" size="56" color="var(--ink)" align="center" verticalAlign="middle" lineHeight="1.2" wrap="word" font="DejaVu Sans" weight="700"/>
-    <text id="t-4" text="Write the plan and&#10;name the checks" width="280" height="90" size="26" color="var(--muted)" align="center" verticalAlign="top" lineHeight="1.2" wrap="word" font="DejaVu Sans" weight="400"/>
+    <text id="t-4" text="The change, its tests and&#10;its risks are written down" width="280" height="90" size="26" color="var(--muted)" align="center" verticalAlign="top" lineHeight="1.2" wrap="word" font="DejaVu Sans" weight="400"/>
     <text id="t-7" text="build" width="300" height="70" size="56" color="var(--ink)" align="center" verticalAlign="middle" lineHeight="1.2" wrap="word" font="DejaVu Sans" weight="700"/>
-    <text id="t-8" text="Do the work in&#10;the worktree" width="280" height="90" size="26" color="var(--muted)" align="center" verticalAlign="top" lineHeight="1.2" wrap="word" font="DejaVu Sans" weight="400"/>
+    <text id="t-8" text="Failing tests first, then&#10;the code that passes them" width="280" height="90" size="26" color="var(--muted)" align="center" verticalAlign="top" lineHeight="1.2" wrap="word" font="DejaVu Sans" weight="400"/>
     <text id="t-11" text="test" width="300" height="70" size="56" color="var(--ink)" align="center" verticalAlign="middle" lineHeight="1.2" wrap="word" font="DejaVu Sans" weight="700"/>
-    <text id="t-12" text="Run the checks;&#10;the exit decides" width="280" height="90" size="26" color="var(--muted)" align="center" verticalAlign="top" lineHeight="1.2" wrap="word" font="DejaVu Sans" weight="400"/>
+    <text id="t-12" text="The whole suite passes;&#10;the check decides" width="280" height="90" size="26" color="var(--muted)" align="center" verticalAlign="top" lineHeight="1.2" wrap="word" font="DejaVu Sans" weight="400"/>
     <text id="t-15" text="review" width="300" height="70" size="56" color="var(--ink)" align="center" verticalAlign="middle" lineHeight="1.2" wrap="word" font="DejaVu Sans" weight="700"/>
-    <text id="t-16" text="A reviewer reads&#10;the change" width="280" height="90" size="26" color="var(--muted)" align="center" verticalAlign="top" lineHeight="1.2" wrap="word" font="DejaVu Sans" weight="400"/>
+    <text id="t-16" text="A second agent or the&#10;owner has read the diff" width="280" height="90" size="26" color="var(--muted)" align="center" verticalAlign="top" lineHeight="1.2" wrap="word" font="DejaVu Sans" weight="400"/>
     <text id="t-19" text="done" width="300" height="70" size="56" color="var(--paper)" align="center" verticalAlign="middle" lineHeight="1.2" wrap="word" font="DejaVu Sans" weight="700"/>
-    <text id="t-20" text="The owner opens the&#10;gate; work is closed" width="280" height="90" size="26" color="var(--paper)" align="center" verticalAlign="top" lineHeight="1.2" wrap="word" font="DejaVu Sans" weight="400"/>
-    <text id="t-23" text="exit check passes" width="360" height="50" size="30" color="var(--muted)" align="center" verticalAlign="top" lineHeight="1.2" wrap="word" font="DejaVu Sans" weight="400"/>
-    <text id="t-25" text="gate: the owner" width="380" height="80" size="34" color="var(--accent-2)" align="center" verticalAlign="bottom" lineHeight="1.2" wrap="word" font="DejaVu Sans" weight="700"/>
+    <text id="t-20" text="Committed; pushed only&#10;on the owner&apos;s go" width="280" height="90" size="26" color="var(--paper)" align="center" verticalAlign="top" lineHeight="1.2" wrap="word" font="DejaVu Sans" weight="400"/>
+    <text id="t-23" text="the test check passes" width="360" height="50" size="30" color="var(--muted)" align="center" verticalAlign="top" lineHeight="1.2" wrap="word" font="DejaVu Sans" weight="400"/>
+    <text id="t-25" text="the owner&apos;s go" width="380" height="80" size="34" color="var(--accent-2)" align="center" verticalAlign="bottom" lineHeight="1.2" wrap="word" font="DejaVu Sans" weight="700"/>
   </assets>
   <composition>
     <layer id="l-1" z="6" x="150" y="60" asset="t-1"/>
