@@ -7,12 +7,7 @@ export interface Topic { file: string; about: string }
 export const TOPICS: readonly Topic[] = [
   { file: "SKILL.md", about: "the core manual: the loop, the queue, the owner's gates, the never-list (govern manual)" },
   { file: "REFERENCE.md", about: "the detailed operating rules by section: workspace, checks, resources, allowances, runners, capabilities, environment (govern manual --full)" },
-  { file: "BUSINESS.md", about: "typed case data, conditional routes, parallel joins, human tasks, quorum approval policies" },
-  { file: "LIFECYCLE.md", about: "timers, business calendars, events, recovery, subprocesses, process revisions" },
   { file: "ITERATION.md", about: "bounded repeats, conditional fan-out, typed collections, per-item subprocess joins" },
-  { file: "CONVERSATIONS.md", about: "persistent conversations: history, turns, runs, recovery, context checkpoints" },
-  { file: "REMOTE.md", about: "the phone: pairing, devices, remote approvals, the remote API" },
-  { file: "PEERS.md", about: "other hosts: peers, mesh, NAME@PEER addressing, the command center" },
 ];
 
 export const HELP_RULES: Readonly<Record<string, string>> = {

@@ -6,13 +6,17 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync, readdirSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { HERE, present } from "./helpers.ts";
-import { ALIASES, COMMANDS, ENGINES } from "../govern.ts";
+import { HERE, present, fullTable } from "./helpers.ts";
+import { ALIASES, ENGINES } from "../govern.ts";
+
+/** Every command: the core's and the extensions'. */
+const COMMANDS = await fullTable();
 import { BUILTIN_RUNNERS, MAX_FILES_CHARS } from "../lib/queue.ts";
 import { MAX_INLINE, PROMPT_KEYS } from "../lib/codex.ts";
 import { LEGACY_PROFILES } from "../lib/caps.ts";
 import { TESTS as RULE_TESTS } from "../lib/rules.ts";
 import { CONFIG_FILE, DOT_DEFAULTS, DOT_DIR } from "../lib/workspace.ts";
+import { EXTENSIONS } from "../lib/ext-registry.ts";
 import { parseArgs, GovernError, type FlagSpec } from "../lib/util.ts";
 
 const GOVERN_DIR = resolve(HERE, "..");
@@ -38,7 +42,9 @@ const MAN = manText(readFileSync(join(ROOT, "bin", "govern"), "utf8"));
 // the agents' manual is the core SKILL.md and the REFERENCE.md it points to (govern manual --full)
 const SKILL = `${src("SKILL.md")}\n${src("REFERENCE.md")}`;
 const REMOTE = src("REMOTE.md");
-const DOCS: Record<string, string> = { MANPAGE: MAN, "SKILL.md": SKILL, "REMOTE.md": REMOTE };
+/** The manpage text of each extension (what `govern help <its command>` adds), beside the core MANPAGE. */
+const EXT_MANS = await Promise.all(EXTENSIONS.map(async (e) => ((await import(`../ext/${e.name}/index.ts`)) as { manpage: string }).manpage));
+const DOCS: Record<string, string> = { MANPAGE: [MAN, ...EXT_MANS].join("\n"), "SKILL.md": SKILL, "REMOTE.md": REMOTE };
 /** A document with its line breaks and indentation folded to single spaces, so a phrase may wrap. */
 const flat = (doc: string): string => present(DOCS[doc], `document ${doc}`).replace(/\s+/g, " ");
 
@@ -142,14 +148,14 @@ const STATED: readonly Stated[] = [
     docs: [["SKILL.md", /the last (\d+) log lines/]] },
   { what: "log's default tail", code: () => codeNumber("govern.ts", /opt\(a, "tail"\) \?\? (\d+)/),
     docs: [["MANPAGE", /log: the last N lines \(default (\d+)\)/]] },
-  { what: "event-listen's default port", code: () => codeNumber("govern.ts", /opt\(a,\s*'port'\)\s*\?\?\s*(\d+)/),
+  { what: "event-listen's default port", code: () => codeNumber("ext/business/index.ts", /opt\(a,\s*'port'\)\s*\?\?\s*(\d+)/),
     docs: [["MANPAGE", /event-listen \[--port (\d+)\]/], ["MANPAGE", /loopback webhook port \(default (\d+)\)/]] },
-  { what: "remote serve's default port", code: () => codeNumber("govern.ts", /opt\(a, "port"\) \?\? (\d+)/),
+  { what: "remote serve's default port", code: () => codeNumber("ext/remote/index.ts", /opt\(a, "port"\) \?\? (\d+)/),
     docs: [["MANPAGE", /remote serve \[--host H\] \[--port (\d+)\]/], ["MANPAGE", /the API port \(default (\d+)\)/],
       ["REMOTE.md", /--url https:\/\/<host>:(\d+)/]] },
-  { what: "the pairing code's default minutes", code: () => codeNumber("govern.ts", /opt\(a, "minutes"\) \?\? (\d+)/),
+  { what: "the pairing code's default minutes", code: () => codeNumber("ext/remote/index.ts", /opt\(a, "minutes"\) \?\? (\d+)/),
     docs: [["MANPAGE", /1\.\.60, default (\d+)\)/]] },
-  { what: "the pairing code's longest minutes", code: () => codeNumber("lib/remote.ts", /minutes > (\d+)\) fail/),
+  { what: "the pairing code's longest minutes", code: () => codeNumber("ext/remote/remote.ts", /minutes > (\d+)\) fail/),
     docs: [["MANPAGE", /valid \(1\.\.(\d+),/]] },
   { what: "the dispatcher's default interval", code: () => codeNumber("govern.ts", /opt\(a, "interval"\) \?\? (\d+)/),
     docs: [["MANPAGE", /seconds between rounds \(default (\d+)\)/], ["SKILL.md", /install-service \[--interval (\d+)\]/]] },
@@ -179,12 +185,12 @@ const STATED: readonly Stated[] = [
     docs: [["MANPAGE", /GOVERN_MAX_INLINE \((\d+), ask\)/]] },
   { what: "a queued message's inline file limit", code: () => MAX_FILES_CHARS,
     docs: [["MANPAGE", /GOVERN_QUEUE_MAX_INLINE \((\d+)\)/]] },
-  { what: "Jev's token limit", code: () => codeNumber("lib/decide.ts", /const MAX_TOKENS = (\d+);/),
+  { what: "Jev's token limit", code: () => codeNumber("ext/decide/decide.ts", /const MAX_TOKENS = (\d+);/),
     docs: [["SKILL.md", /must fit in (\d+k) tokens/]] },
-  { what: "the time TypeSafe gets in shadow mode", code: () => codeNumber("lib/decide.ts", /SHADOW_TIMEOUT_MS = (\d+);/) / 1000,
+  { what: "the time TypeSafe gets in shadow mode", code: () => codeNumber("ext/decide/decide.ts", /SHADOW_TIMEOUT_MS = (\d+);/) / 1000,
     docs: [["SKILL.md", /TypeSafe gets (\d+) seconds/]] },
   { what: "the most shadow mode delays a send (its timeout plus the child's kill grace)",
-    code: () => (codeNumber("lib/decide.ts", /SHADOW_TIMEOUT_MS = (\d+);/) + codeNumber("lib/decide.ts", /timeout: timeoutMs \+ (\d+),/)) / 1000,
+    code: () => (codeNumber("ext/decide/decide.ts", /SHADOW_TIMEOUT_MS = (\d+);/) + codeNumber("ext/decide/decide.ts", /timeout: timeoutMs \+ (\d+),/)) / 1000,
     docs: [["SKILL.md", /delays it by at most about (\d+) seconds/]] },
   { what: "the legacy profiles", code: () => LEGACY_PROFILES.length, docs: [["SKILL.md", /not even the (\w+) legacy ones/]] },
   { what: "a conversation turn's default limit", code: () => codeNumber("lib/conversation.ts", /o\.timeoutSeconds \?\? (\d+)/),
@@ -195,9 +201,9 @@ const STATED: readonly Stated[] = [
     docs: [["MANPAGE", /maximum assembled context characters \(default (\d+)/]] },
   { what: "a conversation's largest context", code: () => codeNumber("lib/conversation.ts", /\["max-context-chars", maxContextChars, (\d+)\]/),
     docs: [["MANPAGE", /context characters \(default \d+, at most (\d+)\)/]] },
-  { what: "how long conversation events --follow streams", code: () => codeNumber("lib/conversation-cli.ts", /secondsOpt\(a, "timeout"\) \?\? (\d+)\) \* 1000/),
+  { what: "how long conversation events --follow streams", code: () => codeNumber("ext/conversation/conversation-cli.ts", /secondsOpt\(a, "timeout"\) \?\? (\d+)\) \* 1000/),
     docs: [["MANPAGE", /until --timeout \(default (\d+) seconds\)/], ["MANPAGE", /conversation events: how long --follow streams \(default (\d+)\)/]] },
-  { what: "the first event conversation events reads after", code: () => codeNumber("lib/conversation-cli.ts", /number\(a, "after"\) \?\? (\d+);/),
+  { what: "the first event conversation events reads after", code: () => codeNumber("ext/conversation/conversation-cli.ts", /number\(a, "after"\) \?\? (\d+);/),
     docs: [["MANPAGE", /conversation events: N, the event number to read after \(default (\d+)\)/]] },
 ];
 
@@ -283,7 +289,7 @@ function refusal(argv: readonly string[]): string | undefined {
  *  are whole commands. A `<placeholder>` stands for one word; a span with alternatives or optional parts (`|`, `[`, `…`)
  *  is a usage pattern, not a command, and is left out, as is one whose command word is itself a placeholder. */
 function examples(): { from: string; argv: string[] }[] {
-  const lines: { from: string; text: string }[] = section(MAN, "EXAMPLES").map((l) => ({ from: "MANPAGE EXAMPLES", text: l.trim() }));
+  const lines: { from: string; text: string }[] = [MAN, ...EXT_MANS].flatMap((m) => section(m, "EXAMPLES")).map((l) => ({ from: "MANPAGE EXAMPLES", text: l.trim() }));
   for (const m of SKILL.matchAll(/`(govern [^`]+)`/g)) lines.push({ from: "SKILL.md", text: m[1] ?? "" });
   for (const block of SKILL.matchAll(/```(?:bash|sh)?\n([\s\S]*?)```/g)) for (const l of (block[1] ?? "").split("\n")) lines.push({ from: "SKILL.md block", text: l.trim() });
   const out: { from: string; argv: string[] }[] = [];

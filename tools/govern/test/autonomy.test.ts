@@ -11,8 +11,8 @@ import * as agents from "../lib/agents.ts";
 import { identity } from "../lib/locks.ts";
 import { dispatcherState } from "../lib/desk.ts";
 import { checkRecipient } from "../lib/sessions.ts";
-import { snapshot } from "../lib/telemetry.ts";
-import { alertsFor } from "../lib/center.ts";
+import { snapshot } from "../ext/peer/telemetry.ts";
+import { alertsFor } from "../ext/center/center.ts";
 import { makeEnv, use, task, write, setConfig, govern, jsonl, HERE, NOW, DAY } from "./helpers.ts";
 
 const original = { ...process.env };

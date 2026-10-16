@@ -1,7 +1,7 @@
 // The live state of a lane (a project) as one small, typed summary: where it stands in its process, what each gate
 // decided, what each check last said, which jobs run and which BLOCKED messages wait, and one derived status. Read
 // only: it loads govern.json, the lane's ledger, its job records and the queue, and writes nothing. The summary is also
-// what a host sends to the command center (lib/peer.ts, "govern-lanes/1"), so its shape is closed and parsed.
+// what a host sends to the command center (ext/peer/peer.ts, "govern-lanes/1"), so its shape is closed and parsed.
 import { GovernError, readJsonl, clip } from "./util.ts";
 import { obj, arr, bool, literal, reject, type Shape } from "./shape.ts";
 import { load, laneSlugs, ledgerFile, stagesOf, type Project } from "./project.ts";

@@ -9,7 +9,7 @@ import { tickTimers, runtimeOf, resetExecution, beginAttempt, checkFailed, check
   requireLifecycleReady, recover, startChild, syncChild, migrate, pin } from "../lib/lifecycle.ts";
 import { parseProject, load } from "../lib/project.ts";
 import { parseProcess } from "../lib/process.ts";
-import { eventServer } from "../lib/event-server.ts";
+import { eventServer } from "../ext/business/event-server.ts";
 import type { Project } from "../lib/project.ts";
 const eventDefinition = () => ({
   version: 1,

@@ -3,8 +3,8 @@ import { createHash, createCipheriv, createDecipheriv, randomBytes, timingSafeEq
 import { hostname } from "node:os";
 import { BadRequest, Forbidden, NotFound, locked, readState, writeState, p256, createDevice, revokeUndelivered } from "./remote.ts";
 import { PROTOCOL } from "./remote-view.ts";
-import { checkSlug } from "./project.ts";
-import { GovernError } from "./util.ts";
+import { checkSlug } from "../../lib/project.ts";
+import { GovernError } from "../../lib/util.ts";
 
 export class TooMany extends GovernError {}
 type Clock = () => number;

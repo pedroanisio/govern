@@ -11,7 +11,8 @@ import { join } from "node:path";
 import { HERE } from "./helpers.ts";
 
 const ROOT = join(HERE, "..");
-const SOURCES = ["govern.ts", ...readdirSync(join(ROOT, "lib")).filter((f) => f.endsWith(".ts")).sort().map((f) => `lib/${f}`)];
+const SOURCES = ["govern.ts", ...["lib", ...readdirSync(join(ROOT, "ext"), { withFileTypes: true }).filter((d) => d.isDirectory()).map((d) => `ext/${d.name}`).sort()].flatMap((dir) =>
+  readdirSync(join(ROOT, dir)).filter((f) => f.endsWith(".ts")).sort().map((f) => `${dir}/${f}`))];
 
 /** Index just past the quoted string, template or bracket group that opens at `i`. Unbalanced input runs to the end. */
 function skipGroup(src: string, i: number): number {

@@ -9,26 +9,24 @@ import { createServer as createHttps } from "node:https";
 import { createHash, createPublicKey, randomBytes, randomInt, timingSafeEqual, verify, X509Certificate, type KeyObject } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync, appendFileSync, createReadStream, closeSync, fstatSync } from "node:fs";
 import { join } from "node:path";
-import { check, obj, str, name, literal, arr, type Shape, reject } from "./shape.ts";
-import { GovernError, fail, nowIso, readJsonl } from "./util.ts";
-import { stateDir, config } from "./workspace.ts";
-import { withLaneLock } from "./lane-lock.ts";
-import { load, save, appendLedger, ledgerFile, stateFile, checkSlug } from "./project.ts";
-import { processOf } from "./process.ts";
-import { ownerApproval, requireGateOwner, gateApproved } from "./business.ts";
-import { transaction } from "./lifecycle.ts";
-import * as artifacts from "./artifacts.ts";
-import * as conversations from "./conversation.ts";
-import * as runtime from "./conversation-runtime.ts";
-import * as jobs from "./jobs.ts";
+import { check, obj, str, name, literal, arr, type Shape, reject } from "../../lib/shape.ts";
+import { GovernError, fail, nowIso, readJsonl } from "../../lib/util.ts";
+import { stateDir, config } from "../../lib/workspace.ts";
+import { withLaneLock } from "../../lib/lane-lock.ts";
+import { load, save, appendLedger, ledgerFile, stateFile, checkSlug } from "../../lib/project.ts";
+import { processOf } from "../../lib/process.ts";
+import { ownerApproval, requireGateOwner, gateApproved } from "../../lib/business.ts";
+import { transaction } from "../../lib/lifecycle.ts";
+import * as artifacts from "../../lib/artifacts.ts";
+import * as conversations from "../../lib/conversation.ts";
+import * as runtime from "../conversation/conversation-runtime.ts";
+import * as jobs from "../../lib/jobs.ts";
 import { deskView, laneDetail, sessionDetail, jobDetail, engines, sessions, PROTOCOL, type Desk, type LaneDetail, type SessionDetail } from "./remote-view.ts";
 
-/** Refusals the server maps to a status: a malformed request (400), a signature, clock, nonce or code that does not
- *  prove the request (403), a lane that does not exist (404). Any other GovernError is a state conflict (409). */
-export class BadRequest extends GovernError {}
-export class Forbidden extends GovernError {}
-export class NotFound extends GovernError {}
-export class TooLarge extends GovernError {}
+// The refusals the server maps to a status (400, 403, 404, 413; any other GovernError is a state conflict, 409) live in
+// http-errors.ts, which the lane artifacts the core keeps share.
+import { BadRequest, Forbidden, NotFound, TooLarge } from "../../lib/http-errors.ts";
+export { BadRequest, Forbidden, NotFound, TooLarge };
 const parsed = <T>(what: string, raw: unknown, shape: Shape<T>): T => {
   try { return check(what, raw, shape); } catch (e) { throw e instanceof GovernError ? new BadRequest(e.message) : e; }
 };
@@ -466,5 +464,5 @@ export function remoteServer(o: ServeOptions = {}): Server {
   return server;
 }
 
-/** Whether `host` only accepts connections from this machine. */
-export const loopback = (host: string): boolean => host === "localhost" || host === "::1" || /^127\./.test(host);
+// Whether a host only accepts connections from this machine: lib/cli.ts (the peer and center commands ask it too).
+export { loopback } from "../../lib/cli.ts";

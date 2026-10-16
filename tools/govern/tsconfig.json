@@ -11,5 +11,5 @@
     "target": "esnext",
     "types": ["node"]
   },
-  "include": ["govern.ts", "lib/**/*.ts", "test/**/*.ts", "scripts/**/*.ts", "site/**/*.ts"]
+  "include": ["govern.ts", "lib/**/*.ts", "ext/**/*.ts", "test/**/*.ts", "scripts/**/*.ts", "site/**/*.ts"]
 }

@@ -39,7 +39,7 @@ govern runs lanes of agent work through the checked stages of a process. Its des
 | Part | What it is |
 |---|---|
 | Actors | The owner, a paired phone, the working agent session, the headless runners the queue starts, external systems that deliver events, and peer hosts that exchange queue messages |
-| CLI | [bin/govern](../../bin/govern) runs [govern.ts](govern.ts) under Node with type stripping; the command table dispatches into [lib/](lib/) |
+| CLI | [bin/govern](../../bin/govern) runs [govern.ts](govern.ts) under Node with type stripping; the command table dispatches into [lib/](lib/), and into [ext/](ext/) for a command of an enabled extension |
 | Subsystems | Twelve groups of `lib/` modules, listed below |
 | Servers | `govern remote serve` for paired phones and `govern event-listen` for webhooks, `govern peer serve` for signed queue delivery, agent discovery, telemetry and mesh membership between hosts, and `govern center serve` for the operator's command center on loopback |
 | State | A workspace folder of JSON and JSONL files; every command and all four servers read there, every server but the command center writes there, and nothing else holds state |
@@ -53,13 +53,15 @@ re-reads them on every request or tick. A worker stopped in the middle of a turn
 
 ## The CLI layer
 
-`govern.ts` holds the command table. For each command it records the flags the command takes, its usage lines and the
+`govern.ts` holds the table of the core commands; the commands of an extension (below) are entries of the same shape in `ext/<name>/index.ts`, and the core knows which command belongs to which extension from [lib/ext-registry.ts](lib/ext-registry.ts) alone. For each command it records the flags the command takes, its usage lines and the
 handler that runs it. Parsing is strict. An unknown flag, a switch given a value other than `true` or `false`, or a value
 flag with no value exits 2 and prints the command's valid flags. A command that changes a lane runs under the lane's lock
 ([lib/lane-lock.ts](lib/lane-lock.ts)). It then appends an entry to the lane's ledger. The manpage is the `MANPAGE`
 block in `bin/govern`, and the operating manual for agents is the short core [SKILL.md](SKILL.md) (`govern manual`), with the
 detailed rules in [REFERENCE.md](REFERENCE.md) (`govern manual --full`) and in each command's rules text
 ([lib/helprules.ts](lib/helprules.ts), shown by `govern help <command>`).
+
+An extension loads with a dynamic `import()` ([lib/ext.ts](lib/ext.ts)) only when the command typed belongs to it, when `help` shows one of its commands, when `desk` asks for its lines, or when the queue calls it (a `NAME@PEER` recipient, the dispatcher loop's relay, the shadow ask). A command of a disabled extension is recognised and refused with exit 2. A test fails when `govern.ts` statically reaches a file only an extension loads. An extension's commands reach the core's `advance` and policy decision through `lib/cli.ts`, never by importing `govern.ts`.
 
 ## Servers
 
@@ -72,9 +74,9 @@ receiving host keeps its own execution policy ([PEERS.md](PEERS.md)).
 
 ### `govern remote serve`: the phone's API
 
-[lib/remote.ts](lib/remote.ts) serves `govern-remote/2`, specified in [REMOTE.md](REMOTE.md), to the Android app in
-[android/](android/README.md). [lib/remote-view.ts](lib/remote-view.ts) builds the read views from the lane files,
-and [lib/remote-pair.ts](lib/remote-pair.ts) handles pairing.
+[ext/remote/remote.ts](ext/remote/remote.ts) serves `govern-remote/2`, specified in [REMOTE.md](REMOTE.md), to the Android app in
+[android/](android/README.md). [ext/remote/remote-view.ts](ext/remote/remote-view.ts) builds the read views from the lane files,
+and [ext/remote/remote-pair.ts](ext/remote/remote-pair.ts) handles pairing.
 
 | Concern | How it works |
 |---|---|
@@ -90,7 +92,7 @@ and [lib/remote-pair.ts](lib/remote-pair.ts) handles pairing.
 
 ### `govern event-listen`: external events
 
-[lib/event-server.ts](lib/event-server.ts) is the entry point for the correlated events of [LIFECYCLE.md](LIFECYCLE.md),
+[ext/business/event-server.ts](ext/business/event-server.ts) is the entry point for the correlated events of [LIFECYCLE.md](LIFECYCLE.md),
 the HTTP form of `govern event`.
 
 | Concern | How it works |
@@ -103,7 +105,7 @@ the HTTP form of `govern event`.
 
 ### `govern peer serve`: signed queue delivery between hosts
 
-[lib/peer.ts](lib/peer.ts) serves `govern-peer/2` and, on a mesh registrar, [lib/mesh.ts](lib/mesh.ts) serves
+[ext/peer/peer.ts](ext/peer/peer.ts) serves `govern-peer/2` and, on a mesh registrar, [ext/peer/mesh.ts](ext/peer/mesh.ts) serves
 `govern-mesh/1`; both are specified in [PEERS.md](PEERS.md). A remote queue address is `NAME@HOST`, where HOST is a
 static peer or a mesh member; each host keeps its own profiles, gates, allowances and maxRuns.
 
@@ -114,7 +116,7 @@ static peer or a mesh member; each host keeps its own profiles, gates, allowance
 | Trust | A sender is a live static peer, found by the SHA-256 fingerprint of its key in `Govern-Peer-Key`, or a mesh member: listed in the last sync, or proven by a certificate the mesh key signed in `Govern-Peer-Cert`. `Govern-Signature` is an Ed25519 signature over the exact body bytes, verified before JSON parsing |
 | Delivery | `POST /v1/peer/deliver` accepts `{protocol, id, at, toKey, message}`. `toKey` must be this host's key fingerprint, so a delivery captured at one host or tunnel cannot be replayed to another |
 | Discovery | `POST /v1/peer/directory` answers a signed `{protocol, kind, at, toKey, id}` with what the signer may address here: granted runners, profiles and names, and agents registered for intersecting projects ([lib/agents.ts](lib/agents.ts)). The answer is signed by this host's key |
-| Telemetry | `POST /v1/peer/telemetry` answers a mesh member this host names as observer (by default the registrar) with a signed closed `govern-telemetry/1` snapshot from [lib/telemetry.ts](lib/telemetry.ts): dispatcher, queue, relay, 24 h runs and spend, agents and recent message summaries, never bodies. [lib/center.ts](lib/center.ts) merges every member's answer for `govern center`, and `govern center serve` shows it on the selected loopback host (127.0.0.1 by default) behind a bearer token and a loopback Host check |
+| Telemetry | `POST /v1/peer/telemetry` answers a mesh member this host names as observer (by default the registrar) with a signed closed `govern-telemetry/1` snapshot from [ext/peer/telemetry.ts](ext/peer/telemetry.ts): dispatcher, queue, relay, 24 h runs and spend, agents and recent message summaries, never bodies. [ext/center/center.ts](ext/center/center.ts) merges every member's answer for `govern center`, and `govern center serve` shows it on the selected loopback host (127.0.0.1 by default) behind a bearer token and a loopback Host check |
 | Lanes and processes | `POST /v1/peer/lanes` and `POST /v1/peer/process` answer an observer with a signed closed `govern-lanes/1` (lane summaries from [lib/lanestate.ts](lib/lanestate.ts), process names, revisions and hashes) or `govern-process/1` (one definition by hash), built by [lib/livestate.ts](lib/livestate.ts); the command center merges them in `gatherLive` and draws processes with [lib/processview.ts](lib/processview.ts) (graph, layout, SVG; [lib/processscene.ts](lib/processscene.ts) for scene-render). A host without the routes answers 404 and shows as unknown |
 | Mesh | On the registrar, `POST /v1/mesh/join` admits a host once per invite (HMAC proof under the hash of the invite secret, plus the joining key's signature) and `POST /v1/mesh/sync` renews a live member's 30-day certificate. Both answer with every live member's certificate and the revoked keys, signed by the mesh key. Applying a snapshot requires the registrar certificate and learns its URL from that certificate |
 | Limits and authorization | At most 262144 request or response body bytes (oversized responses abort as transport failures); a closed typed parse rejects unknown fields and checks protocol, kind, local sender/recipient names and a nonblank summary of at most 200 characters. The timestamp must be within five minutes. The sender's grants (per peer, or this host's mesh policy) must cover the project, and the recipient must be granted or the name or alias of a registered mailbox agent for it. A registration with any name now reserved for a runner, profile or govern is excluded. `replyTo` must name a message exchanged with that sender; an answer to a message this host sent reaches its non-runner author without a grant, so conversations run both ways |
@@ -142,6 +144,19 @@ static peer or a mesh member; each host keeps its own profiles, gates, allowance
 | Owner surfaces and measurement | `desk.ts`, `remote.ts`, `remote-view.ts`, `remote-pair.ts`, `qr.ts`, `artifacts.ts`, `usage.ts`, `tune.ts`, `skill.ts`, `decide.ts`, `typesafeCall.ts` | The desk; `govern-remote/2` with pairing and signed approvals (see [Servers](#servers)); artifact digests; tokens per lane and segment; hourly tuning; a decision classifier asked in shadow mode only, whose answers are recorded and scored and never acted on |
 
 [lib/util.ts](lib/util.ts) holds argument parsing, the typed `GovernError` and JSONL helpers, and every group uses it.
+
+### Extensions
+
+| Extension | Commands | What it loads | Stays in the core |
+|---|---|---|---|
+| peer | `peer`, `mesh`, `agents` | `peer.ts`, `mesh.ts`, `telemetry.ts` | `peer-id.ts` and `agents.ts`: the queue and the live-session view read them; `parseAddress`, so `task send` can refuse a `NAME@PEER` recipient |
+| center | `center` | `center.ts`, `center.html` | |
+| remote | `remote` | `remote.ts`, `remote-view.ts`, `remote-pair.ts`, `qr.ts` | `artifacts.ts` (lane evidence) and `http-errors.ts`, the error classes it shares with the remote server |
+| decide | `decide` | `decide.ts`, `typesafeCall.ts` | |
+| conversation | `conversation` | `conversation-cli.ts`, `-runtime.ts`, `-adapters.ts`, `-host.ts`, `-worker.ts` | `conversation.ts` and `conversation-owner.ts`: `usage` reads the sessions |
+| business | `event`, `event-listen`, `tick`, `alerts`, `subprocess`, `recover`, `human`, `human-inbox`, `data`, `reject` | `event-server.ts` | `business.ts`, `business-schema.ts`, `lifecycle.ts`, `lifecycle-runtime.ts`, `lifecycle-schema.ts`, `fanout.ts`: `advance`, `approve`, `work`, the brief and the lane state depend on them |
+
+The extensions' modules are listed by name here and in the registry; their `index.ts` files are in [ext/](ext/README.md).
 
 ## State layout
 

@@ -160,7 +160,8 @@ test("install-service sets GOVERN_REPO, so the dispatcher needs no particular cw
 });
 
 test("lib/ and govern.ts name no project, channel or workspace (the CLAUDE.md banner is the one allowed line)", () => {
-  const files = [join(TOOL, "govern.ts"), ...readdirSync(join(TOOL, "lib")).filter((f) => f.endsWith(".ts")).map((f) => join(TOOL, "lib", f))];
+  const dirs = ["lib", ...readdirSync(join(TOOL, "ext"), { withFileTypes: true }).filter((d) => d.isDirectory()).map((d) => join("ext", d.name))];
+  const files = [join(TOOL, "govern.ts"), ...dirs.flatMap((d) => readdirSync(join(TOOL, d)).filter((f) => f.endsWith(".ts")).map((f) => join(TOOL, d, f)))];
   const re = /PALS|palsnotes|pals notes|render-frontend-js|media-business/i;
   const hits = files.flatMap((f) => readFileSync(f, "utf8").split("\n").map((l, i) => ({ f, i: i + 1, l })).filter(({ l }) => re.test(l) && !/PALS's LAW/.test(l)));
   assert.deepEqual(hits.map((h) => `${h.f}:${h.i}: ${h.l.trim()}`), []);

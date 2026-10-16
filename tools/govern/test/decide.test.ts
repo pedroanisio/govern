@@ -5,7 +5,7 @@ import { mkdirSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { createServer } from "node:net";
 import { makeEnv, govern, jsonl, write, present, setConfig, tempDir, HERE, type Env } from "./helpers.ts";
-import { QUESTIONS, TASK_QUESTIONS, checkAnswers, calibration, fit } from "../lib/decide.ts";
+import { QUESTIONS, TASK_QUESTIONS, checkAnswers, calibration, fit } from "../ext/decide/decide.ts";
 import { check } from "../lib/shape.ts";
 import { GovernError } from "../lib/util.ts";
 
@@ -359,7 +359,7 @@ test("TypeSafe transport: missing keys, successful text and failures with or wit
     const env = { ...process.env };
     delete env.TYPESAFE_API_KEY;
     const r = spawnSync(process.execPath,
-      ["--disable-warning=ExperimentalWarning", new URL("../lib/typesafeCall.ts", import.meta.url).pathname],
+      ["--disable-warning=ExperimentalWarning", new URL("../ext/decide/typesafeCall.ts", import.meta.url).pathname],
       { env, input: JSON.stringify({ url, body: { check: true }, timeoutMs: 1000 }), encoding: "utf8", timeout: 10000 });
     assert.equal(r.status, 0, r.stderr);
     return JSON.parse(r.stdout);

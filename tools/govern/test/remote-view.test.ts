@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { join } from "node:path";
 import { makeEnv, write } from "./helpers.ts";
 import { create, appendLedger } from "../lib/project.ts";
-import { laneDetail, ledgerSummary } from "../lib/remote-view.ts";
+import { laneDetail, ledgerSummary } from "../ext/remote/remote-view.ts";
 
 const cases: [string, Record<string, unknown>, string, string][] = [
   ["job started", { kind: "job", name: "render720", status: "started", resource: "prod" }, "render720 started · prod", "running"],

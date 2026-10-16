@@ -4,23 +4,11 @@
 #     govern — run lanes of agent work (videos, software, ops, any process) through checked stages, with few tokens
 # SYNOPSIS
 #     govern version [--json]  |  govern --version [--json]
-#     govern conversation create ID [--profile P | --adapter A] [--lane SLUG] [--title T] [--timeout S] [--max-context-chars N]
-#     govern conversation list | show ID | history ID | close ID
-#     govern conversation send ID (--message TEXT | --message-file FILE) [--request-id KEY] [--mode queue|interrupt] [--estimate-usd N] [--run [--bg]]
-#     govern conversation run ID [--bg] [--once] | cancel ID RUN-ID [--reason TEXT]
-#     govern conversation recover ID --action continue|retry|cancel --note TEXT
-#     govern conversation context ID --summary TEXT --through MESSAGE-ID | events ID [--after N] [--follow [--timeout S]]
 #     govern init [DIR] [--nested]
 #     govern new SLUG (--process NAME | --kind long|short|ops) [--title T] [--lang L] [--parent SLUG] [--pin]
 #     govern work SLUG STAGE [--engine claude|codex|grok] [--open]  |  brief SLUG  |  status [SLUG]
 #     govern note SLUG TEXT  |  approve SLUG GATE --quote "owner's words"  |  done SLUG [--engine E]
 #     govern cmd SLUG [NAME [--timeout S] [--resource R] -- ARGV...] | --rm NAME  |  file SLUG [NAME PATH-OR-GLOB]
-#     govern data SLUG [--set JSON]  |  human SLUG [list|claim|delegate|complete STAGE] [--as PERSON] [--to PERSON] [--quote Q]
-#     govern human-inbox [--as PERSON]
-#     govern reject SLUG GATE --quote Q [--by PERSON]
-#     govern event SLUG NAME --id ID --correlation JSON [--data JSON] [--generation N]
-#     govern event-listen [--port 5001]  |  tick [SLUG] [--advance] [--loop --interval S]
-#     govern alerts SLUG [--ack ID]  |  subprocess SLUG STAGE  |  recover SLUG --action retry|compensated --quote Q
 #     govern bpmn PROCESS|SLUG [--svg FILE] [--scene FILE] [--png FILE] [--width N --height N] [--static]
 #     govern process list|show NAME  |  process pin SLUG  |  process migrate SLUG --map JSON --quote Q  |  check SLUG [--set CMD --stage S]  |  check SLUG STAGE --accept --quote Q
 #     govern advance SLUG [--stage STAGE] [--note EVIDENCE]  |  dep SLUG [--after LANE[:STAGE]] [--rm LANE]  |  hook stop|session-start|session-end
@@ -31,25 +19,9 @@
 #     govern prompts [PROCESS]  |  ask SLUG STEP [--file F]... [--var K=V]... [--image PNG]... [--effort E] [--model M]
 #     govern usage [SLUG...] [--since DATE]  |  ctx  |  desk  |  tune  |  publish SLUG
 #     govern artifact add SLUG FILE [--name N] [--title T] [--caption C]  |  artifact list SLUG
-#     govern remote pair [--as PERSON] [--minutes N] [--url URL] [--tls-cert F] [--no-qr]  |  remote devices  |  remote revoke DEVICE
-#     govern remote link [--url URL] [--tls-cert F] [--lane S] [--no-qr]  |  remote requests  |  remote refuse ID
-#     govern remote confirm ID --code NNNNNN [--lane S]... [--all] [--person P]
-#     govern remote serve [--host H] [--port 5002] [--tls-cert F --tls-key F]
 #     govern caps [PROFILE]  |  caps --check PROFILE  |  caps --check --all
-#     govern decide ask --questions F (--state S | --state-file F) [--purpose P] [--json]  |  decide report
 #     govern help [COMMAND]  |  help --topics  |  COMMAND --help  |  manual [PROCESS | --full | --size]  |  install-skill [SKILLS-DIR] [--check] [--replace]
-#     govern peer id [--name N]
-#     govern peer add NAME --url URL --key BASE64 [--allow NAME]... [--project SLUG|*]...
-#     govern peer list
-#     govern peer revoke NAME
-#     govern peer serve [--port 5003] [--host 127.0.0.1]
-#     govern peer push [--max N]
-#     govern mesh create --name MESH --url URL --project P... [--allow NAME]... [--observer HOST]...  |  mesh invite [--host NAME] [--ttl S]
-#     govern mesh join CODE --url URL --project P... [--allow NAME]... [--observer HOST]...  |  mesh sync [--url URL]  |  mesh status
-#     govern mesh policy --project P... [--allow NAME]... [--observer HOST]...  |  mesh revoke HOST
-#     govern center [show] [--json]  |  center serve [--port 5004] [--host 127.0.0.1] [--new-token]  |  center url [--port 5004] [--host 127.0.0.1]
-#     govern agents list [--refresh]  |  agents unregister [NAME] [--as NAME]
-#     govern agents register --project P... [--as NAME | --ephemeral] [--alias NAME]... [--description TEXT] [--ttl S]
+#     govern ext list  |  ext enable NAME  |  ext disable NAME
 #     govern task send --to codex|claude|grok|RUNNER|PROFILE|auto|owner|SESSION|NAME@PEER --project P --task T --kind K --summary S
 #                      (--body B | --body-file F) [--file PATH]... [--reply-to ID] [--write | --profile P | --read-only]
 #                      [--lane SLUG] [--from NAME] [--estimate-usd N] [--timeout S] [--check NAME]... [--verify -- ARGV...]
@@ -78,6 +50,10 @@
 #     the reference documents. `govern install-skill [SKILLS-DIR]` makes SKILLS-DIR/govern (default .claude/skills) a symbolic
 #     link to the tracked tools/govern folder, never a copy; a link already there is left alone, a link elsewhere is replaced,
 #     a real directory or file is refused unless --replace. A process may own a manual too (`govern manual PROCESS`).
+#     The subsystems a workspace may not need are extensions (EXTENSIONS below): they load only when the workspace enables them,
+#     `govern help` lists the core commands and one line naming each extension and its state, and `govern help COMMAND` for an
+#     enabled extension's command adds that extension's own manpage text (SYNOPSIS, OPTIONS, ENVIRONMENT). `desk` and `status` never
+#     load a disabled extension.
 #     A lane follows a process: a JSON file (tools/govern/processes/*.json built in: video, ops, dev; a workspace
 #     adds or overrides its own in its processes folder) naming the stages, each stage's exit condition and the
 #     command that checks it, and the owner's gates. `advance` moves a lane on only when the stage's check passes
@@ -147,113 +123,56 @@
 #     `bound: N turns · T s` for a running or recorded grok run: grok has no dollar cap, so that is its only limit.
 #     Standard host setup includes task install-service and its printed enable command. --system previews a system
 #     unit with current User=; --system --write requires root, otherwise prints the refusal and unit, never escalates.
-#     Peer delivery uses signed HTTP behind a TLS tunnel (PEERS.md). Peer add and revoke require the owner's
-#     terminal. Remote sends require a live peer and refuse --write, --profile, --lane, --estimate-usd, --file and
-#     auto@PEER: the receiving host decides these. Sessions on PEER are not woken. Dispatch --loop also relays;
-#     unverified output never leaves. Peer list shows grants, fingerprints, open outbound counts and last errors.
-#     A mesh replaces pairwise peer setup: the registrar (mesh create) prints one single-use invite per host (mesh
-#     invite); each host joins once (mesh join) and then trusts every certified member. Certificates last 30 days and
-#     renew on mesh sync, which dispatch --loop runs every ten minutes. Mesh grants (--project, --allow) are this
-#     host's own policy for every member. Agents register themselves (agents register) as NAME@HOST, stable or
-#     ephemeral, with aliases; names and aliases are unique per host and held by the registering session, and a
-#     registration grants no run. An answer to a message this host sent reaches its local author without a grant.
-#     agents list shows what this host may address on every other host. Mesh create, invite, join, policy, revoke and
-#     sync --url require the owner's terminal. The command center (center) shows every federated host's dispatcher,
-#     queue, relay, 24 h runs and spend, agents and latest messages, with alerts; each member answers only the observers
-#     its owner names (--observer; default the registrar). center serve shows it on the selected loopback host (default 127.0.0.1) behind a token kept in the private state (the address survives restarts; center url prints it).
 # OPTIONS
-#     --adapter A             conversation create: trusted named NDJSON adapter from conversationAdapters in workspace config
-#     --max-context-chars N    conversation create: maximum assembled context characters (default 64000, at most 1000000); checkpoint rather than truncate
-#     --message TEXT          conversation send: latest user message
-#     --message-file FILE     conversation send: read the message from a UTF-8 file
-#     --request-id KEY        conversation send: idempotent input key; conflicting content is refused
-#     --mode M                conversation send: queue (default) or interrupt the active run before this follow-up
-#     --run                   conversation send: execute persisted turns after submission
-#     --once                  conversation run: execute at most one turn, including background execution
-#     --reason TEXT           conversation cancel: explanation retained with the cancellation request
-#     --through MESSAGE-ID    conversation context: completed assistant message ending the summarized context
-#     --follow                conversation events: stream durable NDJSON events until --timeout (default 30 seconds)
 #     Each entry names the commands that take the flag; `govern help COMMAND` shows one command's lines.
 #     -h, --help              every command: after a command (`govern advance --help`), that command's lines, the same as
 #                             `govern help advance`; as the first word (`govern --help`, `-h`), this manpage
 #     --pin                   new: freeze the process definition even without a declared revision
 #     --map JSON              process migrate: old stage names mapped to the new revision
-#     --data JSON             process migrate, event: migration: converted fields (null removes); event: payload fields
-#     --id ID                 event: stable delivery id used for deduplication
-#     --correlation JSON      event: typed value matching the waiting stage
-#     --generation N          event: activation generation, required when the event contract declares it
-#     --port N                event-listen, remote serve, peer serve, center serve, center url: event-listen: loopback webhook port (default 5001);
-#                             remote serve: the API port (default 5002); peer serve: 5003; center serve, center url: 5004
-#     --host H                remote serve, peer serve, mesh invite, center serve, center url: default 127.0.0.1; center: loopback only; remote: another needs TLS; peer: loopback only,
-#                             TLS from the tunnel; mesh invite: the name the joining host must have
-#     --tls-cert F            remote pair, remote link, remote serve: the server's PEM certificate; pair, link: its pin goes
-#                             into the printed link; serve: serve HTTPS (with --tls-key)
-#     --tls-key F             remote serve: the PEM private key of --tls-cert
-#     --minutes N             remote pair: how long the pairing code is valid (1..60, default 10)
-#     --key BASE64            peer add: Ed25519 base64 DER SPKI public key
-#     --allow NAME            peer add, mesh create, mesh join, mesh policy: permitted local recipient (repeatable, no wildcard)
-#     --url URL               remote pair, remote link, peer add, mesh create, mesh join, mesh sync: the server's address as the
-#                             phone reaches it; peer add: the peer's address; mesh: this host's public https address
-#                             and drawn as a QR code the phone's camera opens in the app (link: default http://127.0.0.1:5002)
-#     --no-qr                 remote pair, remote link: print the link without its QR code
-#     --code NNNNNN           remote confirm: the 6-digit code the phone shows; a wrong code refuses the request for good
-#     --person P              remote confirm: the person the device acts for (default owner)
-#     --advance               tick: progress ready event, subprocess and retry stages through normal gates
-#     --ack ID                alerts: acknowledge an alert without approving a business decision
-#     --action NAME           conversation recover, recover: conversation recover: continue, retry or cancel the interrupted run;
-#                             recover: retry an investigated failure or confirm compensation with compensated
+#     --data JSON             process migrate: converted fields (null removes)
 #     --nested                init: make a workspace inside another workspace (refused otherwise)
 #     --full                  manual: the core manual followed by REFERENCE.md
 #     --replace               install-skill: remove a real directory or file at SKILLS-DIR/govern and link it (otherwise refused)
-#     --size                  manual: the bytes and approximate tokens (bytes / 3.6) of SKILL.md and REFERENCE.md
-#     --topics                help: the reference documents, one line each, with their paths
+#     --size                  manual: the bytes and approximate tokens (bytes / 3.6) of SKILL.md and REFERENCE.md, and a third line for the
+#                             documents of the enabled extensions
+#     --topics                help: the reference documents, one line each, with their paths; an extension's documents only while it is enabled
 #     --process P             new: the process the lane follows (govern process list)
 #     --kind K                new, task send, task reply: new: the lane's kind (long|short|ops, or one the process names);
 #                             task: the message kind (TASK, the default for send; ACK, REVIEW, HANDOFF, BLOCKED…)
-#     --title T               conversation create, new, artifact add: conversation create: its title (default: its id); new: the
-#                             lane's title (default: its slug); artifact add: the artifact's title shown to the reviewer
-#     --name N                artifact add, peer id, mesh create: mesh create: the mesh's name; peer id: identity name on creation; artifact add: the artifact's name in the lane (default: the file's base name)
+#     --title T               new, artifact add: new: the lane's title (default: its slug); artifact add: the artifact's title shown to the reviewer
+#     --name N                artifact add: the artifact's name in the lane (default: the file's base name)
 #     --caption C             artifact add: a caption shown with the artifact
 #     --lang L                new: the lane's language, en (default) or pt-BR
 #     --parent SLUG           new: the lane this one comes from (shown in its brief)
 #     --engine E              work, done: claude, codex or grok (default: claude inside a Claude Code session, grok inside a
 #                             grok session, else codex)
 #     --open                  work: launch a fresh interactive claude, codex or grok session for this lane
-#     --quote Q               approve, reject, human, allow, process migrate, check, recover: the decision owner's own words (in a Claude session,
-#                             from a message the person typed; a Codex or Grok session is refused); allow: it must contain N;
-#                             human: the person's instruction to claim, delegate or complete
-#     --by NAME               approve, reject, allow: the decision owner, required when the gate or allowance names one other
+#     --quote Q               approve, allow, process migrate, check: the decision owner's own words (in a Claude session,
+#                             from a message the person typed; a Codex or Grok session is refused); allow: it must contain N
+#     --by NAME               approve, allow: the decision owner, required when the gate or allowance names one other
 #                             than owner; on a policy gate, the process person this OS account is mapped to
 #     --extra N               allow: raise the allowance's limit by N for its current period
-#     --timeout S             conversation create, conversation events, cmd, wait, up, down, reap, task send, task retry: conversation create: a turn's
-#                             limit (default 1800, at most 86400); conversation events: how long --follow streams (default 30);
-#                             cmd: the command's foreground limit (default 1800); wait: block at most S seconds (default
+#     --timeout S             cmd, wait, up, down, reap, task send, task retry: cmd: the command's foreground limit (default 1800); wait: block at most S seconds (default
 #                             540), exit 124 if the job still runs; up, down, reap: the provider command's limit (default 120);
 #                             task send, task retry: the dispatched run's limit instead of GOVERN_QUEUE_TIMEOUT_SEC, refused
 #                             above maxTimeoutSec (QUEUE/config.json, default 7200)
 #     --rm NAME               cmd, dep: remove the named command (cmd) or the dependency on that lane (dep)
 #     --resource R            cmd: the resource the command runs on (checked now), so run needs no --on
-#     --set X                 data, check: data: a JSON object of case fields merged into the lane (changed data invalidates
-#                             policy votes and active human task completion); check: set the lane's own exit check for
-#                             --stage (ledgered; a swap is flagged)
-#     --stage S               check, advance, recover: check: the stage --set applies to, or the active stage to check; advance: the
-#                             active stage to move on from (a lane with parallel stages)
+#     --set X                 check: set the lane's own exit check for --stage (ledgered; a swap is flagged)
+#     --stage S               check, advance: check: the stage --set applies to, or the active stage to check; advance: the active stage to move on from (a lane with parallel stages)
 #     --accept                check: the owner accepts that stage's flagged check changes (with --quote)
-#     --note T                conversation recover, advance, task retry, task close, task reclaim: conversation recover: why (required); advance: the evidence that a stage with no check is done (also recorded
+#     --note T                advance, task retry, task close, task reclaim: advance: the evidence that a stage with no check is done (also recorded
 #                             as a decision); task retry: what was fixed before sending again (required, recorded on both messages);
 #                             task close: a note recorded with the close; task reclaim: what was checked
 #                             before releasing an abandoned claim
-#     --after X               conversation events, dep: conversation events: N, the event number to read after (default 0);
-#                             dep: LANE[:STAGE], the lane this one waits on (all of it, or past STAGE)
-#     --bg                    conversation send, conversation run, run, slice: run detached and print the job id; wait with `govern wait`
+#     --after X               dep: LANE[:STAGE], the lane this one waits on (all of it, or past STAGE)
+#     --bg                    run, slice: run detached and print the job id; wait with `govern wait`
 #     --on R                  run: run the command on a declared resource (locked unless it says lock: false)
 #     --override-resource     run: let --on move a command off its own resource (recorded in the job)
 #     --estimate HOURS        run, slice: the time reserved on the resource's allowance; the job is stopped at it
 #     --machines N            slice: how many machines the recipe starts (refused above the resource's maxMachines)
-#     --lane SLUG             conversation create, up, task send, remote confirm, remote link: conversation create: the lane it
-#                             runs in (in that lane's folder); up: the lane the machines are booked to (default: the job it runs
-#                             inside); task send: the lane whose gate authorises a spend, publish or push profile; remote confirm
-#                             (repeatable), remote link: a lane the device may reach
+#     --lane SLUG             up, task send: up: the lane the machines are booked to (default: the job it runs
+#                             inside); task send: the lane whose gate authorises a spend, publish or push profile
 #     --count N               up: how many instances to start (default 1)
 #     --forget                down: book the machine time without running stop, for a machine that is already gone
 #     --yes                   reap: run stop on the instances found and ledger the reap (default: list only)
@@ -271,14 +190,12 @@
 #                             claims-cited, or one the profile or config.json defines)
 #     --verify                task send: run the command after -- in the project folder once the reply is filed and the checks
 #                             pass; the reply is [checked] only on exit 0
-#     --to X                  human, task send, task list, task triage, task retry, task forward: human delegate: the person the task goes to; send:
-#                             codex, claude, grok, a queue config runner, a profile, auto, owner or a live session; list, triage: only messages to X; retry: send to X
+#     --to X                  task send, task list, task triage, task retry, task forward: send:
+#                             codex, claude, grok, a queue config runner, a profile, auto, owner, a live session or NAME@PEER; list, triage: only messages to X; retry: send to X
 #                             instead of the original recipient; forward: the new recipient
-#     --project P             task send, task list, task triage, peer add, mesh create, mesh join, mesh policy, agents register: peer add, mesh,
-#                             agents register: allowed project (repeatable, * alone for any); the message's project; list, triage: only that project's messages
+#     --project P             task send, task list, task triage: the message's project; list, triage: only that project's messages
 #     --task T                task send: the task the message belongs to
-#     --summary S             conversation context, task send, task reply: conversation context: the checkpoint summary
-#                             (required, with --through); task: the one-line summary
+#     --summary S             task send, task reply: the one-line summary
 #     --body B                task send, task reply: the message text
 #     --body-file F           task send, task reply: read the message text from F
 #     --reply-to ID           task send: the message this one answers
@@ -286,41 +203,22 @@
 #     --write                 task send, task retry, task install-service: task send, task retry: let the runner change files in the project folder
 #                             (default: read-only; retry: as the original); task install-service with --system: write only as root, otherwise print refusal and unit
 #     --read-only             task send: send a message that matches the write rule to a profile that cannot write, and record readOnlyConfirmed
-#     --profile P             conversation create, task send, task retry: seal the run to profile P's capabilities (govern caps); conversation
-#                             create: default codex-read unless --adapter is given; task send, task retry: not with --write
-#     --estimate-usd N        conversation send, task send: what the run is expected to cost, reserved against a matching allowance
-#     --state S               decide ask, task list: decide ask: the state Jev is asked about, as text; task list: only
-#                             messages in state open, claimed, done or failed
-#     --state-file F          decide ask: read the state from F
-#     --questions F           decide ask: the JSON file of typed questions (choice, score, noul)
-#     --purpose P             decide ask: the name the decision is recorded under (default ask)
-#     --json                  version, decide ask, task triage, center show: print the version, the whole decision, the triage rows
-#                             as an array, or the command center view, as JSON
-#     --observer HOST         mesh create, mesh join, mesh policy: a member that may read this host's telemetry (repeatable;
-#                             default: the registrar)
-#     --ttl S                 mesh invite, agents register: seconds the invite or registration lasts (invite 3600 default,
-#                             60..604800; stable agent 43200 default, at most 604800; ephemeral 3600, at most 86400)
-#     --ephemeral             agents register: generate a short-lived e-XXXXXXXX name that ends with this session
-#     --alias NAME            agents register: another name this agent answers to on this host (repeatable)
-#     --description TEXT      agents register: one line other hosts see in agents list
-#     --new-token             center serve: replace the kept access token with a new one (the old address stops working)
-#     --refresh               agents list: ask every other host now instead of reading the last discovery
-#     --as NAME               human-inbox, human, task inbox, task close, task reclaim, task forward, task reply, remote pair, agents register, agents unregister: who you are;
-#                             agents: must be this session's own name;
-#                             human, human-inbox: a process person, refused unless this OS account is mapped to it; task:
-#                             default GOVERN_AS, else this session; remote pair: the person the device approves as (owner)
-#     --all                   task triage, task inbox, remote confirm, caps: task triage: also replies marked unverified in done/; task inbox: messages in every state, not only open ones; remote
-#                             confirm: grant the device every lane. With no requested lanes, choose --lane SLUG
-#                             (repeatable) or --all; confirmation never grants every lane implicitly; caps --check: every profile without a current passing check
+#     --profile P             task send, task retry: seal the run to profile P's capabilities (govern caps); not with --write
+#     --estimate-usd N        task send: what the run is expected to cost, reserved against a matching allowance
+#     --state S               task list: only messages in state open, claimed, done or failed
+#     --json                  version, task triage: print the version, or the triage rows as an array, as JSON
+#     --as NAME               task inbox, task close, task reclaim, task forward, task reply: who you are; default GOVERN_AS, else this session
+#     --all                   task triage, task inbox, caps: task triage: also replies marked unverified in done/; task inbox: messages in every state, not only open ones;
+#                             caps --check: every profile without a current passing check
 #     --hook                  task inbox: the UserPromptSubmit hook form, silent when empty
-#     --max N                 task dispatch, peer push: run at most N messages
+#     --max N                 task dispatch: run at most N messages
 #     --only E                task dispatch: only messages to that runner (codex, claude, grok or a queue config runner)
 #     --parallel N            task dispatch, task install-service: run up to N messages at once in this dispatcher (default 1);
 #                             a runner still never exceeds its QUEUE/config.json concurrency (default 1) across all dispatchers
 #     --run-claimed ID        task dispatch: run the message a --parallel dispatcher claimed (what its workers run; not for use by hand)
-#     --loop                  tick, task dispatch: keep dispatching every --interval seconds
+#     --loop                  task dispatch: keep dispatching every --interval seconds
 #     --system                task install-service: preview /etc/systemd/system/govern-dispatch.service with current User=
-#     --interval S            tick, task dispatch, task install-service: seconds between rounds (default 30)
+#     --interval S            task dispatch, task install-service: seconds between rounds (default 30)
 #     --reap-every S          task dispatch, task install-service: list each resource's tagged instances every S seconds
 #                             into state for the desk (off by default; never stops a machine)
 #     --svg FILE              bpmn: write the SVG diagram there (with no --svg, --scene or --png it goes to stdout)
@@ -340,6 +238,7 @@
 #     · GOVERN_CAPABILITIES (must exist when set) · GOVERN_STATE (locks and reap state; default .govern/state in a
 #     .govern/ workspace, else govern-state beside the projects folder) · GOVERN_PROMPTS (replaces every prompts
 #     folder) · GOVERN_RESOURCES, GOVERN_ALLOWANCES (a file read instead of the resources or allowances key).
+#     Extensions: GOVERN_EXTENSIONS (comma-separated names of the extensions to enable, instead of the config's "extensions"; empty is unset)
 #     Sessions: GOVERN_AS (session name) · GOVERN_LANE (slug: attribute the session to that lane; read by hook session-start) · GOVERN_SESSIONS_DIR (~/.claude/sessions) · GOVERN_CLAUDE_PROJECTS
 #     (~/.claude/projects) · GOVERN_CODEX_SESSIONS (~/.codex/sessions) · GOVERN_CLAUDE_SETTINGS (~/.claude/settings.json,
 #     read and written by tune) · GOVERN_GROK_SESSIONS (else the sessions of govern's grok home and of the user's)
@@ -356,9 +255,6 @@
 #     · GOVERN_QUEUE_GROK_MODEL (grok's default) · GOVERN_GROK_MAX_TURNS (25; grok has no dollar cap)
 #     · GOVERN_QUEUE_TIMEOUT_SEC (900, one dispatched run); a message's --timeout replaces it for that run; holderless claims fail after twice the run's limit, at least 3600 s.
 #     Conversation workers: GOVERN_CONVERSATION_RUN (set by the runtime; model-origin approvals are refused).
-#     Jev (decide): TYPESAFE_API_KEY (the TypeSafe key; else the config's decide.envFile) · GOVERN_JEV_MODEL (jev-latest)
-#     · GOVERN_TYPESAFE_URL (https://api.typesafe.ai).
-#     Webhooks: GOVERN_WEBHOOK_TOKEN (event-listen bearer token; at least 16 characters, configured securely).
 #     Test and diagnostic: GOVERN_NOW (the allowances clock) · GOVERN_PROC=ps (read the process table with ps).
 #     Coverage: ST_VAR (npm run coverage writes V8 profiles and coverage.json under $ST_VAR/out/govern/coverage;
 #     default <repo>/var) · NODE_V8_COVERAGE (set by npm run coverage so every child node process writes its profile)
@@ -395,15 +291,20 @@
 #     govern run golden-pixel fb gates sheets --bg && govern wait golden-pixel
 #     govern ask you-vs-the-sun metadata --file publication.txt --file timings.json
 #     govern usage --since 2026-10-12
-#     govern decide ask --questions q.json --state-file task.txt   # Jev (TypeSafe System One); logs to the queue's decisions.jsonl
 #     govern new ops/govern --process dev && govern cmd ops/govern test -- node --test 'tools/govern/test/*.test.ts'
 #     govern advance --help                # advance's usage and flags
 #     govern advance ops/govern            # runs the test check; moves to review only when it passes
 # KEYWORDS
 #     lanes process workflow video codex claude grok tokens usage orchestration pals-notes youtube
+# EXTENSIONS
+#     Peer, mesh, agents, center, remote, decide, conversation and the business event commands are extensions: a workspace enables each
+#     with `govern ext enable NAME` ("extensions" in .govern/config.json, or GOVERN_EXTENSIONS), and `govern help COMMAND` prints an enabled
+#     extension's own manpage text. A command of a disabled extension is refused (exit 2). `govern ext list` shows the state of each.
+#     tools/govern/PEERS.md (extensions peer and center) - tools/govern/REMOTE.md (extension remote) - tools/govern/CONVERSATIONS.md (extension conversation)
+#     - tools/govern/BUSINESS.md (extension business) - tools/govern/LIFECYCLE.md (extension business)
 # SEE ALSO
 #     st-man - tools/govern/SKILL.md (govern manual) - tools/govern/REFERENCE.md (govern manual --full) - tools/govern/processes/video/MANUAL.md (govern manual video)
-#     - tools/govern/BUSINESS.md - tools/govern/PURPOSE.md - tools/govern/CONVERSATIONS.md - tools/govern/REMOTE.md - tools/govern/PEERS.md
+#     - tools/govern/PURPOSE.md
 # MANPAGE <<<
 set -eu
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)

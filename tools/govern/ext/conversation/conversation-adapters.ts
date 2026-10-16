@@ -1,13 +1,13 @@
 import { join } from "node:path";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { registry, getProfile, claudeArgs, codexSpec, grokArgs } from "./caps.ts";
-import { execArgs } from "./codex.ts";
-import { prepareGrokHome, syncBackAuth } from "./grokhome.ts";
-import { grokEnv } from "./queue.ts";
-import { cost } from "./usage.ts";
-import { fail } from "./util.ts";
-import type { Conversation, Run, Usage } from "./conversation.ts";
+import { registry, getProfile, claudeArgs, codexSpec, grokArgs } from "../../lib/caps.ts";
+import { execArgs } from "../../lib/codex.ts";
+import { prepareGrokHome, syncBackAuth } from "../../lib/grokhome.ts";
+import { grokEnv } from "../../lib/queue.ts";
+import { cost } from "../../lib/usage.ts";
+import { fail } from "../../lib/util.ts";
+import type { Conversation, Run, Usage } from "../../lib/conversation.ts";
 export interface Normalized {
   type: "assistant.delta" | "tool.started" | "tool.finished" | "done" | "error";
   text?: string;

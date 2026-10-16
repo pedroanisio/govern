@@ -3,11 +3,16 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
-import { makeEnv, govern, jsonl, childEnv, HERE, tempDir } from "./helpers.ts";
+import { makeEnv, govern, jsonl, childEnv, HERE, tempDir, fullTable } from "./helpers.ts";
 import { spawnSync } from "node:child_process";
 import { parseArgs, opt, flag, many } from "../lib/util.ts";
-import { COMMANDS, HELP, commandHelp } from "../govern.ts";
+import { COMMANDS as CORE, HELP, commandHelp } from "../govern.ts";
+import { EXTENSION_NAMES } from "../lib/ext-registry.ts";
+import type { Cmd } from "../lib/cli.ts";
 import { skillMentions, skillProblems } from "../lib/skill.ts";
+
+/** The whole command table: the core's and every extension's commands. */
+const COMMANDS = await fullTable();
 
 const e = makeEnv();
 govern(e, ["new", "lane", "--process", "dev"]);
@@ -116,10 +121,11 @@ test("--help on a command, and help <command>, print that command's lines", () =
   assert.match(govern(e, ["help", "nope"]).err, /unknown command "nope"/);
 });
 
-test("HELP is generated from the table: every command, every subcommand, every declared flag", () => {
+test("HELP is generated from the table: every core command, every subcommand, every declared flag (an extension's commands are in its own help)", () => {
   for (const c of COMMANDS) {
-    assert.match(HELP, new RegExp(`govern ${c.name}\\b`), c.name);
-    const text = commandHelp(c.name);
+    if (CORE.includes(c)) assert.match(HELP, new RegExp(`govern ${c.name}\\b`), c.name);
+    else assert.doesNotMatch(HELP, new RegExp(`govern ${c.name}\\b`), `${c.name} is an extension's: the overview lists the core`);
+    const text = commandHelp(c.name, undefined, COMMANDS);
     for (const s of Object.keys(c.subs ?? {})) assert.match(text, new RegExp(`govern ${c.name} ${s}\\b`), `${c.name} ${s}`);
     const specs = [c.flags, ...Object.values(c.subs ?? {}).map((s) => s.flags)];
     for (const f of specs.flatMap((s) => [...(s?.bool ?? []), ...(s?.value ?? []), ...(s?.multi ?? [])]))
@@ -132,7 +138,7 @@ test("drift: every command and subcommand is in SKILL.md and HELP; SKILL.md name
   const md = `${readFileSync(join(HERE, "..", "SKILL.md"), "utf8")}\n${readFileSync(join(HERE, "..", "REFERENCE.md"), "utf8")}`;
   assert.ok(skillMentions(md).length > 20, "SKILL.md's govern mentions are found");
   assert.deepEqual(skillProblems(md, COMMANDS), [], "SKILL.md against the command table");
-  for (const c of COMMANDS) {
+  for (const c of CORE) {
     assert.match(HELP, new RegExp(`govern ${c.name}\\b`), `HELP lacks govern ${c.name}`);
     for (const s of Object.keys(c.subs ?? {})) assert.match(HELP, new RegExp(`govern ${c.name} ${s}\\b`), `HELP lacks govern ${c.name} ${s}`);
   }
@@ -187,11 +193,17 @@ test("bin/govern: --help after the command is the command's help; only a leading
   }
 });
 
-test("drift: the bin/govern MANPAGE names every command", () => {
+test("drift: the bin/govern MANPAGE names every core command, and each extension's manpage its own", async () => {
   const text = readFileSync(BIN, "utf8");
   const man = text.slice(text.indexOf("# MANPAGE >>>"), text.indexOf("# MANPAGE <<<"));
-  const synopsis = man.slice(man.indexOf("# SYNOPSIS"), man.indexOf("# DESCRIPTION"));
-  for (const c of COMMANDS) {
+  const coreSynopsis = man.slice(man.indexOf("# SYNOPSIS"), man.indexOf("# DESCRIPTION"));
+  const own = await Promise.all(EXTENSION_NAMES.map(async (n) => {
+    const x = await import(`../ext/${n}/index.ts`) as { manpage: string; commands: Cmd[] };
+    return { commands: x.commands, synopsis: x.manpage.slice(x.manpage.indexOf("SYNOPSIS"), x.manpage.indexOf("DESCRIPTION")) };
+  }));
+  for (const c of CORE) check(c, coreSynopsis);
+  for (const x of own) for (const c of x.commands) check(c, x.synopsis);
+  function check(c: Cmd, synopsis: string): void {
     assert.match(synopsis, new RegExp(`(?:govern|\\|)\\s+${c.name}(?![\\w-])`), `the MANPAGE SYNOPSIS lacks ${c.name}`);
     for (const s of Object.keys(c.subs ?? {})) assert.match(synopsis, new RegExp(`${c.name}\\b.*\\b${s}(?![\\w-])`), `the MANPAGE SYNOPSIS lacks ${c.name} ${s}`);
   }

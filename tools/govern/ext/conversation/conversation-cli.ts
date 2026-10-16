@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
-import { fail, opt, flag, secondsOpt, type Args, type FlagSpec } from "./util.ts";
-import * as sessions from "./conversation.ts";
+import { fail, opt, flag, secondsOpt, type Args, type FlagSpec } from "../../lib/util.ts";
+import * as sessions from "../../lib/conversation.ts";
 import * as runtime from "./conversation-runtime.ts";
 const json = (v: unknown) => {
   process.stdout.write(JSON.stringify(v) + "\n");

@@ -5,9 +5,9 @@ import { createHash, generateKeyPairSync, sign } from "node:crypto";
 import { readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { makeEnv, govern, write, asSession } from "./helpers.ts";
-import { remoteServer, devices, scoped, Forbidden, BadRequest, NotFound, createPairing, pair, deviceOfToken } from "../lib/remote.ts";
-import { comparisonCode, requestPairing, pollPairing, confirmPairing, cancelPairing, refusePairing, requests, TooMany } from "../lib/remote-pair.ts";
-import { deskView, laneSummary, PROTOCOL } from "../lib/remote-view.ts";
+import { remoteServer, devices, scoped, Forbidden, BadRequest, NotFound, createPairing, pair, deviceOfToken } from "../ext/remote/remote.ts";
+import { comparisonCode, requestPairing, pollPairing, confirmPairing, cancelPairing, refusePairing, requests, TooMany } from "../ext/remote/remote-pair.ts";
+import { deskView, laneSummary, PROTOCOL } from "../ext/remote/remote-view.ts";
 import { create, load } from "../lib/project.ts";
 
 const vectors = [

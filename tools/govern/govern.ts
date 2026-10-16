@@ -2,13 +2,11 @@
 import { installSystemUnit } from "./lib/dispatch-service.ts";
 import * as lifecycle from './lib/lifecycle.ts';
 import { enterRuntime } from './lib/lifecycle-runtime.ts';
-import { eventServer } from './lib/event-server.ts';
-import { SUBS as CONVERSATION_SUBS } from './lib/conversation-cli.ts';
 import { withLaneLock } from './lib/lane-lock.ts';
 // govern — run lanes of work (videos, software, ops, any process) through their stages with agents, cheaply and under the owner's gates.
 // The manual for the AI operating it is SKILL.md (govern manual). Usage: govern help.
-import { activeStages, enterTasks, isGraph, requireActive, validateRequired, nextStages, completeStage, setData, authenticatedPerson, humanAction, requireHumanComplete, gateApproved, policyVote, rejectRoute, ownerApproval } from './lib/business.ts';
-import { scalar, value } from './lib/business-schema.ts';
+import { activeStages, enterTasks, isGraph, requireActive, validateRequired, nextStages, completeStage, authenticatedPerson, requireHumanComplete, gateApproved, policyVote, rejectRoute, ownerApproval } from './lib/business.ts';
+import { value } from './lib/business-schema.ts';
 import { check, record } from './lib/shape.ts';
 import { spawnSync } from "node:child_process";
 import { readFileSync, globSync, mkdirSync } from "node:fs";
@@ -18,7 +16,7 @@ import { randomUUID, createHash } from "node:crypto";
 import { GovernError, fail, parseArgs, opt, flag, many, flagNames, secondsOpt, nowIso, readJsonl, kTok, clip, type Args, type FlagSpec } from "./lib/util.ts";
 import { stagesOf, load, save, create, stageOf, brief, appendLedger, resolveFile, ledgerFile, projectDir, checkSlug, checkOf, pendingCheckChanges, blockedBy, laneState, driftWarning, laneSlugs, laneRows, stateFile, argvOf, commandLine, type Project, type Command } from "./lib/project.ts";
 import { processes, getProcess, processOf, listLine, show, manualOf } from "./lib/process.ts";
-import { repo, findRepo, projectsDir, packagesDir, initWorkspace, stateDir } from "./lib/workspace.ts";
+import { repo, findRepo, projectsDir, packagesDir, initWorkspace, stateDir, decideConfig } from "./lib/workspace.ts";
 import { emptyRecord, PROTO } from "./lib/shape.ts";
 import * as jobs from "./lib/jobs.ts";
 import { ask, readPrompt, promptFiles } from "./lib/codex.ts";
@@ -26,29 +24,25 @@ import { report, currentCtx, CTX_WARN } from "./lib/usage.ts";
 import { laneByCwd, recordLane } from "./lib/attribution.ts";
 import * as queue from "./lib/queue.ts";
 import { tag, verdict } from "./lib/replycheck.ts";
-import * as jev from "./lib/decide.ts";
 import { desk } from "./lib/desk.ts";
 import { listLines, showLines, place } from "./lib/resources.ts";
 import * as reaping from "./lib/reap.ts";
-import * as qr from "./lib/qr.ts";
 import * as slicing from "./lib/slice.ts";
 import * as allowances from "./lib/allowances.ts";
 import { registry, getProfile, listText, showText, failing, writes, readCheck, checkState, profileHash } from "./lib/caps.ts";
 import { asksForChanges, WRITE_RULE } from "./lib/writeask.ts";
 import { checkProfile } from "./lib/capcheck.ts";
 import { tune, chooseRunner } from "./lib/tune.ts";
-import { verifyQuote, origin, GROK_MARKERS } from "./lib/approval.ts";
-import * as remote from "./lib/remote.ts";
-import * as peer from "./lib/peer.ts";
-import * as mesh from "./lib/mesh.ts";
-import * as agents from "./lib/agents.ts";
-import * as center from "./lib/center.ts";
+import { verifyQuote, GROK_MARKERS } from "./lib/approval.ts";
+import { parseAddress } from "./lib/peer-id.ts";
+import { EXTENSIONS, EXTENSION_FLAGS } from "./lib/ext-registry.ts";
+import * as extensions from "./lib/ext.ts";
+import { out, jsonValue, core, type Cmd, type Sub, type Line } from "./lib/cli.ts";
 import { processSvg, viewOf, type Overlay } from "./lib/processview.ts";
 import { sceneOf, canvasFor } from "./lib/processscene.ts";
 import { readLane, readLanes } from "./lib/lanestate.ts";
 import * as artifacts from "./lib/artifacts.ts";
-import * as remotePair from "./lib/remote-pair.ts";
-import { checkRecipient, requireAs, resolveAs, callingSession, sessions } from "./lib/sessions.ts";
+import { checkRecipient, requireAs, resolveAs } from "./lib/sessions.ts";
 import { installSkill, skillDrift, sha256File, approxTokens, BYTES_PER_TOKEN } from "./lib/skill.ts";
 import { HELP_RULES, TOPICS } from "./lib/helprules.ts";
 import { writeFileSync, existsSync, unlinkSync, statSync } from "node:fs";
@@ -62,7 +56,6 @@ const laneLockDir = (slug: string | undefined) => join(stateDir(), "lane-locks",
 
 // A reader that stops early (govern brief x | head) is not an error.
 process.stdout.on("error", (e: NodeJS.ErrnoException) => { if (e.code === "EPIPE") process.exit(0); throw e; });
-const out = (s: string): void => { process.stdout.write(s.endsWith("\n") ? s : s + "\n"); };
 
 // What the session does about it by itself: the owner is never asked to /clear (context is the session's job).
 const CTX_ADVICE = "keep state in files (govern note, memory), offload model work with `govern task send --to codex`, " +
@@ -198,44 +191,6 @@ function cmdPolicyDecision(a: Args, p: Project, g: import('./lib/process.ts').Ga
   appendLedger(p.slug,{kind:decision,gate:g.name,...vote,source});
   out(`${p.slug}: ${g.name} ${decision} by ${actor} · ${gateApproved(p,g) ? 'approved' : 'not approved'}`);
 }
-function cmdData(a:Args):void {
-  const p=load(a._[1]), text=opt(a,'set');
-  if(text!==undefined) {
-    let raw:unknown; try {raw=JSON.parse(text);} catch {fail('--set must be a JSON object');}
-    const patch=check('case data',raw,record(value));
-    setData(p,patch); save(p); appendLedger(p.slug,{kind:'data',fields:Object.keys(patch)});
-  }
-  out(JSON.stringify(p.data??{},null,2));
-}
-function cmdHumanInbox(a:Args):void {
-  const requested=opt(a,'as'), user=userInfo().username, rows:string[]=[];
-  let authenticated=false;
-  for(const slug of laneSlugs()) {
-    const p=load(slug), pr=processOf(p);
-    const actor=Object.keys(pr.people??{}).find(id=>pr.people![id]!.user===user && (!requested || id===requested));
-    if(!actor) continue;
-    authenticated=true;
-    for(const stage of activeStages(p)) {
-      const def=pr.stages.find(s=>s.name===stage)?.human, task=p.humanTasks?.[stage];
-      if(!def || task?.completedAt) continue;
-      if(task?.assignee===actor || (!task?.assignee && def.role && pr.people![actor]!.roles?.includes(def.role))) rows.push(`${slug} ${stage}: ${task?.assignee ? `assigned to ${actor}` : `unclaimed (${def.role})`}`);
-    }
-  }
-  if(requested && !authenticated) fail(`OS account ${user} is not authenticated as ${requested}`);
-  out(rows.join('\n')||'(no human tasks for this account)');
-}
-function cmdHuman(a:Args):void {
-  const p=load(a._[1]), action=a._[2]??'list';
-  if(action==='list') { out(Object.entries(p.humanTasks??{}).map(([s,t])=>`${s}: ${t.completedAt ? `completed by ${t.completedBy}` : t.assignee??'unclaimed'}${activeStages(p).includes(s)?' (active)':''}`).join('\n')||'(no human tasks)'); return; }
-  if(!['claim','delegate','complete'].includes(action)) fail('human action must be list, claim, delegate or complete');
-  const stage=a._[3]??fail('human action requires a stage'), quote=opt(a,'quote');
-  if(!quote || quote.trim().length<2) fail('--quote is required: the human instruction');
-  const actor=authenticatedPerson(processOf(p),opt(a,'as')), source=verifyQuote(quote!);
-  humanAction(p,stage,action as 'claim'|'delegate'|'complete',actor,quote!,opt(a,'to'));
-  save(p); appendLedger(p.slug,{kind:'human-'+action,stage,by:actor,to:opt(a,'to'),quote,source});
-  out(`${p.slug}: ${stage} ${action} by ${actor}`);
-}
-
 /** A flag's value as a number above 0 (an estimate), or undefined when the flag is absent. */
 function amountOpt(a: Args, k: string): number | undefined {
   const v = opt(a, k);
@@ -370,43 +325,11 @@ function cmdDep(a: Args): void {
   out(labels.length ? `${p.slug}: after ${labels.join(", ")}` : `${p.slug}: no dependencies`);
 }
 
-function jsonValue(text:string|undefined,fallback:unknown={}):unknown {try{return text===undefined?fallback:JSON.parse(text);}catch{return fail('value must be valid JSON');}}
-function cmdEvent(a:Args):void {
-  const p=load(a._[1]),name=a._[2]??fail('event name required'),id=opt(a,'id')??fail('--id required'),correlation=check('correlation',jsonValue(opt(a,'correlation'),null),scalar);
-  const data=check('event data',jsonValue(opt(a,'data')),record(scalar)),generation=secondsOpt(a,'generation');if(generation!==undefined&&!Number.isSafeInteger(generation))fail('--generation must be a positive safe integer');
-  const accepted=lifecycle.deliverEvent(p,name,id,correlation,data,generation);save(p);out(accepted?'event accepted; stage ready':'duplicate event ignored');
-}
-function cmdRecover(a:Args):void {
-  const p=load(a._[1]),stage=opt(a,'stage')??p.stage;requireActive(p,stage);p.stage=stage;
-  const action=opt(a,'action');if(action!=='retry'&&action!=='compensated')fail('--action must be retry or compensated');
-  const quote=opt(a,'quote');if(!quote||quote.trim().length<2)fail('--quote is required: the human recovery decision');
-  const source=verifyQuote(quote!);lifecycle.recover(p,action as 'retry'|'compensated',quote!);save(p);appendLedger(p.slug,{kind:'recover-source',source});out(`${p.slug}: recovery recorded`);
-}
 function cmdMigrate(a:Args):void {
   const quote=opt(a,'quote');if(!quote||quote.trim().length<2)fail('--quote is required: the human migration decision');const source=verifyQuote(quote!);
   const map=check('stage map',jsonValue(opt(a,'map')),record((x,p)=>typeof x==='string'?x:fail(`${p} must be a stage name`))),data=check('migration data',jsonValue(opt(a,'data')),record((x,p)=>x===null?null:value(x,p)));
   lifecycle.transaction(checkSlug(a._[2]),()=>{const p=load(a._[2]);lifecycle.migrate(p,map,data,quote!);appendLedger(p.slug,{kind:'migration-source',source});out(`${p.slug}: migrated to revision ${p.processSnapshot!.revision}`);});
 }
-function cmdTick(a:Args):void {
-  const interval=secondsOpt(a,'interval')??30,advance=flag(a,'advance');
-  const once=()=>{
-    let failed=false;
-    for(const slug of a._[1]?[checkSlug(a._[1])]:laneSlugs())try{lifecycle.transaction(slug,()=>{
-      const p=load(slug);if(p.finished)return;const emitted=lifecycle.tickTimers(p);save(p);if(emitted)out(`${slug}: ${emitted} timer alerts`);
-      if(!advance)return;
-      for(const stage of [...activeStages(p)]){
-        const current=load(slug);if(!activeStages(current).includes(stage))continue;
-        const s=processOf(current).stages.find(s=>s.name===stage)!,r=current.runtime?.[stage];
-        if(s.call||s.foreach)lifecycle.syncChild(current,stage);
-        if(!(r?.eventId||r?.childSynced||r?.batch?.synced||(r?.retryAt&&Date.parse(r.retryAt)<=Date.now())))continue;
-        const args=parseArgs([slug,'--stage',stage,'--note','Declared workflow event, child completion or scheduled retry verified'],{value:['stage','note']},'advance');args._.unshift('advance');cmdAdvance(args);
-      }
-    });}catch(e){if(!(e instanceof GovernError))throw e;failed=true;out(`${slug}: blocked: ${e.message}`);}
-    if(failed&&!flag(a,'loop'))process.exitCode=1;
-  };
-  once();if(flag(a,'loop'))setInterval(once,interval*1000);
-}
-
 function cmdProcess(a: Args): void {
   if (a._[1] === "show") return out(show(getProcess(a._[2] ?? fail("govern process show <name>"))));
   if (a._[1] && a._[1] !== "list") fail("govern process list|show <name>");
@@ -627,6 +550,7 @@ function cmdManual(a: Args): void {
       const bytes = statSync(f).size;
       out(`${basename(f).padEnd(13)} ${String(bytes).padStart(6)} bytes  ≈ ${approxTokens(bytes)} tokens (bytes / ${BYTES_PER_TOKEN}, an estimate)`);
     }
+    out(extensions.docsSizeLine());
     return;
   }
   if (flag(a, "full") && name) fail("govern manual --full is the core manual and REFERENCE.md; it takes no process");
@@ -666,11 +590,11 @@ function cmdPublish(a: Args): void {
 }
 
 /** Recipient of a new message: runner, auto (the tuning loop picks the runner), owner, configured mailbox or a live session. */
-function recipient(to: string): { to: string; routed: boolean } {
-  const address = peer.parseAddress(to);
+function recipient(to: string, host?: (peer: string) => void): { to: string; routed: boolean } {
+  const address = parseAddress(to);
   if (address) {
     if (address.name === "auto") fail("the receiving host decides routing; --to auto@PEER is not allowed");
-    peer.remote(address.peer);
+    host!(address.peer);
     return { to, routed: false };
   }
   checkRecipient(to, queue.runners());
@@ -679,9 +603,25 @@ function recipient(to: string): { to: string; routed: boolean } {
   out(`auto → ${c.runner} (${c.reason})`);
   return { to: c.runner, routed: true };
 }
+/** The peer extension's host check for a `NAME@PEER` recipient, loaded only for one; undefined for a local recipient. A workspace
+ *  that does not enable the extension refuses the recipient (exit 2) with the disabled message. */
+async function hostCheck(to: string | undefined, via: string): Promise<((peer: string) => void) | undefined> {
+  if (to === undefined || !parseAddress(to)) return undefined;
+  if (!extensions.isEnabled("peer")) return fail(extensions.disabledMessage(`${via} --to ${to}`, "peer"));
+  return (await extensions.loadExtension("peer")).requireHost;
+}
+/** The decide extension's shadow ask about a sent TASK, when the workspace config turns it on (decide.shadow). Without the extension
+ *  there is no ask, and the send says so on stderr; it never fails the send. */
+async function shadowTask(m: queue.Message): Promise<void> {
+  try {
+    if (m.kind !== "TASK" || !decideConfig().shadow) return;
+    if (!extensions.isEnabled("decide")) return void process.stderr.write(`govern: decide (shadow): the config asks for it, but the decide extension is not enabled — govern ext enable decide\n`);
+    (await extensions.loadExtension("decide")).shadowTask?.(m);
+  } catch (e) { process.stderr.write(`govern: decide (shadow): ${(e as Error).message}\n`); }
+}
 /** The queue does not wake a session: say so when a message goes to one. */
 function wakeNote(m: queue.Message): void {
-  const address = peer.parseAddress(m.to);
+  const address = parseAddress(m.to);
   if (address) return out(`sessions on ${address.peer} are not woken by the queue`);
   if (!queue.runners().includes(m.to) && m.to !== "owner")
     out(`sessions are not woken by the queue: also tell ${m.to} "govern task show ${m.id}" (SendMessage)`);
@@ -736,13 +676,13 @@ function writeRefusal(profile: string, summary: string, body: string): void {
     `Fix: add --write (or --profile ${writer ? writer.name : "<a write profile>"}) so the task can edit, or --read-only to send it as it is and confirm it needs no edits`);
 }
 
-function cmdTask(a: Args): void | Promise<void> {
+async function cmdTask(a: Args): Promise<void> {
   const sub = a._[1];
   if (sub === "send") {
     const bodyFile = opt(a, "body-file");
     const body = bodyFile ? readFileSync(bodyFile, "utf8") : opt(a, "body") ?? "";
-    const { to, routed } = recipient(opt(a, "to") ?? "");
-    const address = peer.parseAddress(to);
+    const { to, routed } = recipient(opt(a, "to") ?? "", await hostCheck(opt(a, "to"), "task send"));
+    const address = parseAddress(to);
     if (address && (flag(a, "write") || flag(a, "read-only") || flag(a, "verify") || ["profile", "lane", "estimate-usd", "timeout"].some(k => opt(a, k) !== undefined) || many(a, "file").length || many(a, "check").length))
       fail("the receiving host decides write access, profile, lane, estimate, timeout, files and checks; these options cannot be sent to a peer");
     const checks = [...new Set(many(a, "check"))], verifyArgv = flag(a, "verify") ? a._.slice(2) : [];
@@ -761,7 +701,7 @@ function cmdTask(a: Args): void | Promise<void> {
       access: t.access, ...(estimateUsd !== undefined ? { estimateUsd } : {}), ...(timeoutSec !== undefined ? { timeoutSec } : {}), ...(checks.length ? { check: checks } : {}), ...(verifyArgv.length ? { verify: verifyArgv } : {}),
     });
     out(`queued ${m.id} (${m.kind} to ${m.to}${m.profile && (m.profile !== `${m.to}-read` || opt(a, "profile")) && m.profile !== m.to ? `, profile ${m.profile}` : ""})`);
-    jev.shadowTask(m);
+    await shadowTask(m);
     return wakeNote(m);
   }
   if (sub === "list") {
@@ -785,8 +725,8 @@ function cmdTask(a: Args): void | Promise<void> {
     return out(`${rows.length} message(s) · after fixing the cause, send one again with its fix recorded: govern task retry <id> --note "<what was fixed>"`);
   }
   if (sub === "retry") {
-    const to = opt(a, "to");
-    const m = queue.retry(a._[2] ?? "", { note: opt(a, "note") ?? "", ...(to !== undefined ? { to: recipient(to).to } : {}), ...(flag(a, "write") ? { write: true } : {}), ...(opt(a, "profile") !== undefined ? { profile: opt(a, "profile")! } : {}), ...(secondsOpt(a, "timeout") !== undefined ? { timeoutSec: secondsOpt(a, "timeout")! } : {}) });
+    const to = opt(a, "to"), host = await hostCheck(to, "task retry");
+    const m = queue.retry(a._[2] ?? "", { note: opt(a, "note") ?? "", ...(to !== undefined ? { to: recipient(to, host).to } : {}), ...(flag(a, "write") ? { write: true } : {}), ...(opt(a, "profile") !== undefined ? { profile: opt(a, "profile")! } : {}), ...(secondsOpt(a, "timeout") !== undefined ? { timeoutSec: secondsOpt(a, "timeout")! } : {}) });
     out(`queued ${m.id} (${m.kind} to ${m.to}, retry of ${m.retryOf})`);
     return wakeNote(m);
   }
@@ -808,7 +748,7 @@ function cmdTask(a: Args): void | Promise<void> {
     return wakeNote(m);
   }
   if (sub === "forward") {
-    const { to, routed } = recipient(opt(a, "to") ?? "");
+    const { to, routed } = recipient(opt(a, "to") ?? "", await hostCheck(opt(a, "to"), "task forward"));
     const m = queue.forward(a._[2] ?? "", localTaskName(requireAs(opt(a, "as")), "--as"), to, routed);
     out(`forwarded ${a._[2]} to ${m.to} as ${m.id}`);
     return wakeNote(m);
@@ -829,23 +769,17 @@ function cmdTask(a: Args): void | Promise<void> {
     process.on("SIGTERM", stop); process.on("SIGINT", stop);
     // setTimeout, not a blocking sleep: signals are handled only when the event loop turns.
     // The tuning measurement runs hourly in the same loop: reading transcripts, no model.
-    let lastTune = 0, lastReap = 0, lastSync = 0;
+    let lastTune = 0, lastReap = 0;
     const reapEvery = secondsOpt(a, "reap-every");
+    // The loop relays to peers and renews the mesh only where the workspace enables the peer extension.
+    let relay: ((max: number | undefined) => Promise<string[]>) | undefined;
+    if (extensions.isEnabled("peer")) {
+      try { relay = (await extensions.loadExtension("peer")).relay?.(); } catch (e) { out(`[peer] extension unavailable: ${(e as Error).message}`); }
+    }
     const tick = async () => {
       try {
         await once();
-        try {
-          if (mesh.state() && Date.now() - lastSync >= MESH_SYNC_MS) {
-            lastSync = Date.now();
-            try { await mesh.sync(); }
-            catch (e) { out(`[mesh] sync failed: ${(e as Error).message}`); }
-            try { for (const h of await peer.discover()) if (!h.ok) out(`[mesh] ${h.host}: ${h.error}`); }
-            catch (e) { out(`[mesh] discovery failed: ${(e as Error).message}`); }
-          }
-        } catch (e) { out(`[mesh] failed: ${(e as Error).message}`); }
-        try {
-          if (peer.remotes().length) for (const line of await peer.push({ max })) out(`[peer] ${line}`);
-        } catch (e) { out(`[peer] failed: ${(e as Error).message}`); }
+        if (relay) for (const line of await relay(max)) out(line);
         if (reapEvery && Date.now() - lastReap >= reapEvery * 1000) {
           lastReap = Date.now();
           try { for (const r of reaping.scan([], REAP_TIMEOUT)) out(`[reap] ${r.resource}: ${r.status === "ok" ? `${r.orphans.length} with no job` : r.why}`); } catch (e) { out(`[reap] failed: ${(e as Error).message}`); }
@@ -877,189 +811,6 @@ const unitWord = (v: string, cmd = false) => {
   const q = v.replace(/\\/g, "\\\\").replace(/"/g, '\\"').replace(/%/g, "%%");
   return `"${cmd ? q.replaceAll("$", "$$$$") : q}"`;
 };
-/** `govern remote pair | devices | revoke ID`, or with no subcommand serve the remote API (off loopback only over TLS). */
-function cmdRemote(a: Args): void {
-  const sub = a._[1];
-  if (["pair", "requests", "confirm", "refuse", "link"].includes(sub ?? "") && origin().kind !== "terminal")
-    fail("pair a device from the owner's own terminal, not from an agent session: a paired device approves gates", 1);
-  if (sub === "requests") {
-    out(remotePair.requests().map((r) => `${r.id}  ${r.code}  ${r.name}  lanes: ${r.lanes?.join(", ") ?? "all"}  expires ${r.expires}`).join("\n") || "(no open pairing requests)");
-    return;
-  }
-  if (sub === "confirm") {
-    const lanes = many(a, "lane");
-    const d = remotePair.confirmPairing(a._[2] ?? fail("govern remote confirm <id> --code NNNNNN"), opt(a, "code") ?? fail("--code is required"),
-      { person: opt(a, "person"), lanes: lanes.length ? lanes : undefined, all: flag(a, "all") });
-    out(`${d.id} (${d.name}) paired as ${d.person}; lanes: ${d.lanes?.join(", ") ?? "all"}`);
-    return;
-  }
-  if (sub === "refuse") {
-    const id = a._[2] ?? fail("govern remote refuse <id>");
-    remotePair.refusePairing(id); out(`${id} refused`); return;
-  }
-  if (sub === "link") {
-    const url = opt(a, "url") ?? "http://127.0.0.1:5002", cert = opt(a, "tls-cert"), lane = opt(a, "lane");
-    if (!/^https?:\/\/[^\s]+$/.test(url)) fail("--url must be the server's http(s) address, as the phone reaches it");
-    const q = new URLSearchParams({ url });
-    if (cert) q.set("pin", remote.certPin(readFileSync(cert, "utf8")));
-    if (lane) q.set("lane", checkSlug(lane));
-    const link = `govern-remote://pair?${q}`;
-    out(`pairing link (request pairing from the phone): ${link}`);
-    if (!flag(a, "no-qr")) out(qr.render(qr.encode(link), { colour: process.stdout.isTTY === true }));
-    return;
-  }
-  if (sub === "pair") {
-    const minutes = Number(opt(a, "minutes") ?? 10);
-    const { code, expires } = remote.createPairing(opt(a, "as") ?? "owner", minutes);
-    const url = opt(a, "url"), cert = opt(a, "tls-cert");
-    if (cert && !url) fail("--tls-cert needs --url (the pin goes into the pairing link)");
-    out(`pairing code ${code} (one device, until ${expires}; ${remote.PAIR_ATTEMPTS} wrong tries void it)`);
-    if (url) {
-      if (!/^https?:\/\/[^\s]+$/.test(url)) fail("--url must be the server's http(s) address, as the phone reaches it");
-      const q = new URLSearchParams({ url, code });
-      if (cert) q.set("pin", remote.certPin(readFileSync(cert, "utf8")));
-      const link = `govern-remote://pair?${q}`;
-      out(`pairing link (paste it in the app): ${link}`);
-      if (!flag(a, "no-qr")) out(`or scan it with the phone's camera (it opens the app with the form filled in):\n${qr.render(qr.encode(link), { colour: process.stdout.isTTY === true })}`);
-    }
-    return;
-  }
-  if (sub === "devices") {
-    const all = remote.devices();
-    out(all.map((d) => `${d.id}  ${d.name.padEnd(24)} ${d.person.padEnd(10)} lanes: ${d.lanes?.join(", ") ?? "all"} paired ${d.pairedAt.slice(0, 16)}${d.revokedAt ? `  REVOKED ${d.revokedAt.slice(0, 16)}` : ""}`).join("\n") || "(no paired devices: govern remote pair)");
-    return;
-  }
-  if (sub === "revoke") {
-    const d = remote.revoke(a._[2] ?? fail("govern remote revoke <device-id>"));
-    out(`${d.id} (${d.name}) revoked`);
-    return;
-  }
-  const host = opt(a, "host") ?? "127.0.0.1", port = Number(opt(a, "port") ?? 5002);
-  if (!Number.isInteger(port) || port < 1 || port > 65535) fail("--port must be 1..65535");
-  const certFile = opt(a, "tls-cert"), keyFile = opt(a, "tls-key");
-  if (!certFile !== !keyFile) fail("--tls-cert and --tls-key go together");
-  if (!certFile && !remote.loopback(host))
-    fail(`${host} is reachable from other machines: serve TLS (--tls-cert, --tls-key), or keep loopback and publish it with tailscale serve`);
-  const tls = certFile ? { cert: readFileSync(certFile, "utf8"), key: readFileSync(keyFile!, "utf8") } : undefined;
-  const server = remote.remoteServer({ tls });
-  server.on("error", (e) => { process.stderr.write(`remote: ${e.message}\n`); process.exitCode = 1; });
-  server.listen(port, host, () => out(`govern remote (${remote.devices().filter((d) => !d.revokedAt).length} paired devices) on ${tls ? "https" : "http"}://${host}:${port}${tls ? ` · certificate pin ${remote.certPin(tls.cert)}` : ""}`));
-}
-
-const MESH_SYNC_MS = 10 * 60_000;
-/** Peer grants are owner-only; the server always binds IPv4 loopback behind a TLS tunnel. */
-async function cmdPeer(a: Args): Promise<void> {
-  const sub = a._[1];
-  if ((sub === "add" || sub === "revoke") && origin().kind !== "terminal")
-    fail("manage peers from the owner's own terminal: a peer's allow list grants runs on this host", 1);
-  if (sub === "id") {
-    const h = peer.identity(opt(a, "name"));
-    return out(`${h.name}\nfingerprint: ${peer.fingerprint(h.publicKey)}\npublic key: ${h.publicKey}`);
-  }
-  if (sub === "add") {
-    const p = peer.addPeer({ name: a._[2] ?? fail("govern peer add <name>"), url: opt(a, "url") ?? fail("--url is required"), publicKey: opt(a, "key") ?? fail("--key is required"), allow: many(a, "allow"), projects: many(a, "project") });
-    return out(`added ${p.name} (${peer.fingerprint(p.publicKey)})`);
-  }
-  if (sub === "revoke") return out(`revoked ${peer.revokePeer(a._[2] ?? fail("govern peer revoke <name>")).name}`);
-  if (sub === "list") {
-    const rows = queue.all();
-    return out(peer.peers().map(p => {
-      const outbound = rows.filter(x => x.state === "open" && peer.parseAddress(x.m.to)?.peer === p.name);
-      const last = rows.filter(x => peer.parseAddress(x.m.to)?.peer === p.name && (x.m.relay?.lastError || x.m.result?.error)).at(-1)?.m;
-      return `${p.name}${p.revokedAt ? " REVOKED" : ""}  ${p.url}\n  allow: ${p.allow.join(", ")}  projects: ${p.projects.join(", ")}\n  fingerprint: ${peer.fingerprint(p.publicKey)}  open: ${outbound.length}\n  last relay error: ${last?.relay?.lastError ?? last?.result?.error ?? "none"}`;
-    }).join("\n") || "(no peers: govern peer add)");
-  }
-  if (sub === "push") {
-    for (const line of await peer.push({ max: opt(a, "max") === undefined ? undefined : Number(opt(a, "max")) })) out(line);
-    return;
-  }
-  const host = opt(a, "host") ?? "127.0.0.1", port = Number(opt(a, "port") ?? 5003);
-  if (!remote.loopback(host)) fail("peer serve binds loopback only; TLS comes from the tunnel (Cloudflare or Tailscale)");
-  if (!Number.isInteger(port) || port < 1 || port > 65535) fail("--port must be 1..65535");
-  peer.identity();
-  const server = peer.peerServer();
-  server.on("error", e => { process.stderr.write(`peer: ${e.message}\n`); process.exitCode = 1; });
-  server.listen(port, "127.0.0.1", () => out(`govern peer on http://127.0.0.1:${port} · TLS comes from the tunnel`));
-}
-
-/** Mesh membership and grants change who may cause runs here, so every change but a plain sync is the owner's. */
-async function cmdMesh(a: Args): Promise<void> {
-  const sub = a._[1] ?? "status";
-  if (sub !== "status" && !(sub === "sync" && opt(a, "url") === undefined) && origin().kind !== "terminal")
-    fail("manage the mesh from the owner's own terminal: mesh grants authorize runs on this host", 1);
-  const policy = () => ({ allow: many(a, "allow"), projects: many(a, "project"), ...(many(a, "observer").length ? { observers: many(a, "observer") } : {}) });
-  if (sub === "create") {
-    const m = mesh.create({ name: opt(a, "name") ?? fail("--name is required"), url: opt(a, "url") ?? fail("--url is required (this host's public https address)"), policy: policy() });
-    return out(`mesh ${m.mesh.name} created; this host (${peer.identity().name}) is its registrar\nmesh key fingerprint: ${peer.fingerprint(m.mesh.publicKey)}\nnext: govern mesh invite, once per host that joins`);
-  }
-  if (sub === "invite") {
-    const i = mesh.invite({ host: opt(a, "host"), ttlSeconds: secondsOpt(a, "ttl") });
-    return out(`${i.code}\nsingle use, expires ${i.expires}\non the joining host, from its owner's terminal:\n  govern mesh join CODE --url https://THAT-HOST --project P [--allow NAME]…`);
-  }
-  if (sub === "join") {
-    const m = await mesh.join(a._[2] ?? fail("govern mesh join <code> --url URL --project P"), { url: opt(a, "url") ?? fail("--url is required (this host's public https address)"), policy: policy() });
-    return out(`joined mesh ${m.mesh.name} as ${peer.identity().name}: ${m.members.length} members (mesh key ${peer.fingerprint(m.mesh.publicKey)})`);
-  }
-  if (sub === "policy") {
-    const m = mesh.setPolicy(policy());
-    return out(`members may address: ${m.policy.allow.join(", ") || "(no runners or profiles; registered agents only)"} in projects ${m.policy.projects.join(", ")}; telemetry observers: ${mesh.observers().join(", ") || "none"}`);
-  }
-  if (sub === "revoke") { mesh.revoke(a._[2] ?? fail("govern mesh revoke <host>")); return out(`revoked ${a._[2]}: members drop it at their next sync`); }
-  if (sub === "sync") {
-    const m = await mesh.sync({ url: opt(a, "url") }), hosts = await peer.discover();
-    out(`synced mesh ${m.mesh.name}: ${m.members.length} members, certificate renewed`);
-    for (const h of hosts) out(`  ${h.host}: ${h.ok ? `${h.agents.length} addressable` : `unreachable: ${h.error}`}`);
-    return;
-  }
-  const s = mesh.state();
-  if (!s) return out("(not in a mesh: govern mesh create, or govern mesh join with an invite code)");
-  const self = peer.identity(), cert = s.members.find(m => m.publicKey === self.publicKey);
-  out(`mesh ${s.mesh.name}${mesh.isRegistrar() ? " (this host is the registrar)" : ` · registrar ${s.mesh.url}`}`);
-  out(`this host: ${self.name} ${cert?.url ?? ""} · certificate expires ${cert?.expires ?? "?"} · synced ${s.syncedAt}`);
-  out(`members may address: ${s.policy.allow.join(", ") || "(registered agents only)"} · projects: ${s.policy.projects.join(", ")} · telemetry observers: ${mesh.observers().join(", ") || "none"}`);
-  for (const m of s.members) out(`  ${m.name}${m.publicKey === self.publicKey ? " (this host)" : ""}  ${m.url}  ${peer.fingerprint(m.publicKey).slice(0, 16)}  until ${m.expires}`);
-  if (s.revoked.length) out(`  revoked keys: ${s.revoked.map(f => f.slice(0, 16)).join(", ")}`);
-}
-
-/** Agents publish and find each other: a session registers only itself; listing reads local state and signed directories. */
-async function cmdAgents(a: Args): Promise<void> {
-  const sub = a._[1] ?? "list";
-  if (sub === "register" || sub === "unregister") {
-    // The holder: this Claude Code session (its id and process) when there is one, else the caller's name or the terminal.
-    const self = resolveAs({}), cs = callingSession(), proc = cs ? sessions().find(s => s.pid === cs.pid) : undefined;
-    const holder = { owner: cs?.sessionId ?? self ?? "terminal", ...(cs ? { pid: cs.pid } : {}), ...(proc?.procStart ? { procStart: proc.procStart } : {}) };
-    const asked = opt(a, "as");
-    if (self && asked !== undefined && asked !== self) fail(`an agent registers only itself (this is ${self})`);
-    if (sub === "unregister") {
-      const n = a._[2] ?? asked ?? self ?? fail("govern agents unregister [NAME]: which registration");
-      return out(agents.unregister(n, holder.owner) ? `unregistered ${n}` : `${n} was not registered`);
-    }
-    const ephemeral = flag(a, "ephemeral");
-    const { liveSessions } = await import("./lib/sessions.ts");
-    const claimed = [...(!ephemeral ? [asked ?? self] : []), ...many(a, "alias")];
-    for (const n of claimed) if (liveSessions().some(s => s.name === n && s.pid !== cs?.pid))
-      fail(`${n} belongs to another live session: only that session may register its name or alias`);
-    const r = agents.register({ ...holder, ...(ephemeral ? { ephemeral } : { name: asked ?? self ?? fail("cannot tell which agent this is: pass --as NAME, set GOVERN_AS, or use --ephemeral") }),
-      aliases: many(a, "alias"), projects: many(a, "project"), description: opt(a, "description"), ttlSeconds: secondsOpt(a, "ttl") });
-    const host = peer.identity().name;
-    out(`registered ${r.name}@${host} (${r.kind}) for ${r.projects.join(", ")} until ${r.expires}${r.aliases.length ? `; also ${r.aliases.map(x => `${x}@${host}`).join(", ")}` : ""}`);
-    if (r.name !== self) out(`read its inbox with: govern task inbox --as ${r.name}`);
-    return;
-  }
-  const live = agents.live();
-  out(`this host (${peer.identity().name}):`);
-  out(`  runners: ${queue.runners().join(", ")}`);
-  for (const r of live) out(`  ${r.name}  agent (${r.kind})  ${r.projects.join(", ")}  until ${r.expires}${r.aliases.length ? `  aliases: ${r.aliases.join(", ")}` : ""}${r.description ? `  ${r.description}` : ""}`);
-  const dir = flag(a, "refresh") ? { fetchedAt: nowIso(), hosts: await peer.discover() } : peer.cached();
-  if (!dir) return out("(no other hosts discovered yet: govern agents list --refresh)");
-  out(`other hosts (as of ${dir.fetchedAt}):`);
-  for (const h of dir.hosts) {
-    if (!h.ok) { out(`  ${h.host}: unreachable: ${h.error}`); continue; }
-    for (const x of h.agents) out(`  ${x.name}@${h.host}  ${x.kind}${x.lifetime ? ` (${x.lifetime})` : ""}  ${x.projects.join(", ")}${x.aliases ? `  aliases: ${x.aliases.map(n => `${n}@${h.host}`).join(", ")}` : ""}${x.description ? `  ${x.description}` : ""}`);
-    if (!h.agents.length) out(`  ${h.host}: nothing addressable from this host`);
-  }
-}
-
 /** The scene-render program: $SCENE_RENDER, else `scene-render` on PATH; undefined when neither runs. */
 function sceneRender(): string | undefined {
   const named = process.env.SCENE_RENDER;
@@ -1104,23 +855,6 @@ function cmdBpmn(a: Args): void {
   }
 }
 
-/** The operator's view of every federated host. serve binds loopback only and prints the address with its token. */
-async function cmdCenter(a: Args): Promise<void> {
-  const sub = a._[1] ?? "show";
-  if (sub === "show") {
-    const v = await center.gather();
-    return out(flag(a, "json") ? JSON.stringify(v, null, 2) : center.render(v));
-  }
-  const host = opt(a, "host") ?? "127.0.0.1", port = Number(opt(a, "port") ?? 5004);
-  if (!remote.loopback(host)) fail(`center ${sub} binds loopback only: the view shows every host's messages and spend`);
-  if (!Number.isInteger(port) || port < 1 || port > 65535) fail("--port must be 1..65535");
-  peer.identity();
-  const token = center.persistentToken({ rotate: sub === "serve" && flag(a, "new-token") });
-  if (sub === "url") return out(center.centerAddress(host, port, token));
-  const server = center.centerServer({ token });
-  server.on("error", e => { process.stderr.write(`center: ${e.message}\n`); process.exitCode = 1; });
-  server.listen(port, host, () => out(`govern command center: ${center.centerAddress(host, port, token)}\n(the token is kept in ${center.tokenFile()} and survives restarts; --new-token replaces it; keep the address private)`));
-}
 
 /** The text of the user service: every Environment= and the ExecStart binary quoted, and the state folders of this shell passed on. */
 export function serviceUnit(bin: string, interval: string, reapEvery: number | undefined, system = false, parallel = 1): string {
@@ -1139,23 +873,9 @@ export function serviceUnit(bin: string, interval: string, reapEvery: number | u
 // One entry per command drives dispatch, flag parsing (every flag a command reads is declared on it: lib/util.ts parseArgs
 // refuses any other, and opt/flag/many refuse to read an undeclared one) and the help text below.
 
-/** One help line: the usage after `govern <command>[ <sub>]`, and what it does. */
-type Line = readonly [usage: string, help?: string];
-export interface Sub { lines: readonly Line[]; flags?: FlagSpec; run: (a: Args) => void | Promise<void> }
-export interface Cmd {
-  name: string;
-  section: number;
-  lines?: readonly Line[];
-  flags?: FlagSpec;
-  run?: (a: Args) => void | Promise<void>;
-  /** Subcommands: the word right after the command, each with its own flags. */
-  subs?: Record<string, Sub>;
-  /** The subcommand a bare `govern <name>` runs; without one, a missing or unknown subcommand is refused with `noSub`. */
-  defaultSub?: string;
-  noSub?: string;
-  /** Print the context-size warning after the command (default true). */
-  footer?: boolean;
-}
+// The entry types (Cmd, Sub, Line) are lib/cli.ts's: the extensions' commands are entries of the same shape. This table holds
+// the core commands; an extension's commands come from its ext/<name>/index.ts, loaded when they are used (lib/ext.ts).
+export type { Cmd, Sub };
 
 const SECTIONS: readonly (readonly [title: string, notes?: readonly string[]])[] = [
   ["start / state"],
@@ -1182,7 +902,6 @@ export const COMMANDS: readonly Cmd[] = [
       const { version } = JSON.parse(readFileSync(join(HERE, "package.json"), "utf8")) as { version: string };
       out(flag(a, "json") ? JSON.stringify({ name: "govern", version }) : `govern ${version}`);
     } },
-  {name:'conversation',section:0,footer:false,subs:CONVERSATION_SUBS,noSub:'govern conversation create|list|show|history|send|run|cancel|recover|context|events|close (govern help)'},
   { name: "init", section: 0, flags: { bool: ["nested"] },
     lines: [["[<dir>] [--nested]", "make <dir> (default: here) a workspace by the convention: .govern/ with projects, queue, processes; inside another workspace only with --nested"]],
     run: (a) => out(`created ${initWorkspace(a._[1] ?? process.cwd(), { nested: flag(a, "nested") })}`) },
@@ -1209,15 +928,6 @@ export const COMMANDS: readonly Cmd[] = [
     } },
   { name: "approve", section: 0, flags: { value: ["quote", "by"] },
     lines: [["<slug> <gate> --quote \"<the owner's words>\" [--by NAME]", "(gates come from the lane's process; --by: the gate's decision owner,\nrequired when the process names one other than owner. In a Claude session the quote\nmust be in a message the person typed; a Codex or Grok session is refused)"]], run: cmdApprove },
-  { name: "reject", section: 1, flags: { value: ["quote", "by"] },
-    lines: [["<slug> <gate> --quote Q [--by PERSON]", "reject a policy gate; follows rejectTo when declared, otherwise blocks the gate"]],
-    run: (a) => { const p=load(a._[1]); const g=processOf(p).gates.find(g=>g.name===a._[2])??fail('unknown gate'); cmdPolicyDecision(a,p,g,'reject'); } },
-  { name: "data", section: 1, flags: { value: ["set"] },
-    lines: [["<slug> [--set JSON]", "read or merge typed case fields; changed data invalidates policy votes and active human task completion"]], run: cmdData },
-  { name: "human-inbox", section: 1, flags: { value: ["as"] },
-    lines: [["[--as PERSON]", "active tasks assigned to this OS account or claimable through its process roles"]], run: cmdHumanInbox },
-  { name: "human", section: 1, flags: { value: ["as", "to", "quote"] },
-    lines: [["<slug> [list | claim|delegate|complete STAGE] [--as PERSON] [--to PERSON] [--quote Q]", "list, claim, delegate or complete stage tasks; person identity is mapped to the current OS account; mutations require verified human words"]], run: cmdHuman },
   { name: "allow", section: 0, flags: { value: ["extra", "quote", "by"] },
     lines: [["<allowance> --extra N --quote \"<the decision owner's words>\" [--by NAME]", "raise an allowance's limit by N for its current period (govern.config.json: allowances; govern usage\nlists them). --by: the allowance's decision owner, required when it names one other than owner. The quote must\ncontain N as a number (10 matches 10 and 10.0, not 100) and grants once per allowance and period. In a\nClaude session the quote must be in a message the person typed; a Codex or Grok session is refused)"]], run: cmdAllow },
   { name: "done", section: 0, flags: { value: ["engine"] }, lines: [["<slug> [--engine claude|codex|grok]", "end the current work segment"]],
@@ -1242,21 +952,6 @@ export const COMMANDS: readonly Cmd[] = [
       ["<slug> <stage> --accept --quote \"<the owner's words>\"", "the owner accepts that stage's flagged check changes"]], run: cmdCheck },
   { name: "advance", section: 1, flags: { value: ["note", "stage"] },
     lines: [["<slug> [--stage STAGE] [--note \"<evidence>\"]", "next stage: needs the check to pass (or --note when none and none is required) and the gate"]], run: cmdAdvance },
-  {name:'event',section:1,flags:{value:['id','correlation','data','generation']},lines:[["<slug> <name> --id ID --correlation JSON [--data JSON] [--generation N]","deliver a deduplicated event to one matching active stage; adapters supply a stable id"]],run:cmdEvent},
-  {name:'event-listen',section:1,flags:{value:['port']},lines:[["[--port 5001]","loopback POST /events listener; Bearer token comes from GOVERN_WEBHOOK_TOKEN (minimum 16 characters)"]],run:a=>{
-    const token=process.env.GOVERN_WEBHOOK_TOKEN??fail('GOVERN_WEBHOOK_TOKEN is not set; configure it securely before starting the listener');
-    const port=Number(opt(a,'port')??5001);if(!Number.isInteger(port)||port<1||port>65535)fail('--port must be 1..65535');
-    const server=eventServer(token);server.on('error',e=>{process.stderr.write(`event listener: ${e.message}\n`);process.exitCode=1;});server.listen(port,'127.0.0.1',()=>out(`event listener ready on port ${port}`));
-  }},
-  {name:'tick',section:1,flags:{value:['interval'],bool:['advance','loop']},lines:[["[<slug>] [--advance] [--loop --interval 30]","emit due reminders/escalations; optionally advance ready event, child and retry stages through normal checks and gates"]],run:cmdTick},
-  {name:'alerts',section:1,flags:{value:['ack']},lines:[["<slug> [--ack ID]","list timer alerts or acknowledge one; acknowledgement does not approve a gate"]],run:a=>{
-    const p=load(a._[1]),id=opt(a,'ack');if(id){const alert=p.alerts?.find(x=>x.id===id)??fail('unknown alert');alert.acknowledgedAt=nowIso();save(p);appendLedger(p.slug,{kind:'alert-ack',id});}
-    out((p.alerts??[]).map(x=>`${x.id} ${x.kind} ${x.acknowledgedAt?'acknowledged':'open'}: ${x.message}`).join('\n')||'(no alerts)');
-  }},
-  {name:'subprocess',section:1,lines:[["<slug> <stage>","start the declared child if needed and sync its outputs only after it finishes"]],run:a=>{
-    const p=load(a._[1]),stage=a._[2]??p.stage,ready=lifecycle.syncChild(p,stage);out(`${stage}: ${ready?'child complete; outputs synced':`waiting for ${p.runtime![stage]!.batch ? `${Object.keys(p.runtime![stage]!.batch!.children).length}/${p.runtime![stage]!.batch!.items.length} item cases` : p.runtime![stage]!.child}`}`);
-  }},
-  {name:'recover',section:1,flags:{value:['stage','action','quote']},lines:[["<slug> [--stage S] --action retry|compensated --quote Q","human recovery: reset exhausted retries, or confirm compensation after investigating an uncertain result"]],run:cmdRecover},
   { name: "dep", section: 1, flags: { value: ["after", "rm"] },
     lines: [["<slug> [--after <lane>[:<stage>]] [--rm <lane>]", "this lane waits on another (all of it, or past a stage)"]], run: cmdDep },
   { name: "hook", section: 1, footer: false, noSub: "govern hook stop|session-start|session-end",
@@ -1326,34 +1021,23 @@ export const COMMANDS: readonly Cmd[] = [
   { name: "ctx", section: 4, footer: false, lines: [["", "this Claude Code session's context size now"]],
     run: () => { const x = currentCtx(); out(x ? `context now ${kTok(x.ctx)} per call (limit ${kTok(CTX_WARN)})${x.ctx > CTX_WARN ? ` ⚠ over: ${CTX_ADVICE}` : ""}` : "not in a Claude Code session (no CLAUDE_CODE_SESSION_ID) or no transcript yet"); } },
 
-  { name: "decide", section: 4, noSub: "govern decide ask|report",
-    subs: {
-      ask: { flags: { value: ["questions", "state", "state-file", "purpose"], bool: ["json"] },
-        lines: [["--questions <file.json> (--state \"<text>\" | --state-file <file>) [--purpose <name>] [--json]",
-          "ask Jev (TypeSafe System One: probabilities, no text) typed questions about a state; recorded in the queue's decisions.jsonl\n" +
-          "(choice: {key: description}, score: [levels…], noul: yes/no; key TYPESAFE_API_KEY or the config's decide.envFile)"]],
-        run: (a) => {
-          const text = opt(a, "state"), file = opt(a, "state-file");
-          if ((text === undefined) === (file === undefined)) fail("give the state with --state or --state-file (one of them)");
-          const state = text ?? readFileSync(file!, "utf8");
-          if (!state.trim()) fail("the state is empty");
-          const qs = jev.loadQuestions(opt(a, "questions") ?? fail("--questions <file.json> is required"));
-          const d = jev.decide(state, qs, { purpose: opt(a, "purpose") ?? "ask" });
-          out(flag(a, "json") ? JSON.stringify(d, null, 2) : jev.show(d));
-        } },
-      report: { lines: [["", "how well Jev's recorded answers predicted outcomes: per yes/no question Brier and ECE against the task's\n" +
-        "first-try result in the queue ledger, per score question ok rate, cost and time in five buckets (decide.shadow: true\n" +
-        "in the workspace config asks about every TASK sent)"]], run: () => out(jev.report()) },
-    } },
-
   { name: "help", section: 5, footer: false, flags: { bool: ["topics"] },
     lines: [["[<command> | --topics]", "this text, or one command's lines and rules (also: govern <command> --help); --topics lists the reference documents"]],
-    run: (a) => {
+    run: async (a) => {
       if (flag(a, "topics")) {
         if (a._[1]) fail("govern help --topics takes no command");
         return out(topicsText());
       }
-      out(a._[1] ? commandHelp(a._[1]) : HELP);
+      out(a._[1] ? await helpFor(a._[1]) : helpText());
+    } },
+  { name: "ext", section: 5, footer: false, noSub: "govern ext list|enable|disable",
+    subs: {
+      list: { lines: [["", "every extension with its state (enabled or disabled), its size in bytes and its commands; a workspace enables none by default"]],
+        run: () => out(extensions.listText()) },
+      enable: { lines: [["<name>", "turn an extension on: writes \"extensions\" in .govern/config.json (created when absent); a govern.config.json workspace is edited by hand"]],
+        run: (a) => out(extensions.setEnabled(extensions.infoOf(a._[2]).name, true)) },
+      disable: { lines: [["<name>", "turn an extension off: removes it from \"extensions\" in .govern/config.json"]],
+        run: (a) => out(extensions.setEnabled(extensions.infoOf(a._[2]).name, false)) },
     } },
   { name: "manual", section: 5, footer: false, flags: { bool: ["full", "size"] },
     lines: [["[<process> | --full | --size]", "the AI's core manual (SKILL.md), or the manual of one process's kind of work;\n--full adds REFERENCE.md; --size prints the bytes and approximate tokens (bytes / 3.6) of both"]], run: cmdManual },
@@ -1400,37 +1084,6 @@ export const COMMANDS: readonly Cmd[] = [
       "install-service": { flags: { bool: ["system", "write"], value: ["interval", "reap-every", "parallel"] }, lines: [["[--interval 30] [--reap-every S] [--parallel N] [--system [--write]]", "install the standard dispatcher user service; --system prints a system unit with current User=, --write writes it only as root (never escalates)"]], run: cmdTask },
     } },
 
-  { name: "peer", section: 6, footer: false, noSub: "govern peer id|add|list|revoke|serve|push (PEERS.md)",
-    subs: {
-      id: { flags: { value: ["name"] }, lines: [["[--name N]", "create or show the host identity, fingerprint and public key; --name only on creation"]], run: cmdPeer },
-      add: { flags: { value: ["url", "key"], multi: ["allow", "project"] }, lines: [["<name> --url URL --key BASE64 [--allow NAME]… [--project SLUG|*]…", "trust a peer for these local recipients and projects; owner's terminal only"]], run: cmdPeer },
-      list: { lines: [["", "peers, grants, fingerprints, open outbound counts and last relay errors"]], run: cmdPeer },
-      revoke: { lines: [["<name>", "revoke a peer's grants; owner's terminal only"]], run: cmdPeer },
-      serve: { flags: { value: ["host", "port"] }, lines: [["[--port 5003] [--host 127.0.0.1]", "bind 127.0.0.1 only; TLS comes from a Cloudflare or Tailscale tunnel"]], run: cmdPeer },
-      push: { flags: { value: ["max"] }, lines: [["[--max N]", "run one relay pass, oldest first; print one line per message"]], run: cmdPeer },
-    } },
-  { name: "mesh", section: 6, footer: false, defaultSub: "status", noSub: "govern mesh create|invite|join|sync|status|policy|revoke (PEERS.md)",
-    subs: {
-      create: { flags: { value: ["name", "url"], multi: ["allow", "project", "observer"] }, lines: [["--name MESH --url URL --project P… [--allow NAME]… [--observer HOST]…", "make this host the registrar of a new mesh; --project/--allow are the grants every member gets here; owner's terminal only"]], run: cmdMesh },
-      invite: { flags: { value: ["host", "ttl"] }, lines: [["[--host NAME] [--ttl 3600]", "registrar: print a single-use invite code for one new host; owner's terminal only"]], run: cmdMesh },
-      join: { flags: { value: ["url"], multi: ["allow", "project", "observer"] }, lines: [["<code> --url URL --project P… [--allow NAME]… [--observer HOST]…", "join with an invite code, at this host's public URL, granting members these names and projects;\n--observer names the members that may read this host's telemetry (default: the registrar); owner's terminal only"]], run: cmdMesh },
-      sync: { flags: { value: ["url"] }, lines: [["[--url URL]", "renew this host's certificate, refresh members and discover agents; --url moves this host (owner's terminal only)"]], run: cmdMesh },
-      status: { lines: [["", "the mesh, this host's certificate, the grants members get here, and every member"]], run: cmdMesh },
-      policy: { flags: { multi: ["allow", "project", "observer"] }, lines: [["--project P… [--allow NAME]… [--observer HOST]…", "replace the grants every member gets here, and who reads its telemetry (default: the registrar); owner's terminal only"]], run: cmdMesh },
-      revoke: { lines: [["<host>", "registrar: revoke a member; owner's terminal only"]], run: cmdMesh },
-    } },
-  { name: "agents", section: 6, footer: false, defaultSub: "list", noSub: "govern agents list|register|unregister (PEERS.md)",
-    subs: {
-      list: { flags: { bool: ["refresh"] }, lines: [["[--refresh]", "agents here, and what this host may address on every other host (cached; --refresh asks each host)"]], run: cmdAgents },
-      register: { flags: { value: ["as", "description", "ttl"], multi: ["project", "alias"], bool: ["ephemeral"] }, lines: [["--project P… [--as NAME | --ephemeral] [--alias NAME]… [--description TEXT] [--ttl S]", "publish this agent's inbox to peer hosts as NAME@HOST for these projects, until it expires or its session ends;\nnames and aliases are unique per host and held by their registering session; --ephemeral generates a name (1 h default, at most 24 h)"]], run: cmdAgents },
-      unregister: { flags: { value: ["as"] }, lines: [["[NAME] [--as NAME]", "withdraw a registration this session holds"]], run: cmdAgents },
-    } },
-  { name: "center", section: 6, footer: false, defaultSub: "show", noSub: "govern center show|serve|url (PEERS.md)",
-    subs: {
-      show: { flags: { bool: ["json"] }, lines: [["[--json]", "the command center: every federated host's health, alerts, agents, 24 h spend and latest messages"]], run: cmdCenter },
-      serve: { flags: { value: ["host", "port"], bool: ["new-token"] }, lines: [["[--port 5004] [--host 127.0.0.1] [--new-token]", "the command center in a browser on the selected loopback host, refreshed every 15 s; prints the address with its access token, which is kept in the private state so the address survives restarts (--new-token replaces it)"]], run: cmdCenter },
-      url: { flags: { value: ["host", "port"] }, lines: [["[--port 5004] [--host 127.0.0.1]", "print the command center's address with its access token without starting a server (creates the token when absent)"]], run: cmdCenter },
-    } },
   { name: "caps", section: 6, flags: { bool: ["check", "all"] },
     lines: [["", "the capabilities and profiles a queued agent can run under, with each profile's last self-test"],
       ["<profile>", "its permission patterns, Codex mapping, side-effect classes and secret names"],
@@ -1461,8 +1114,8 @@ export const COMMANDS: readonly Cmd[] = [
       out(name ? showText(reg, qdir, getProfile(name, reg)) : listText(reg, qdir, ws ? queue.shadowing() : []));
     } },
 
-  { name: "desk", section: 7, lines: [["", "every lane, your inbox, the queue, today's tokens (reads files only)"]], run: () => {
-    const d = desk();
+  { name: "desk", section: 7, lines: [["", "every lane, your inbox, the queue, today's tokens (reads files only; an enabled extension adds its own lines)"]], run: async () => {
+    const d = desk(await extensions.deskLines());
     out(d.text);
     if (d.failed) unreadable(d.failed, d.lanes);
   } },
@@ -1474,25 +1127,14 @@ export const COMMANDS: readonly Cmd[] = [
       list: { lines: [["<slug>", "list artifacts with current digests and reviews"]],
         run: (a) => { const slug = checkSlug(a._[2]); load(slug); out(JSON.stringify(artifacts.list(slug), null, 2)); } },
     } },
-  { name: "remote", section: 7, noSub: "govern remote pair|requests|confirm|refuse|link|devices|revoke|serve (the protocol: tools/govern/REMOTE.md)",
-    subs: {
-      pair: { flags: { value: ["as", "minutes", "url", "tls-cert"], bool: ["no-qr"] },
-        lines: [["[--as PERSON] [--minutes 10] [--url URL] [--tls-cert F] [--no-qr]", "a one-time code that pairs one phone (govern-remote app) as PERSON (default owner); only from the\nowner's own terminal. --url and --tls-cert add the server and its certificate pin to the printed pairing link,\nalso drawn as a QR code the phone's camera opens in the app (--no-qr: the link only)"]], run: cmdRemote },
-      requests: { lines: [["", "open phone pairing requests with comparison code, name, lanes and expiry; owner's terminal only"]], run: cmdRemote },
-      confirm: { flags: { value: ["code", "person"], multi: ["lane"], bool: ["all"] },
-        lines: [["<id> --code NNNNNN [--lane S]... [--all] [--person P]", "compare the phone's code and pair it; defaults to requested lanes and owner; with no requested lanes choose --lane SLUG (repeatable) or --all"]], run: cmdRemote },
-      refuse: { lines: [["<id>", "refuse a phone's pairing request; owner's terminal only"]], run: cmdRemote },
-      link: { flags: { value: ["url", "tls-cert", "lane"], bool: ["no-qr"] },
-        lines: [["[--url URL] [--tls-cert F] [--lane S] [--no-qr]", "print a QR and link for phone-initiated pairing (default http://127.0.0.1:5002); owner's terminal only"]], run: cmdRemote },
-      devices: { lines: [["", "the paired devices: id, name, person, lanes, when paired, revoked"]], run: cmdRemote },
-      revoke: { lines: [["<device-id>", "the device's token and key stop working at once (its open stream ends too)"]], run: cmdRemote },
-      serve: { flags: { value: ["host", "port", "tls-cert", "tls-key"] },
-        lines: [["[--host 127.0.0.1] [--port 5002] [--tls-cert F --tls-key F]", "serve the remote API to paired devices; a host other than loopback needs TLS\n(or keep loopback and publish it with tailscale serve)"]], run: cmdRemote },
-    } },
   { name: "tune", section: 7, lines: [["", "measure the last 24 h and record the tuning decision (the dispatcher runs it hourly)"]], run: () => out(tune()) },
 
   { name: "publish", section: 8, lines: [["<slug>", "the publish commands, once the final and publish gates are approved and the package is filed"]], run: cmdPublish },
 ];
+
+// What an extension's commands call back into (tick advances, reject records a policy decision), without importing this file.
+core.advance = cmdAdvance;
+core.policyDecision = cmdPolicyDecision;
 
 const byName = new Map(COMMANDS.map((c) => [c.name, c]));
 
@@ -1513,56 +1155,71 @@ const cmdLines = (c: Cmd, only?: string): string[] =>
   c.subs ? Object.entries(c.subs).filter(([s]) => !only || s === only).flatMap(([s, sub]) => helpLines(`${c.name} ${s}`, sub.lines)) : helpLines(c.name, c.lines ?? []);
 
 function unknownCommand(name: string): never {
-  return fail(`unknown command "${name}" (commands: ${COMMANDS.map((c) => c.name).join(", ")}; govern help)`);
+  return fail(`unknown command "${name}" (commands: ${[...COMMANDS.map((c) => c.name), ...EXTENSIONS.flatMap((e) => e.commands)].join(", ")}; govern help)`);
 }
 
-/** One command's help lines: all its subcommands, or only `sub`. */
-export function commandHelp(name: string, sub?: string): string {
-  const c = byName.get(name) ?? unknownCommand(name);
+/** One command's help lines: all its subcommands, or only `sub`. `extra` holds the commands of a loaded extension, whose names are then known. */
+export function commandHelp(name: string, sub?: string, extra: readonly Cmd[] = []): string {
+  const c = byName.get(name) ?? extra.find((x) => x.name === name) ?? unknownCommand(name);
   const rules = HELP_RULES[name];
   return [...cmdLines(c, sub), ...(rules ? ["", `rules: ${rules}`] : [])].join("\n");
 }
 
-/** `govern help --topics`: each reference document with its path (relative to the workspace when it is inside it) and one line. */
-function topicsText(): string {
-  const root = findRepo();
-  return TOPICS.map((t) => {
-    const f = join(HERE, t.file);
-    return `${t.file.padEnd(17)} ${root && f.startsWith(`${root}/`) ? relative(root, f) : f}\n${" ".repeat(18)}${t.about}`;
-  }).join("\n");
+/** What `govern help <command>` and `govern <command> --help` print: a core command's lines and rules; an enabled extension's
+ *  command's lines and rules followed by the extension's own manpage text; for a disabled extension, its refusal (exit 2). */
+async function helpFor(name: string, sub?: string): Promise<string> {
+  const owned = await extensions.commandOf(name);
+  return owned ? `${commandHelp(name, sub, owned.ext.commands)}\n\n${owned.ext.manpage.trimEnd()}` : commandHelp(name, sub);
 }
 
+/** `govern help --topics`: each reference document with its path (relative to the workspace when it is inside it) and one line;
+ *  an extension's documents only while it is enabled, each marked with the extension. */
+function topicsText(): string {
+  const root = findRepo();
+  const show = (file: string, about: string) => {
+    const f = join(HERE, file);
+    return `${file.padEnd(17)} ${root && f.startsWith(`${root}/`) ? relative(root, f) : f}\n${" ".repeat(18)}${about}`;
+  };
+  return [...TOPICS.map((t) => show(t.file, t.about)), ...extensions.topicLines(show)].join("\n");
+}
+
+/** The overview of the core commands (the extensions' commands are listed by `govern help COMMAND` once enabled). */
 export const HELP = [
   "govern — run lanes of work (videos, software, ops, any process) through their stages with agents (manual: govern manual)",
   ...SECTIONS.flatMap(([title, notes], i) => ["", title, ...COMMANDS.filter((c) => c.section === i).flatMap((c) => cmdLines(c)), ...(notes ?? []).map((n) => `  ${n}`)]),
   "",
   "stages: govern process list",
 ].join("\n");
+/** What `govern help` prints: the overview, then one line naming every extension and whether this workspace enables it. */
+const helpText = (): string => `${HELP}\n${extensions.extensionsLine()}`;
 
 /** Every command takes --help: its own help lines instead of running. */
 const withHelp = (f: FlagSpec | undefined): FlagSpec => ({ ...f, bool: [...(f?.bool ?? []), "help"] });
 
-/** Every flag any command or subcommand declares: a value flag never takes one of these words as its value
- *  (`advance l1 --note --bg` forgot the note), while any other word, `--verbose test passes` included, is the value. */
-const FLAG_WORDS: ReadonlySet<string> = new Set(
-  COMMANDS.flatMap((c) => [c.flags, ...Object.values(c.subs ?? {}).map((s) => s.flags)])
+/** Every flag any command or subcommand declares, the extensions' included whether or not one is loaded: a value flag never takes
+ *  one of these words as its value (`advance l1 --note --bg` forgot the note), while any other word, `--verbose test passes`
+ *  included, is the value. */
+const FLAG_WORDS: ReadonlySet<string> = new Set([
+  ...COMMANDS.flatMap((c) => [c.flags, ...Object.values(c.subs ?? {}).map((s) => s.flags)])
     .flatMap((f) => [...(withHelp(f).bool ?? []), ...(f?.value ?? []), ...(f?.multi ?? [])]),
-);
+  ...EXTENSION_FLAGS,
+]);
 
 /** Leading words that name a command by another spelling: `govern --version` is `govern version`. */
 export const ALIASES: Readonly<Record<string, string>> = { "--version": "version" };
 
 async function main(argv: string[]): Promise<void> {
   const name = argv[0] !== undefined && Object.hasOwn(ALIASES, argv[0]) ? ALIASES[argv[0]] : argv[0];
-  if (name === undefined || name === "-h" || name === "--help") return void out(HELP);
+  if (name === undefined || name === "-h" || name === "--help") return void out(helpText());
   if (name.startsWith("--")) fail(`the command comes first: govern <command> [<args>] [--flags] (got ${name} first; govern help)`);
-  const c = byName.get(name) ?? unknownCommand(name);
+  // A command of an extension: refused (exit 2) when the workspace does not enable it, else loaded from ext/<name>/ for this one call.
+  const c = byName.get(name) ?? (await extensions.commandOf(name))?.cmd ?? unknownCommand(name);
   let entry: { flags?: FlagSpec; run?: (a: Args) => void | Promise<void> } = c, label = c.name, sub: string | undefined, rest = argv.slice(1);
   const lead = [name];
   if (c.subs) {
     const word = argv[1];
     const given = word !== undefined && !word.startsWith("--");
-    if (!given && word === "--help" && argv.length === 2) return void out(commandHelp(c.name));
+    if (!given && word === "--help" && argv.length === 2) return void out(await helpFor(c.name));
     sub = given ? word : c.defaultSub;
     const named = sub && Object.hasOwn(c.subs, sub) ? c.subs[sub] : undefined;
     if (!named) fail(c.noSub ?? `govern ${c.name} ${Object.keys(c.subs).join("|")}`);
@@ -1571,7 +1228,7 @@ async function main(argv: string[]): Promise<void> {
     if (given) { rest = argv.slice(2); lead.push(word); }
   }
   const a = parseArgs(rest, withHelp(entry.flags), label, FLAG_WORDS);
-  if (flag(a, "help")) return void out(commandHelp(c.name, sub));
+  if (flag(a, "help")) return void out(await helpFor(c.name, sub));
   a._.unshift(...lead);
   const mutations = new Set(['new','note','approve','reject','data','human','advance','cmd','file','dep','check','event','alerts','subprocess','recover']);
   if (mutations.has(name)) withLaneLock(laneLockDir(a._[1]), () => entry.run!(a));

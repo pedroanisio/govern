@@ -5,7 +5,7 @@ import { readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { generateKeyPairSync } from "node:crypto";
 import { makeEnv, childEnv, reply, write, jsonl, seedChecks } from "./helpers.ts";
-import * as peer from "../lib/peer.ts";
+import * as peer from "../ext/peer/peer.ts";
 import * as queue from "../lib/queue.ts";
 import { stateDir } from "../lib/workspace.ts";
 import { identity } from "../lib/locks.ts";

@@ -12,6 +12,8 @@ disclaimer:
 
 Part of [govern](README.md), in [super-tools](../../README.md).
 
+`govern remote` belongs to the `remote` extension: a workspace enables it with `govern ext enable remote` (see [REFERENCE.md](REFERENCE.md#extensions)).
+
 govern remote lets the owner of the work follow every lane and its telemetry from a phone, and approve gates there,
 without weakening the rule that a gate opens only on the owner's own words. It is two parts: `govern remote serve`, an
 HTTP API on the machine that holds the workspace, and the Android app in [android/](android/README.md). This document
@@ -176,7 +178,7 @@ authenticated by OS account mapping, which a phone does not have; they stay at t
 
 Every response is JSON with `Cache-Control: no-store`, except the stream and raw artifact downloads. Field sets are closed except for the additive ledger display fields described below; clients must accept
 those optional fields. Other field additions require a new protocol version. The types are in
-[lib/remote-view.ts](lib/remote-view.ts) on the server and
+[ext/remote/remote-view.ts](ext/remote/remote-view.ts) on the server and
 [Model.kt](android/app/src/main/java/dev/supertools/govern/remote/protocol/Model.kt) in the app, and both are tested
 against the same fixtures in [android/app/src/test/resources/fixtures/](android/app/src/test/resources/fixtures/).
 

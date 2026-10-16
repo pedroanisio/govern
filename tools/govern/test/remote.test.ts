@@ -1,4 +1,4 @@
-// govern remote (lib/remote.ts, REMOTE.md): pairing, bearer reads, signed actions and the desk stream, over real HTTP
+// govern remote (ext/remote/remote.ts, REMOTE.md): pairing, bearer reads, signed actions and the desk stream, over real HTTP
 // against a throwaway workspace. The device key is a P-256 pair made here, as the Android Keystore would make it.
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -9,9 +9,9 @@ import { request } from "node:http";
 import { spawn } from "node:child_process";
 import type { Server } from "node:http";
 import { makeEnv, govern, write, jsonl, asSession, childEnv, type Env } from "./helpers.ts";
-import { remoteServer, createPairing, revoke, PAIR_ATTEMPTS, MAX_STREAMS } from "../lib/remote.ts";
-import { PROTOCOL } from "../lib/remote-view.ts";
-import { encode, render } from "../lib/qr.ts";
+import { remoteServer, createPairing, revoke, PAIR_ATTEMPTS, MAX_STREAMS } from "../ext/remote/remote.ts";
+import { PROTOCOL } from "../ext/remote/remote-view.ts";
+import { encode, render } from "../ext/remote/qr.ts";
 import type { Project } from "../lib/project.ts";
 
 const PROCESS = {
@@ -91,7 +91,7 @@ test("health answers without a token; every other route needs a paired device's 
 
 test("malformed request targets return 400 without terminating the remote server", { timeout: 15000 }, async (t) => {
   const e = setup();
-  const module = new URL("../lib/remote.ts", import.meta.url).href;
+  const module = new URL("../ext/remote/remote.ts", import.meta.url).href;
   const child = spawn(process.execPath, ["--input-type=module", "--eval", `
     import { remoteServer } from ${JSON.stringify(module)};
     const server = remoteServer();
@@ -554,7 +554,7 @@ test("v2 projections count latest checks and preserve session state, clipping an
   try {
     const { create, save, appendLedger } = await import("../lib/project.ts");
     const sessions = await import("../lib/conversation.ts");
-    const views = await import("../lib/remote-view.ts");
+    const views = await import("../ext/remote/remote-view.ts");
     write(join(e.root, "PALS-Notes/processes/release.json"), JSON.stringify(PROCESS));
     const cfg = join(e.root, "govern.config.json");
     write(cfg, JSON.stringify({ ...JSON.parse(readFileSync(cfg, "utf8")), conversationAdapters: { echo: { argv: [process.execPath, join(import.meta.dirname, "fake-conversation.ts"), "echo"] } } }));
@@ -601,7 +601,7 @@ test("v2 request handler streams artifact bytes and rejects invalid read paramet
   process.env.GOVERN_REPO = e.root;
   try {
     const { create, save } = await import("../lib/project.ts");
-    const { pair } = await import("../lib/remote.ts");
+    const { pair } = await import("../ext/remote/remote.ts");
     const { PassThrough, Writable } = await import("node:stream");
     const { symlinkSync, truncateSync } = await import("node:fs");
     const artifacts = await import("../lib/artifacts.ts");
@@ -665,7 +665,7 @@ test("a lane-scoped device reads no session, job or artifact of another lane, an
   run(["artifact", "add", "r1", write(join(e.root, "proof.txt"), "evidence")]);
   await serving(e, async (base) => {
     const phone = await pairPhone(base);
-    const { readState, writeState } = await import("../lib/remote.ts");
+    const { readState, writeState } = await import("../ext/remote/remote.ts");
     const all = readState<{ devices: { id: string; lanes?: string[] }[] }>("devices.json", { devices: [] });
     all.devices.find((d) => d.id === phone.id)!.lanes = ["r2"];
     writeState("devices.json", all);
@@ -786,7 +786,7 @@ test("FIELD action refusals preserve scope, gates, digests, bounds and nonce pro
     assert.equal((await act(base, phone, approval)).status, 200);
     assert.equal((await act(base, phone, approval)).status, 403);
     await refuse({ action: "changes", lane: "r1", gate: "final", quote: "change it" }, 409);
-    const { readState, writeState } = await import("../lib/remote.ts");
+    const { readState, writeState } = await import("../ext/remote/remote.ts");
     const all = readState<{ devices: { id: string; lanes?: string[] }[] }>("devices.json", { devices: [] });
     all.devices.find(d => d.id === phone.id)!.lanes = ["other"]; writeState("devices.json", all);
     for (const action of ["approve", "changes", "reviewed", "session", "ack"]) {
@@ -801,7 +801,7 @@ test("FIELD signed shapes enforce every action's signature, clock, nonce and clo
   const e = makeEnv("field-shapes"), old = process.env.GOVERN_REPO;
   process.env.GOVERN_REPO = e.root;
   try {
-    const { verifyAction, createDevice, locked, BadRequest, Forbidden } = await import("../lib/remote.ts");
+    const { verifyAction, createDevice, locked, BadRequest, Forbidden } = await import("../ext/remote/remote.ts");
     const kp = keyPair(), { device } = locked(() => createDevice("test", kp.publicKey, "owner"));
     const now = Date.parse("2026-10-14T12:00:00Z"), at = new Date(now).toISOString();
     const artifact = { name: "proof.txt", sha256: "a".repeat(64) };
@@ -848,7 +848,7 @@ test("FIELD local actions bind decisions to current artifacts and refuse scope b
   process.env.GOVERN_REPO = e.root;
   try {
     write(join(e.root, "PALS-Notes/processes/release.json"), JSON.stringify(PROCESS));
-    const project = await import("../lib/project.ts"), remote = await import("../lib/remote.ts"), artifacts = await import("../lib/artifacts.ts");
+    const project = await import("../lib/project.ts"), remote = await import("../ext/remote/remote.ts"), artifacts = await import("../lib/artifacts.ts");
     const cfg = join(e.root, "govern.config.json");
     write(cfg, JSON.stringify({ ...JSON.parse(readFileSync(cfg, "utf8")), conversationAdapters: { echo: { argv: [process.execPath, join(import.meta.dirname, "fake-conversation.ts"), "echo"] } } }));
     project.create("r1", { process: "release" });

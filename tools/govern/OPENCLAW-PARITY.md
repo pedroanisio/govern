@@ -117,7 +117,7 @@ Govern evidence:
 
 - [Purpose](PURPOSE.md), [business workflows](BUSINESS.md), [lifecycle](LIFECYCLE.md), [new iteration capabilities](ITERATION.md), [manual](SKILL.md).
 - [Queue/runner contract](lib/queue.ts), [external session registry](lib/sessions.ts), [one-shot Codex adapter](lib/codex.ts), [engine selection/tuning](lib/tune.ts).
-- [Capability/MCP mappings and sealing limits](lib/caps.ts), [human provenance](lib/approval.ts), [process people/policies](lib/business.ts), [generic event receiver](lib/event-server.ts).
+- [Capability/MCP mappings and sealing limits](lib/caps.ts), [human provenance](lib/approval.ts), [process people/policies](lib/business.ts), [generic event receiver](ext/business/event-server.ts).
 - [Workflow timers/recovery](lib/lifecycle.ts), [text operator desk](lib/desk.ts), [allowances](lib/allowances.ts), [skill-copy installer](lib/skill.ts).
 
 No feature-parity percentage or delivery estimate is assigned: that would require a defined target feature set and implementation/design review. This assessment establishes the missing native capabilities and observable completion criteria.

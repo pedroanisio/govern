@@ -10,10 +10,10 @@ import { spawnSync } from "node:child_process";
 import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { fail, nowIso, sha256, clip, GovernError } from "./util.ts";
-import { obj, str, arr, record, literal, reject, keyPath, check, type Shape } from "./shape.ts";
-import { configFile, decideConfig, queueDir } from "./workspace.ts";
-import type { Message } from "./queue.ts";
+import { fail, nowIso, sha256, clip, GovernError } from "../../lib/util.ts";
+import { obj, str, arr, record, literal, reject, keyPath, check, type Shape } from "../../lib/shape.ts";
+import { configFile, decideConfig, queueDir } from "../../lib/workspace.ts";
+import type { Message } from "../../lib/queue.ts";
 
 const CALL = fileURLToPath(new URL("./typesafeCall.ts", import.meta.url));
 const DEFAULT_URL = "https://api.typesafe.ai";

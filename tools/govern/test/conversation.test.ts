@@ -553,7 +553,7 @@ test("Grok NDJSON conversation commits only the final turn and rejects error str
 });
 
 test("Grok stream adapter emits tool events and covers every parse failure", async () => {
-  const { build } = await import("../lib/conversation-adapters.ts");
+  const { build } = await import("../ext/conversation/conversation-adapters.ts");
   const e = setup(), saved = process.env;
   process.env = childEnv(e, { GOVERN_GROK_HOME: join(e.root, "private-grok"), GROK_HOME: join(e.root, "test-grok") });
   let adapter: ReturnType<typeof build> | undefined;

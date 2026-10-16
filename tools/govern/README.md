@@ -12,7 +12,7 @@ disclaimer:
 
 Part of [super-tools](../../README.md).
 
-Send queued tasks between hosts with [govern peers](PEERS.md): a mesh joined with one invite per host, agents that register and discover each other, `NAME@HOST` addressing, signed delivery and local execution policy.
+Send queued tasks between hosts with [govern peers](PEERS.md) (an [extension](ext/README.md): `govern ext enable peer`): a mesh joined with one invite per host, agents that register and discover each other, `NAME@HOST` addressing, signed delivery and local execution policy.
 
 Runs lanes of agent work through checked stages, with few tokens. A lane can be
 a video, software, ops, or any other process.
@@ -66,7 +66,8 @@ govern help advance                            # one command's usage and flags
 `govern version` (also `govern --version`) prints the installed package version; add
 `--json` for a JSON object with `name` and `version`.
 
-The CLI is TypeScript ([govern.ts](govern.ts), [lib/](lib/)). It runs directly
+The CLI is TypeScript ([govern.ts](govern.ts), [lib/](lib/), and [ext/](ext/README.md) for the
+extensions a workspace enables: peer, center, remote, decide, conversation, business). It runs directly
 under Node through type stripping, from the [bin/govern](../../bin/govern)
 launcher. `tsc` is a dev dependency used only for type checking.
 

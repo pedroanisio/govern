@@ -1,5 +1,7 @@
 # Business workflows
 
+The commands `govern data`, `govern human`, `govern human-inbox` and `govern reject` belong to the `business` extension: a workspace enables it with `govern ext enable business` (see [REFERENCE.md](REFERENCE.md#extensions)). The graph processes themselves are the core's, and `govern advance` works without the extension.
+
 Govern supports five declarative business-workflow features: conditional routes, parallel stages with joins, typed case data, assigned human tasks, and approval policies. Existing version-1 processes without `next` remain linear and keep their existing commands and gate semantics.
 
 An example is in [examples/purchase.json](examples/purchase.json). Copy it into your workspace's processes folder (`.govern/processes` for a convention-based workspace), set `manual` to a path valid relative to that copy or remove it, and map the example people to real OS account names before using it. Each OS account maps to exactly one person. Do not add shared accounts as multiple people.

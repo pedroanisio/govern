@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { chmodSync, statSync, readFileSync, writeFileSync } from "node:fs";
 import { makeEnv, use, govern, childEnv, GOVERN } from "./helpers.ts";
-import * as center from "../lib/center.ts";
+import * as center from "../ext/center/center.ts";
 import * as peerId from "../lib/peer-id.ts";
 
 const original = { ...process.env };

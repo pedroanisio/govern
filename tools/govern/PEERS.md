@@ -12,6 +12,8 @@ disclaimer:
 
 Part of [govern](README.md), in [super-tools](../../README.md).
 
+`govern peer`, `govern mesh` and `govern agents` belong to the `peer` extension, and `govern center` to the `center` extension: a workspace enables them with `govern ext enable peer` and `govern ext enable center` (see [REFERENCE.md](REFERENCE.md#extensions)). Without `peer`, `govern task send --to NAME@PEER` is refused.
+
 An agent addresses a queue recipient on another host as `NAME@HOST`. Host names are unique in a mesh and agent names
 are unique on their host, so an address names exactly one agent. Relaying is ordinary code and runs no model.
 Each receiving host decides its profiles, gates, allowances and maxRuns. A sender cannot select the receiver's

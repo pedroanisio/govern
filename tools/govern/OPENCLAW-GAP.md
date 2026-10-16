@@ -96,7 +96,7 @@ Govern implementation reviewed:
 
 - [Purpose](PURPOSE.md), [business workflows](BUSINESS.md), [durable lifecycle](LIFECYCLE.md), [new iteration capabilities](ITERATION.md), [operator manual](SKILL.md).
 - [Human approval provenance](lib/approval.ts), [people and policy enforcement](lib/business.ts), [profiles and capability mappings](lib/caps.ts), [queue and runners](lib/queue.ts).
-- [Event receiver](lib/event-server.ts), [lifecycle execution](lib/lifecycle.ts), [per-item execution](lib/fanout.ts), [allowances](lib/allowances.ts), [text desk](lib/desk.ts).
+- [Event receiver](ext/business/event-server.ts), [lifecycle execution](lib/lifecycle.ts), [per-item execution](lib/fanout.ts), [allowances](lib/allowances.ts), [text desk](lib/desk.ts).
 
 OpenClaw primary documentation retrieved from upstream `main`:
 

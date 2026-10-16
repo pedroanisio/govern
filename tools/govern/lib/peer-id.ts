@@ -13,6 +13,11 @@ export const MAX_BODY = 262144;
 /** A signed request's `at` must be within this many milliseconds of the receiver's clock. */
 export const SKEW_MS = 5 * 60_000;
 export const NAME = /^[a-z0-9][a-z0-9.-]*$/;
+/** Syntax only: the NAME and PEER of a `NAME@PEER` address, or undefined when `address` is not one. */
+export function parseAddress(address: string): { name: string; peer: string } | undefined {
+  const parts = address.split("@");
+  return parts.length === 2 && parts.every(x => NAME.test(x)) ? { name: parts[0]!, peer: parts[1]! } : undefined;
+}
 /** A host, peer or recipient name: lowercase letters, digits, dots and dashes. */
 export const name: Shape<string> = (v, p) => { const s = str(v, p); return NAME.test(s) ? s : reject(p, "must be lowercase letters, digits, dots and dashes, starting with a letter or digit"); };
 /** Any string with at least one character. */
