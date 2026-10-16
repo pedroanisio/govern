@@ -4,7 +4,7 @@ description: How govern differs from LangGraph, CrewAI, Microsoft Agent Framewor
 nav: 4
 ---
 
-This page compares govern with eight other projects on the same eight questions, as researched on 2026-10-16. govern's side comes from its own documents (PURPOSE.md, SKILL.md, REFERENCE.md and ARCHITECTURE.md) on this commit, so govern's cells carry no source numbers. The other projects' sides come only from their public documentation, and every sentence about them carries a bracketed source number that points into the numbered Sources list at the end of the page. Where the documentation I read does not say, the cell says "not documented". It means not documented on the pages listed in Sources, not that the feature is absent.
+This page compares govern with eight other projects on the same eight questions, as researched on 2026-10-16. govern's side comes from its own documents (PURPOSE.md, SKILL.md, REFERENCE.md and ARCHITECTURE.md) on this commit, so govern's cells carry no source numbers. The other projects' sides come only from their public documentation, and every sentence about them carries a bracketed source number that points into the numbered Sources list at the end of the page. Where the documentation cited does not say, the cell says "not documented". It means not documented on the pages listed in Sources, not that the feature is absent.
 
 ## Framing
 
@@ -190,35 +190,35 @@ Each cell is short; the sections above have the detail.
 
 ## Sources
 
-Each page was fetched on 2026-10-16, and a statement above goes no further than the text fetched from that page. All entries are the projects' own documentation; none is a blog, a comparison article or a generated summary. One URL I tried was not reachable (a Camunda "what is Camunda" page, HTTP 404). It is not cited, and the Camunda facts come from the pages listed.
+Each page was fetched on 2026-10-16, and a statement above goes no further than the text fetched from that page. All entries are the projects' own documentation; none is a blog, a comparison article or a generated summary. One URL fetched during the research was not reachable (a Camunda "what is Camunda" page, HTTP 404). It is not cited, and the Camunda facts come from the pages listed.
 
 1. LangGraph (LangChain), "LangGraph overview", https://docs.langchain.com/oss/python/langgraph/overview, accessed 2026-10-16.
 2. LangGraph (LangChain), "Persistence", https://docs.langchain.com/oss/python/langgraph/persistence, accessed 2026-10-16.
 3. LangGraph (LangChain), "Interrupts", https://docs.langchain.com/oss/python/langgraph/interrupts, accessed 2026-10-16.
-4. LangGraph (LangChain), Graph API page (title not captured), https://docs.langchain.com/oss/python/langgraph/graph-api, accessed 2026-10-16.
-5. LangChain, Models page (title not captured), https://docs.langchain.com/oss/python/langchain/models, accessed 2026-10-16.
-6. LangSmith, Cost tracking page (title not captured), https://docs.langchain.com/langsmith/cost-tracking, accessed 2026-10-16.
-7. LangSmith, Deployments page (title not captured), https://docs.langchain.com/langsmith/deployments, accessed 2026-10-16.
+4. LangGraph (LangChain), Graph API page, https://docs.langchain.com/oss/python/langgraph/graph-api, accessed 2026-10-16.
+5. LangChain, Models page, https://docs.langchain.com/oss/python/langchain/models, accessed 2026-10-16.
+6. LangSmith, Cost tracking page, https://docs.langchain.com/langsmith/cost-tracking, accessed 2026-10-16.
+7. LangSmith, Deployments page, https://docs.langchain.com/langsmith/deployments, accessed 2026-10-16.
 8. CrewAI, "Introduction", https://docs.crewai.com/en/introduction, accessed 2026-10-16.
-9. CrewAI, Flows page (title not captured), https://docs.crewai.com/en/concepts/flows, accessed 2026-10-16.
-10. CrewAI, LLMs page (title not captured), https://docs.crewai.com/en/concepts/llms, accessed 2026-10-16.
-11. CrewAI, Human-in-the-loop page (title not captured), https://docs.crewai.com/en/learn/human-in-the-loop, accessed 2026-10-16.
-12. CrewAI, Tasks page (title not captured), https://docs.crewai.com/en/concepts/tasks, accessed 2026-10-16.
-13. CrewAI, Agents page (title not captured), https://docs.crewai.com/en/concepts/agents, accessed 2026-10-16.
-14. CrewAI, Crews page (title not captured), https://docs.crewai.com/en/concepts/crews, accessed 2026-10-16.
-15. CrewAI, AMP platform introduction (title not captured), https://docs-platform.crewai.com/platform/en/introduction, accessed 2026-10-16.
+9. CrewAI, Flows page, https://docs.crewai.com/en/concepts/flows, accessed 2026-10-16.
+10. CrewAI, LLMs page, https://docs.crewai.com/en/concepts/llms, accessed 2026-10-16.
+11. CrewAI, Human-in-the-loop page, https://docs.crewai.com/en/learn/human-in-the-loop, accessed 2026-10-16.
+12. CrewAI, Tasks page, https://docs.crewai.com/en/concepts/tasks, accessed 2026-10-16.
+13. CrewAI, Agents page, https://docs.crewai.com/en/concepts/agents, accessed 2026-10-16.
+14. CrewAI, Crews page, https://docs.crewai.com/en/concepts/crews, accessed 2026-10-16.
+15. CrewAI, AMP platform introduction, https://docs-platform.crewai.com/platform/en/introduction, accessed 2026-10-16.
 16. Microsoft Agent Framework, "Microsoft Agent Framework Overview | Microsoft Learn", https://learn.microsoft.com/en-us/agent-framework/overview/, accessed 2026-10-16.
 17. Microsoft Agent Framework, "Workflow capabilities | Microsoft Learn", https://learn.microsoft.com/en-us/agent-framework/workflows/, accessed 2026-10-16.
 18. Microsoft Agent Framework, "Microsoft Agent Framework Workflows - Human-in-the-loop (HITL) | Microsoft Learn", https://learn.microsoft.com/en-us/agent-framework/workflows/human-in-the-loop, accessed 2026-10-16.
 19. Microsoft Agent Framework, "Microsoft Agent Framework Workflows - Checkpoints | Microsoft Learn", https://learn.microsoft.com/en-us/agent-framework/workflows/checkpoints, accessed 2026-10-16.
 20. Microsoft Agent Framework, "Observability | Microsoft Learn", https://learn.microsoft.com/en-us/agent-framework/agents/observability, accessed 2026-10-16.
-21. Microsoft AutoGen, repository README (title not captured), https://github.com/microsoft/autogen, accessed 2026-10-16.
+21. Microsoft AutoGen, repository README, https://github.com/microsoft/autogen, accessed 2026-10-16.
 22. OpenAI Agents SDK, "OpenAI Agents SDK", https://openai.github.io/openai-agents-python/, accessed 2026-10-16.
-23. OpenAI Agents SDK, Human in the loop page (title not captured), https://openai.github.io/openai-agents-python/human_in_the_loop/, accessed 2026-10-16.
-24. OpenAI Agents SDK, Usage page (title not captured), https://openai.github.io/openai-agents-python/usage/, accessed 2026-10-16.
-25. OpenAI Agents SDK, Models page (title not captured), https://openai.github.io/openai-agents-python/models/, accessed 2026-10-16.
-26. OpenAI Agents SDK, Sessions page (title not captured), https://openai.github.io/openai-agents-python/sessions/, accessed 2026-10-16.
-27. OpenAI Agents SDK, Sandbox agents page (title not captured), https://openai.github.io/openai-agents-python/sandbox_agents/, accessed 2026-10-16.
+23. OpenAI Agents SDK, Human in the loop page, https://openai.github.io/openai-agents-python/human_in_the_loop/, accessed 2026-10-16.
+24. OpenAI Agents SDK, Usage page, https://openai.github.io/openai-agents-python/usage/, accessed 2026-10-16.
+25. OpenAI Agents SDK, Models page, https://openai.github.io/openai-agents-python/models/, accessed 2026-10-16.
+26. OpenAI Agents SDK, Sessions page, https://openai.github.io/openai-agents-python/sessions/, accessed 2026-10-16.
+27. OpenAI Agents SDK, Sandbox agents page, https://openai.github.io/openai-agents-python/sandbox_agents/, accessed 2026-10-16.
 28. Claude Agent SDK, "Agent SDK overview", https://code.claude.com/docs/en/agent-sdk/overview, accessed 2026-10-16.
 29. Claude Agent SDK, "Configure permissions", https://code.claude.com/docs/en/agent-sdk/permissions, accessed 2026-10-16.
 30. Claude Agent SDK, "Track cost and usage", https://code.claude.com/docs/en/agent-sdk/cost-tracking, accessed 2026-10-16.
@@ -227,10 +227,10 @@ Each page was fetched on 2026-10-16, and a statement above goes no further than 
 33. Claude Agent SDK, "Hosting the Agent SDK", https://code.claude.com/docs/en/agent-sdk/hosting, accessed 2026-10-16.
 34. Claude Code, "Claude Code on Amazon Bedrock", https://code.claude.com/docs/en/amazon-bedrock, accessed 2026-10-16.
 35. Temporal, "What is Temporal?", https://docs.temporal.io/temporal, accessed 2026-10-16.
-36. Temporal, Workflows page (title not captured), https://docs.temporal.io/workflows, accessed 2026-10-16.
-37. Temporal, Workflow message passing page (title not captured), https://docs.temporal.io/encyclopedia/workflow-message-passing, accessed 2026-10-16.
-38. Temporal, "AI Cookbook" page (title not captured), https://docs.temporal.io/ai-cookbook, accessed 2026-10-16.
-39. Temporal, Cloud pricing page (title not captured), https://docs.temporal.io/cloud/pricing, accessed 2026-10-16.
+36. Temporal, Workflows page, https://docs.temporal.io/workflows, accessed 2026-10-16.
+37. Temporal, Workflow message passing page, https://docs.temporal.io/encyclopedia/workflow-message-passing, accessed 2026-10-16.
+38. Temporal, "AI Cookbook" page, https://docs.temporal.io/ai-cookbook, accessed 2026-10-16.
+39. Temporal, Cloud pricing page, https://docs.temporal.io/cloud/pricing, accessed 2026-10-16.
 40. Camunda, "Using Camunda 8", https://docs.camunda.io/docs/components/, accessed 2026-10-16.
 41. Camunda, "BPMN primer", https://docs.camunda.io/docs/components/modeler/bpmn/bpmn-primer/, accessed 2026-10-16.
 42. Camunda, "User tasks", https://docs.camunda.io/docs/components/modeler/bpmn/user-tasks/, accessed 2026-10-16.
@@ -244,7 +244,7 @@ Each page was fetched on 2026-10-16, and a statement above goes no further than 
 50. OpenClaw, "Approvals" (CLI), https://docs.openclaw.ai/cli/approvals, accessed 2026-10-16.
 51. OpenClaw, "Automation", https://docs.openclaw.ai/automation, accessed 2026-10-16.
 52. OpenClaw, "Lobster", https://docs.openclaw.ai/tools/lobster, accessed 2026-10-16.
-53. OpenClaw, Model providers page (title not captured), https://docs.openclaw.ai/concepts/model-providers, accessed 2026-10-16.
-54. OpenClaw, Agent loop page (title not captured), https://docs.openclaw.ai/concepts/agent-loop, accessed 2026-10-16.
+53. OpenClaw, Model providers page, https://docs.openclaw.ai/concepts/model-providers, accessed 2026-10-16.
+54. OpenClaw, Agent loop page, https://docs.openclaw.ai/concepts/agent-loop, accessed 2026-10-16.
 
 govern's side of every table comes from `tools/govern/PURPOSE.md`, `SKILL.md`, `REFERENCE.md` and `ARCHITECTURE.md` at this commit.

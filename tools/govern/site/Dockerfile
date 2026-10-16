@@ -6,8 +6,9 @@
 FROM python:3.13-slim AS press
 WORKDIR /work
 COPY press/ ./press/
+COPY site/static/brand/press-banner.png site/static/brand/logo.png ./brand/
 RUN pip install --no-cache-dir -r press/requirements.txt \
- && python press/render.py --out press/dist
+ && python press/render.py --out press/dist --banner brand/press-banner.png --logo brand/logo.png
 
 # 2. Build the site. build.ts imports lib/shape.ts and lib/util.ts, and reads package.json for the version.
 FROM node:24-alpine AS build
