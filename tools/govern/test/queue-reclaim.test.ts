@@ -92,7 +92,7 @@ test("desk counts only live claims as running and identifies dead and unknown ho
   write(join(e.env.GOVERN_QUEUE!, "claimed", `${unknown.id}.json`), JSON.stringify(unknown));
   assert.equal(queue.claim(live, "dispatcher"), true);
   const text = desk().text;
-  assert.match(text, /codex: 0 waiting, 1 running/);
+  assert.match(text, /codex: 0 waiting, running 1\/1/);
   assert.ok(text.includes(`${dead.id}: dead holder (peer-relay)`));
   assert.ok(text.includes(`${unknown.id}: unknown holder`));
 });

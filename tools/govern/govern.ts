@@ -16,7 +16,7 @@ import { join, dirname, resolve, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import { randomUUID, createHash } from "node:crypto";
 import { GovernError, fail, parseArgs, opt, flag, many, flagNames, secondsOpt, nowIso, readJsonl, kTok, clip, type Args, type FlagSpec } from "./lib/util.ts";
-import { stagesOf, load, save, create, stageOf, brief, appendLedger, resolveFile, ledgerFile, projectDir, checkSlug, checkOf, pendingCheckChanges, blockedBy, laneState, laneSlugs, laneRows, stateFile, argvOf, commandLine, type Project, type Command } from "./lib/project.ts";
+import { stagesOf, load, save, create, stageOf, brief, appendLedger, resolveFile, ledgerFile, projectDir, checkSlug, checkOf, pendingCheckChanges, blockedBy, laneState, driftWarning, laneSlugs, laneRows, stateFile, argvOf, commandLine, type Project, type Command } from "./lib/project.ts";
 import { processes, getProcess, processOf, listLine, show, manualOf } from "./lib/process.ts";
 import { repo, findRepo, projectsDir, packagesDir, initWorkspace, stateDir } from "./lib/workspace.ts";
 import { emptyRecord, PROTO } from "./lib/shape.ts";
@@ -150,13 +150,15 @@ function cmdStatus(a: Args): void {
   const slugs = laneSlugs();
   if (!slugs.length) return out("nothing under govern yet (govern new <slug> --process NAME, or --kind long|short|ops)");
   const { rows, failed } = laneRows(slugs, (s, p) => {
-    const lastJob = readJsonl(ledgerFile(s)).filter((e) => e.kind === "job").pop();
+    const led = readJsonl(ledgerFile(s));
+    const lastJob = led.filter((e) => e.kind === "job").pop();
     const gates = processOf(p).gates;
     const ap = gates.map((g) => (gateApproved(p, g) ? g.name.charAt(0).toUpperCase() : "·")).join("");
     const list = stagesOf(p);
     const parts = [`${s.padEnd(36)} ${p.kind.padEnd(5)} ${list.indexOf(p.stage) + 1}/${list.length} ${p.stage.padEnd(12)}`, gates.length ? `approvals ${ap}` : "",
-      laneState(p), p.workflow ? `active ${p.workflow.active.join(', ')}` : '', lastJob ? `last job ${lastJob.name} ${lastJob.status}` : ""];
-    return parts.filter(Boolean).join("  ").trimEnd();
+      laneState(p), p.workflow && !p.finished ? `active ${p.workflow.active.join(', ')}` : '', lastJob ? `last job ${lastJob.name} ${lastJob.status}` : ""];
+    const drift = driftWarning(p, led);
+    return parts.filter(Boolean).join("  ").trimEnd() + (drift ? `\n    ${drift}` : "");
   });
   for (const r of rows) out(r);
   if (failed) unreadable(failed, slugs.length);
@@ -649,22 +651,30 @@ function localTaskName(name: string, option: string): string {
   return name;
 }
 
-function cmdTask(a: Args): void {
+/** `--parallel N`: how many messages one dispatcher runs at once (a whole number, 1 or more; default 1). */
+function parallelOpt(a: Args): number {
+  const v = opt(a, "parallel");
+  if (v === undefined) return 1;
+  if (!/^[1-9]\d*$/.test(v)) fail(`--parallel must be a whole number, 1 or more: ${JSON.stringify(v)}`);
+  return Number(v);
+}
+
+function cmdTask(a: Args): void | Promise<void> {
   const sub = a._[1];
   if (sub === "send") {
     const bodyFile = opt(a, "body-file");
     const body = bodyFile ? readFileSync(bodyFile, "utf8") : opt(a, "body") ?? "";
     const { to, routed } = recipient(opt(a, "to") ?? "");
     const address = peer.parseAddress(to);
-    if (address && (flag(a, "write") || ["profile", "lane", "estimate-usd"].some(k => opt(a, k) !== undefined) || many(a, "file").length))
-      fail("the receiving host decides write access, profile, lane, estimate and files; these options cannot be sent to a peer");
+    if (address && (flag(a, "write") || ["profile", "lane", "estimate-usd", "timeout"].some(k => opt(a, k) !== undefined) || many(a, "file").length))
+      fail("the receiving host decides write access, profile, lane, estimate, timeout and files; these options cannot be sent to a peer");
     const t = address ? { access: "read-only" as const } : queue.resolveTarget(to, { write: flag(a, "write"), profile: opt(a, "profile") });
-    const lane = opt(a, "lane"), estimateUsd = amountOpt(a, "estimate-usd");
+    const lane = opt(a, "lane"), estimateUsd = amountOpt(a, "estimate-usd"), timeoutSec = secondsOpt(a, "timeout");
     const m = queue.send({
       ...(t.profile ? { profile: t.profile } : {}), ...(lane ? { lane } : {}),
       project: opt(a, "project") ?? "", task: opt(a, "task") ?? "", kind: opt(a, "kind") ?? "TASK", from: localTaskName(opt(a, "from") ?? resolveAs() ?? fail("cannot tell who is sending (no parent process is a registered Claude Code session): pass --from NAME"), "--from"),
       to, ...(routed ? { routed: true } : {}), summary: opt(a, "summary") ?? "", body, files: many(a, "file"), replyTo: opt(a, "reply-to"),
-      access: t.access, ...(estimateUsd !== undefined ? { estimateUsd } : {}),
+      access: t.access, ...(estimateUsd !== undefined ? { estimateUsd } : {}), ...(timeoutSec !== undefined ? { timeoutSec } : {}),
     });
     out(`queued ${m.id} (${m.kind} to ${m.to}${m.profile && (m.profile !== `${m.to}-read` || opt(a, "profile")) && m.profile !== m.to ? `, profile ${m.profile}` : ""})`);
     jev.shadowTask(m);
@@ -678,8 +688,23 @@ function cmdTask(a: Args): void {
   }
   if (sub === "show") {
     const hit = queue.find(a._[2] ?? "") ?? fail(`no message ${a._[2]}`);
-    for (const m of queue.thread(hit!.m)) out(`--- ${m.id} [${m.kind}] ${m.from}→${m.to} ${m.created}${m.profile ? `\nprofile: ${m.profile}${m.lane ? ` · lane ${m.lane}` : ""}` : ""}\n${m.summary}\n${m.body}${m.files.length ? `\nfiles: ${m.files.join(", ")}` : ""}${m.verification ? `\n${verdict(m.verification)}` : ""}${m.claim ? `\nclaim: ${JSON.stringify(m.claim)} (${queue.claimState(m)})` : ""}${m.result ? `\nresult: ${JSON.stringify(m.result)}` : ""}`);
+    for (const m of queue.thread(hit!.m)) out(`--- ${m.id} [${m.kind}] ${m.from}→${m.to} ${m.created}${m.profile ? `\nprofile: ${m.profile}${m.lane ? ` · lane ${m.lane}` : ""}` : ""}${m.timeoutSec !== undefined ? `\nlimit: ${m.timeoutSec} s` : ""}${m.retryOf ? `\nretry of ${m.retryOf}: ${m.retryNote}` : ""}${(m.retries ?? []).map((r) => `\nretried as ${r.id}: ${r.note}`).join("")}\n${m.summary}\n${m.body}${m.files.length ? `\nfiles: ${m.files.join(", ")}` : ""}${m.verification ? `\n${verdict(m.verification)}` : ""}${m.claim ? `\nclaim: ${JSON.stringify(m.claim)} (${queue.claimState(m)})` : ""}${m.result ? `\nresult: ${JSON.stringify(m.result)}` : ""}`);
     return;
+  }
+  if (sub === "triage") {
+    const rows = queue.triage({ all: flag(a, "all"), ...(opt(a, "project") ? { project: opt(a, "project")! } : {}), ...(opt(a, "to") ? { to: opt(a, "to")! } : {}) });
+    if (flag(a, "json")) return out(JSON.stringify(rows, null, 2));
+    if (!rows.length) return out("no failed messages");
+    const age = (s: number) => (s < 90 ? `${s}s` : s < 5400 ? `${Math.round(s / 60)}m` : s < 48 * 3600 ? `${Math.round(s / 3600)}h` : `${Math.round(s / 86400)}d`);
+    for (const r of rows)
+      out(`${r.id} ${r.state.padEnd(6)} ${r.to} [${r.project}/${r.task}] ${age(r.ageSec)} ago · ${r.cause}: ${r.reason}${r.usage ? ` · ${kTok(r.usage.input)} in, ${kTok(r.usage.output)} out` : ""}${r.costUsd !== undefined ? `, $${r.costUsd.toFixed(3)}` : ""}${r.replyKept ? ` · reply kept: ${r.replyKept}` : ""}`);
+    return out(`${rows.length} message(s) · after fixing the cause, send one again with its fix recorded: govern task retry <id> --note "<what was fixed>"`);
+  }
+  if (sub === "retry") {
+    const to = opt(a, "to");
+    const m = queue.retry(a._[2] ?? "", { note: opt(a, "note") ?? "", ...(to !== undefined ? { to: recipient(to).to } : {}), ...(flag(a, "write") ? { write: true } : {}), ...(opt(a, "profile") !== undefined ? { profile: opt(a, "profile")! } : {}), ...(secondsOpt(a, "timeout") !== undefined ? { timeoutSec: secondsOpt(a, "timeout")! } : {}) });
+    out(`queued ${m.id} (${m.kind} to ${m.to}, retry of ${m.retryOf})`);
+    return wakeNote(m);
   }
   if (sub === "inbox") return cmdInbox(a);
   if (sub === "close") {
@@ -706,13 +731,17 @@ function cmdTask(a: Args): void {
   }
   if (sub === "dispatch") {
     const max = opt(a, "max") ? Number(opt(a, "max")) : undefined;
-    const once = () => queue.dispatch({ max, only: opt(a, "only") }).forEach((l) => out(l));
-    if (!flag(a, "loop")) { if (opt(a, "reap-every")) fail("--reap-every needs --loop (it lists on the loop's timer; a single dispatch never lists instances)"); once(); return; }
+    const claimed = opt(a, "run-claimed");
+    if (claimed !== undefined) return queue.runClaimedBy(claimed).forEach((l) => out(l)); // a worker of --parallel: its parent claimed the message
+    const parallel = parallelOpt(a);
+    const worker = [process.execPath, ...process.execArgv, join(HERE, "govern.ts")];
+    const once = async () => (parallel > 1 ? await queue.dispatchParallel({ max, only: opt(a, "only"), parallel, worker }) : queue.dispatch({ max, only: opt(a, "only") })).forEach((l) => out(l));
+    if (!flag(a, "loop")) { if (opt(a, "reap-every")) fail("--reap-every needs --loop (it lists on the loop's timer; a single dispatch never lists instances)"); return once(); }
     const secs = Number(opt(a, "interval") ?? 30);
     const pidf = join(queue.QUEUE(), "dispatcher.json");
     mkdirSync(queue.QUEUE(), { recursive: true });
     writeFileSync(pidf, JSON.stringify({ pid: process.pid, started: nowIso(), interval: secs }) + "\n");
-    const stop = () => { try { if (existsSync(pidf) && JSON.parse(readFileSync(pidf, "utf8")).pid === process.pid) unlinkSync(pidf); } catch { /* gone */ } process.exit(0); };
+    const stop = () => { try { if (existsSync(pidf) && JSON.parse(readFileSync(pidf, "utf8")).pid === process.pid) unlinkSync(pidf); } catch { /* gone */ } queue.stopWorkers(); process.exit(0); };
     process.on("SIGTERM", stop); process.on("SIGINT", stop);
     // setTimeout, not a blocking sleep: signals are handled only when the event loop turns.
     // The tuning measurement runs hourly in the same loop: reading transcripts, no model.
@@ -720,7 +749,7 @@ function cmdTask(a: Args): void {
     const reapEvery = secondsOpt(a, "reap-every");
     const tick = async () => {
       try {
-        once();
+        await once();
         try {
           if (mesh.state() && Date.now() - lastSync >= MESH_SYNC_MS) {
             lastSync = Date.now();
@@ -748,7 +777,7 @@ function cmdTask(a: Args): void {
     // A user systemd service, so the dispatcher survives sessions and reboots. It runs a model only when a message waits.
     const system = flag(a, "system");
     const bin = resolve(HERE, "..", "..", "bin", "govern");
-    const text = serviceUnit(bin, String(secondsOpt(a, "interval") ?? 30), secondsOpt(a, "reap-every"), system);
+    const text = serviceUnit(bin, String(secondsOpt(a, "interval") ?? 30), secondsOpt(a, "reap-every"), system, parallelOpt(a));
     if (system) return out(installSystemUnit(text, flag(a, "write")));
     const unit = join(homedir(), ".config", "systemd", "user", "govern-dispatch.service");
     mkdirSync(dirname(unit), { recursive: true });
@@ -1010,13 +1039,13 @@ async function cmdCenter(a: Args): Promise<void> {
 }
 
 /** The text of the user service: every Environment= and the ExecStart binary quoted, and the state folders of this shell passed on. */
-export function serviceUnit(bin: string, interval: string, reapEvery: number | undefined, system = false): string {
+export function serviceUnit(bin: string, interval: string, reapEvery: number | undefined, system = false, parallel = 1): string {
   const env: [string, string][] = [["PATH", process.env.PATH ?? ""], ["GOVERN_REPO", repo()], ["GOVERN_QUEUE", queue.QUEUE()]];
   for (const k of ["GOVERN_STATE", "GOVERN_PROJECTS"]) if (process.env[k]) env.push([k, process.env[k]!]);
   return [
     "[Unit]", "Description=govern task dispatcher (one fresh codex/claude/grok session per queued message)", "",
     "[Service]", ...(system ? [`User=${userInfo().username}`] : []), `WorkingDirectory=${repo().replace(/%/g, "%%")}`,
-    `ExecStart=${unitWord(bin, true)} task dispatch --loop --interval ${interval}${reapEvery ? ` --reap-every ${reapEvery}` : ""}`,
+    `ExecStart=${unitWord(bin, true)} task dispatch --loop --interval ${interval}${reapEvery ? ` --reap-every ${reapEvery}` : ""}${parallel > 1 ? ` --parallel ${parallel}` : ""}`,
     ...env.map(([k, v]) => `Environment=${unitWord(`${k}=${v}`)}`), "Restart=on-failure", "RestartSec=30", "",
     "[Install]", `WantedBy=${system ? "multi-user.target" : "default.target"}`, "",
   ].join("\n");
@@ -1060,7 +1089,7 @@ const SECTIONS: readonly (readonly [title: string, notes?: readonly string[]])[]
 
 /** How long a provider command (start, stop, list) may run when --timeout is not given. */
 const REAP_TIMEOUT = 120;
-const TASK_SUBS = "govern task send|list|show|inbox|close|reclaim|reply|forward|dispatch|install-service (govern help)";
+const TASK_SUBS = "govern task send|list|show|inbox|triage|retry|close|reclaim|reply|forward|dispatch|install-service (govern help)";
 
 export const COMMANDS: readonly Cmd[] = [
   { name: "version", section: 5, footer: false, flags: { bool: ["json"] },
@@ -1249,11 +1278,15 @@ export const COMMANDS: readonly Cmd[] = [
 
   { name: "task", section: 6, noSub: TASK_SUBS,
     subs: {
-      send: { flags: { value: ["to", "project", "task", "kind", "summary", "body", "body-file", "reply-to", "from", "profile", "lane", "estimate-usd"], multi: ["file"], bool: ["write"] },
+      send: { flags: { value: ["to", "project", "task", "kind", "summary", "body", "body-file", "reply-to", "from", "profile", "lane", "estimate-usd", "timeout"], multi: ["file"], bool: ["write"] },
         lines: [["--to auto|codex|claude|grok|owner|<session> --project P --task T --kind TASK --summary S (--body B | --body-file F)\n" +
-          "[--file REPO-RELATIVE-PATH]… [--reply-to ID] [--write | --profile P] [--lane SLUG] [--from NAME] [--estimate-usd N]", "--to must be a runner, a profile, owner, a LIVE session name or NAME@PEER;\nremote recipients require a live peer; the receiving host decides write access, profile, lane, estimate and files;\n--from must be a local name without @; only receive() files a remote sender;\n--profile P (govern caps) seals the run to P's capabilities; --lane names the lane whose gate authorises a spend, publish or push profile;\n--estimate-usd N: what the run is expected to cost, reserved against a matching allowance (govern allow)"]], run: cmdTask },
+          "[--file REPO-RELATIVE-PATH]… [--reply-to ID] [--write | --profile P] [--lane SLUG] [--from NAME] [--estimate-usd N] [--timeout S]", "--to must be a runner, a profile, owner, a LIVE session name or NAME@PEER;\nremote recipients require a live peer; the receiving host decides write access, profile, lane, estimate, timeout and files;\n--from must be a local name without @; only receive() files a remote sender;\n--profile P (govern caps) seals the run to P's capabilities; --lane names the lane whose gate authorises a spend, publish or push profile;\n--estimate-usd N: what the run is expected to cost, reserved against a matching allowance (govern allow);\n--timeout S: the run's limit in seconds, used instead of GOVERN_QUEUE_TIMEOUT_SEC and refused above maxTimeoutSec (queue config.json, default 7200)"]], run: cmdTask },
       list: { flags: { value: ["to", "state", "project"] }, lines: [["[--to X] [--state open|claimed|done|failed] [--project P]", "the queue's messages; a dispatcher reply ends with [checked], [unverified] or [shape only] (content check, declared per profile, in queue config.json checks, or built in for REVIEW)"]], run: cmdTask },
-      show: { lines: [["<id>", "a message and its thread, claim holder and result; a dispatcher reply also shows its check (checked, UNVERIFIED with the reason, or shape only)"]], run: cmdTask },
+      show: { lines: [["<id>", "a message and its thread, limit, retries, claim holder and result; a dispatcher reply also shows its check (checked, UNVERIFIED with the reason, or shape only)"]], run: cmdTask },
+      triage: { flags: { value: ["project", "to"], bool: ["all", "json"] },
+        lines: [["[--all] [--project P] [--to X] [--json]", "every message in failed/, newest first: id, recipient, project/task, age, the cause (dispatcher error, parse failure, dead claim, expired, held) and its reason,\ntokens and cost where recorded, and the kept reply text if there is one; --all adds replies marked unverified in done/; --json prints an array"]], run: cmdTask },
+      retry: { flags: { value: ["note", "to", "profile", "timeout"], bool: ["write"] },
+        lines: [["<id> --note T [--to X] [--write | --profile P] [--timeout S]", "file a new open message from a failed or closed one: same recipient, project, task, kind, summary, body and files, threaded to it, with the note recorded on both;\n--to, --write, --profile and --timeout override; refuses without --note, for an open or claimed message and for a third retry of one original; never automatic"]], run: cmdTask },
       inbox: { flags: { value: ["as"], bool: ["all", "hook"] },
         lines: [["[--as NAME] [--all] [--hook]", "open messages for NAME (default: GOVERN_AS, else this session);\n--hook is silent when empty"]], run: cmdTask },
       close: { flags: { value: ["as", "note"] }, lines: [["<id> [--as NAME] [--note T]", "close a message addressed to NAME"]], run: cmdTask },
@@ -1261,9 +1294,9 @@ export const COMMANDS: readonly Cmd[] = [
       forward: { flags: { value: ["to", "as"] }, lines: [["<id> --to NAME [--as NAME]", "pass a message on to another recipient"]], run: cmdTask },
       reply: { flags: { value: ["kind", "summary", "body", "body-file", "as"] },
         lines: [["<id> --kind K --summary S (--body B | --body-file F) [--as NAME]", "answer the sender, then close <id>"]], run: cmdTask },
-      dispatch: { flags: { value: ["max", "only", "interval", "reap-every"], bool: ["loop"] },
-        lines: [["[--max N] [--only codex|claude|grok] [--loop --interval 30 [--reap-every S]]", "first fail dead claims and holderless claims older than twice GOVERN_QUEUE_TIMEOUT_SEC (minimum 3600 s; unknown spend charged as reserved),\nexpire local mail with no live recipient after workspace mailTtlHours (default 72; owner and config mailboxes retained), then run open messages addressed to runners; --loop also relays to live peers;\n--reap-every lists each resource's tagged instances\nevery S seconds into state for the desk (off by default; lists only, never stops a machine)"]], run: cmdTask },
-      "install-service": { flags: { bool: ["system", "write"], value: ["interval", "reap-every"] }, lines: [["[--interval 30] [--reap-every S] [--system [--write]]", "install the standard dispatcher user service; --system prints a system unit with current User=, --write writes it only as root (never escalates)"]], run: cmdTask },
+      dispatch: { flags: { value: ["max", "only", "interval", "reap-every", "parallel", "run-claimed"], bool: ["loop"] },
+        lines: [["[--max N] [--only codex|claude|grok] [--parallel N] [--loop --interval 30 [--reap-every S]]", "first fail dead claims and holderless claims older than twice the task's limit (GOVERN_QUEUE_TIMEOUT_SEC, or its --timeout; minimum 3600 s; unknown spend charged as reserved),\n--parallel N runs up to N messages at once in this dispatcher (default 1); a runner never exceeds its queue config.json concurrency (default 1) across all dispatchers, and a message over it stays open;\n--run-claimed ID is what a --parallel worker runs; expire local mail with no live recipient after workspace mailTtlHours (default 72; owner and config mailboxes retained), then run open messages addressed to runners; --loop also relays to live peers;\n--reap-every lists each resource's tagged instances\nevery S seconds into state for the desk (off by default; lists only, never stops a machine)"]], run: cmdTask },
+      "install-service": { flags: { bool: ["system", "write"], value: ["interval", "reap-every", "parallel"] }, lines: [["[--interval 30] [--reap-every S] [--parallel N] [--system [--write]]", "install the standard dispatcher user service; --system prints a system unit with current User=, --write writes it only as root (never escalates)"]], run: cmdTask },
     } },
 
   { name: "peer", section: 6, footer: false, noSub: "govern peer id|add|list|revoke|serve|push (PEERS.md)",

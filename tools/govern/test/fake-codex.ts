@@ -11,7 +11,13 @@ const argv = process.argv.slice(2);
 if (process.env.FAKE_CODEX_ARGV_OUT) appendFileSync(process.env.FAKE_CODEX_ARGV_OUT, JSON.stringify(argv) + "\n");
 const chunks: Buffer[] = [];
 process.stdin.on("data", (c) => chunks.push(c as Buffer));
+//   FAKE_CODEX_SLEEP_MS   wait this long before answering; FAKE_CODEX_TIMES_OUT gets a "start"/"end" line (epoch ms) around the wait
 process.stdin.on("end", () => {
+  const stamp = (what: string) => { if (process.env.FAKE_CODEX_TIMES_OUT) appendFileSync(process.env.FAKE_CODEX_TIMES_OUT, `${what} ${Date.now()}\n`); };
+  stamp("start");
+  setTimeout(() => { stamp("end"); answer(); }, Number(process.env.FAKE_CODEX_SLEEP_MS ?? 0));
+});
+function answer(): void {
   if (process.env.FAKE_CODEX_STDIN_OUT) appendFileSync(process.env.FAKE_CODEX_STDIN_OUT, JSON.stringify(Buffer.concat(chunks).toString("utf8")) + "\n");
   const counter = process.env.FAKE_CODEX_COUNTER ?? "";
   const n = counter && existsSync(counter) ? Number(readFileSync(counter, "utf8")) : 0;
@@ -31,4 +37,4 @@ process.stdin.on("end", () => {
     writeFileSync(file, last);
   }
   process.exit(Number(process.env.FAKE_CODEX_EXIT ?? 0));
-});
+}

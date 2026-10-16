@@ -177,7 +177,7 @@ test("a runner named in the queue config is dispatched like codex and claude; th
   write(join(e.root, "queue", "config.json"), JSON.stringify({ name: "the test queue", maxRuns: 2, runners: { echo: { argv: [bin, "{dir}"], format: "text" } } }));
   assert.match(govern(e, ["task", "send", "--to", "echo", "--project", "film", "--task", "t", "--summary", "do it"]).out, /queued \S+-echo-\w+ \(TASK to echo\)/);
   assert.doesNotMatch(govern(e, ["task", "send", "--to", "echo", "--project", "film", "--task", "t2", "--summary", "x"]).out, /sessions are not woken/);
-  assert.match(govern(e, ["desk"]).out, /echo: 2 waiting, 0 running/);
+  assert.match(govern(e, ["desk"]).out, /echo: 2 waiting, running 0\/1/);
   const d = govern(e, ["task", "dispatch", "--max", "1"]).out;
   assert.match(d, /→ echo: ACK in \d+s · reply /);
   assert.match(readFileSync(join(e.root, "echo-stdin.txt"), "utf8"), /^You are the "echo" agent of the test queue\./);
