@@ -23,6 +23,7 @@ import { emptyRecord, PROTO } from "./lib/shape.ts";
 import * as jobs from "./lib/jobs.ts";
 import { ask, readPrompt, promptFiles } from "./lib/codex.ts";
 import { report, currentCtx, CTX_WARN } from "./lib/usage.ts";
+import { laneByCwd, recordLane } from "./lib/attribution.ts";
 import * as queue from "./lib/queue.ts";
 import { tag, verdict } from "./lib/replycheck.ts";
 import * as jev from "./lib/decide.ts";
@@ -412,37 +413,88 @@ function cmdProcess(a: Args): void {
   for (const p of processes().values()) out(listLine(p));
 }
 
+/** The lane where session `sid` has an open work segment: the one whose latest work/done entry for the session is a work entry
+ *  (the latest such entry when several lanes qualify). `hookOpened`: that entry says the SessionStart hook opened it. */
+function openSegment(sid: string): { slug: string; at: number; t: string; stage: string; hookOpened: boolean; entries: Record<string, unknown>[] } | undefined {
+  let hit: ReturnType<typeof openSegment>;
+  for (const f of globSync("**/govern.json", { cwd: projectsDir() })) {
+    const slug = dirname(f);
+    const entries = readJsonl(ledgerFile(slug));
+    let at = -1;
+    entries.forEach((e, i) => { if ((e.kind === "work" || e.kind === "done") && e.session === sid) at = i; });
+    const latest = entries[at];
+    if (latest === undefined || latest.kind !== "work") continue;
+    const t = String(latest.t);
+    if (!hit || t > hit.t) hit = { slug, at, t, stage: String(latest.stage), hookOpened: latest.openedBy === "hook", entries };
+  }
+  return hit;
+}
+
 /** Claude Code Stop hook. Exit 2 (stderr = the reason) keeps the session working while its lane's stage check fails;
- *  3 refusals per work segment at most. Silent and exit 0 on anything else, including its own errors. */
+ *  3 refusals per work segment at most. It closes nothing: Stop fires after every response, a segment lasts a session
+ *  (see `hook session-end`). Silent and exit 0 on anything else, including its own errors. */
 function cmdHook(a: Args): void {
-  if (a._[1] !== "stop") fail("govern hook stop");
+  if (a._[1] === "session-start") return hookSessionStart();
+  if (a._[1] === "session-end") return hookSessionEnd();
+  if (a._[1] !== "stop") fail("govern hook stop|session-start|session-end");
   try {
     const sid = String(JSON.parse(readFileSync(0, "utf8")).session_id ?? "");
     if (!sid) return;
-    // This session's lane: the one whose latest work/done entry for the session is a work entry.
-    let hit: { slug: string; at: number; t: string; entries: Record<string, unknown>[] } | undefined;
-    for (const f of globSync("**/govern.json", { cwd: projectsDir() })) {
-      const slug = dirname(f);
-      const entries = readJsonl(ledgerFile(slug));
-      let at = -1;
-      entries.forEach((e, i) => { if ((e.kind === "work" || e.kind === "done") && e.session === sid) at = i; });
-      const latest = entries[at];
-      if (latest === undefined || latest.kind !== "work") continue;
-      const t = String(latest.t);
-      if (!hit || t > hit.t) hit = { slug, at, t, entries };
-    }
+    const hit = openSegment(sid);
     if (!hit) return;
-    const blocks = hit.entries.slice(hit.at + 1).filter((e) => e.kind === "stop-block" && e.session === sid).length;
-    if (blocks >= 3) { process.stderr.write(`govern: ${hit.slug}: stopped 3 times in this segment with the check failing; letting the session stop\n`); return; }
-    const p = load(hit.slug);
-    const chk = checkOf(p);
-    if (!chk || !p.commands[chk]) return;
-    const r = runCheck(p, chk);
-    if (r.ok) return;
-    appendLedger(p.slug, { kind: "stop-block", session: sid, stage: p.stage, check: chk });
-    process.stderr.write(`${p.slug}: stage ${p.stage} is not done — check ${chk} failed (${r.why})\n${r.text}\n` +
-      `next: govern check ${p.slug} after fixing, or govern advance ${p.slug} / govern note ${p.slug} "…" if the stage changed\n`);
-    process.exitCode = 2;
+    stopRefused(hit.slug, hit.entries.slice(hit.at + 1), sid);
+  } catch { process.exitCode = 0; }
+}
+
+/** Claude Code SessionEnd hook: closes the work segment the SessionStart hook opened for the session (a `done` entry with
+ *  closedBy "hook"). A segment opened by `govern work` is left alone. Prints nothing; never fails. */
+function hookSessionEnd(): void {
+  try {
+    const j: unknown = JSON.parse(readFileSync(0, "utf8"));
+    const sid = j && typeof j === "object" && !Array.isArray(j) ? (j as Record<string, unknown>)["session_id"] : undefined;
+    if (typeof sid !== "string" || !sid) return;
+    const hit = openSegment(sid);
+    if (hit?.hookOpened) appendLedger(hit.slug, { kind: "done", engine: "claude", session: sid, closedBy: "hook" });
+  } catch { process.exitCode = 0; }
+}
+
+/** Whether the Stop hook refuses this stop (exit 2): the lane's check fails and fewer than 3 refusals were ledgered since the segment opened. */
+function stopRefused(slug: string, since: Record<string, unknown>[], sid: string): boolean {
+  const blocks = since.filter((e) => e.kind === "stop-block" && e.session === sid).length;
+  if (blocks >= 3) { process.stderr.write(`govern: ${slug}: stopped 3 times in this segment with the check failing; letting the session stop\n`); return false; }
+  const p = load(slug);
+  const chk = checkOf(p);
+  if (!chk || !p.commands[chk]) return false;
+  const r = runCheck(p, chk);
+  if (r.ok) return false;
+  appendLedger(p.slug, { kind: "stop-block", session: sid, stage: p.stage, check: chk });
+  process.stderr.write(`${p.slug}: stage ${p.stage} is not done — check ${chk} failed (${r.why})\n${r.text}\n` +
+    `next: govern check ${p.slug} after fixing, or govern advance ${p.slug} / govern note ${p.slug} "…" if the stage changed\n`);
+  process.exitCode = 2;
+  return true;
+}
+
+/** Claude Code SessionStart hook: a session that works in a lane's folder (or runs with GOVERN_LANE=<slug>) gets a work
+ *  segment on the lane's current stage without running `govern work`; one line names the lane and stage. Nothing is printed
+ *  and nothing changes when no lane matches, the lane is finished, or the session already has an open segment. Never fails. */
+function hookSessionStart(): void {
+  try {
+    let input: Record<string, unknown> = {};
+    try { const j: unknown = JSON.parse(readFileSync(0, "utf8")); if (j && typeof j === "object" && !Array.isArray(j)) input = j as Record<string, unknown>; } catch { /* no usable input */ }
+    const sid = typeof input["session_id"] === "string" && input["session_id"] ? input["session_id"] : process.env.CLAUDE_CODE_SESSION_ID ?? "";
+    if (!sid) return;
+    const cwd = typeof input["cwd"] === "string" && input["cwd"] ? input["cwd"] : process.cwd();
+    const named = process.env.GOVERN_LANE?.trim();
+    const byName = named && existsSync(stateFile(checkSlug(named))) ? checkSlug(named) : undefined;
+    const slug = byName ?? laneByCwd(cwd);
+    if (!slug) return;
+    if (byName) recordLane(sid, byName);
+    const open = openSegment(sid);
+    if (open) { if (open.slug === slug) out(`govern: ${slug}: work segment open on stage ${open.stage}`); return; }
+    const p = load(slug);
+    if (p.finished) return;
+    appendLedger(slug, { kind: "work", stage: p.stage, engine: "claude", session: sid, skillSha: sha256File(SKILL), openedBy: "hook", via: byName ? "GOVERN_LANE" : "cwd" });
+    out(`govern: ${slug}: work segment opened on stage ${p.stage}`);
   } catch { process.exitCode = 0; }
 }
 
@@ -1207,8 +1259,12 @@ export const COMMANDS: readonly Cmd[] = [
   {name:'recover',section:1,flags:{value:['stage','action','quote']},lines:[["<slug> [--stage S] --action retry|compensated --quote Q","human recovery: reset exhausted retries, or confirm compensation after investigating an uncertain result"]],run:cmdRecover},
   { name: "dep", section: 1, flags: { value: ["after", "rm"] },
     lines: [["<slug> [--after <lane>[:<stage>]] [--rm <lane>]", "this lane waits on another (all of it, or past a stage)"]], run: cmdDep },
-  { name: "hook", section: 1, footer: false, noSub: "govern hook stop",
-    subs: { stop: { lines: [["", "Claude Code Stop hook: keeps a session on its lane until the stage's check passes (3 tries)"]], run: cmdHook } } },
+  { name: "hook", section: 1, footer: false, noSub: "govern hook stop|session-start|session-end",
+    subs: {
+      stop: { lines: [["", "Claude Code Stop hook: keeps a session on its lane until the stage's check passes (3 tries); closes nothing"]], run: cmdHook },
+      "session-start": { lines: [["", "Claude Code SessionStart hook: a session working in a lane's folder (or with GOVERN_LANE=<slug>) gets a work\nsegment on the lane's current stage; silent when no lane matches"]], run: cmdHook },
+      "session-end": { lines: [["", "Claude Code SessionEnd hook: closes the work segment the SessionStart hook opened for the session; silent"]], run: cmdHook },
+    } },
 
   { name: "run", section: 2, flags: { bool: ["bg", "override-resource"], value: ["on", "estimate"] },
     lines: [["<slug> <command> [--bg] [--on <resource> [--override-resource]] [--estimate HOURS] [-- extra args]", "foreground prints a summary; --bg returns a job id; --on runs it on a declared resource (every resource is locked unless\nit says lock: false: the job waits its turn, a --bg job shows \"queued on <resource>\"); a command with its own resource refuses a\ndifferent --on unless --override-resource (recorded in the job). On a resource with an allowance (govern allow) the job\nreserves HOURS (else the command's --timeout, else 1800 s; a --bg job needs one of them) and is refused if that does not fit;\nthe reservation also caps the job: it is stopped at its reserved estimate (--bg too)"]], run: cmdRun },
@@ -1317,6 +1373,7 @@ export const COMMANDS: readonly Cmd[] = [
       }
       const did = installSkill(HERE, skills, flag(a, "replace"));
       out(`${did}: ${dest} -> ${HERE} (SKILL.md sha256 ${sha256File(SKILL)}, REFERENCE.md sha256 ${sha256File(REFERENCE)}); edits to tools/govern/SKILL.md show at once, there is nothing to refresh`);
+      out("add to the hooks of your Claude Code settings so every session on a lane is measured by where it works: SessionStart → govern hook session-start, Stop → govern hook stop, SessionEnd → govern hook session-end");
     } },
 
   { name: "task", section: 6, noSub: TASK_SUBS,

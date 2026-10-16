@@ -6,12 +6,15 @@
 // contains the `govern work <slug>` call; Grok sessions by session id (GROK_SESSION_ID, recorded at `govern work`) in
 // Grok's own session store. One-shot `govern ask` calls come from the video ledger.
 import { existsSync, readdirSync, readFileSync, statSync, globSync, openSync, readSync, closeSync } from "node:fs";
-import { join, dirname, resolve } from "node:path";
+import { join, dirname, resolve, basename } from "node:path";
 import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
-import { readJsonl, kTok } from "./util.ts";
-import { ledgerFile } from "./project.ts";
-import { projectsDir, baseline } from "./workspace.ts";
+import { readJsonl, kTok, writeJson } from "./util.ts";
+import { ledgerFile, laneSlugs, load } from "./project.ts";
+import { projectsDir, baseline, stateDir } from "./workspace.ts";
+import { lanes, laneByCwd, laneOf, recordedLanes, queueWindows, basisLabel, type Basis, type Ctx } from "./attribution.ts";
+import { sessions as registrySessions } from "./sessions.ts";
+import { obj, arr, record, literal, str, reject, parseFile, type Shape } from "./shape.ts";
 import { list as conversationList } from './conversation.ts';
 import * as allowances from "./allowances.ts";
 import { grokHome, realGrokHome } from "./grokhome.ts";
@@ -302,6 +305,141 @@ export function attribute(segs: Segment[]): Segment[] {
   return segs;
 }
 
+// ---------------------------------------------------------------- sessions outside any segment
+
+/** One Claude Code session's calls and the basis each was attributed on (see lib/attribution.ts). */
+export interface SessionUse { slug: string; basis: Basis; session: string; calls: Call[] }
+/** A session whose calls map to no lane. */
+export interface Stray { session: string; cwd?: string; calls: Call[] }
+
+/** Transcripts changed in the last 3 days keep their parsed calls in <state>/transcript-index.json, valid while the file's size and mtime match. */
+const CACHE_MS = 3 * 86400_000;
+const transcriptIndex = (): string => join(stateDir(), "transcript-index.json");
+type Row = [t: number, model: string, input: number, cacheRead: number, cacheWrite: number, output: number];
+const count: Shape<number> = (v, p) => (typeof v === "number" && Number.isFinite(v) && v >= 0 ? v : reject(p, `must be a number, 0 or more (got ${JSON.stringify(v)})`));
+const ROW: Shape<Row> = (v, p) => {
+  if (!Array.isArray(v) || v.length !== 6) return reject(p, "must be [t, model, input, cacheRead, cacheWrite, output]");
+  return [count(v[0], `${p}[0]`), str(v[1], `${p}[1]`), count(v[2], `${p}[2]`), count(v[3], `${p}[3]`), count(v[4], `${p}[4]`), count(v[5], `${p}[5]`)];
+};
+const TRANSCRIPTS = obj({ version: literal(1), files: record(obj({ size: count, mtimeMs: count, calls: arr(ROW) })) });
+type Cached = ReturnType<typeof TRANSCRIPTS>["files"];
+
+/** The parsed-calls index as the file holds it; a missing, unparsable or wrongly shaped file is not trusted: the scan starts empty and the file is rewritten. */
+function readTranscriptIndex(): { files: Cached; bad: boolean } {
+  const f = transcriptIndex();
+  if (!existsSync(f)) return { files: Object.create(null), bad: false };
+  try { return { files: parseFile(f, readFileSync(f, "utf8"), TRANSCRIPTS).files, bad: false }; } catch { return { files: Object.create(null), bad: true }; }
+}
+
+/** The first working directory a transcript records, from its first 64 KB (every line carries one; the first lines may not). */
+function transcriptCwd(file: string): string | undefined {
+  const buf = Buffer.alloc(65536);
+  let n = 0;
+  const fd = openSync(file, "r");
+  try { n = readSync(fd, buf, 0, buf.length, 0); } finally { closeSync(fd); }
+  const m = /"cwd":("(?:[^"\\]|\\.)*")/.exec(buf.toString("utf8", 0, n));
+  if (!m) return undefined;
+  try { const c = JSON.parse(m[1]!); return typeof c === "string" && c ? c : undefined; } catch { return undefined; }
+}
+
+/** Calls of every Claude Code session whose transcript changed at or after the earlier of `since` and `strayFrom`, each placed on a
+ *  lane by laneOf (none: a stray). `since`: lane-attributed calls from that time; `strayFrom`: calls of no lane from that time
+ *  (Infinity: none are listed). Bounded: only transcripts that can matter are parsed (a lane's, a recorded GOVERN_LANE's, one
+ *  inside a queue run, or a recent one when strays are wanted), and unchanged ones come from the index. */
+export function sessionUsage(o: { since: number; strayFrom?: number }): { used: SessionUse[]; stray: Stray[]; ctx: Ctx } {
+  const strayFrom = o.strayFrom ?? Infinity, floor = Math.min(o.since, strayFrom);
+  const ctx: Ctx = { lanes: lanes(), segments: segments(), recorded: recordedLanes(), windows: queueWindows(floor - 60000) };
+  const used = new Map<string, SessionUse>(), stray = new Map<string, Stray>();
+  const root = CLAUDE_DIR();
+  if (!existsSync(root)) return { used: [], stray: [], ctx };
+  const { files: index, bad } = readTranscriptIndex();
+  let dirty = bad;
+  const registry = new Map<string, string>();
+  try { for (const s of registrySessions()) if (s.sessionId && s.cwd) registry.set(s.sessionId, s.cwd); } catch { /* no registry */ }
+  const calls = (file: string, sub: boolean): Call[] => {
+    const st = statSync(file), hit = index[file];
+    if (hit && hit.size === st.size && hit.mtimeMs === st.mtimeMs) return hit.calls.map(([t, model, input, cacheRead, cacheWrite, output]) => ({ t, model, input, cacheRead, cacheWrite, output, ctx: input + cacheRead + cacheWrite, sub }));
+    const parsed = claudeCalls(file, sub).calls.filter((c) => Number.isFinite(c.t));
+    if (Date.now() - st.mtimeMs < CACHE_MS) { index[file] = { size: st.size, mtimeMs: st.mtimeMs, calls: parsed.map((c) => [c.t, c.model, c.input, c.cacheRead, c.cacheWrite, c.output]) }; dirty = true; }
+    return parsed;
+  };
+  for (const proj of readdirSync(root)) {
+    let names: string[];
+    try { names = readdirSync(join(root, proj)).filter((n) => n.endsWith(".jsonl")); } catch { continue; }
+    for (const n of names) {
+      const file = join(root, proj, n), id = basename(n, ".jsonl");
+      const mtime = statSync(file).mtimeMs;
+      if (mtime < floor) continue;
+      const cwd = transcriptCwd(file) ?? registry.get(id);
+      const candidate = ctx.segments.some((s) => s.engine === "claude" && s.session === id) || ctx.recorded.has(id) || (cwd !== undefined && laneByCwd(cwd, ctx.lanes) !== undefined);
+      const inRun = ctx.windows.some((w) => mtime >= w.start && mtime <= w.end + 60000);
+      if (!candidate && !inRun && mtime < strayFrom) continue;
+      const sub = join(root, proj, id);
+      const all = [...calls(file, false), ...(existsSync(sub) ? globSync("**/*.jsonl", { cwd: sub }).flatMap((g) => calls(join(sub, g), true)) : [])];
+      for (const c of all) {
+        const a = laneOf({ session: id, t: c.t, ...(cwd ? { cwd } : {}) }, ctx);
+        if (a) {
+          if (c.t < o.since) continue;
+          const key = `${a.slug}\0${a.basis}\0${id}`;
+          if (!used.has(key)) used.set(key, { slug: a.slug, basis: a.basis, session: id, calls: [] });
+          used.get(key)!.calls.push(c);
+        } else if (c.t >= strayFrom) {
+          if (!stray.has(id)) stray.set(id, { session: id, ...(cwd ? { cwd } : {}), calls: [] });
+          stray.get(id)!.calls.push(c);
+        }
+      }
+    }
+  }
+  if (dirty) {
+    for (const k of Object.keys(index)) if (!existsSync(k) || Date.now() - index[k]!.mtimeMs >= CACHE_MS) delete index[k];
+    try { writeJson(transcriptIndex(), { version: 1, files: index }); } catch { /* read-only state: the scan is still right */ }
+  }
+  return { used: [...used.values()], stray: [...stray.values()], ctx };
+}
+
+const UTC_DAY = 86400_000;
+interface ChatUse { calls: number; input: number; output: number; usd: number; partly: boolean }
+/** What the desk shows of chat sessions on `day` (YYYY-MM-DD, UTC): per lane the calls attributed by segment, GOVERN_LANE or
+ *  folder (not a queue run's own transcript: the queue ledger counts those), `partly` where a call went by GOVERN_LANE or folder;
+ *  the strays; and the lanes that had a session attributed in the last 24 h. */
+export function deskUsage(day: string, now = Date.now()): { chat: Map<string, ChatUse>; stray: Stray[]; attributed: Set<string> } {
+  const dayStart = Date.parse(day), since24 = now - UTC_DAY;
+  const { used, stray, ctx } = sessionUsage({ since: Math.min(dayStart, since24), strayFrom: dayStart });
+  const chat = new Map<string, ChatUse>();
+  const attributed = new Set<string>();
+  for (const s of ctx.segments) if (s.start <= now && s.end >= since24) attributed.add(s.slug);
+  for (const u of used) {
+    if (u.calls.some((c) => c.t >= since24)) attributed.add(u.slug);
+    const byFolder = u.basis === "cwd" || u.basis === "queue";
+    const own = u.calls.filter((c) => c.t >= dayStart && !(byFolder && ctx.windows.some((w) => w.project === u.slug && c.t >= w.start && c.t <= w.end)));
+    if (!own.length) continue;
+    const t = totals(own), x = chat.get(u.slug) ?? { calls: 0, input: 0, output: 0, usd: 0, partly: false };
+    x.calls += t.calls; x.input += t.inputSide; x.output += t.output; x.usd += t.usd ?? 0;
+    x.partly ||= u.basis === "GOVERN_LANE" || u.basis === "cwd";
+    chat.set(u.slug, x);
+  }
+  return { chat, stray, attributed };
+}
+
+/** The UNATTRIBUTED section: sessions of the day that belong to no lane, with their folder and tokens, and the lanes that
+ *  recorded a job, note or ask in the last 24 h with no session attributed. */
+export function unattributedLines(stray: Stray[], attributed: Set<string>, now = Date.now()): string[] {
+  const L = ["UNATTRIBUTED (sessions today that belong to no lane; lanes with work recorded and no session)"];
+  for (const s of [...stray].sort((a, b) => totals(b.calls).inputSide - totals(a.calls).inputSide)) {
+    const t = totals(s.calls);
+    L.push(`  ${(s.cwd ?? "(folder unknown)").padEnd(40)} session ${s.session.slice(0, 8)}  ${t.calls} calls ${kTok(t.inputSide)} in ${kTok(t.output)} out`);
+  }
+  const since = now - UTC_DAY, recent = (t: unknown) => typeof t === "string" && Date.parse(t) >= since;
+  for (const slug of laneSlugs()) {
+    if (attributed.has(slug)) continue;
+    let worked = readJsonl(ledgerFile(slug)).some((e) => (e.kind === "job" || e.kind === "ask") && recent(e.t));
+    if (!worked) { try { worked = load(slug).notes.some((n) => recent(n.at)); } catch { /* an unreadable lane is shown elsewhere */ } }
+    if (worked) L.push(`  ${slug}: work recorded, no session attributed`);
+  }
+  if (L.length === 1) L.push("  (none)");
+  return L;
+}
+
 /** The USD cost of a call from prices.json by model prefix, or undefined for a model with no price. */
 export const cost = (c: { model: string; input: number; cacheRead: number; cacheWrite: number; output: number }): number | undefined => {
   const p = Object.entries(PRICES).find(([k]) => c.model.startsWith(k))?.[1];
@@ -346,7 +484,11 @@ export function report(slugs: string[] | undefined, since?: number): string {
   // machine time and money (jobs run on resources) come from the lane's ledger, beside the tokens
   const machine = (v: string) => machineLines(machineEntries(ledgerFile(v)).filter((e) => !since || Date.parse(String(e["t"])) >= since));
   const ranOn = slugs ? [] : globSync("**/govern/ledger.jsonl", { cwd: projectsDir() }).map((f) => dirname(dirname(f))).filter((v) => machine(v).length);
-  const videos = [...new Set([...segs.map((s) => s.slug), ...(slugs ?? []), ...ranOn])].sort();
+  // calls that went by GOVERN_LANE, folder or queue run, outside any segment; with no slug, also the strays of today
+  const dayStart = Date.parse(new Date().toISOString().slice(0, 10));
+  const su = sessionUsage({ since: since ?? 0, ...(slugs ? {} : { strayFrom: dayStart }) });
+  const unseg = su.used.filter((u) => u.basis !== "segment" && (!slugs || slugs.includes(u.slug)));
+  const videos = [...new Set([...segs.map((s) => s.slug), ...unseg.map((u) => u.slug), ...(slugs ?? []), ...ranOn])].sort();
   const L: string[] = [];
   const row = (label: string, t: Totals) =>
     `${label.padEnd(34)} ${String(t.calls).padStart(5)} ${kTok(t.inputSide).padStart(8)} ${kTok(t.output).padStart(7)} ${kTok(t.avgCtx).padStart(7)} ${kTok(t.maxCtx).padStart(7)} ${(Math.round(t.cacheShare * 100) + "%").padStart(5)} ${String(t.owner).padStart(4)} ${t.usd != null ? ("$" + t.usd.toFixed(2)).padStart(8) : "       -"}`;
@@ -355,7 +497,8 @@ export function report(slugs: string[] | undefined, since?: number): string {
     const vs = segs.filter((s) => s.slug === v);
     const asks = readJsonl(ledgerFile(v)).filter((e) => e.kind === "ask" && (!since || Date.parse(e.t) >= since));
     const mach = machine(v);
-    if (!vs.length && !asks.length && !mach.length) continue;
+    const un = unseg.filter((u) => u.slug === v);
+    if (!vs.length && !asks.length && !mach.length && !un.length) continue;
     L.push(`## ${v}`, head);
     for (const s of vs) {
       const t = totals(s.calls, s.ownerTurns);
@@ -364,12 +507,16 @@ export function report(slugs: string[] | undefined, since?: number): string {
       const b = behaviourText(behaviour(s.tools));
       L.push(row(`${when} ${s.stage} ${s.engine}`, t) + (b ? `  ${b}` : "") + (flags.length ? `  ⚠ ${flags.join(", ")}` : ""));
     }
+    for (const basis of ["GOVERN_LANE", "cwd", "queue"] as const) {
+      const calls = un.filter((u) => u.basis === basis).flatMap((u) => u.calls);
+      if (calls.length) L.push(row(`unsegmented · ${basisLabel(basis)}`, totals(calls)));
+    }
     if (asks.length) {
       const a = asks.reduce((x, e) => ({ in: x.in + (e.usage?.input ?? 0), out: x.out + (e.usage?.output ?? 0), cached: x.cached + (e.usage?.cached ?? 0), calls: x.calls + (e.calls ?? 1), bad: x.bad + (e.ok ? 0 : 1) }), { in: 0, out: 0, cached: 0, calls: 0, bad: 0 });
       const names = Object.entries(asks.reduce((m: Record<string, number>, e) => ((m[e.prompt] = (m[e.prompt] ?? 0) + 1), m), {})).map(([k, n]) => `${k}×${n}`).join(", ");
       L.push(`codex ask: ${asks.length} steps (${names}), ${a.calls} calls, ${kTok(a.in)} in (${a.in ? Math.round((a.cached / a.in) * 100) : 0}% cached), ${kTok(a.out)} out${a.bad ? `, ${a.bad} failed verification` : ""}`);
     }
-    const t = totals(vs.flatMap((s) => s.calls), vs.reduce((a, s) => a + s.ownerTurns, 0));
+    const t = totals([...vs.flatMap((s) => s.calls), ...un.flatMap((u) => u.calls)], vs.reduce((a, s) => a + s.ownerTurns, 0));
     const b = behaviourText(vs.map((s) => behaviour(s.tools)).reduce(addB, behaviour([])));
     L.push(row("TOTAL conversation", t) + (b ? `  ${b}` : ""));
     if (t.owner) L.push(`per message from you: ${kTok(Math.round(t.inputSide / t.owner))} input-side tokens`);
@@ -389,6 +536,11 @@ export function report(slugs: string[] | undefined, since?: number): string {
   const base = baseline(); // the chat baseline the workspace measured, if its config gives one
   if (base) L.push(`baseline (chat way): median context per call ${kTok(base.mainMedianCtx)} main session, ${kTok(base.subagentMedianCtx)} subagent — ${base.source}`);
   L.push(`target: avg ctx ≤ ${kTok(CTX_WARN)}, no subagent calls in production; in-side = input + cache read + cache write; ~usd only for models in prices.json`);
+  if (!slugs) {
+    const day = Date.now() - UTC_DAY;
+    const attributed = new Set<string>([...su.ctx.segments.filter((s) => s.end >= day).map((s) => s.slug), ...su.used.filter((u) => u.calls.some((c) => c.t >= day)).map((u) => u.slug)]);
+    L.push("", ...unattributedLines(su.stray, attributed));
+  }
   return L.join("\n");
 }
 

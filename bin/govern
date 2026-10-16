@@ -23,7 +23,7 @@
 #     govern alerts SLUG [--ack ID]  |  subprocess SLUG STAGE  |  recover SLUG --action retry|compensated --quote Q
 #     govern bpmn PROCESS|SLUG [--svg FILE] [--scene FILE] [--png FILE] [--width N --height N] [--static]
 #     govern process list|show NAME  |  process pin SLUG  |  process migrate SLUG --map JSON --quote Q  |  check SLUG [--set CMD --stage S]  |  check SLUG STAGE --accept --quote Q
-#     govern advance SLUG [--stage STAGE] [--note EVIDENCE]  |  dep SLUG [--after LANE[:STAGE]] [--rm LANE]  |  hook stop
+#     govern advance SLUG [--stage STAGE] [--note EVIDENCE]  |  dep SLUG [--after LANE[:STAGE]] [--rm LANE]  |  hook stop|session-start|session-end
 #     govern run SLUG CMD [--bg] [--on RESOURCE [--override-resource]] [--estimate HOURS] [-- ARGS]  |  allow NAME --extra N --quote "…" [--by OWNER]  |  resources [NAME]  |  wait SLUG [JOB] [--timeout S]  |  jobs SLUG  |  kill SLUG [JOB]
 #     govern slice SLUG RECIPE [--machines N] [--estimate HOURS] [--bg]
 #     govern up RESOURCE [--lane SLUG] [--count N] [--timeout S]  |  down TAG|ID [--forget] [--timeout S]  |  reap [RESOURCE] [--yes] [--timeout S]
@@ -66,7 +66,13 @@
 #     `run --bg` returns at once and `wait` blocks with no model in the loop. `ask` runs one Codex step
 #     (codex exec --json --output-schema) and verifies the reply against its schema and house rules, with
 #     one repair. `usage` attributes the tokens of Claude Code, Codex and Grok sessions to (lane, stage)
-#     segments opened by `govern work`, against the chat baseline the workspace config gives under "baseline".
+#     segments opened by `govern work` or the SessionStart hook, against the chat baseline the workspace config gives under
+#     "baseline". A call outside any segment is attributed in this order, first match wins: GOVERN_LANE recorded for its
+#     session, the session's working directory (a lane's folder or below, or a folder it names under {repo}), a queue
+#     run's project; it shows as an `unsegmented · by cwd|by GOVERN_LANE|by queue` row, counted in the lane's TOTAL and
+#     never twice. With no SLUG, `usage` ends with UNATTRIBUTED: today's sessions that map to no lane (folder, tokens)
+#     and lanes with a job, note or ask in the last 24 h and no session. The desk's TOKENS TODAY includes those chat
+#     sessions, marks a row `(partly unsegmented)`, and has the same UNATTRIBUTED section.
 #     The operating manual for the AI is the short core tools/govern/SKILL.md (`govern manual`); the detailed rules are in
 #     tools/govern/REFERENCE.md (`govern manual --full`) and in each command's `govern help COMMAND`; `govern help --topics` lists
 #     the reference documents. `govern install-skill [SKILLS-DIR]` makes SKILLS-DIR/govern (default .claude/skills) a symbolic
@@ -79,7 +85,14 @@
 #     is behind. `work` to a later stage holds every stage it skips to the same rules (a failing check, an open
 #     gate or a pending dependency refuses it, exit 2); going back is always allowed. `dep` refuses a cycle.
 #     `hook stop` is a Claude Code Stop hook: while the session's lane has a failing check it refuses
-#     the stop (exit 2, the check's log as the reason), at most 3 times per work segment.
+#     the stop (exit 2, the check's log as the reason), at most 3 times per work segment;
+#     it closes nothing (Stop fires after every response). `hook session-end` is the SessionEnd hook: it closes the
+#     work segment the SessionStart hook opened for the session (a `done` entry with closedBy "hook"), leaves one opened
+#     by `work` alone, prints nothing and always exits 0. `hook session-start` is a Claude Code
+#     SessionStart hook (`install-skill` prints the line to add): a session working in a lane's folder (or below it,
+#     or in a folder the lane's govern.json names under {repo}), or started with GOVERN_LANE=SLUG, gets a work
+#     segment on the lane's current stage (ledger `work` entry with openedBy "hook"), one line names it, and it
+#     prints nothing and exits 0 when no lane matches; a second call changes nothing.
 #     A .govern/ folder in the working directory or above it makes that folder a govern workspace (`govern init`
 #     creates one; inside another workspace only with --nested): lanes, queue, processes, capabilities, state and
 #     tuning.jsonl live inside it by convention, and an optional .govern/config.json (same keys, relative to .govern/)
@@ -327,7 +340,7 @@
 #     · GOVERN_CAPABILITIES (must exist when set) · GOVERN_STATE (locks and reap state; default .govern/state in a
 #     .govern/ workspace, else govern-state beside the projects folder) · GOVERN_PROMPTS (replaces every prompts
 #     folder) · GOVERN_RESOURCES, GOVERN_ALLOWANCES (a file read instead of the resources or allowances key).
-#     Sessions: GOVERN_AS (session name) · GOVERN_SESSIONS_DIR (~/.claude/sessions) · GOVERN_CLAUDE_PROJECTS
+#     Sessions: GOVERN_AS (session name) · GOVERN_LANE (slug: attribute the session to that lane; read by hook session-start) · GOVERN_SESSIONS_DIR (~/.claude/sessions) · GOVERN_CLAUDE_PROJECTS
 #     (~/.claude/projects) · GOVERN_CODEX_SESSIONS (~/.codex/sessions) · GOVERN_CLAUDE_SETTINGS (~/.claude/settings.json,
 #     read and written by tune) · GOVERN_GROK_SESSIONS (else the sessions of govern's grok home and of the user's)
 #     · GOVERN_GROK_HOME (govern's private grok home; default $XDG_STATE_HOME, else ~/.local/state, /govern/grok-home)

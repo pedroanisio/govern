@@ -17,7 +17,7 @@ This is the core manual. Everything else is one command away: `govern help <comm
 
 1. `govern desk` is the owner's one screen (lanes, inbox, queue, today's tokens); `govern status` lists the lanes. One session works one lane.
 2. No lane yet: `govern new <slug> --process <name> --title "…"` (`govern process list` shows the processes).
-3. `govern work <slug> <stage>` opens a measured work segment and prints the **brief**: stage and exit condition, approvals, named files, commands, last jobs, recent decisions. `govern brief <slug>` prints it again. Work from the brief; do not read long process documents in full. If it names `manual: govern manual <process>`, read that once.
+3. `govern work <slug> <stage>` opens a measured work segment and prints the **brief**: stage and exit condition, approvals, named files, commands, last jobs, recent decisions. `govern brief <slug>` prints it again. Work from the brief; do not read long process documents in full. If it names `manual: govern manual <process>`, read that once. A session started in a lane's folder, or with `GOVERN_LANE=<slug>`, gets its segment from the `govern hook session-start` hook.
 4. Name the lane's commands and files once: `govern cmd <slug> build -- {python} build.py`, `govern file <slug> report summary.json`.
 
 ## The loop
@@ -73,7 +73,7 @@ govern task send --to codex --project <slug> --task <name> --kind TASK --summary
 - Every command warns past 150k tokens per call; `govern ctx` shows the number. Never ask the owner to `/clear`.
 - When it warns: record what is open with `govern note`, offload model work with `govern task send --to codex`, wait on jobs in the background, let auto-compaction do the rest.
 - One session covers one lane and one stage. For another lane run `govern done <slug>` and start a fresh session.
-- `govern usage [<slug>]` shows what the tokens went to; report it when asked or when a lane is delivered.
+- `govern usage [<slug>]` shows what the tokens went to, calls outside a segment included (attributed by `GOVERN_LANE`, the session's folder or the queue run, as `unsegmented` rows); with no slug it ends with what belongs to no lane. Report it when asked or when a lane is delivered.
 
 ## Where the rest is
 

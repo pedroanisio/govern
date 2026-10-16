@@ -7,7 +7,7 @@ import { config, findRepo } from "./workspace.ts";
 import { fail, procStat, hasProc, exited } from "./util.ts";
 
 /** procStart: the session process's start time as Claude Code recorded it (field 22 of /proc/<pid>/stat). */
-export interface Session { pid: number; name: string; cwd?: string; kind?: string; status?: string; procStart?: string }
+export interface Session { pid: number; name: string; sessionId?: string; cwd?: string; kind?: string; status?: string; procStart?: string }
 
 /** Claude Code's session registry folder: GOVERN_SESSIONS_DIR, else ~/.claude/sessions. */
 export const SESSIONS_DIR = () => process.env.GOVERN_SESSIONS_DIR ?? join(homedir(), ".claude", "sessions");
@@ -27,7 +27,7 @@ export function sessions(dir = SESSIONS_DIR()): Session[] {
     try {
       const o = JSON.parse(readFileSync(join(dir, f), "utf8"));
       if (Number.isInteger(o?.pid) && typeof o.name === "string" && o.name)
-        out.push({ pid: o.pid, name: o.name, cwd: o.cwd, kind: o.kind, status: o.status, ...(typeof o.procStart === "string" ? { procStart: o.procStart } : {}) });
+        out.push({ pid: o.pid, name: o.name, ...(typeof o.sessionId === "string" ? { sessionId: o.sessionId } : {}), cwd: o.cwd, kind: o.kind, status: o.status, ...(typeof o.procStart === "string" ? { procStart: o.procStart } : {}) });
     } catch { /* not a session file */ }
   }
   return out;
