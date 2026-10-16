@@ -48,10 +48,22 @@ export function tokensOn(slugs: string[], day: string): Map<string, { calls: num
     x.calls += calls; x.input += u?.input ?? 0; x.output += u?.output ?? 0; x.usd += u?.costUsd ?? 0;
     byLane.set(lane, x);
   };
-  for (const e of readJsonl(join(queue.QUEUE(), "ledger.jsonl"))) if (String(e.t).startsWith(day)) add(e.project, e.usage);
+  for (const e of readJsonl(join(queue.QUEUE(), "ledger.jsonl"))) if (String(e.t).startsWith(day)) { add(e.project, e.usage); if (e.repair?.usage) add(e.project, e.repair.usage, 0); }
   for (const s of slugs) for (const e of readJsonl(ledgerFile(s))) if ((e.kind === "ask" || e.kind === "conversation") && String(e.t).startsWith(day)) add(s, e.usage, e.calls ?? 1);
   for (const e of readJsonl(join(stateDir(), "conversations", "ledger.jsonl"))) if (String(e.t).startsWith(day)) add(`conversation:${e.conversation}`, e.usage, 1);
   return byLane;
+}
+
+/** What became of the replies the dispatcher filed on `day`, from the queue's ledger: checked, shape only (no check declared, or an older entry
+ *  with no mark), unverified, and how many of those had their envelope repaired. A run that failed filed no reply and is not counted. */
+export function repliesToday(day: string): string {
+  const n = { checked: 0, "shape only": 0, unverified: 0, repaired: 0 };
+  for (const e of readJsonl(join(queue.QUEUE(), "ledger.jsonl"))) {
+    if (!String(e.t).startsWith(day) || e.kind === "relay" || e.ok !== true) continue;
+    n[e.verification === "checked" ? "checked" : e.verification === "unverified" ? "unverified" : "shape only"]++;
+    if (e.repaired === true) n.repaired++;
+  }
+  return `replies today: ${n.checked} checked · ${n["shape only"]} shape only · ${n.unverified} unverified · ${n.repaired} repaired`;
 }
 
 /** The desk's text, with how many of its `lanes` could not be read (each shown as a ✖ row; the caller exits 1). */
@@ -88,10 +100,12 @@ export function desk(): { text: string; failed: number; lanes: number } {
   try { runners = queue.plainRunners(); } catch (e) { L.push(`queue: config error — ${e instanceof Error ? e.message : String(e)}`); }
   const claims = msgs.filter((x) => x.state === "claimed").map(({ m }) => ({ m, holder: queue.claimState(m) }));
   const perRunner = runners.map((r) => `${r}: ${count("open", r)} waiting, ${claims.filter((x) => x.m.to === r && x.holder === "live").length} running`);
-  L.push("", `QUEUE  ${perRunner.join(" · ")} · failed: ${count("failed")} · ${dispatcherState()}`);
+  L.push("", `QUEUE  ${perRunner.join(" · ")} · failed: ${count("failed")} · ${dispatcherState()} · ${repliesToday(day)}`);
   for (const { m, holder } of claims) if (holder !== "live")
     L.push(`  ${m.id}: ${holder} holder${holder === "dead" ? ` (${m.claim!.by})` : ""} · inspect: govern task show ${m.id}${holder === "unknown" ? ` · recover: govern task reclaim ${m.id} --note "<why>"` : " · recovered on next dispatch"}`);
   if (bad) L.push(`unverified replies: ${bad}  · their content is kept but no check passed: govern task show <id>`);
+  const asked = msgs.filter((x) => (x.state === "open" || x.state === "claimed") && (x.m.check || x.m.verify));
+  if (asked.length) L.push(`checks asked of replies (--check, --verify): ${asked.map(({ m }) => `${m.id}: ${[...(m.check ?? []), ...(m.verify ? ["verify"] : [])].join("+")}`).join(" · ")}`);
   // ---- profiles with work queued or a check on record
   const reg = registry();
   const byProfile = [...reg.profiles.values()].map((p) => {
