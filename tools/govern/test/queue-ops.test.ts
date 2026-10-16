@@ -4,6 +4,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
+import { createRequire, syncBuiltinESMExports } from "node:module";
 import * as queue from "../lib/queue.ts";
 import { identity } from "../lib/locks.ts";
 import { makeEnv, govern, write, reply, present, seedChecks, type Env } from "./helpers.ts";
@@ -283,6 +284,23 @@ test("task retry works on a closed message too", (t) => {
 });
 
 // ---------------------------------------------------------------- concurrency
+
+test("send writes a message through a temporary file renamed into place, so a parallel reader never sees a half-written message", (t) => {
+  const e = env();
+  const mk = lib(e, t);
+  const fs = createRequire(import.meta.url)("node:fs") as typeof import("node:fs");
+  const written: string[] = [], renamed: string[] = [];
+  const write = fs.writeFileSync, rename = fs.renameSync;
+  t.mock.method(fs, "writeFileSync", (p: Parameters<typeof write>[0], ...rest: unknown[]) => { written.push(String(p)); return (write as Function)(p, ...rest); });
+  t.mock.method(fs, "renameSync", (from: string, to: string) => { renamed.push(to); return rename(from, to); });
+  syncBuiltinESMExports(); // queue.ts holds live bindings to these names
+  t.after(() => { t.mock.restoreAll(); syncBuiltinESMExports(); });
+  const m = mk();
+  const final = join(e.root, "queue", "open", `${m.id}.json`);
+  assert.ok(!written.includes(final), `the message file was written in place: ${written.join(", ")}`);
+  assert.ok(renamed.includes(final), `the message file was not renamed into place: ${renamed.join(", ")}`);
+  assert.equal(queue.find(m.id)!.state, "open");
+});
 
 test("a runner at its limit keeps the message open; a dead or unknown holder does not count; the config raises the limit", (t) => {
   const e = env();

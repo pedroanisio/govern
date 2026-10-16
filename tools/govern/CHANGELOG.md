@@ -57,6 +57,7 @@ All notable changes to govern are documented here, following Keep a Changelog.
 
 ### Fixed
 
+- `task send` writes a new message through a temporary file renamed into place, so a parallel dispatcher never reads a half-written message (it crashed on `JSON.parse` of an empty file).
 - A finished lane prints `finished` in `govern status` and `govern desk`, never `finished  active <stage>`.
 - The negative probe of a self-test asks for a capability the profile really lacks: a profile holding `wt-edit` no longer fails with `not-edit leaked`; with none to ask for the record says `negative: none applicable`.
 

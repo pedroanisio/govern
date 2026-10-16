@@ -193,8 +193,7 @@ export function send(m: Omit<Message, "id" | "created">): Message {
   if (m.replyTo && !find(m.replyTo)) fail(`--reply-to ${m.replyTo}: no such message`);
   for (const f of m.files) if (!existsSync(resolve(repo(), f))) fail(`--file not found (paths are relative to ${repo()}): ${f}`);
   const msg: Message = { ...m, id: `${stamp()}-${m.to}-${Math.random().toString(36).slice(2, 6)}`, created: nowIso() };
-  mkdirSync(dir("open"), { recursive: true });
-  writeFileSync(join(dir("open"), `${msg.id}.json`), JSON.stringify(msg, null, 2) + "\n");
+  writeJson(join(dir("open"), `${msg.id}.json`), msg); // a temporary file renamed into place: a parallel reader never sees a half-written message
   return msg;
 }
 
