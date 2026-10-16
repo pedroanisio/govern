@@ -1,4 +1,4 @@
-// One HTTP call to TypeSafe, run by lib/decide.ts as a child process because govern is synchronous: reads {url, body,
+// One HTTP call to TypeSafe, run by ext/decide/decide.ts as a child process because govern is synchronous: reads {url, body,
 // timeoutMs} as JSON on stdin, posts body to url with TYPESAFE_API_KEY (from the environment, never argv) as a bearer
 // token, and prints {status, text} or {error} as JSON on stdout.
 const chunks: Buffer[] = [];

@@ -2,7 +2,7 @@
 // rejections. The runtime they drive (lib/lifecycle.ts) and the graph processes (lib/business.ts) stay in the core: advance,
 // approve and the brief depend on them. A workspace turns this extension on with `govern ext enable business`.
 import { userInfo } from "node:os";
-import { eventServer } from "../../lib/event-server.ts";
+import { eventServer } from "./event-server.ts";
 import * as lifecycle from "../../lib/lifecycle.ts";
 import { activeStages, requireActive, setData, authenticatedPerson, humanAction } from "../../lib/business.ts";
 import { scalar, value } from "../../lib/business-schema.ts";

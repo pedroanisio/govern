@@ -19,5 +19,5 @@ the owner's own terminal. Enable it with `govern ext enable remote`.
 
 - [index.ts](index.ts): the command and the desk line (the paired devices).
 - [manpage.ts](manpage.ts): the SYNOPSIS, OPTIONS and DESCRIPTION text `govern help remote` prints.
-- It loads `lib/remote.ts`, `lib/remote-view.ts`, `lib/remote-pair.ts` and `lib/qr.ts`. Lane artifacts (`govern artifact`) are lane
+- It loads `ext/remote/remote.ts`, `ext/remote/remote-view.ts`, `ext/remote/remote-pair.ts` and `ext/remote/qr.ts`. Lane artifacts (`govern artifact`) are lane
   evidence and stay in the core: their error classes are in `lib/http-errors.ts`, which the remote server shares.

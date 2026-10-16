@@ -2,7 +2,7 @@
 import { test, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { makeEnv, childEnv, govern, servePeer, type Env } from "./helpers.ts";
-import * as peer from "../lib/peer.ts";
+import * as peer from "../ext/peer/peer.ts";
 import * as queue from "../lib/queue.ts";
 
 const original = { ...process.env };

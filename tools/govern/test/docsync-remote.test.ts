@@ -1,5 +1,5 @@
-// Doc-sync: the route table in REMOTE.md lists exactly the routes lib/remote.ts serves.
-// lib/remote.ts exports no route list (its handler matches `route === "METHOD /path"`), so the source is parsed.
+// Doc-sync: the route table in REMOTE.md lists exactly the routes ext/remote/remote.ts serves.
+// ext/remote/remote.ts exports no route list (its handler matches `route === "METHOD /path"`), so the source is parsed.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
@@ -7,13 +7,13 @@ import { resolve } from "node:path";
 import { HERE } from "./helpers.ts";
 
 const GOVERN_DIR = resolve(HERE, "..");
-const SOURCE = readFileSync(resolve(GOVERN_DIR, "lib/remote.ts"), "utf8");
+const SOURCE = readFileSync(resolve(GOVERN_DIR, "ext/remote/remote.ts"), "utf8");
 const DOC = readFileSync(resolve(GOVERN_DIR, "REMOTE.md"), "utf8");
 
 /** Every `route === "METHOD /path"` comparison in the server's request handler. */
 function servedRoutes(): string[] {
   const routes = [...SOURCE.matchAll(/\broute === "([A-Z]+ \/[^"]*)"/g)].map((m) => m[1]!);
-  assert.ok(routes.length > 0, "lib/remote.ts has no `route === \"METHOD /path\"` comparisons; update this test's parser");
+  assert.ok(routes.length > 0, "ext/remote/remote.ts has no `route === \"METHOD /path\"` comparisons; update this test's parser");
   return routes;
 }
 
@@ -32,13 +32,13 @@ function documentedRoutes(): string[] {
   return routes;
 }
 
-test("REMOTE.md documents each route lib/remote.ts serves, once", () => {
+test("REMOTE.md documents each route ext/remote/remote.ts serves, once", () => {
   const doc = documentedRoutes();
   assert.deepEqual(doc.filter((r, i) => doc.indexOf(r) !== i), [], "routes documented twice");
   assert.deepEqual(servedRoutes().filter((r) => !doc.includes(r)), [], "routes served but missing from REMOTE.md");
 });
 
-test("REMOTE.md documents no route lib/remote.ts does not serve", () => {
+test("REMOTE.md documents no route ext/remote/remote.ts does not serve", () => {
   const served = new Set(servedRoutes());
   assert.deepEqual(documentedRoutes().filter((r) => !served.has(r)), [], "routes documented in REMOTE.md but not served");
 });

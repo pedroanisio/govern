@@ -20,4 +20,4 @@ how well the answers predicted outcomes. Enable it with `govern ext enable decid
 
 - [index.ts](index.ts): the command and `shadowTask()`, the ask `task send` makes about every TASK when the workspace config has
   `decide.shadow: true`. With the extension off, the send is queued and says on stderr that there was no ask.
-- It loads `lib/decide.ts` and `lib/typesafeCall.ts`.
+- It loads `ext/decide/decide.ts` and `ext/decide/typesafeCall.ts`.

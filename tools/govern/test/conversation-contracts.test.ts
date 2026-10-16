@@ -5,9 +5,9 @@ import { existsSync, mkdirSync, readFileSync, rmSync, symlinkSync, unlinkSync } 
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import * as sessions from "../lib/conversation.ts";
-import { build } from "../lib/conversation-adapters.ts";
+import { build } from "../ext/conversation/conversation-adapters.ts";
 import { createOwner, owner, ownerLive, readBoot } from "../lib/conversation-owner.ts";
-import { SUBS } from "../lib/conversation-cli.ts";
+import { SUBS } from "../ext/conversation/conversation-cli.ts";
 import { parseArgs } from "../lib/util.ts";
 import { makeEnv, childEnv, write, type Env } from "./helpers.ts";
 
@@ -319,7 +319,7 @@ test("conversation transactions enforce ownership, cancellation, recovery and cl
   assert.equal(sessions.claim(s.id), undefined);
 }));
 
-const WORKER = fileURLToPath(new URL("../lib/conversation-worker.ts", import.meta.url));
+const WORKER = fileURLToPath(new URL("../ext/conversation/conversation-worker.ts", import.meta.url));
 test("worker entry point exits normally on idle, failed runs and invalid session IDs", () => isolated((e) => {
   command(e, 'process.stdout.write(JSON.stringify({type:"error",text:"refused"})+"\\n")');
   const run = (id: string) => spawnSync(process.execPath, [WORKER, id, "--once"], { env: childEnv(e), encoding: "utf8" });
@@ -338,7 +338,7 @@ test("worker entry point exits normally on idle, failed runs and invalid session
 }));
 
 test("host forwards input, output, errors and signal exits and terminates normally", async () => {
-  const host = fileURLToPath(new URL("../lib/conversation-host.ts", import.meta.url));
+  const host = fileURLToPath(new URL("../ext/conversation/conversation-host.ts", import.meta.url));
   for (const script of ['process.stdin.pipe(process.stdout);process.stderr.write("diagnostic")', 'process.kill(process.pid,"SIGTERM")']) {
     const child = spawn(process.execPath, [host], { detached: true, stdio: ["ignore", "pipe", "pipe", "ipc"] });
     let out = "", err = "";
@@ -358,7 +358,7 @@ test("non-detached host refuses an exited owner without starting the child and e
   const deadOwner = owner(exited.pid);
   assert.equal(ownerLive(deadOwner), false);
   const marker = join(e.root, "child-started");
-  const host = fileURLToPath(new URL("../lib/conversation-host.ts", import.meta.url));
+  const host = fileURLToPath(new URL("../ext/conversation/conversation-host.ts", import.meta.url));
   // Without detached, the host is not a process-group leader. Both group kills
   // fail, allowing stop() to exit normally and V8 to flush its coverage profile.
   const child = spawn(process.execPath, [host], { detached: false, env: childEnv(e), stdio: ["ignore", "pipe", "pipe", "ipc"] });
@@ -374,7 +374,7 @@ test("non-detached host refuses an exited owner without starting the child and e
 }));
 
 test("non-detached host exits 1 when its child is killed by a signal", { timeout: 5000 }, async (t) => {
-  const host = fileURLToPath(new URL("../lib/conversation-host.ts", import.meta.url));
+  const host = fileURLToPath(new URL("../ext/conversation/conversation-host.ts", import.meta.url));
   const child = spawn(process.execPath, [host], { detached: false, stdio: ["ignore", "pipe", "pipe", "ipc"] });
   let out = "", err = "";
   child.stdout!.on("data", (chunk) => out += chunk);

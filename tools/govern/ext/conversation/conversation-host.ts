@@ -1,7 +1,7 @@
 // Start no model until its process-group identity has been committed by the worker.
 // IPC disconnect means the worker died: stop this group rather than leave an orphan model running.
 import { spawn } from "node:child_process";
-import { ownerLive, type Owner } from "./conversation-owner.ts";
+import { ownerLive, type Owner } from "../../lib/conversation-owner.ts";
 interface Request {
   bin: string;
   args: string[];

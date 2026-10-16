@@ -2,13 +2,13 @@
 // certified member, so N hosts need N joins rather than N² pairings. Grants for members stay each host's own policy.
 import { createHash, createHmac, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { existsSync } from "node:fs";
-import { obj, str, arr, literal, parseFile, check, reject, type Shape } from "./shape.ts";
+import { obj, str, arr, literal, parseFile, check, reject, type Shape } from "../../lib/shape.ts";
 import {
   name, nonempty, iso, hex64, project, publicKey, url, keys, newKeys, file, locked, readOr, write, identity,
   fingerprint, header, signBytes, verifyBytes, sign, fresh, error, signedJson, postFetch, MAX_BODY, TIMEOUT_MS,
   type Keys, type Headers, type Response, type Post,
-} from "./peer-id.ts";
-import { fail, clip } from "./util.ts";
+} from "../../lib/peer-id.ts";
+import { fail, clip } from "../../lib/util.ts";
 
 export const MESH_PROTOCOL = "govern-mesh/1";
 export const CERT_MS = 30 * 86400_000, DEFAULT_INVITE_S = 3600, MAX_INVITE_S = 7 * 86400;

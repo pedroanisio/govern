@@ -6,11 +6,11 @@ import { once } from "node:events";
 import { appendFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { makeEnv, govern, NOW, DAY, use, lower, network, policy, trio, task } from "./helpers.ts";
-import * as peer from "../lib/peer.ts";
-import * as mesh from "../lib/mesh.ts";
+import * as peer from "../ext/peer/peer.ts";
+import * as mesh from "../ext/peer/mesh.ts";
 import * as agents from "../lib/agents.ts";
 import * as queue from "../lib/queue.ts";
-import * as center from "../lib/center.ts";
+import * as center from "../ext/center/center.ts";
 import { type Headers } from "../lib/peer-id.ts";
 
 const original = { ...process.env };

@@ -19,4 +19,4 @@ loopback host. Enable it with `govern ext enable center`; it reads the state the
 
 - [index.ts](index.ts): the command.
 - [manpage.ts](manpage.ts): the SYNOPSIS, OPTIONS and DESCRIPTION text `govern help center` prints.
-- It loads `lib/center.ts` and its page, `lib/center.html`.
+- It loads `ext/center/center.ts` and its page, `ext/center/center.html`.

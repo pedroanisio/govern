@@ -1,6 +1,6 @@
 // What a host tells the command center about its work: the summary of every lane and the processes those lanes (and the
 // workspace) use, by name, revision and hash, plus, on request, one process definition by hash. Both answers are signed by
-// lib/peer.ts, closed in shape and small: lane summaries, never raw state; a definition only when asked for by its hash.
+// ext/peer/peer.ts, closed in shape and small: lane summaries, never raw state; a definition only when asked for by its hash.
 import { obj, arr, literal, reject, type Shape } from "./shape.ts";
 import { laneSlugs, load } from "./project.ts";
 import { processes, freezeProcess } from "./process.ts";

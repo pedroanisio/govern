@@ -3,15 +3,15 @@
 import { createServer, type Server } from "node:http";
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { readFileSync, writeFileSync, renameSync, statSync, existsSync } from "node:fs";
-import { clip, kTok, fail } from "./util.ts";
-import * as peer from "./peer.ts";
-import * as mesh from "./mesh.ts";
-import { file as peerFile, locked } from "./peer-id.ts";
-import type { Telemetry, Recent } from "./telemetry.ts";
-import { lanesAnswer, definitionOf, type ProcessInfo } from "./livestate.ts";
-import type { LaneState } from "./lanestate.ts";
-import { parseProcess, getProcess, processes, type Process } from "./process.ts";
-import { processSvg } from "./processview.ts";
+import { clip, kTok, fail } from "../../lib/util.ts";
+import * as peer from "../peer/peer.ts";
+import * as mesh from "../peer/mesh.ts";
+import { file as peerFile, locked } from "../../lib/peer-id.ts";
+import type { Telemetry, Recent } from "../peer/telemetry.ts";
+import { lanesAnswer, definitionOf, type ProcessInfo } from "../../lib/livestate.ts";
+import type { LaneState } from "../../lib/lanestate.ts";
+import { parseProcess, getProcess, processes, type Process } from "../../lib/process.ts";
+import { processSvg } from "../../lib/processview.ts";
 
 export const WARN_CERT_MS = 7 * 86400_000, STALE_SYNC_MS = 3600_000, CACHE_MS = 10_000, MESSAGES = 60;
 export interface HostView { host: string; url?: string; self: boolean; registrar: boolean; ok: boolean; error?: string; telemetry?: Telemetry }

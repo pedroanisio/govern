@@ -3,7 +3,7 @@ import { test, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { parseArgs } from "../lib/util.ts";
 import { makeEnv, childEnv, govern, fullTable } from "./helpers.ts";
-import * as peer from "../lib/peer.ts";
+import * as peer from "../ext/peer/peer.ts";
 import * as queue from "../lib/queue.ts";
 const COMMANDS = await fullTable();
 const original = { ...process.env };

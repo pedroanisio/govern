@@ -1,7 +1,7 @@
 // A QR code (ISO/IEC 18004, model 2) for `govern remote pair`: the pairing link drawn in the terminal, so the phone's camera
 // opens it in the app. Byte mode only (UTF-8, no ECI), versions 1-40, levels L/M/Q/H, and a mask chosen by the standard's
 // penalty rules unless one is given. test/qr.test.ts checks every module against an independent encoder.
-import { fail } from "./util.ts";
+import { fail } from "../../lib/util.ts";
 
 export type Level = "L" | "M" | "Q" | "H";
 const LEVELS: Level[] = ["L", "M", "Q", "H"];

@@ -74,9 +74,9 @@ receiving host keeps its own execution policy ([PEERS.md](PEERS.md)).
 
 ### `govern remote serve`: the phone's API
 
-[lib/remote.ts](lib/remote.ts) serves `govern-remote/2`, specified in [REMOTE.md](REMOTE.md), to the Android app in
-[android/](android/README.md). [lib/remote-view.ts](lib/remote-view.ts) builds the read views from the lane files,
-and [lib/remote-pair.ts](lib/remote-pair.ts) handles pairing.
+[ext/remote/remote.ts](ext/remote/remote.ts) serves `govern-remote/2`, specified in [REMOTE.md](REMOTE.md), to the Android app in
+[android/](android/README.md). [ext/remote/remote-view.ts](ext/remote/remote-view.ts) builds the read views from the lane files,
+and [ext/remote/remote-pair.ts](ext/remote/remote-pair.ts) handles pairing.
 
 | Concern | How it works |
 |---|---|
@@ -92,7 +92,7 @@ and [lib/remote-pair.ts](lib/remote-pair.ts) handles pairing.
 
 ### `govern event-listen`: external events
 
-[lib/event-server.ts](lib/event-server.ts) is the entry point for the correlated events of [LIFECYCLE.md](LIFECYCLE.md),
+[ext/business/event-server.ts](ext/business/event-server.ts) is the entry point for the correlated events of [LIFECYCLE.md](LIFECYCLE.md),
 the HTTP form of `govern event`.
 
 | Concern | How it works |
@@ -105,7 +105,7 @@ the HTTP form of `govern event`.
 
 ### `govern peer serve`: signed queue delivery between hosts
 
-[lib/peer.ts](lib/peer.ts) serves `govern-peer/2` and, on a mesh registrar, [lib/mesh.ts](lib/mesh.ts) serves
+[ext/peer/peer.ts](ext/peer/peer.ts) serves `govern-peer/2` and, on a mesh registrar, [ext/peer/mesh.ts](ext/peer/mesh.ts) serves
 `govern-mesh/1`; both are specified in [PEERS.md](PEERS.md). A remote queue address is `NAME@HOST`, where HOST is a
 static peer or a mesh member; each host keeps its own profiles, gates, allowances and maxRuns.
 
@@ -116,7 +116,7 @@ static peer or a mesh member; each host keeps its own profiles, gates, allowance
 | Trust | A sender is a live static peer, found by the SHA-256 fingerprint of its key in `Govern-Peer-Key`, or a mesh member: listed in the last sync, or proven by a certificate the mesh key signed in `Govern-Peer-Cert`. `Govern-Signature` is an Ed25519 signature over the exact body bytes, verified before JSON parsing |
 | Delivery | `POST /v1/peer/deliver` accepts `{protocol, id, at, toKey, message}`. `toKey` must be this host's key fingerprint, so a delivery captured at one host or tunnel cannot be replayed to another |
 | Discovery | `POST /v1/peer/directory` answers a signed `{protocol, kind, at, toKey, id}` with what the signer may address here: granted runners, profiles and names, and agents registered for intersecting projects ([lib/agents.ts](lib/agents.ts)). The answer is signed by this host's key |
-| Telemetry | `POST /v1/peer/telemetry` answers a mesh member this host names as observer (by default the registrar) with a signed closed `govern-telemetry/1` snapshot from [lib/telemetry.ts](lib/telemetry.ts): dispatcher, queue, relay, 24 h runs and spend, agents and recent message summaries, never bodies. [lib/center.ts](lib/center.ts) merges every member's answer for `govern center`, and `govern center serve` shows it on the selected loopback host (127.0.0.1 by default) behind a bearer token and a loopback Host check |
+| Telemetry | `POST /v1/peer/telemetry` answers a mesh member this host names as observer (by default the registrar) with a signed closed `govern-telemetry/1` snapshot from [ext/peer/telemetry.ts](ext/peer/telemetry.ts): dispatcher, queue, relay, 24 h runs and spend, agents and recent message summaries, never bodies. [ext/center/center.ts](ext/center/center.ts) merges every member's answer for `govern center`, and `govern center serve` shows it on the selected loopback host (127.0.0.1 by default) behind a bearer token and a loopback Host check |
 | Lanes and processes | `POST /v1/peer/lanes` and `POST /v1/peer/process` answer an observer with a signed closed `govern-lanes/1` (lane summaries from [lib/lanestate.ts](lib/lanestate.ts), process names, revisions and hashes) or `govern-process/1` (one definition by hash), built by [lib/livestate.ts](lib/livestate.ts); the command center merges them in `gatherLive` and draws processes with [lib/processview.ts](lib/processview.ts) (graph, layout, SVG; [lib/processscene.ts](lib/processscene.ts) for scene-render). A host without the routes answers 404 and shows as unknown |
 | Mesh | On the registrar, `POST /v1/mesh/join` admits a host once per invite (HMAC proof under the hash of the invite secret, plus the joining key's signature) and `POST /v1/mesh/sync` renews a live member's 30-day certificate. Both answer with every live member's certificate and the revoked keys, signed by the mesh key. Applying a snapshot requires the registrar certificate and learns its URL from that certificate |
 | Limits and authorization | At most 262144 request or response body bytes (oversized responses abort as transport failures); a closed typed parse rejects unknown fields and checks protocol, kind, local sender/recipient names and a nonblank summary of at most 200 characters. The timestamp must be within five minutes. The sender's grants (per peer, or this host's mesh policy) must cover the project, and the recipient must be granted or the name or alias of a registered mailbox agent for it. A registration with any name now reserved for a runner, profile or govern is excluded. `replyTo` must name a message exchanged with that sender; an answer to a message this host sent reaches its non-runner author without a grant, so conversations run both ways |

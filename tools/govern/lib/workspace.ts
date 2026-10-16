@@ -38,7 +38,7 @@ export interface WorkspaceConfig {
   state?: string;
   /** Trusted local NDJSON conversation adapters; task runners remain separate. */
   conversationAdapters?: Record<string, { argv: string[] }>;
-  /** Jev decisions (lib/decide.ts): shadow asks about every TASK sent; envFile is a dotenv file holding TYPESAFE_API_KEY. */
+  /** Jev decisions (ext/decide/decide.ts): shadow asks about every TASK sent; envFile is a dotenv file holding TYPESAFE_API_KEY. */
   decide?: { shadow?: boolean; envFile?: string };
 }
 /** A file path, or the list shape lib/resources.ts checks (kept as written: resources() builds the registry). */

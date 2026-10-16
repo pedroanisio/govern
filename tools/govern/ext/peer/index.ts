@@ -1,8 +1,8 @@
 // Other hosts: peers (signed delivery behind a TLS tunnel), the mesh (one invite per host, certified members) and the agent
 // directory (NAME@HOST). The queue's NAME@PEER recipients and the dispatcher's relay call this extension; without it a
 // NAME@PEER recipient is refused. A workspace turns it on with `govern ext enable peer`.
-import * as peer from "../../lib/peer.ts";
-import * as mesh from "../../lib/mesh.ts";
+import * as peer from "./peer.ts";
+import * as mesh from "./mesh.ts";
 import * as agents from "../../lib/agents.ts";
 import * as queue from "../../lib/queue.ts";
 import { origin } from "../../lib/approval.ts";

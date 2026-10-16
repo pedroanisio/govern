@@ -1,7 +1,7 @@
 // Jev (TypeSafe System One): typed questions about a state, recorded in the queue's decisions.jsonl, and the report of how well its
 // answers predicted outcomes. A workspace turns this extension on with `govern ext enable decide`.
 import { readFileSync } from "node:fs";
-import * as jev from "../../lib/decide.ts";
+import * as jev from "./decide.ts";
 import { fail, opt, flag } from "../../lib/util.ts";
 import { out, type Cmd } from "../../lib/cli.ts";
 import type { Message } from "../../lib/queue.ts";

@@ -1,9 +1,9 @@
 // The phone: one-time pairing, the paired devices, remote approvals and the remote API (REMOTE.md). Pairing and revoking are the
 // owner's own terminal only. A workspace turns this extension on with `govern ext enable remote`.
 import { readFileSync } from "node:fs";
-import * as remote from "../../lib/remote.ts";
-import * as remotePair from "../../lib/remote-pair.ts";
-import * as qr from "../../lib/qr.ts";
+import * as remote from "./remote.ts";
+import * as remotePair from "./remote-pair.ts";
+import * as qr from "./qr.ts";
 import { origin } from "../../lib/approval.ts";
 import { checkSlug } from "../../lib/project.ts";
 import { fail, opt, flag, many } from "../../lib/util.ts";

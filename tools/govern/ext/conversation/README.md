@@ -20,5 +20,5 @@ It keeps persistent conversations: history, turns, runs, recovery of an interrup
 
 - [index.ts](index.ts): the command.
 - [manpage.ts](manpage.ts): the SYNOPSIS, OPTIONS and DESCRIPTION text `govern help conversation` prints.
-- It loads `lib/conversation-cli.ts`, `lib/conversation-runtime.ts`, `lib/conversation-adapters.ts`, `lib/conversation-host.ts` and
-  `lib/conversation-worker.ts`. The session store (`lib/conversation.ts`) stays in the core: `govern usage` reads it.
+- It loads `ext/conversation/conversation-cli.ts`, `ext/conversation/conversation-runtime.ts`, `ext/conversation/conversation-adapters.ts`, `ext/conversation/conversation-host.ts` and
+  `ext/conversation/conversation-worker.ts`. The session store (`lib/conversation.ts`) stays in the core: `govern usage` reads it.

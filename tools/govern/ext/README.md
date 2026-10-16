@@ -48,5 +48,5 @@ The core knows the same facts without loading anything, in [lib/ext-registry.ts]
 extension owns, its documents, the flags its commands declare and the source files only it loads. `test/ext.test.ts` fails when
 the registry and an `index.ts` disagree, and when `govern.ts` reaches a file only an extension may load.
 
-The modules an extension's index imports (`lib/peer.ts`, `lib/remote.ts` and the others the registry lists under `files`) are
+The modules an extension's index imports (`ext/peer/peer.ts`, `ext/remote/remote.ts` and the others the registry lists under `files`) are
 still in `lib/`; the registry is the list of which ones belong to which extension.

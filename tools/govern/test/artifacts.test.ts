@@ -39,7 +39,7 @@ test("artifact library hashes bytes, versions replacements and keeps only curren
   try {
     const { create, appendLedger } = await import("../lib/project.ts");
     const artifacts = await import("../lib/artifacts.ts");
-    const { BadRequest, NotFound, TooLarge } = await import("../lib/remote.ts");
+    const { BadRequest, NotFound, TooLarge } = await import("../ext/remote/remote.ts");
     const { createHash } = await import("node:crypto");
     const { truncateSync, closeSync } = await import("node:fs");
     write(join(e.root, "PALS-Notes/processes/proof.json"), JSON.stringify({ version: 1, name: "proof", stages: [{ name: "draft" }], gates: [] }));

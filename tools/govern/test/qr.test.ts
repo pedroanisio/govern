@@ -1,11 +1,11 @@
-// lib/qr.ts: the QR code `govern remote pair` draws. The expected matrices come from segno 1.6.6, an independent encoder,
+// ext/remote/qr.ts: the QR code `govern remote pair` draws. The expected matrices come from segno 1.6.6, an independent encoder,
 // run with the same text, version, level and mask (byte mode, no ECI); each is the SHA-256 of its rows as "0"/"1" lines.
 // segno 1.6.6 adds a whole 0x00 codeword when the data already ends on a codeword boundary (it pads 8 - n % 8 bits);
 // ISO/IEC 18004:2015 7.4.10 pads only to reach a boundary, so the vectors were made with that one function corrected.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { encode, render, type Level } from "../lib/qr.ts";
+import { encode, render, type Level } from "../ext/remote/qr.ts";
 import { GovernError } from "../lib/util.ts";
 
 const rows = (m: boolean[][]) => m.map((r) => r.map((d) => (d ? "1" : "0")).join("")).join("\n");

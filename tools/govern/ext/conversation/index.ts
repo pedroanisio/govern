@@ -1,6 +1,6 @@
 // Persistent conversations: history, turns, runs, recovery and context checkpoints. The session store the usage report reads
 // (lib/conversation.ts) stays in the core. A workspace turns this extension on with `govern ext enable conversation`.
-import { SUBS } from "../../lib/conversation-cli.ts";
+import { SUBS } from "./conversation-cli.ts";
 import type { Cmd } from "../../lib/cli.ts";
 import type { ExtDoc } from "../../lib/ext-registry.ts";
 import { MANPAGE } from "./manpage.ts";

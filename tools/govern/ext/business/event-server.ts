@@ -1,10 +1,10 @@
 import { createServer, type Server } from "node:http";
 import { timingSafeEqual, createHash } from "node:crypto";
-import { check, obj, name, record, posInt } from "./shape.ts";
-import { scalar } from "./business-schema.ts";
-import { load, save } from "./project.ts";
-import { deliverEvent, transaction } from "./lifecycle.ts";
-import { GovernError, fail } from "./util.ts";
+import { check, obj, name, record, posInt } from "../../lib/shape.ts";
+import { scalar } from "../../lib/business-schema.ts";
+import { load, save } from "../../lib/project.ts";
+import { deliverEvent, transaction } from "../../lib/lifecycle.ts";
+import { GovernError, fail } from "../../lib/util.ts";
 const DELIVERY = obj({ lane: name, name, id: name, correlation: scalar }, { data: record(scalar), generation: posInt });
 /** An HTTP server (not yet listening) that takes POST /events with `Authorization: Bearer <token>`, a JSON delivery of
  *  at most 64 KiB, and delivers it to the lane's waiting stage under the lane lock: 200 {accepted, duplicate}; 400, 401,

@@ -2,14 +2,14 @@
 // recent messages. Read from files only; no model runs. Message bodies never leave the host: summaries and routing do.
 import { existsSync } from "node:fs";
 import { join } from "node:path";
-import { obj, str, bool, arr, literal, record, reject, type Shape } from "./shape.ts";
-import { name, iso, project, hex64, identity, fingerprint } from "./peer-id.ts";
-import { dispatcherInfo } from "./desk.ts";
-import { liveSessions } from "./sessions.ts";
-import { readJsonl, clip } from "./util.ts";
+import { obj, str, bool, arr, literal, record, reject, type Shape } from "../../lib/shape.ts";
+import { name, iso, project, hex64, identity, fingerprint } from "../../lib/peer-id.ts";
+import { dispatcherInfo } from "../../lib/desk.ts";
+import { liveSessions } from "../../lib/sessions.ts";
+import { readJsonl, clip } from "../../lib/util.ts";
 import * as mesh from "./mesh.ts";
-import * as agents from "./agents.ts";
-import * as queue from "./queue.ts";
+import * as agents from "../../lib/agents.ts";
+import * as queue from "../../lib/queue.ts";
 
 export const RECENT = 40, DAY_MS = 86400_000;
 const count: Shape<number> = (v, p) => (Number.isInteger(v) && (v as number) >= 0 ? (v as number) : reject(p, "must be a whole number, 0 or more"));

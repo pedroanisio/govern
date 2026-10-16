@@ -1,8 +1,8 @@
 // The command center: every federated host's health, alerts, agents, 24 h spend and latest messages, in the terminal or in a
 // browser on loopback. It reads the peer extension's state, and the document it is described in is PEERS.md. A workspace turns
 // it on with `govern ext enable center`.
-import * as peer from "../../lib/peer.ts";
-import * as center from "../../lib/center.ts";
+import * as peer from "../peer/peer.ts";
+import * as center from "./center.ts";
 import { fail, opt, flag } from "../../lib/util.ts";
 import type { Args } from "../../lib/util.ts";
 import { out, loopback, type Cmd } from "../../lib/cli.ts";

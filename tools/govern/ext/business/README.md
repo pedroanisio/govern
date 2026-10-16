@@ -21,6 +21,6 @@ data, human tasks and policy rejections. Enable them with `govern ext enable bus
 - [index.ts](index.ts): the commands. `tick --advance` and `reject` call back into the core's `advance` and policy decision
   through `lib/cli.ts`, so the extension never imports `govern.ts`.
 - [manpage.ts](manpage.ts): the SYNOPSIS, OPTIONS, ENVIRONMENT and DESCRIPTION text `govern help event` (and the others) prints.
-- It loads `lib/event-server.ts`. The lifecycle runtime (`lib/lifecycle.ts`, `lib/lifecycle-runtime.ts`, `lib/lifecycle-schema.ts`)
+- It loads `ext/business/event-server.ts`. The lifecycle runtime (`lib/lifecycle.ts`, `lib/lifecycle-runtime.ts`, `lib/lifecycle-schema.ts`)
   and the graph processes (`lib/business.ts`, `lib/business-schema.ts`) stay in the core: `advance`, `approve`, `work`, the brief
   and the lane state depend on them for graph and lifecycle processes.

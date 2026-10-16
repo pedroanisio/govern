@@ -2,23 +2,23 @@
 // today. They read the same files as `govern desk` and `govern brief`, and run no model and no check.
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { hostname } from "node:os";
-import * as conversations from "./conversation.ts";
-import * as jobs from "./jobs.ts";
-import * as artifacts from "./artifacts.ts";
-import { config } from "./workspace.ts";
-import { registry } from "./caps.ts";
-import { governDir } from "./project.ts";
-import type { ArtifactRef, ArtifactView } from "./artifacts.ts";
+import * as conversations from "../../lib/conversation.ts";
+import * as jobs from "../../lib/jobs.ts";
+import * as artifacts from "../../lib/artifacts.ts";
+import { config } from "../../lib/workspace.ts";
+import { registry } from "../../lib/caps.ts";
+import { governDir } from "../../lib/project.ts";
+import type { ArtifactRef, ArtifactView } from "../../lib/artifacts.ts";
 import { join } from "node:path";
-import { readJsonl, clip } from "./util.ts";
-import { load, ledgerFile, stagesOf, laneSlugs, blockedBy, exitCondition, checkOf, type Project } from "./project.ts";
-import { processOf } from "./process.ts";
-import { gateApproved, activeStages } from "./business.ts";
-import { GovernError } from "./util.ts";
-import * as queue from "./queue.ts";
-import * as allowances from "./allowances.ts";
-import { machineSummary, machineEntries, stateDir } from "./resources.ts";
-import { tokensOn, dispatcherInfo } from "./desk.ts";
+import { readJsonl, clip } from "../../lib/util.ts";
+import { load, ledgerFile, stagesOf, laneSlugs, blockedBy, exitCondition, checkOf, type Project } from "../../lib/project.ts";
+import { processOf } from "../../lib/process.ts";
+import { gateApproved, activeStages } from "../../lib/business.ts";
+import { GovernError } from "../../lib/util.ts";
+import * as queue from "../../lib/queue.ts";
+import * as allowances from "../../lib/allowances.ts";
+import { machineSummary, machineEntries, stateDir } from "../../lib/resources.ts";
+import { tokensOn, dispatcherInfo } from "../../lib/desk.ts";
 
 /** The wire protocol's name and version: a client refuses a server whose major version it does not know. */
 export const PROTOCOL = "govern-remote/2";

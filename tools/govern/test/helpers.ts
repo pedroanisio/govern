@@ -7,8 +7,8 @@ import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import * as peer from "../lib/peer.ts";
-import * as mesh from "../lib/mesh.ts";
+import * as peer from "../ext/peer/peer.ts";
+import * as mesh from "../ext/peer/mesh.ts";
 import * as queue from "../lib/queue.ts";
 import { registry, readCheck, checkState, checkFile, profileHash, capsOf } from "../lib/caps.ts";
 import { writeJson } from "../lib/util.ts";

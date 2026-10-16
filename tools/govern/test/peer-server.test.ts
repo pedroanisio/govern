@@ -6,7 +6,7 @@ import { Socket } from "node:net";
 import { join } from "node:path";
 import { makeEnv, childEnv, write } from "./helpers.ts";
 import { stateDir } from "../lib/workspace.ts";
-import * as peer from "../lib/peer.ts";
+import * as peer from "../ext/peer/peer.ts";
 import * as queue from "../lib/queue.ts";
 const original = { ...process.env };
 afterEach(() => { process.env = { ...original }; });

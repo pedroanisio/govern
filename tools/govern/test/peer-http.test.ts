@@ -8,7 +8,7 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { stateDir } from "../lib/workspace.ts";
 import { makeEnv, childEnv, govern, GOVERN, reply, servePeer as serve } from "./helpers.ts";
-import * as peer from "../lib/peer.ts";
+import * as peer from "../ext/peer/peer.ts";
 import { newKeys } from "../lib/peer-id.ts";
 import * as queue from "../lib/queue.ts";
 
