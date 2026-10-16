@@ -35,7 +35,8 @@ function section(man: string, name: string): string[] {
 }
 
 const MAN = manText(readFileSync(join(ROOT, "bin", "govern"), "utf8"));
-const SKILL = src("SKILL.md");
+// the agents' manual is the core SKILL.md and the REFERENCE.md it points to (govern manual --full)
+const SKILL = `${src("SKILL.md")}\n${src("REFERENCE.md")}`;
 const REMOTE = src("REMOTE.md");
 const DOCS: Record<string, string> = { MANPAGE: MAN, "SKILL.md": SKILL, "REMOTE.md": REMOTE };
 /** A document with its line breaks and indentation folded to single spaces, so a phrase may wrap. */

@@ -301,7 +301,8 @@ test("help and the manual describe up, down and reap", () => {
   const r = rig();
   const h = g(r, ["help"]).out;
   for (const w of ["up <resource>", "down <tag|id>", "reap [<resource>]", "--reap-every"]) assert.ok(h.includes(w), w);
-  assert.match(g(r, ["manual"]).out, /govern reap/);
+  assert.match(g(r, ["manual", "--full"]).out, /govern reap/);
+  assert.match(g(r, ["help", "reap"]).out, /rules: .*--yes/);
 });
 
 // ---- review fixes (second review of 3.9)

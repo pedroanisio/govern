@@ -100,7 +100,8 @@ Documentation:
 
 - The manpage is the `MANPAGE` block in [bin/govern](../../bin/govern). Read it
   with `govern --help` or `st-man govern`.
-- [SKILL.md](SKILL.md) is the operating manual for the AI (`govern manual`).
+- [SKILL.md](SKILL.md) is the short core operating manual for the AI (`govern manual`); [REFERENCE.md](REFERENCE.md) holds the
+  detailed rules (`govern manual --full`), `govern help <command>` the rules of one command, `govern help --topics` lists the documents.
 - [PURPOSE.md](PURPOSE.md) explains why govern exists.
 - [ARCHITECTURE.md](ARCHITECTURE.md) describes govern's structure: actors, subsystems, state layout and how a lane moves,
   with a one-frame 4K diagram built by [scripts/govern_architecture.py](../../scripts/govern_architecture.py).

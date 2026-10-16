@@ -147,7 +147,7 @@ function seeAlsoProblems(man: string, root: string, required: readonly string[])
 
 /** The documents govern itself serves: SKILL.md (`govern manual`) and each built-in process's manual (`govern manual P`). */
 function servedDocs(): string[] {
-  const dir = join(GOVERN_DIR, "processes"), docs = [relative(ROOT, join(GOVERN_DIR, "SKILL.md"))];
+  const dir = join(GOVERN_DIR, "processes"), docs = [relative(ROOT, join(GOVERN_DIR, "SKILL.md")), relative(ROOT, join(GOVERN_DIR, "REFERENCE.md"))];
   for (const f of readdirSync(dir).filter((x) => x.endsWith(".json")).sort()) {
     const manual: unknown = JSON.parse(readFileSync(join(dir, f), "utf8")).manual;
     if (typeof manual === "string") docs.push(relative(ROOT, resolve(dir, manual)));

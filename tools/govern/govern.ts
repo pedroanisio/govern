@@ -47,12 +47,15 @@ import { readLane, readLanes } from "./lib/lanestate.ts";
 import * as artifacts from "./lib/artifacts.ts";
 import * as remotePair from "./lib/remote-pair.ts";
 import { checkRecipient, requireAs, resolveAs, callingSession, sessions } from "./lib/sessions.ts";
-import { installSkill, skillDrift, sha256File } from "./lib/skill.ts";
-import { writeFileSync, existsSync, unlinkSync } from "node:fs";
+import { installSkill, skillDrift, sha256File, approxTokens, BYTES_PER_TOKEN } from "./lib/skill.ts";
+import { HELP_RULES, TOPICS } from "./lib/helprules.ts";
+import { writeFileSync, existsSync, unlinkSync, statSync } from "node:fs";
+import { basename } from "node:path";
 import { homedir, tmpdir, userInfo } from "node:os";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const SKILL = resolve(HERE, "SKILL.md");
+const REFERENCE = resolve(HERE, "REFERENCE.md");
 const laneLockDir = (slug: string | undefined) => join(stateDir(), "lane-locks", createHash("sha256").update(stateFile(checkSlug(slug))).digest("hex"));
 
 // A reader that stops early (govern brief x | head) is not an error.
@@ -131,7 +134,7 @@ function cmdWork(a: Args): void {
   const engine = engineOf(a);
   if (flag(a, "open")) {
     const session = engine === "codex" ? undefined : randomUUID();
-    appendLedger(p.slug, { kind: "work", stage, engine, session, skillSha: sha256File(SKILL) });
+    appendLedger(p.slug, { kind: "work", stage, engine, session, skillSha: sha256File(SKILL), referenceSha: sha256File(REFERENCE) });
     const kind = processOf(p).name, label = kind.charAt(0).toUpperCase() + kind.slice(1);
     const first = `${label} work session (registered by govern work ${p.slug} ${stage}). Use the govern skill: run \`govern brief ${p.slug}\` first and work from it; do not explore the repository. Then ask me what we change.`;
     const args = engine === "codex" ? ["-C", repo(), first] : ["--session-id", session!, first];
@@ -141,7 +144,7 @@ function cmdWork(a: Args): void {
     process.exitCode = r.status ?? 0;
     return;
   }
-  appendLedger(p.slug, { kind: "work", stage, engine, session: sessionOf(engine), skillSha: sha256File(SKILL) });
+  appendLedger(p.slug, { kind: "work", stage, engine, session: sessionOf(engine), skillSha: sha256File(SKILL), referenceSha: sha256File(REFERENCE) });
   out(brief(p));
 }
 
@@ -563,8 +566,18 @@ function cmdPrompts(a: Args): void {
 /** The general manual, or a process's own manual (the rules of its kind of work). */
 function cmdManual(a: Args): void {
   const name = a._[1];
+  if (flag(a, "size")) {
+    if (name || flag(a, "full")) fail("govern manual --size takes no process and no --full");
+    for (const f of [SKILL, REFERENCE]) {
+      const bytes = statSync(f).size;
+      out(`${basename(f).padEnd(13)} ${String(bytes).padStart(6)} bytes  ≈ ${approxTokens(bytes)} tokens (bytes / ${BYTES_PER_TOKEN}, an estimate)`);
+    }
+    return;
+  }
+  if (flag(a, "full") && name) fail("govern manual --full is the core manual and REFERENCE.md; it takes no process");
   if (!name) {
     out(readFileSync(SKILL, "utf8"));
+    if (flag(a, "full")) out(readFileSync(REFERENCE, "utf8"));
     const have = [...processes().values()].filter((p) => manualOf(p)).map((p) => p.name);
     if (have.length) out(`\nProcess manuals (govern manual <process>): ${have.join(", ")}`);
     return;
@@ -1229,22 +1242,33 @@ export const COMMANDS: readonly Cmd[] = [
         "in the workspace config asks about every TASK sent)"]], run: () => out(jev.report()) },
     } },
 
-  { name: "help", section: 5, footer: false, lines: [["[<command>]", "this text, or one command's lines (also: govern <command> --help)"]],
-    run: (a) => out(a._[1] ? commandHelp(a._[1]) : HELP) },
-  { name: "manual", section: 5, footer: false, lines: [["[<process>]", "the AI's operating manual (SKILL.md), or the manual of one process's kind of work"]], run: cmdManual },
-  { name: "install-skill", section: 5, footer: false, flags: { bool: ["check"] },
-    lines: [["[<skills dir>] [--check]", "install SKILL.md as the govern skill (default: the repo's .claude/skills), atomically and\n" +
-      "read back by sha256; --check installs nothing and exits 1 when the installed copy is missing or differs"]],
+  { name: "help", section: 5, footer: false, flags: { bool: ["topics"] },
+    lines: [["[<command> | --topics]", "this text, or one command's lines and rules (also: govern <command> --help); --topics lists the reference documents"]],
     run: (a) => {
-      const dest = join(a._[1] ?? join(repo(), ".claude", "skills"), "govern", "SKILL.md");
+      if (flag(a, "topics")) {
+        if (a._[1]) fail("govern help --topics takes no command");
+        return out(topicsText());
+      }
+      out(a._[1] ? commandHelp(a._[1]) : HELP);
+    } },
+  { name: "manual", section: 5, footer: false, flags: { bool: ["full", "size"] },
+    lines: [["[<process> | --full | --size]", "the AI's core manual (SKILL.md), or the manual of one process's kind of work;\n--full adds REFERENCE.md; --size prints the bytes and approximate tokens (bytes / 3.6) of both"]], run: cmdManual },
+  { name: "install-skill", section: 5, footer: false, flags: { bool: ["check", "replace"] },
+    lines: [["[<skills dir>] [--check] [--replace]", "link <skills dir>/govern (default: the repo's .claude/skills) to the tool's tracked folder (tools/govern:\n" +
+      "SKILL.md and REFERENCE.md), never a copy; a real directory or file there is refused unless --replace;\n" +
+      "--check installs nothing and exits 1 when the entry is missing, a copy, a link elsewhere or has a stale SKILL.md"]],
+    run: (a) => {
+      const skills = a._[1] ?? join(repo(), ".claude", "skills");
+      const dest = join(skills, "govern");
       if (flag(a, "check")) {
-        const drift = skillDrift(SKILL, dest);
+        if (flag(a, "replace")) fail("govern install-skill --check installs nothing; --replace belongs to the install");
+        const drift = skillDrift(HERE, skills);
         if (drift) fail(drift, 1);
-        out(`${dest} is current (sha256 ${sha256File(SKILL)})`);
+        out(`${dest} is a link to ${HERE}; SKILL.md is current (sha256 ${sha256File(SKILL)}), REFERENCE.md sha256 ${sha256File(REFERENCE)}`);
         return;
       }
-      const sha = installSkill(SKILL, dest);
-      out(`installed ${dest} (sha256 ${sha}); refresh it with govern install-skill after editing tools/govern/SKILL.md`);
+      const did = installSkill(HERE, skills, flag(a, "replace"));
+      out(`${did}: ${dest} -> ${HERE} (SKILL.md sha256 ${sha256File(SKILL)}, REFERENCE.md sha256 ${sha256File(REFERENCE)}); edits to tools/govern/SKILL.md show at once, there is nothing to refresh`);
     } },
 
   { name: "task", section: 6, noSub: TASK_SUBS,
@@ -1375,7 +1399,17 @@ function unknownCommand(name: string): never {
 /** One command's help lines: all its subcommands, or only `sub`. */
 export function commandHelp(name: string, sub?: string): string {
   const c = byName.get(name) ?? unknownCommand(name);
-  return cmdLines(c, sub).join("\n");
+  const rules = HELP_RULES[name];
+  return [...cmdLines(c, sub), ...(rules ? ["", `rules: ${rules}`] : [])].join("\n");
+}
+
+/** `govern help --topics`: each reference document with its path (relative to the workspace when it is inside it) and one line. */
+function topicsText(): string {
+  const root = findRepo();
+  return TOPICS.map((t) => {
+    const f = join(HERE, t.file);
+    return `${t.file.padEnd(17)} ${root && f.startsWith(`${root}/`) ? relative(root, f) : f}\n${" ".repeat(18)}${t.about}`;
+  }).join("\n");
 }
 
 export const HELP = [

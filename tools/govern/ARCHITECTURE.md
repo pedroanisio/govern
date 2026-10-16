@@ -57,7 +57,9 @@ re-reads them on every request or tick. A worker stopped in the middle of a turn
 handler that runs it. Parsing is strict. An unknown flag, a switch given a value other than `true` or `false`, or a value
 flag with no value exits 2 and prints the command's valid flags. A command that changes a lane runs under the lane's lock
 ([lib/lane-lock.ts](lib/lane-lock.ts)). It then appends an entry to the lane's ledger. The manpage is the `MANPAGE`
-block in `bin/govern`, and the operating manual for agents is [SKILL.md](SKILL.md) (`govern manual`).
+block in `bin/govern`, and the operating manual for agents is the short core [SKILL.md](SKILL.md) (`govern manual`), with the
+detailed rules in [REFERENCE.md](REFERENCE.md) (`govern manual --full`) and in each command's rules text
+([lib/helprules.ts](lib/helprules.ts), shown by `govern help <command>`).
 
 ## Servers
 
