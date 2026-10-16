@@ -6,7 +6,7 @@ import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import * as queue from "../lib/queue.ts";
 import { identity } from "../lib/locks.ts";
-import { makeEnv, govern, write, reply, present, type Env } from "./helpers.ts";
+import { makeEnv, govern, write, reply, present, seedChecks, type Env } from "./helpers.ts";
 
 const answer = { kind: "REVIEW", summary: "two claims unsupported", body: "Claim 3 and 7 have no source." };
 function env(): Env {
@@ -20,6 +20,7 @@ function inProcess(e: Env, t: { after: (fn: () => void) => void }): void {
   for (const k of Object.keys(process.env)) if (k.startsWith("GOVERN_")) delete process.env[k];
   Object.assign(process.env, e.env);
   t.after(() => { process.env = old; });
+  seedChecks(); // the dispatcher runs a profile only after a passing self-test; the fake codex cannot answer probes
 }
 const queueConfig = (e: Env, cfg: unknown) => write(join(e.root, "queue", "config.json"), JSON.stringify(cfg));
 const SEND = ["task", "send", "--to", "codex", "--project", "film", "--task", "check", "--summary", "check the claims", "--body", "BODY-XYZ"];
