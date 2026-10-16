@@ -6,7 +6,7 @@ The brand images are scene-render scenes (`scenes/*.scene.xml`) rendered to PNG 
 
 ## The mark
 
-A rounded ink tile holds one lane: five stages joined by a line. The first four stages are paper-white. An amber gate, a vertical bar taller than the stages, stands before the fifth stage, which is green. It reads as the dev process in the manual: work moves through stages, and the last step is not reached until the owner opens the gate. The mark has no text and stays legible at 32 px.
+A rounded ink tile holds one lane: five stages joined by a line. The first four stages are paper-white. An amber gate, a vertical bar taller than the stages, stands before the fifth stage, which is green. It reads as the dev process in the manual: work moves through stages, and the last step, the push, waits for the owner's go. The mark has no text and stays legible at 32 px.
 
 ## Palette
 
@@ -35,7 +35,7 @@ All text is an engine text layer set in DejaVu Sans (bold for the word "govern" 
 | `hero.png` | 2400×1200 | home page hero: four lanes moving through five stages, a gate, a desk watching |
 | `social-card.png` | 1200×630 | link previews: wordmark and "agent work, in lanes, with gates" |
 | `press-banner.png` | 2400×600 | press releases: wordmark and "press release" |
-| `process-stages.png` | 2400×1200 | figure of the dev process: plan, build, test, review, done, with the owner's gate before done |
+| `process-stages.png` | 2400×1200 | figure of the dev process: plan, build, test, review, done, with the owner's go before done |
 
 ## Re-render
 
