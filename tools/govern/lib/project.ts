@@ -268,6 +268,36 @@ export function laneState(p: Project): string {
   return b.length ? `blocked by ${b.join(", ")}` : "ready";
 }
 
+/** A lane is flagged as possibly behind its work when at least this many jobs, notes and asks were recorded since its last advance... */
+export const DRIFT_MIN_ENTRIES = 20;
+/** ...and that advance (or, for a lane never advanced, its creation) is at least this many hours old. */
+export const DRIFT_MIN_HOURS = 24;
+/** What a lane's ledger recorded since its last `advance` (or since creation): distinct jobs, notes and asks, and the hours since. */
+export interface Drift { jobs: number; notes: number; asks: number; hours: number; since: "advance" | "creation" }
+
+/** The jobs (counted once by id, so a background job's start and end line are one), notes and asks recorded since the lane's last
+ *  advance, and the whole hours since that advance; counted from the lane's creation when it never advanced. */
+export function stageDrift(p: Project, led: Record<string, any>[], now = Date.now()): Drift {
+  const last = led.findLastIndex((e) => e.kind === "advance");
+  const at = last < 0 ? Date.parse(p.created) : Date.parse(String(led[last]!.t));
+  const after = led.slice(last + 1);
+  return {
+    jobs: new Set(after.filter((e) => e.kind === "job").map((e) => String(e.id))).size,
+    notes: after.filter((e) => e.kind === "note").length,
+    asks: after.filter((e) => e.kind === "ask").length,
+    hours: Number.isFinite(at) ? Math.max(0, Math.floor((now - at) / 3600_000)) : 0,
+    since: last < 0 ? "creation" : "advance",
+  };
+}
+/** The warning line for a lane that is not finished, has at least DRIFT_MIN_ENTRIES such entries and no advance in DRIFT_MIN_HOURS; undefined otherwise. */
+export function driftWarning(p: Project, led: Record<string, any>[], now = Date.now()): string | undefined {
+  if (p.finished) return undefined;
+  const d = stageDrift(p, led, now);
+  if (d.jobs + d.notes + d.asks < DRIFT_MIN_ENTRIES || d.hours < DRIFT_MIN_HOURS) return undefined;
+  const what = [[d.jobs, "jobs"], [d.notes, "notes"], [d.asks, "asks"]].filter(([n]) => n).map(([n, w]) => `${n} ${w}`).join(", ");
+  return `⚠ stage may be behind: ${what} since ${d.since === "advance" ? "the last advance" : "the lane was created"} ${d.hours} h ago`;
+}
+
 /** Append `entry` to the lane's ledger as one JSON line, stamped with the time and slug; creates `govern/` when missing. */
 export function appendLedger(slug: string, entry: Record<string, unknown>): void {
   mkdirSync(governDir(slug), { recursive: true });
@@ -350,6 +380,9 @@ export function brief(p: Project, o: { notes?: number } = {}): string {
   L.push(`# ${p.slug} — ${p.title}`);
   const label = kinded || pr.name === "ops" ? `kind ${p.kind}` : `process ${pr.name}`;
   L.push(`${label}${kinded ? ` · lang ${p.lang}` : ""}${p.parent ? ` · from ${p.parent}` : ""} · stage ${n}/${list.length} ${p.stage}${p.finished ? " (finished)" : ""} · folder ${rel(dir)}`);
+  const led = readJsonl(ledgerFile(p.slug));
+  const drift = driftWarning(p, led);
+  if (drift) L.push(drift);
   if (manualOf(pr)) L.push(`manual: govern manual ${pr.name}`);
   if(p.workflow?.loops)L.push(`loop repeats: ${JSON.stringify(p.workflow.loops)}`);
   if (p.workflow) L.push(`active: ${p.workflow.active.join(', ') || '(none)'}${p.workflow.waiting.length ? ` · joins waiting: ${p.workflow.waiting.join(', ')}` : ''}`);
@@ -362,7 +395,6 @@ export function brief(p: Project, o: { notes?: number } = {}): string {
   if (ex) L.push(`exit when: ${ex}`);
   const chk = checkOf(p);
   if (chk) L.push(`check: command "${chk}"${p.commands[chk] ? "" : ` (not set: govern cmd ${p.slug} ${chk} -- …)`}`);
-  const led = readJsonl(ledgerFile(p.slug));
   const pending = pendingCheckChanges(p, led), unaccepted = "changed and the owner has not accepted it";
   for (const { stage, sets, cmds } of pending) {
     const [firstSet] = sets;

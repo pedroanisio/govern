@@ -10,7 +10,10 @@ import { gateApproved, activeStages } from "./business.ts";
 import * as jobs from "./jobs.ts";
 import * as queue from "./queue.ts";
 
-export const STATUSES = ["running", "waiting-on-owner", "waiting-on-coordinator", "blocked-by-check", "idle", "done"] as const;
+/** Stage drift (jobs, notes and asks since the last advance, and the warning thresholds) is computed in project.ts, which the brief also uses. */
+export { stageDrift as drift, driftWarning, DRIFT_MIN_ENTRIES, DRIFT_MIN_HOURS, type Drift } from "./project.ts";
+
+export const STATUSES =["running", "waiting-on-owner", "waiting-on-coordinator", "blocked-by-check", "idle", "done"] as const;
 export type Status = (typeof STATUSES)[number];
 export const MARKS = ["done", "current", "blocked", "todo"] as const;
 export type Mark = (typeof MARKS)[number];

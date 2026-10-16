@@ -4,7 +4,7 @@ import { gateApproved } from './business.ts';
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { readJsonl, kTok, clip } from "./util.ts";
-import { load, ledgerFile, stagesOf, laneState, laneSlugs, laneRows } from "./project.ts";
+import { load, ledgerFile, stagesOf, laneState, driftWarning, laneSlugs, laneRows } from "./project.ts";
 import { processOf } from "./process.ts";
 import * as queue from "./queue.ts";
 import { tag } from "./replycheck.ts";
@@ -83,7 +83,8 @@ export function desk(): { text: string; failed: number; lanes: number } {
     const note = p.notes.at(-1);
     const list = stagesOf(p);
     const state = laneState(p);
-    return `  ${s.padEnd(40)} ${p.kind.padEnd(5)} ${`${list.indexOf(p.stage) + 1}/${list.length} ${p.stage}`.padEnd(16)} ${gate.padEnd(13)} ${open.padEnd(14)} ${p.workflow ? `active ${p.workflow.active.join(", ")} · ` : ""}${state ? `${state} · ` : ""}${note ? `${ago(note.at)}: ${clip(note.text, 60)}` : ""}`.trimEnd();
+    const drift = driftWarning(p, led);
+    return `  ${s.padEnd(40)} ${p.kind.padEnd(5)} ${`${list.indexOf(p.stage) + 1}/${list.length} ${p.stage}`.padEnd(16)} ${gate.padEnd(13)} ${open.padEnd(14)} ${p.workflow && !p.finished ? `active ${p.workflow.active.join(", ")} · ` : ""}${state ? `${state} · ` : ""}${note ? `${ago(note.at)}: ${clip(note.text, 60)}` : ""}`.trimEnd() + (drift ? `\n      ${drift}` : "");
   }, "  ");
   L.push(...rows);
   const alerts=slugs.flatMap(s=>{try{return (load(s).alerts??[]).filter(a=>!a.acknowledgedAt).map(a=>`  ${s} ${a.id}: ${clip(a.message,100)}`);}catch{return [];}});
@@ -100,8 +101,9 @@ export function desk(): { text: string; failed: number; lanes: number } {
   let runners: readonly string[] = queue.BUILTIN_RUNNERS;
   try { runners = queue.plainRunners(); } catch (e) { L.push(`queue: config error — ${e instanceof Error ? e.message : String(e)}`); }
   const claims = msgs.filter((x) => x.state === "claimed").map(({ m }) => ({ m, holder: queue.claimState(m) }));
-  const perRunner = runners.map((r) => `${r}: ${count("open", r)} waiting, ${claims.filter((x) => x.m.to === r && x.holder === "live").length} running`);
-  L.push("", `QUEUE  ${perRunner.join(" · ")} · failed: ${count("failed")} · ${dispatcherState()} · ${repliesToday(day)}`);
+  const limitOf = (r: string): number => { try { return queue.runnerLimit(r); } catch { return 1; } }; // a bad config is already reported above
+  const perRunner = runners.map((r) => `${r}: ${count("open", r)} waiting, running ${claims.filter((x) => x.m.to === r && x.holder === "live").length}/${limitOf(r)}`);
+  L.push("", `QUEUE  ${perRunner.join(" · ")} · failed: ${count("failed")} (govern task triage) · ${dispatcherState()} · ${repliesToday(day)}`);
   for (const { m, holder } of claims) if (holder !== "live")
     L.push(`  ${m.id}: ${holder} holder${holder === "dead" ? ` (${m.claim!.by})` : ""} · inspect: govern task show ${m.id}${holder === "unknown" ? ` · recover: govern task reclaim ${m.id} --note "<why>"` : " · recovered on next dispatch"}`);
   if (bad) L.push(`unverified replies: ${bad}  · their content is kept but no check passed: govern task show <id>`);

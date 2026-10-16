@@ -4,11 +4,11 @@
 // dispatchers never take the same message. The dispatcher runs no model while it waits: for each open message addressed
 // to an AI agent it starts ONE fresh headless session (codex exec or claude -p) with only that message, its thread and
 // the files it names, verifies the reply, files it as a new message to the sender and closes the original.
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir, homedir } from "node:os";
 import { existsSync, statSync, mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync, appendFileSync } from "node:fs";
-import { join, resolve, dirname } from "node:path";
+import { join, resolve, dirname, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import { fail, stamp, nowIso, clip, charLimit } from "./util.ts";
 import { repo, projectsDir, queueDir, config as workspaceConfig, expandPlaceholders } from "./workspace.ts";
@@ -18,8 +18,8 @@ import { cost } from "./usage.ts";
 import { identity, live, withMutex } from "./locks.ts";
 import { prepareGrokHome, syncBackAuth } from "./grokhome.ts";
 import { parseEvents, execArgs, validate, type Usage } from "./codex.ts";
-import { type ConfigChecks, configChecks, declared, verify, resolveNamed, checkNames, verifyDeclared, type Verification } from "./replycheck.ts";
-import { obj, arr, str, posInt, record, literal, parseFile, type Shape } from "./shape.ts";
+import { type CheckDef, type ConfigChecks, configChecks, declared, verify, resolveNamed, checkNames, verifyDeclared, type Verification } from "./replycheck.ts";
+import { obj, arr, str, posInt, record, literal, parseFile, keyPath, type Shape } from "./shape.ts";
 import { registry, getProfile, writes, guardProblem, checkProblem, profileHash, claudeArgs, codexSpec, grokArgs, LEGACY_PROFILES, type Profile, type Registry } from "./caps.ts";
 
 import * as agents from "./agents.ts";
@@ -45,18 +45,35 @@ export interface QueueConfig {
   /** Content checks on replies by message kind, the task's or the reply's (lib/replycheck.ts); a profile's own `check` wins over these for content kinds.
    *  `named` holds the checks a sender chooses with `--check NAME`. */
   checks?: ConfigChecks;
+  /** The most runs of one runner or profile at once across all dispatchers, counted from live claims (default 1 per runner). */
+  concurrency?: Record<string, number>;
+  /** The longest a message may ask to run (`task send --timeout`), in seconds (default 7200). */
+  maxTimeoutSec?: number;
 }
 const RUNNER: Shape<RunnerDef> = obj({ argv: arr(str, { nonEmpty: true }) }, { format: literal("text", "json-result") });
+/** The longest run a message may ask for when the queue's config.json sets no maxTimeoutSec. */
+export const DEFAULT_MAX_TIMEOUT_SEC = 7200;
+/** Retries one failed message may have (counting retries of its retries): the bound is code, not the model's or the sender's choice. */
+export const MAX_RETRIES = 2;
 
 /** The queue's config.json, strictly parsed; {} when absent. A bad field fails naming the file and JSON path. */
 export function config(): QueueConfig {
   const f = join(QUEUE(), "config.json");
   if (!existsSync(f)) return {};
   const shape: Shape<QueueConfig> = obj({}, {
-    name: str, maxRuns: posInt, runners: record(RUNNER), checks: (v) => configChecks(f, v, KINDS),
+    name: str, maxRuns: posInt, maxTimeoutSec: posInt, concurrency: record(posInt), runners: record(RUNNER), checks: (v) => configChecks(f, v, KINDS),
   });
-  return parseFile(f, readFileSync(f, "utf8"), shape);
+  const cfg = parseFile(f, readFileSync(f, "utf8"), shape);
+  if (cfg.concurrency) {
+    const known = [...new Set([...BUILTIN_RUNNERS, ...Object.keys(cfg.runners ?? {}), ...registry().profiles.keys()])];
+    for (const n of Object.keys(cfg.concurrency)) if (!known.includes(n)) fail(`${f}: ${keyPath("$.concurrency", n)}: "${n}" is neither a runner nor a profile (known: ${known.join(", ")})`);
+  }
+  return cfg;
 }
+/** The longest run a message may ask for: maxTimeoutSec of the queue's config.json, else 7200 s. */
+export const maxTimeout = (): number => config().maxTimeoutSec ?? DEFAULT_MAX_TIMEOUT_SEC;
+/** How long the dispatcher lets message `m` run: its own `--timeout` limit (capped by maxTimeoutSec), else GOVERN_QUEUE_TIMEOUT_SEC, else 900 s. */
+export const taskTimeout = (m: Pick<Message, "timeoutSec">): number => (m.timeoutSec !== undefined ? Math.min(m.timeoutSec, maxTimeout()) : dispatchTimeout());
 /** Agents the dispatcher can run. Anyone else (owner, a named session) only reads the queue. */
 /** codex, claude, grok and the config.json runners: the queue line of the desk (profiles have their own line). */
 export const plainRunners = (): string[] => [...BUILTIN_RUNNERS, ...Object.keys(config().runners ?? {})];
@@ -87,6 +104,13 @@ export interface Message {
   routed?: boolean;
   /** id of the message this one is a copy of (govern task forward) */
   forwardedFrom?: string;
+  /** How long the run may take, in seconds (`task send --timeout`): used instead of GOVERN_QUEUE_TIMEOUT_SEC, capped by maxTimeoutSec. */
+  timeoutSec?: number;
+  /** On a message `task retry` filed: the failed or closed message it repeats, and what was fixed before sending it again. */
+  retryOf?: string;
+  retryNote?: string;
+  /** On the message that was retried: each retry filed from it, and the note given. */
+  retries?: { id: string; note: string; at: string }[];
   /** On a reply the dispatcher filed: whether a content check ran on it and passed (lib/replycheck.ts). Absent on a message no check was asked of. */
   verification?: Verification;
   /** On a task: the names of the content checks the sender asked for with `--check` (all must pass for [checked]), in addition to those of the kinds. */
@@ -99,7 +123,8 @@ export interface Message {
   claim?: { by: string; pid: number; start: string; at: string };
   remote?: { peer: string; id: string };
   relay?: { attempts: number; lastError: string; nextAt: string };
-  result?: { profile?: string; profileHash?: string; closedBy?: string; note?: string; agent: string; ok: boolean; usage?: Usage & { costUsd?: number }; turns?: number; seconds: number; reply?: string; error?: string;
+  /** failure: where a dispatched run went wrong, the runner itself ("runner") or the reply it gave ("reply": empty, not JSON, off schema). */
+  result?: { profile?: string; profileHash?: string; closedBy?: string; note?: string; agent: string; ok: boolean; usage?: Usage & { costUsd?: number }; turns?: number; seconds: number; reply?: string; error?: string; failure?: "runner" | "reply";
     /** The run's envelope was repaired by one call; `repair` is that call (usage, seconds, and the engine and model that made it). */
     repaired?: true; repair?: Repair };
 }
@@ -145,6 +170,10 @@ export function send(m: Omit<Message, "id" | "created">): Message {
     fail(`--project must be a project slug (lowercase, digits, dots, dashes, /): ${m.project}`);
   if (!KINDS.includes(m.kind as any)) fail(`--kind must be one of ${KINDS.join(", ")}`);
   if (!m.summary.trim()) fail("--summary is required");
+  if (m.timeoutSec !== undefined) {
+    if (!Number.isInteger(m.timeoutSec) || m.timeoutSec < 1) fail(`--timeout must be a whole number of seconds, 1 or more: ${m.timeoutSec}`);
+    if (m.timeoutSec > maxTimeout()) fail(`--timeout ${m.timeoutSec} is above maxTimeoutSec ${maxTimeout()} (${join(QUEUE(), "config.json")}; default ${DEFAULT_MAX_TIMEOUT_SEC})`);
+  }
   if (m.profile) {
     const reg = registry();
     const why = guardProblem(reg, getProfile(m.profile, reg), laneOf(m), m.lane !== undefined, m.project);
@@ -243,10 +272,34 @@ export const save = (m: Message, s: State) => {
 /** Serialize claim ownership changes and recovery, including the rename-to-record gap. */
 const claimGuard = <T>(f: () => T): T => withMutex(join(QUEUE(), ".claims"), f);
 
-/** Atomically take an open message, then record the process responsible for its run. */
-export function claim(m: Message, by: string): boolean {
+/** The profile a message runs under: its own, else the one its recipient implies. */
+const profileOf = (m: Message, reg: Registry): string | undefined => m.profile ?? defaultProfile(m, reg);
+
+/** Messages in claimed/ whose holder is alive. A dead or unknown holder does not count: its claim is about to be failed. */
+const liveClaims = (): Message[] => all().filter((x) => x.state === "claimed" && claimState(x.m) === "live").map((x) => x.m);
+
+/** The most runs of runner `name` at once: its entry in the queue's concurrency, else 1. */
+export const runnerLimit = (name: string): number => config().concurrency?.[name] ?? 1;
+
+/** Runs of runner `name` in progress now, over all dispatchers, and the most that may run. */
+export function runnerUsage(name: string): { running: number; limit: number } {
+  return { running: liveClaims().filter((x) => x.to === name).length, limit: runnerLimit(name) };
+}
+
+/** Whether taking `m` would put its runner (or its profile, when the config limits that) above its limit, counting live claims. */
+function atLimit(m: Message): boolean {
+  const live = liveClaims();
+  if (live.filter((x) => x.to === m.to).length >= runnerLimit(m.to)) return true;
+  const reg = registry(), prof = profileOf(m, reg), cap = prof !== undefined && prof !== m.to ? config().concurrency?.[prof] : undefined;
+  return cap !== undefined && live.filter((x) => profileOf(x, reg) === prof).length >= cap;
+}
+
+/** Atomically take an open message, then record the process responsible for its run. With `limited`, a message whose runner is at its
+ *  concurrency limit stays open (false), decided under the same guard as the rename so two dispatchers cannot both pass it. */
+export function claim(m: Message, by: string, limited = false): boolean {
   return claimGuard(() => {
     const me = identity(process.pid) ?? fail("cannot identify the claiming process");
+    if (limited && atLimit(m)) return false;
     if (!move(m, "open", "claimed")) return false;
     m.claim = { by, pid: process.pid, start: me.start, at: nowIso() };
     save(m, "claimed");
@@ -277,7 +330,7 @@ function failClaim(m: Message, by: string, note?: string, reason?: string): Mess
   return m;
 }
 
-/** Fail claims of dead processes, for every claimer. Holderless claims fail after max(3600 s, twice the dispatch timeout); never retry unknown effects. */
+/** Fail claims of dead processes, for every claimer. Holderless claims fail after max(3600 s, twice the task's timeout); never retry unknown effects. */
 export function reclaimDead(now = Date.now()): string[] {
   return claimGuard(() => {
     const lines: string[] = [];
@@ -286,7 +339,7 @@ export function reclaimDead(now = Date.now()): string[] {
       const holder = claimState(m);
       if (holder === "live") continue;
       if (holder === "unknown") {
-        const bound = Math.max(3600, 2 * dispatchTimeout());
+        const bound = Math.max(3600, 2 * taskTimeout(m));
         // With no claim timestamp, rename updates ctime, so an old open message cannot inherit an old claim age.
         const at = m.claim?.at ? Date.parse(m.claim.at) : statSync(join(dir("claimed"), `${m.id}.json`)).ctimeMs;
         if (now - at <= bound * 1000 || !Number.isFinite(at)) {
@@ -343,6 +396,78 @@ export function expireMail(now = Date.now()): string[] {
   });
 }
 
+// ---------------------------------------------------------------- triage and retry of failed tasks
+
+/** One failed message (or, with `all`, an unverified reply in done/) as `task triage` shows it. */
+export interface TriageRow {
+  id: string; state: "failed" | "done"; to: string; from: string; project: string; task: string; kind: string; created: string; ageSec: number;
+  /** dispatcher error, parse failure, dead claim, expired, held (refused or stopped before it ran) or unverified reply. */
+  cause: string; reason: string;
+  usage?: { input: number; output: number }; costUsd?: number;
+  /** The kept whole reply, relative to the folder that holds the queue: queue/failed/<id>.reply.txt. */
+  replyKept?: string;
+}
+
+/** What went wrong with a message in failed/ (or an unverified one in done/), from the result the dispatcher recorded. */
+function causeOf(m: Message, state: "failed" | "done"): { cause: string; reason: string } {
+  const one = (s: string) => clip(s.replace(/\s+/g, " ").trim(), 160);
+  if (state === "done") return { cause: "unverified reply", reason: one(m.verification?.reason ?? "content check failed") };
+  const r = m.result, error = r?.error ?? "";
+  if (r?.closedBy === "govern" && (r.note ?? "").startsWith("expired")) return { cause: "expired", reason: one(r.note!) };
+  if (/died during the run|unknown holder|no holder recorded/.test(error)) return { cause: "dead claim", reason: one(error) };
+  if (r?.closedBy === "dispatcher" && /refused|maxRuns/.test(error)) return { cause: "held", reason: one(error) };
+  if (r?.failure === "reply" || /^(empty reply|reply is not JSON)/.test(error)) return { cause: "parse failure", reason: one(error) };
+  return { cause: "dispatcher error", reason: one(error || "no result recorded") };
+}
+
+/** Every message in failed/ (and, with `all`, every reply marked unverified in done/), newest first, filtered by project and recipient. */
+export function triage(o: { all?: boolean; project?: string; to?: string } = {}, now = Date.now()): TriageRow[] {
+  const rows: TriageRow[] = [];
+  for (const { state, m } of all()) {
+    if (state !== "failed" && !(o.all && state === "done" && m.verification?.state === "unverified")) continue;
+    if ((o.project && m.project !== o.project) || (o.to && m.to !== o.to)) continue;
+    const kept = join(QUEUE(), "failed", `${m.id}.reply.txt`), u = m.result?.usage;
+    rows.push({
+      id: m.id, state, to: m.to, from: m.from, project: m.project, task: m.task, kind: m.kind, created: m.created,
+      ageSec: Math.max(0, Math.round((now - Date.parse(m.created)) / 1000)), ...causeOf(m, state),
+      ...(u ? { usage: { input: u.input, output: u.output } } : {}), ...(u?.costUsd != null ? { costUsd: u.costUsd } : {}),
+      ...(existsSync(kept) ? { replyKept: relative(dirname(QUEUE()), kept) } : {}),
+    });
+  }
+  return rows.sort((a, b) => b.created.localeCompare(a.created) || b.id.localeCompare(a.id));
+}
+
+/** File a new open message that repeats a failed (or closed) one: its recipient, project, task, kind, summary, body, files, lane and
+ *  estimate, threaded to it, `retryOf` and `retryNote` on the new message and the note on the original. `o` may override the
+ *  recipient, write access, profile and timeout. Refuses without a note, for a message still open or claimed, and for a third retry of
+ *  one original (retries of its retries count): never automatic, and bounded here, in code. */
+export function retry(ref: string, o: { note: string; to?: string; write?: boolean; profile?: string; timeoutSec?: number }): Message {
+  const note = o.note.trim();
+  if (!note) fail("task retry requires --note saying what was fixed");
+  const hit = find(ref) ?? fail(`no message ${ref}`);
+  const orig = hit.m;
+  if (hit.state === "open" || hit.state === "claimed") fail(`message ${orig.id} is still ${hit.state}: retry a failed or closed message`);
+  const byId = new Map(all().map((x) => [x.m.id, x.m]));
+  const rootOf = (m: Message): Message => { let cur = m; while (cur.retryOf && byId.has(cur.retryOf)) cur = byId.get(cur.retryOf)!; return cur; };
+  const root = rootOf(orig);
+  const tries = [...byId.values()].filter((x) => x.retryOf && rootOf(x).id === root.id).length;
+  if (tries >= MAX_RETRIES) fail(`message ${root.id} was already retried ${tries} times (the limit is ${MAX_RETRIES}): decide what to do with it yourself, or send a new task`);
+  const to = o.to ?? orig.to;
+  const target = o.to === undefined && !o.write && o.profile === undefined
+    ? { access: orig.access, ...(orig.profile ? { profile: orig.profile } : {}) }
+    : resolveTarget(to, { write: o.write ?? (o.profile === undefined && orig.access === "write"), ...(o.profile !== undefined ? { profile: o.profile } : {}) });
+  const timeoutSec = o.timeoutSec ?? orig.timeoutSec;
+  const copy = send({
+    project: orig.project, task: orig.task, kind: orig.kind, from: orig.from, to, summary: orig.summary, body: orig.body, files: orig.files,
+    access: target.access, ...(target.profile ? { profile: target.profile } : {}), ...(orig.lane ? { lane: orig.lane } : {}),
+    ...(orig.estimateUsd !== undefined ? { estimateUsd: orig.estimateUsd } : {}), ...(timeoutSec !== undefined ? { timeoutSec } : {}),
+    replyTo: orig.id, retryOf: orig.id, retryNote: note,
+  });
+  orig.retries = [...(orig.retries ?? []), { id: copy.id, note, at: nowIso() }];
+  save(orig, hit.state);
+  return copy;
+}
+
 // ---------------------------------------------------------------- the prompt one session gets
 
 /** The folders a codex profile's add-dirs open to writing beside the project folder: the prompt names them, or the model refuses a
@@ -375,6 +500,7 @@ export function prompt(m: Message, maxChars = charLimit("GOVERN_QUEUE_MAX_INLINE
     ...t.map((x) => x.verification?.state === "unverified"
       ? `--- ${x.id} [${x.kind}] from ${x.from}${x.from.includes("@") ? " (another host)" : ""} to ${x.to}: [Host: unverified reply withheld because its content check failed. Inspect it with govern task show ${x.id}.]`
       : `--- ${x.id} [${x.kind}] from ${x.from}${x.from.includes("@") ? " (another host)" : ""} to ${x.to}: ${x.summary}\n${x.body}`),
+    m.retryNote ? `This message is a retry of ${m.retryOf}. What was fixed before it was sent again: ${m.retryNote}` : "",
     files.length ? `Files named by the message:\n${files.join("\n")}` : "",
     `Answer with JSON only: {"kind": one of ${REPLY_KINDS.join("|")}, "summary": one line of at most ${SUMMARY_MAX} characters, "body": the full answer}. Use BLOCKED when you cannot do it, saying exactly what is missing.`,
   ].filter(Boolean).join("\n");
@@ -680,119 +806,199 @@ function tellHold(m: Message, h: allowances.Refusal): void {
 /** How long one dispatched run may take: GOVERN_QUEUE_TIMEOUT_SEC, else 900 s. */
 const dispatchTimeout = (): number => { const n = Number(process.env.GOVERN_QUEUE_TIMEOUT_SEC); return Number.isFinite(n) && n > 0 ? n : 900; };
 
-/** Run every open message addressed to a runner, oldest first, at most `max`. Returns what happened, one line each. */
-export function dispatch(o: { max?: number; only?: string; timeoutSec?: number } = {}): string[] {
-  const lines = [...reclaimDead(), ...expireMail()];
+export interface DispatchOpts { max?: number; only?: string; timeoutSec?: number }
+/** What one dispatch pass needs from the config and the environment, read (and so validated) before any message is claimed. */
+interface Pass { cfg: QueueConfig; fromConfig: Record<string, CheckDef>; maxInline: number; maxRuns: number; limits: ReturnType<typeof allowances.allowances> }
+function passOf(): Pass {
   const cfg = config();
-  // The whole config is checked before any message is claimed or any paid session runs.
-  const fromConfig = cfg.checks?.byKind ?? {};
-  // So does a bad GOVERN_QUEUE_MAX_INLINE: read after a claim, it would leave the message stuck in claimed/.
-  const maxInline = charLimit("GOVERN_QUEUE_MAX_INLINE", MAX_FILES_CHARS);
+  return {
+    cfg,
+    // The whole config is checked before any message is claimed or any paid session runs.
+    fromConfig: cfg.checks?.byKind ?? {},
+    // So does a bad GOVERN_QUEUE_MAX_INLINE: read after a claim, it would leave the message stuck in claimed/.
+    maxInline: charLimit("GOVERN_QUEUE_MAX_INLINE", MAX_FILES_CHARS),
+    maxRuns: cfg.maxRuns ?? 4,
+    limits: allowances.allowances(),
+  };
+}
+/** The open messages a pass may run, oldest first: addressed to a runner, and to `only` when given. */
+const candidates = (o: DispatchOpts): Message[] => {
   const names = runners();
-  const maxRuns = cfg.maxRuns ?? 4;
-  const limits = allowances.allowances();
-  const todo = all().filter((x) => x.state === "open" && names.includes(x.m.to) && (!o.only || x.m.to === o.only))
-    .slice(0, o.max ?? Infinity);
-  for (const { m } of todo) {
-    if (!claim(m, "dispatcher")) continue; // another claimer took it
-    const used = threadRuns(m);
-    if (used >= maxRuns) {
-      const stop = send({ project: m.project, task: m.task, kind: "BLOCKED", from: "dispatcher", to: "owner", summary: `thread reached maxRuns ${maxRuns}`, body: `${m.id} (${m.kind} from ${m.from} to ${m.to}) was not run: its thread already used ${used} dispatched run(s), the limit in ${join(QUEUE(), "config.json")} (maxRuns, default 4). Decide whether it goes on: send it again yourself, or close it.`, files: [], replyTo: m.id, access: "read-only" });
-      m.result = { agent: "dispatcher", ok: false, seconds: 0, error: `thread reached maxRuns ${maxRuns}`, reply: stop.id, closedBy: "dispatcher" };
-      save(m, "claimed");
-      move(m, "claimed", "failed");
-      lines.push(`${m.id} → ${m.to}: stopped: thread already ran ${used} time${used === 1 ? "" : "s"} (maxRuns ${maxRuns}) · to owner ${stop.id}`);
-      continue;
-    }
-    const reg = registry();
-    const refuse = (name: string | undefined, why: string): string => {
-      const stop = send({ project: m.project, task: m.task, kind: "BLOCKED", from: "dispatcher", to: LEGACY_OWNER(m), summary: `${name ?? m.to} refused: ${why}`, body: `${m.id} (${m.kind} from ${m.from} to ${m.to}) was not run: ${why}`, files: [], replyTo: m.id, access: "read-only" });
-      m.result = { agent: "dispatcher", ok: false, seconds: 0, ...(name ? { profile: name } : {}), error: `${name ? `profile ${name} ` : ""}refused: ${why}`, reply: stop.id, closedBy: "dispatcher" };
-      save(m, "claimed");
-      move(m, "claimed", "failed");
-      return `${m.id} → ${m.to}: refused: ${why} · to ${stop.to} ${stop.id}`;
-    };
-    if (m.verification?.state === "unverified") {
-      lines.push(refuse(undefined, `unverified reply: ${m.verification.reason ?? "content check failed"}; inspect it with govern task show ${m.id}`));
-      continue;
-    }
-    const prof = m.profile ?? defaultProfile(m, reg);
-    if (prof !== undefined && !configuredRunner(m.to) && !reg.profiles.has(prof)) { lines.push(refuse(prof, `profile ${prof} does not exist (have: ${[...reg.profiles.keys()].join(", ")})`)); continue; }
-    const sealed = prof !== undefined && !configuredRunner(m.to) ? getProfile(prof, reg) : undefined;
-    if (!sealed && !cfg.runners?.[m.to]) { lines.push(refuse(undefined, `${m.to} has no profile and no runner in ${join(QUEUE(), "config.json")}`)); continue; }
-    if (sealed) {
-      const why = guardProblem(reg, sealed, laneOf(m), m.lane !== undefined, m.project) ?? checkProblem(QUEUE(), reg, sealed);
-      if (why) { lines.push(refuse(sealed.name, why)); continue; }
-    }
-    // Checked before the reservation, so a refused message holds nothing.
-    const folder = join(projectsDir(), m.project);
-    if (sealed && writes(reg, sealed) && !existsSync(folder)) { lines.push(refuse(sealed.name, `profile ${sealed.name} may change files, and the project folder ${folder} does not exist`)); continue; }
-    const taskId = `task:${m.id}`;
-    let held: allowances.Refusal | undefined;
-    try {
-      held = allowances.reserve(limits, { ...(laneOf(m) ? { lane: laneOf(m)! } : {}), ...(prof ? { profile: prof } : {}) },
-        { id: taskId, label: `task ${m.id}`, ...(m.estimateUsd !== undefined ? { usd: m.estimateUsd } : {}) }, jobs.settleDead);
-    } catch (e) {
-      delete m.claim;
-      save(m, "claimed");
-      move(m, "claimed", "open");
-      throw e;
-    } // never left claimed: nobody would run it
-    if (held) {
-      delete m.claim;
-      save(m, "claimed");
-      move(m, "claimed", "open");
-      lines.push(`${m.id} → ${m.to}: held: ${held.text.replaceAll("\n", " · ")}`);
-      tellHold(m, held);
-      continue;
-    }
-    const t0 = Date.now();
-    const def = cfg.runners?.[m.to];
-    const cwd = existsSync(folder) ? folder : repo();
-    let r: RunOut;
-    const cap = allowances.reservedUsd(taskId); // the reservation is a cap, not a hint
-    let started = false;
-    try {
-      const input = prompt(m, maxInline);
-      started = true;
-      r = sealed
-        ? runSealed(reg, sealed, cwd, input, o.timeoutSec ?? dispatchTimeout(), { lastMessage: join(QUEUE(), "claimed", `${m.id}.reply.txt`), schema: REPLY_SCHEMA, ...(cap !== undefined ? { maxBudgetUsd: cap } : {}) })
-        : runConfigured(def as RunnerDef, m, input, o.timeoutSec ?? dispatchTimeout());
-    } catch (e) {
-      if (!started) allowances.release(taskId);
-      r = { error: `${started ? "runner failed" : "task preparation failed"}: ${e instanceof Error ? e.message : String(e)}`, spendUnknown: started };
-    }
-    // A run that finished (exit 0, no error) with text that does not parse gets ONE repair call: never more, whatever the model answers.
-    let reply: { kind: string; summary: string; body: string } | { error: string } = r.error ? { error: r.error } : parseReply(r.text);
-    let rr: RunOut | undefined, repair: Repair | undefined, repairText: string | undefined;
-    const raw = r.text?.trim() ? r.text : r.prose;
-    if ("error" in reply && !r.error && sealed && raw?.trim() && repairOn()) {
-      const tr = Date.now();
-      rr = repairEnvelope(reg, sealed, cwd, raw, join(QUEUE(), "claimed", `${m.id}.repair.txt`));
-      repair = { engine: sealed.engine, ...(sealed.engine === "claude" ? { model: REPAIR_CLAUDE_MODEL } : {}), seconds: Math.round((Date.now() - tr) / 1000), ...(rr.usage ? { usage: rr.usage } : {}), ...(rr.turns !== undefined ? { turns: rr.turns } : {}) };
-      repairText = rr.text ?? rr.prose ?? rr.error;
-      const again = rr.error ? { error: rr.error } : faithful(raw, parseReply(rr.text));
-      if ("error" in again) reply = { error: `${reply.error}; the one repair call did not produce a valid reply either: ${again.error}` };
-      else reply = again;
-    }
-    const repaired = repair !== undefined && !("error" in reply);
-    allowances.settle(taskId, sumActual(usdOf(r, sealed?.model), rr ? usdOf(rr, sealed?.engine === "claude" ? REPAIR_CLAUDE_MODEL : undefined) : undefined));
-    const seconds = Math.round((Date.now() - t0) / 1000);
-    const ok = !("error" in reply);
-    m.result = { agent: m.to, ok, ...(sealed ? { profile: sealed.name, profileHash: profileHash(reg, sealed) } : {}), usage: r.usage, turns: r.turns, seconds, ...(ok ? {} : { error: (reply as any).error }), ...(repaired ? { repaired: true as const } : {}), ...(repair ? { repair } : {}) };
-    // The check runs before the reply is filed, so it never reaches its reader without the mark.
-    const chosen = resolveNamed(m.check ?? [], sealed?.checks, cfg.checks?.named ?? {});
-    const verification = ok ? verify(declared(m.kind, (reply as any).kind, sealed?.check, fromConfig, [...chosen.found, ...(m.verify ? [verifyDeclared(m.verify)] : [])]),
-      { id: m.id, summary: (reply as any).summary, body: (reply as any).body, kinds: [m.kind, (reply as any).kind], dir: cwd, logDir: join(QUEUE(), "replychecks"), files: m.files.map((f) => resolve(repo(), f)), missing: chosen.missing }) : undefined;
-    const answer = ok
-      ? send({ project: m.project, task: m.task, kind: (reply as any).kind, from: m.to, to: m.from, summary: (reply as any).summary, body: (reply as any).body, files: [], replyTo: m.id, access: "read-only", ...(repaired ? { repaired: true as const } : {}), ...(verification ? { verification } : {}) })
-      : send({ project: m.project, task: m.task, kind: "BLOCKED", from: "dispatcher", to: LEGACY_OWNER(m), summary: `${m.to} reply failed verification`, body: `${(reply as any).error}\nwhole reply: ${keepRaw(m, raw ?? r.text)}${repair ? `\nrepair reply: ${keepRaw(m, repairText, "repair")}` : ""}`, files: [], replyTo: m.id, access: "read-only" });
-    m.result.reply = answer.id;
-    save(m, "claimed");
-    move(m, "claimed", ok ? "done" : "failed");
-    appendFileSync(join(QUEUE(), "ledger.jsonl"), JSON.stringify({ t: nowIso(), id: m.id, project: m.project, task: m.task, agent: m.to, ok, seconds, turns: r.turns, usage: r.usage, ...(verification ? { verification: verification.state } : {}), ...(repaired ? { repaired: true } : {}), ...(repair ? { repair } : {}), ...(sealed ? { profile: sealed.name, profileHash: profileHash(reg, sealed) } : {}) }) + "\n");
-    const u = r.usage;
-    lines.push(`${m.id} → ${m.to}: ${ok ? (reply as any).kind : "FAILED"} in ${seconds}s${u ? `, ${Math.round(u.input / 1000)}k in (${u.input ? Math.round((u.cached / u.input) * 100) : 0}% cached), ${u.output} out${u.costUsd != null ? `, $${u.costUsd.toFixed(3)}` : ""}` : ""}${repaired ? ` · envelope repaired by one ${repair!.engine} call` : repair ? " · envelope repair failed" : ""} · reply ${answer.id}${verification ? ` · ${verification.state}${verification.state === "unverified" ? `: ${clip(verification.reason ?? "", 80)}` : ""}` : ""}`);
+  return all().filter((x) => x.state === "open" && names.includes(x.m.to) && (!o.only || x.m.to === o.only)).map((x) => x.m);
+};
+
+/** Run every open message addressed to a runner, oldest first, one at a time, at most `max`. A message whose runner is at its
+ *  concurrency limit stays open. Returns what happened, one line each. */
+export function dispatch(o: DispatchOpts = {}): string[] {
+  const lines = [...reclaimDead(), ...expireMail()];
+  const pass = passOf();
+  let started = 0;
+  for (const m of candidates(o)) {
+    if (started >= (o.max ?? Infinity)) break;
+    if (!claim(m, "dispatcher", true)) continue; // another claimer took it, or its runner is at its limit
+    started++;
+    lines.push(...runClaimed(m, pass, o));
   }
   return lines;
+}
+
+/** Worker processes of a parallel dispatch that are still running, so the loop can stop them with itself. */
+const workers = new Set<ChildProcess>();
+/** Stop the worker processes of a parallel dispatch (SIGTERM). Their claims then read as dead and the next pass fails them. */
+export function stopWorkers(): void { for (const w of workers) w.kill("SIGTERM"); }
+
+/** Like `dispatch`, with up to `parallel` messages running at once: this process claims each message (under the runner's limit) and
+ *  starts a worker, `worker` plus `task dispatch --run-claimed ID`, that runs it and prints its line. A worker that dies before
+ *  finishing fails its claim, as a dead claim would. Messages whose runner is at its limit wait for a free slot, and stay open if none
+ *  frees while this pass has work. */
+export async function dispatchParallel(o: DispatchOpts & { parallel: number; worker: string[] }): Promise<string[]> {
+  const lines = [...reclaimDead(), ...expireMail()];
+  passOf(); // a bad config fails the pass before anything is claimed
+  const waiting = candidates(o), active = new Set<Promise<void>>();
+  let started = 0;
+  for (;;) {
+    for (let i = 0; i < waiting.length && active.size < o.parallel && started < (o.max ?? Infinity);) {
+      const m = waiting[i]!;
+      if (!claim(m, "dispatcher", true)) {
+        if (find(m.id)?.state === "open") i++; else waiting.splice(i, 1); // at its limit: try later; taken: forget it
+        continue;
+      }
+      waiting.splice(i, 1);
+      started++;
+      const job: Promise<void> = runWorker(m, o.worker).then((l) => { lines.push(...l); }).finally(() => { active.delete(job); });
+      active.add(job);
+    }
+    if (!active.size) break;
+    await Promise.race(active);
+  }
+  return lines;
+}
+
+/** One worker for the claimed message `m`: its output lines, and a failed claim when it died before the message left claimed/. */
+function runWorker(m: Message, worker: string[]): Promise<string[]> {
+  return new Promise((done) => {
+    const [bin, ...args] = worker;
+    const child = spawn(bin!, [...args, "task", "dispatch", "--run-claimed", m.id], { env: process.env, stdio: ["ignore", "pipe", "pipe"] });
+    workers.add(child);
+    let stdout = "", stderr = "";
+    child.stdout.on("data", (c) => { stdout += c; });
+    child.stderr.on("data", (c) => { stderr += c; });
+    const finish = (code: number | null, signal: NodeJS.Signals | null, error?: Error) => {
+      workers.delete(child);
+      const out = stdout.split("\n").filter(Boolean);
+      const left = find(m.id);
+      if (left?.state !== "claimed") return done(out);
+      const why = error ? error.message : `worker exited ${code ?? signal} before finishing: ${clip(stderr.trim() || stdout.trim(), 300)}`;
+      done([...out, claimGuard(() => { const f = failClaim(left.m, "dispatcher", undefined, why); return `${f.id}: ${why} · failed · notice ${f.result!.reply}`; })]);
+    };
+    child.on("error", (e) => finish(null, null, e));
+    child.on("close", (code, signal) => finish(code, signal));
+  });
+}
+
+/** The worker side of a parallel dispatch: run message `id`, which the parent process claimed, and return its line. */
+export function runClaimedBy(id: string, o: DispatchOpts = {}): string[] {
+  const hit = find(id) ?? fail(`no message ${id}`);
+  if (hit.state !== "claimed" || hit.m.claim?.pid !== process.ppid) fail(`message ${hit.m.id} is not claimed by the process that started this worker`);
+  return runClaimed(hit.m, passOf(), o);
+}
+
+/** Everything that follows a claim: the thread's run bound, the profile and allowance checks, the run, the reply's verification and the
+ *  filing. Returns the lines of what happened (one for a run, a refusal or a hold). */
+function runClaimed(m: Message, pass: Pass, o: DispatchOpts): string[] {
+  const { cfg, fromConfig, maxInline, maxRuns, limits } = pass;
+  const used = threadRuns(m);
+  if (used >= maxRuns) {
+    const stop = send({ project: m.project, task: m.task, kind: "BLOCKED", from: "dispatcher", to: "owner", summary: `thread reached maxRuns ${maxRuns}`, body: `${m.id} (${m.kind} from ${m.from} to ${m.to}) was not run: its thread already used ${used} dispatched run(s), the limit in ${join(QUEUE(), "config.json")} (maxRuns, default 4). Decide whether it goes on: send it again yourself, or close it.`, files: [], replyTo: m.id, access: "read-only" });
+    m.result = { agent: "dispatcher", ok: false, seconds: 0, error: `thread reached maxRuns ${maxRuns}`, reply: stop.id, closedBy: "dispatcher" };
+    save(m, "claimed");
+    move(m, "claimed", "failed");
+    return [`${m.id} → ${m.to}: stopped: thread already ran ${used} time${used === 1 ? "" : "s"} (maxRuns ${maxRuns}) · to owner ${stop.id}`];
+  }
+  const reg = registry();
+  const refuse = (name: string | undefined, why: string): string[] => {
+    const stop = send({ project: m.project, task: m.task, kind: "BLOCKED", from: "dispatcher", to: LEGACY_OWNER(m), summary: `${name ?? m.to} refused: ${why}`, body: `${m.id} (${m.kind} from ${m.from} to ${m.to}) was not run: ${why}`, files: [], replyTo: m.id, access: "read-only" });
+    m.result = { agent: "dispatcher", ok: false, seconds: 0, ...(name ? { profile: name } : {}), error: `${name ? `profile ${name} ` : ""}refused: ${why}`, reply: stop.id, closedBy: "dispatcher" };
+    save(m, "claimed");
+    move(m, "claimed", "failed");
+    return [`${m.id} → ${m.to}: refused: ${why} · to ${stop.to} ${stop.id}`];
+  };
+  if (m.verification?.state === "unverified") return refuse(undefined, `unverified reply: ${m.verification.reason ?? "content check failed"}; inspect it with govern task show ${m.id}`);
+  const prof = profileOf(m, reg);
+  if (prof !== undefined && !configuredRunner(m.to) && !reg.profiles.has(prof)) return refuse(prof, `profile ${prof} does not exist (have: ${[...reg.profiles.keys()].join(", ")})`);
+  const sealed = prof !== undefined && !configuredRunner(m.to) ? getProfile(prof, reg) : undefined;
+  if (!sealed && !cfg.runners?.[m.to]) return refuse(undefined, `${m.to} has no profile and no runner in ${join(QUEUE(), "config.json")}`);
+  if (sealed) {
+    const why = guardProblem(reg, sealed, laneOf(m), m.lane !== undefined, m.project) ?? checkProblem(QUEUE(), reg, sealed);
+    if (why) return refuse(sealed.name, why);
+  }
+  // Checked before the reservation, so a refused message holds nothing.
+  const folder = join(projectsDir(), m.project);
+  if (sealed && writes(reg, sealed) && !existsSync(folder)) return refuse(sealed.name, `profile ${sealed.name} may change files, and the project folder ${folder} does not exist`);
+  const taskId = `task:${m.id}`;
+  let held: allowances.Refusal | undefined;
+  try {
+    held = allowances.reserve(limits, { ...(laneOf(m) ? { lane: laneOf(m)! } : {}), ...(prof ? { profile: prof } : {}) },
+      { id: taskId, label: `task ${m.id}`, ...(m.estimateUsd !== undefined ? { usd: m.estimateUsd } : {}) }, jobs.settleDead);
+  } catch (e) {
+    delete m.claim;
+    save(m, "claimed");
+    move(m, "claimed", "open");
+    throw e;
+  } // never left claimed: nobody would run it
+  if (held) {
+    delete m.claim;
+    save(m, "claimed");
+    move(m, "claimed", "open");
+    tellHold(m, held);
+    return [`${m.id} → ${m.to}: held: ${held.text.replaceAll("\n", " · ")}`];
+  }
+  const t0 = Date.now();
+  const def = cfg.runners?.[m.to];
+  const cwd = existsSync(folder) ? folder : repo();
+  let r: RunOut;
+  const cap = allowances.reservedUsd(taskId); // the reservation is a cap, not a hint
+  const limit = o.timeoutSec ?? taskTimeout(m);
+  let started = false;
+  try {
+    const input = prompt(m, maxInline);
+    started = true;
+    r = sealed
+      ? runSealed(reg, sealed, cwd, input, limit, { lastMessage: join(QUEUE(), "claimed", `${m.id}.reply.txt`), schema: REPLY_SCHEMA, ...(cap !== undefined ? { maxBudgetUsd: cap } : {}) })
+      : runConfigured(def as RunnerDef, m, input, limit);
+  } catch (e) {
+    if (!started) allowances.release(taskId);
+    r = { error: `${started ? "runner failed" : "task preparation failed"}: ${e instanceof Error ? e.message : String(e)}`, spendUnknown: started };
+  }
+  // A run that finished (exit 0, no error) with text that does not parse gets ONE repair call: never more, whatever the model answers.
+  let reply: { kind: string; summary: string; body: string } | { error: string } = r.error ? { error: r.error } : parseReply(r.text);
+  let rr: RunOut | undefined, repair: Repair | undefined, repairText: string | undefined;
+  const raw = r.text?.trim() ? r.text : r.prose;
+  if ("error" in reply && !r.error && sealed && raw?.trim() && repairOn()) {
+    const tr = Date.now();
+    rr = repairEnvelope(reg, sealed, cwd, raw, join(QUEUE(), "claimed", `${m.id}.repair.txt`));
+    repair = { engine: sealed.engine, ...(sealed.engine === "claude" ? { model: REPAIR_CLAUDE_MODEL } : {}), seconds: Math.round((Date.now() - tr) / 1000), ...(rr.usage ? { usage: rr.usage } : {}), ...(rr.turns !== undefined ? { turns: rr.turns } : {}) };
+    repairText = rr.text ?? rr.prose ?? rr.error;
+    const again = rr.error ? { error: rr.error } : faithful(raw, parseReply(rr.text));
+    if ("error" in again) reply = { error: `${reply.error}; the one repair call did not produce a valid reply either: ${again.error}` };
+    else reply = again;
+  }
+  const repaired = repair !== undefined && !("error" in reply);
+  allowances.settle(taskId, sumActual(usdOf(r, sealed?.model), rr ? usdOf(rr, sealed?.engine === "claude" ? REPAIR_CLAUDE_MODEL : undefined) : undefined));
+  const seconds = Math.round((Date.now() - t0) / 1000);
+  const ok = !("error" in reply);
+  m.result = { agent: m.to, ok, ...(sealed ? { profile: sealed.name, profileHash: profileHash(reg, sealed) } : {}), usage: r.usage, turns: r.turns, seconds, ...(ok ? {} : { error: (reply as any).error, failure: r.error ? "runner" as const : "reply" as const }), ...(repaired ? { repaired: true as const } : {}), ...(repair ? { repair } : {}) };
+  // The check runs before the reply is filed, so it never reaches its reader without the mark.
+  const chosen = resolveNamed(m.check ?? [], sealed?.checks, cfg.checks?.named ?? {});
+  const verification = ok ? verify(declared(m.kind, (reply as any).kind, sealed?.check, fromConfig, [...chosen.found, ...(m.verify ? [verifyDeclared(m.verify)] : [])]),
+    { id: m.id, summary: (reply as any).summary, body: (reply as any).body, kinds: [m.kind, (reply as any).kind], dir: cwd, logDir: join(QUEUE(), "replychecks"), files: m.files.map((f) => resolve(repo(), f)), missing: chosen.missing }) : undefined;
+  const answer = ok
+    ? send({ project: m.project, task: m.task, kind: (reply as any).kind, from: m.to, to: m.from, summary: (reply as any).summary, body: (reply as any).body, files: [], replyTo: m.id, access: "read-only", ...(repaired ? { repaired: true as const } : {}), ...(verification ? { verification } : {}) })
+    : send({ project: m.project, task: m.task, kind: "BLOCKED", from: "dispatcher", to: LEGACY_OWNER(m), summary: `${m.to} reply failed verification`, body: `${(reply as any).error}\nwhole reply: ${keepRaw(m, raw ?? r.text)}${repair ? `\nrepair reply: ${keepRaw(m, repairText, "repair")}` : ""}`, files: [], replyTo: m.id, access: "read-only" });
+  m.result.reply = answer.id;
+  save(m, "claimed");
+  move(m, "claimed", ok ? "done" : "failed");
+  appendFileSync(join(QUEUE(), "ledger.jsonl"), JSON.stringify({ t: nowIso(), id: m.id, project: m.project, task: m.task, agent: m.to, ok, seconds, turns: r.turns, usage: r.usage, ...(verification ? { verification: verification.state } : {}), ...(repaired ? { repaired: true } : {}), ...(repair ? { repair } : {}), ...(sealed ? { profile: sealed.name, profileHash: profileHash(reg, sealed) } : {}) }) + "\n");
+  const u = r.usage;
+  return [`${m.id} → ${m.to}: ${ok ? (reply as any).kind : "FAILED"} in ${seconds}s${u ? `, ${Math.round(u.input / 1000)}k in (${u.input ? Math.round((u.cached / u.input) * 100) : 0}% cached), ${u.output} out${u.costUsd != null ? `, $${u.costUsd.toFixed(3)}` : ""}` : ""}${repaired ? ` · envelope repaired by one ${repair!.engine} call` : repair ? " · envelope repair failed" : ""} · reply ${answer.id}${verification ? ` · ${verification.state}${verification.state === "unverified" ? `: ${clip(verification.reason ?? "", 80)}` : ""}` : ""}`];
 }

@@ -231,9 +231,15 @@ resolves the names and `checks/` holds the built-ins (file-refs, commit-refs, cl
 | Processes as JSON | Code per kind of work | A new kind of work is a new file, and govern does not change |
 
 
+## Queue concurrency, limits and retries
+
+`dispatch` claims each message under the claim guard, and the guard also checks the message's runner (and profile) against the queue config's `concurrency`, counted from live claims across every dispatcher (default 1 per runner); a message over its limit stays open. `dispatch --parallel N` makes `dispatchParallel` claim messages in one process and run each in a worker (`task dispatch --run-claimed ID`), so the run itself stays the synchronous code path; a worker that dies before the message leaves `claimed/` has its claim failed like a dead one. A message's own `--timeout` replaces `GOVERN_QUEUE_TIMEOUT_SEC` for its run (capped by `maxTimeoutSec`, default 7200), and the holderless-claim bound uses it. `triage` reads `failed/` (and unverified replies in `done/`) and classifies each by the result the dispatcher recorded; `retry` files a threaded copy with `retryOf` and the note, bounded at two retries per original in code (`MAX_RETRIES`).
+
+Stage drift (`stageDrift` in `project.ts`, re-exported by `lanestate.ts`) counts the jobs, notes and asks in a lane's ledger since its last `advance`; `DRIFT_MIN_ENTRIES` and `DRIFT_MIN_HOURS` set when `status`, `desk` and `brief` warn.
+
 ## Automatic queue settlement
 
-The dispatcher tick owns deterministic retention bounds. A holderless claim fails after `max(3600, 2 * dispatchTimeout())` seconds, using its claim timestamp or the claimed file’s metadata-change time (ctime, updated by the claim rename) when no timestamp exists. It follows the abandoned-claim settlement path, charges unknown spend as reserved, records govern as the handler and sends the normal BLOCKED notice. It never retries effects that may already have occurred; manual reclaim remains available and refuses live holders.
+The dispatcher tick owns deterministic retention bounds. A holderless claim fails after `max(3600, 2 * taskTimeout(m))` seconds (the task's own limit, else `dispatchTimeout()`), using its claim timestamp or the claimed file’s metadata-change time (ctime, updated by the claim rename) when no timestamp exists. It follows the abandoned-claim settlement path, charges unknown spend as reserved, records govern as the handler and sends the normal BLOCKED notice. It never retries effects that may already have occurred; manual reclaim remains available and refuses live holders.
 
 Open local mail expires after workspace `mailTtlHours` (positive integer, default 72) only when the recipient is absent from runners, profiles, live registrations (including aliases), live sessions and mailboxes. Workspace `mailboxes` is a string array; `owner` is always included. Remote addresses belong to the relay. Under the claim guard, expiry atomically takes the message, records `closedBy: "govern"` and its reason, and moves it to `failed/`. Only known senders get a NOTICE, so expired names cannot create notice loops. Telemetry carries the resolution handler and reason to the terminal and browser command centers.
 
