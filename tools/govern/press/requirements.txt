@@ -1,0 +1,4 @@
+# reportlab: PDF layout.
+reportlab==4.4.3
+# pypdf: reading the output back in tests.
+pypdf==6.1.1
