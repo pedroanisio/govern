@@ -1,5 +1,7 @@
 # Persistent conversation runtime
 
+`govern conversation` belongs to the `conversation` extension: a workspace enables it with `govern ext enable conversation` (see [REFERENCE.md](REFERENCE.md#extensions)).
+
 Govern owns conversation identity, messages, execution attempts, context boundaries, progress events and outcomes. Configured coding harnesses perform model/tool work; their session stores are not the conversation's authority. Each turn receives Govern's assembled history. This provides continuity even when an ephemeral harness session ends or the worker restarts.
 
 ## Use

@@ -1,5 +1,7 @@
 # Durable workflow lifecycle
 
+The commands `govern event`, `govern event-listen`, `govern tick`, `govern alerts`, `govern subprocess` and `govern recover` belong to the `business` extension: a workspace enables it with `govern ext enable business` (see [REFERENCE.md](REFERENCE.md#extensions)). The lifecycle runtime that `govern advance` and `govern work` use is the core's.
+
 Govern extends business workflows with timers and escalation, correlated external events, exception recovery, reusable subprocesses, and pinned process revisions. These features compose with the fields, graph stages, human tasks and approval gates described in [BUSINESS.md](BUSINESS.md).
 
 The executable definitions in [examples/fulfillment.json](examples/fulfillment.json) and [examples/supplier-review.json](examples/supplier-review.json) demonstrate the whole workflow. Copy both into your workspace's processes folder. They require Node and use a local exit check; no API credential is needed for the CLI example. Adding a process file does not run commands or start a listener.

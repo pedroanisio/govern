@@ -12,6 +12,8 @@ disclaimer:
 
 Part of [govern](README.md), in [super-tools](../../README.md).
 
+`govern remote` belongs to the `remote` extension: a workspace enables it with `govern ext enable remote` (see [REFERENCE.md](REFERENCE.md#extensions)).
+
 govern remote lets the owner of the work follow every lane and its telemetry from a phone, and approve gates there,
 without weakening the rule that a gate opens only on the owner's own words. It is two parts: `govern remote serve`, an
 HTTP API on the machine that holds the workspace, and the Android app in [android/](android/README.md). This document

@@ -39,7 +39,7 @@ govern runs lanes of agent work through the checked stages of a process. Its des
 | Part | What it is |
 |---|---|
 | Actors | The owner, a paired phone, the working agent session, the headless runners the queue starts, external systems that deliver events, and peer hosts that exchange queue messages |
-| CLI | [bin/govern](../../bin/govern) runs [govern.ts](govern.ts) under Node with type stripping; the command table dispatches into [lib/](lib/) |
+| CLI | [bin/govern](../../bin/govern) runs [govern.ts](govern.ts) under Node with type stripping; the command table dispatches into [lib/](lib/), and into [ext/](ext/) for a command of an enabled extension |
 | Subsystems | Twelve groups of `lib/` modules, listed below |
 | Servers | `govern remote serve` for paired phones and `govern event-listen` for webhooks, `govern peer serve` for signed queue delivery, agent discovery, telemetry and mesh membership between hosts, and `govern center serve` for the operator's command center on loopback |
 | State | A workspace folder of JSON and JSONL files; every command and all four servers read there, every server but the command center writes there, and nothing else holds state |
@@ -53,13 +53,15 @@ re-reads them on every request or tick. A worker stopped in the middle of a turn
 
 ## The CLI layer
 
-`govern.ts` holds the command table. For each command it records the flags the command takes, its usage lines and the
+`govern.ts` holds the table of the core commands; the commands of an extension (below) are entries of the same shape in `ext/<name>/index.ts`, and the core knows which command belongs to which extension from [lib/ext-registry.ts](lib/ext-registry.ts) alone. For each command it records the flags the command takes, its usage lines and the
 handler that runs it. Parsing is strict. An unknown flag, a switch given a value other than `true` or `false`, or a value
 flag with no value exits 2 and prints the command's valid flags. A command that changes a lane runs under the lane's lock
 ([lib/lane-lock.ts](lib/lane-lock.ts)). It then appends an entry to the lane's ledger. The manpage is the `MANPAGE`
 block in `bin/govern`, and the operating manual for agents is the short core [SKILL.md](SKILL.md) (`govern manual`), with the
 detailed rules in [REFERENCE.md](REFERENCE.md) (`govern manual --full`) and in each command's rules text
 ([lib/helprules.ts](lib/helprules.ts), shown by `govern help <command>`).
+
+An extension loads with a dynamic `import()` ([lib/ext.ts](lib/ext.ts)) only when the command typed belongs to it, when `help` shows one of its commands, when `desk` asks for its lines, or when the queue calls it (a `NAME@PEER` recipient, the dispatcher loop's relay, the shadow ask). A command of a disabled extension is recognised and refused with exit 2. A test fails when `govern.ts` statically reaches a file only an extension loads. An extension's commands reach the core's `advance` and policy decision through `lib/cli.ts`, never by importing `govern.ts`.
 
 ## Servers
 
@@ -142,6 +144,19 @@ static peer or a mesh member; each host keeps its own profiles, gates, allowance
 | Owner surfaces and measurement | `desk.ts`, `remote.ts`, `remote-view.ts`, `remote-pair.ts`, `qr.ts`, `artifacts.ts`, `usage.ts`, `tune.ts`, `skill.ts`, `decide.ts`, `typesafeCall.ts` | The desk; `govern-remote/2` with pairing and signed approvals (see [Servers](#servers)); artifact digests; tokens per lane and segment; hourly tuning; a decision classifier asked in shadow mode only, whose answers are recorded and scored and never acted on |
 
 [lib/util.ts](lib/util.ts) holds argument parsing, the typed `GovernError` and JSONL helpers, and every group uses it.
+
+### Extensions
+
+| Extension | Commands | What it loads | Stays in the core |
+|---|---|---|---|
+| peer | `peer`, `mesh`, `agents` | `peer.ts`, `mesh.ts`, `telemetry.ts` | `peer-id.ts` and `agents.ts`: the queue and the live-session view read them; `parseAddress`, so `task send` can refuse a `NAME@PEER` recipient |
+| center | `center` | `center.ts`, `center.html` | |
+| remote | `remote` | `remote.ts`, `remote-view.ts`, `remote-pair.ts`, `qr.ts` | `artifacts.ts` (lane evidence) and `http-errors.ts`, the error classes it shares with the remote server |
+| decide | `decide` | `decide.ts`, `typesafeCall.ts` | |
+| conversation | `conversation` | `conversation-cli.ts`, `-runtime.ts`, `-adapters.ts`, `-host.ts`, `-worker.ts` | `conversation.ts` and `conversation-owner.ts`: `usage` reads the sessions |
+| business | `event`, `event-listen`, `tick`, `alerts`, `subprocess`, `recover`, `human`, `human-inbox`, `data`, `reject` | `event-server.ts` | `business.ts`, `business-schema.ts`, `lifecycle.ts`, `lifecycle-runtime.ts`, `lifecycle-schema.ts`, `fanout.ts`: `advance`, `approve`, `work`, the brief and the lane state depend on them |
+
+The extensions' modules are listed by name here and in the registry; their `index.ts` files are in [ext/](ext/README.md).
 
 ## State layout
 

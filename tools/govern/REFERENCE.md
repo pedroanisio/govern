@@ -19,6 +19,7 @@ Sections (headings are stable; other changes add to them):
 - Business processes
 - Durable lifecycle
 - Persistent conversations
+- Extensions
 
 ## Overview and other hosts
 
@@ -32,7 +33,7 @@ You and the owner do the work together; `govern` keeps that conversation cheap a
 
 A process may own a manual with the rules of its kind of work (for example how a build runs or what its steps must say). The brief names it when it does (`manual: govern manual <process>`); read it once, then work from the brief. `govern manual <process>` prints it.
 
-For a recipient on another host, `govern task send --to NAME@PEER` uses a live static peer or mesh member and skips
+*Extension: peer (and center, for the command center); `govern ext enable peer`.* For a recipient on another host, `govern task send --to NAME@PEER` uses a live static peer or mesh member and skips
 local session liveness. `govern agents list` shows what you may address on every other host (`--refresh` asks them
 now). To be reachable from other hosts yourself, run `govern agents register --project P [--description TEXT]`: it
 publishes your own inbox as NAME@HOST, for those projects, until it expires (12 hours by default) or your session
@@ -55,7 +56,7 @@ host's health, alerts, agents, spend and latest messages; `govern center serve` 
 
 The owner's one screen is `govern desk`: every lane, their inbox, the queue and today's tokens. One session works one lane; the other lanes wait in their files, not in open chat tabs. A session that starts in a lane's folder (or with `GOVERN_LANE=<slug>`) already has its work segment: the `govern hook session-start` hook (`govern install-skill` prints the line to add) opens it on the lane's current stage.
 
-The owner can also follow the lanes from a phone: `govern remote serve` serves the desk, each lane and today's telemetry to paired devices (the Android app in `android/`), and a paired device approves gates and acknowledges alerts with a signature the owner confirms on the phone (REMOTE.md). `govern remote pair` makes the one-time pairing code and is refused inside an agent session: never pair a device, and never ask the owner for a code. A phone can also ask to pair: `govern remote link` prints the link it scans, `govern remote requests` lists open requests with their 6-digit comparison codes, and `govern remote confirm <id> --code NNNNNN` (or `govern remote refuse <id>`) answers one; if no lanes were requested, confirm requires `--lane SLUG` (repeatable) or `--all`. These, too, are the owner's alone. `govern remote devices` lists paired devices and `govern remote revoke <id>` cuts one off; both are the owner's. An approval whose source is `device` is the owner's own words, as valid as one from their terminal.
+*Extension: remote; `govern ext enable remote`.* The owner can also follow the lanes from a phone: `govern remote serve` serves the desk, each lane and today's telemetry to paired devices (the Android app in `android/`), and a paired device approves gates and acknowledges alerts with a signature the owner confirms on the phone (REMOTE.md). `govern remote pair` makes the one-time pairing code and is refused inside an agent session: never pair a device, and never ask the owner for a code. A phone can also ask to pair: `govern remote link` prints the link it scans, `govern remote requests` lists open requests with their 6-digit comparison codes, and `govern remote confirm <id> --code NNNNNN` (or `govern remote refuse <id>`) answers one; if no lanes were requested, confirm requires `--lane SLUG` (repeatable) or `--all`. These, too, are the owner's alone. `govern remote devices` lists paired devices and `govern remote revoke <id>` cuts one off; both are the owner's. An approval whose source is `device` is the owner's own words, as valid as one from their terminal.
 
 Add review evidence with `govern artifact add <slug> <file> [--name N] [--title T] [--caption C]`; it copies private bytes into the lane and records their SHA-256 and version. `govern artifact list <slug>` prints metadata and reviews of the current digest. Replacing bytes invalidates reviews of older bytes. Paired phones can read artifacts, sessions and job logs through the remote API.
 
@@ -192,6 +193,8 @@ Tokens are attributed to a lane by where the session works, not by a command you
 
 ### Decisions (Jev, shadow mode)
 
+*Extension: decide; `govern ext enable decide`.*
+
 `govern decide ask --questions <file.json> (--state <text> | --state-file <file>) [--purpose P] [--json]` asks Jev (TypeSafe System One, `POST /v1/systemone`) the questions about the state and prints the answers:
 - question types: `choice` (criteria: a key → description map), `score` (criteria: an ordered list of at least 2 levels), `noul` (a probability; criteria optional). Each needs `instructions`.
 - the key is `TYPESAFE_API_KEY`, else the dotenv file named by `decide.envFile` in the workspace config (only that variable is read). It goes to the child process through the environment, never argv, and is redacted from errors.
@@ -210,21 +213,28 @@ govern reads these variables; the MANPAGE (`govern --help`) gives each one's def
 - Sessions: `GOVERN_AS` (your queue name), `GOVERN_SESSIONS_DIR` (the Claude Code session registry), `GOVERN_CLAUDE_PROJECTS`, `GOVERN_CODEX_SESSIONS` and `GOVERN_GROK_SESSIONS` (where `govern usage` finds transcripts), `GOVERN_CLAUDE_SETTINGS` (the settings file `govern tune` writes), `GOVERN_GROK_HOME`.
 - Programs: `GOVERN_CODEX_BIN`, `GOVERN_CLAUDE_BIN`, `GOVERN_GROK_BIN`, `GOVERN_PYTHON` (fills `{python}`).
 - Limits and models: `GOVERN_CTX_WARN` (the context warning), `GOVERN_TARGET_CTX` (what `govern tune` aims at), `GOVERN_MAX_INLINE` (file text `govern ask` inlines), `GOVERN_QUEUE_MAX_INLINE` (file text a queued message inlines), `GOVERN_QUEUE_TIMEOUT_SEC` (one dispatched run; default 900 s), which a message's `--timeout` replaces for that run; the holderless-claim bound is twice the run's limit, at least 3600 s, `GOVERN_QUEUE_REPAIR` (`0` turns the envelope repair off) and `GOVERN_QUEUE_REPAIR_EFFORT` (Codex effort for it, default `low`), `GOVERN_QUEUE_CLAUDE_MODEL`, `GOVERN_QUEUE_CODEX_EFFORT`, `GOVERN_QUEUE_GROK_MODEL`, `GOVERN_GROK_MAX_TURNS`, `GOVERN_CAPS_CHECK_MODEL`, `GOVERN_GROK_CHECK_MODEL`, `GOVERN_JEV_MODEL`, `GOVERN_TYPESAFE_URL`.
-- The webhook: `GOVERN_WEBHOOK_TOKEN`, the bearer token `govern event-listen` requires.
+- The webhook (extension business): `GOVERN_WEBHOOK_TOKEN`, the bearer token `govern event-listen` requires.
+- Extensions: `GOVERN_EXTENSIONS`, the comma-separated names of the extensions to enable, instead of the config's `extensions` (empty is unset).
 - Tests and diagnosis: `GOVERN_NOW` (the allowances clock), `GOVERN_PROC=ps` (read the process table with ps).
 - Set by govern for what it runs, never by you: `GOVERN_JOB_ID` and `GOVERN_JOB_DIR` (every job), `GOVERN_TAG`, `GOVERN_LANE`, `GOVERN_RESOURCE`, `GOVERN_COUNT` and `GOVERN_ID` (a resource's commands), `GOVERN_PIECES`, `GOVERN_OUT` and `GOVERN_PIECE` (a slice's steps), `GOVERN_REPLY_FILE` and `GOVERN_TASK_FILES` (a reply check: the reply text, and the task's attached files as a JSON array), `GOVERN_CONVERSATION_RUN` (a conversation worker; an approval from under it is refused).
 
 ## Business processes
 
+*Extension: business; `govern ext enable business`.*
+
 See [BUSINESS.md](BUSINESS.md) for typed case data, conditional graph routes, parallel joins, assigned human tasks, and quorum approval policies. Use `govern data` to prepare fields and `govern advance <slug> --stage <stage>` to complete a specific active branch. Use `govern human` to list, claim, delegate, or complete stage tasks and `govern human-inbox` for tasks assigned or claimable by the current human. Use `govern reject` to record a policy veto and follow its declared rework route. Human task decisions and policy votes require the mapped human OS account and verified human words; never impersonate people or infer approvals. Policy votes expire and are invalidated by changed case data. Existing linear processes retain their behavior.
 
 ## Durable lifecycle
+
+*Extension: business; `govern ext enable business`.*
 
 See [LIFECYCLE.md](LIFECYCLE.md) for timers, business calendars, events, recovery, subprocesses and process revisions. `govern tick` emits due reminders and escalation alerts; `govern alerts` lists or acknowledges them. `govern event` delivers a stable, correlated event id; `govern event-listen` is the authenticated loopback webhook adapter. `govern subprocess` starts or syncs a declared child and never treats an unfinished child as success. `govern recover` requires verified human words before retrying exhausted checks or resolving uncertain compensation. `govern process pin` freezes an existing lane; `govern process migrate` requires a higher revision, explicit mappings where needed and the human's own quoted migration decision. Never infer that an external effect was undone: inspect compensation results before confirming them.
 
 See [Loops and dynamic branching](ITERATION.md) for bounded repeats, conditional fan-out, typed collections, and per-item subprocess joins.
 
 ## Persistent conversations
+
+*Extension: conversation; `govern ext enable conversation`.*
 
 Govern owns conversation history separately from case state; see [CONVERSATIONS.md](CONVERSATIONS.md). Use `govern conversation create <id> --profile codex-read` (or a trusted configured `--adapter`) and optionally `--lane` to bind a case. `govern conversation list`, `govern conversation show <id>` and `govern conversation history <id>` read the durable records. Submit with `govern conversation send <id> --message "..." --request-id KEY`; `--mode interrupt` requests cancellation before a replacement turn. `--message-file` reads UTF-8 input. Submission queues work; `--run` executes it, and `--run --bg` survives this caller disconnecting.
 
@@ -233,3 +243,13 @@ Govern owns conversation history separately from case state; see [CONVERSATIONS.
 `govern conversation cancel <id> <run-id> --reason "..."` preserves partial work and requests process-group shutdown. It does not undo external effects. A worker crash leaves an interrupted run and blocks further execution. Inspect those effects, then use `govern conversation recover <id> --action continue|retry|cancel --note "..."`; retry is an explicit new attempt. Conversation state is not a human approval source: model processes cannot approve business gates, and existing case checks and human-source rules still apply.
 
 Context is bounded and never silently truncated. `govern conversation context <id> --summary "..." --through <completed-assistant-message-id>` checkpoints completed history while retaining original messages and events. Summaries are historical context, not authority. `govern conversation close <id>` closes an idle session; history remains readable. Conversation state lives under the workspace's state folder and must be retained for restart. Never edit its JSON directly.
+
+## Extensions
+
+Peer, center, remote, decide, conversation and business are extensions: a workspace enables each one it uses, and the others are not loaded. A fresh workspace enables none.
+
+- `govern ext list` shows every extension with its state, its size in bytes and its commands. `govern ext enable <name>` and `govern ext disable <name>` write `extensions` in `.govern/config.json`; in a workspace with a `govern.config.json` that file is the owner's, so they are refused (exit 2) and name the file to edit by hand. `GOVERN_EXTENSIONS` (comma-separated) replaces the file's list. Enabling is workspace setup: nothing is ledgered.
+- The commands: peer owns `peer`, `mesh` and `agents`; center owns `center`; remote owns `remote`; decide owns `decide`; conversation owns `conversation`; business owns `event`, `event-listen`, `tick`, `alerts`, `subprocess`, `recover`, `human`, `human-inbox`, `data` and `reject`. The rest of the commands are the core's.
+- A command of a disabled extension prints one line, `govern: <command> is part of the <name> extension, which this workspace does not enable — govern ext enable <name>`, and exits 2. `govern task send --to NAME@PEER` is refused the same way while peer is off, and `govern task dispatch --loop` relays to peers and renews the mesh only while it is on.
+- `govern help` lists the core commands and one `extensions:` line with each extension's state. `govern help <command>` of an enabled extension prints the command's lines and rules, then the extension's own manpage text. `govern help --topics` lists an extension's documents only while it is enabled, each marked `(extension: <name>)`; `govern manual --size` prints a third line for them.
+- `govern desk` and `govern status` never load a disabled extension and do not fail because of an enabled one: peer adds a line with its peers and the messages waiting for them, and remote one with its paired devices, when there is something to show.

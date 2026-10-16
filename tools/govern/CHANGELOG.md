@@ -11,6 +11,10 @@ All notable changes to govern are documented here, following Keep a Changelog.
 
 ### Changed
 
+- Peer, mesh, agents, center, remote, decide, conversation and the business event and lifecycle commands (`event`, `event-listen`, `tick`, `alerts`, `subprocess`, `recover`, `human`, `human-inbox`, `data`, `reject`) are extensions: they load only where the workspace enables them, and a command of a disabled one is refused (exit 2) with `govern ext enable <name>`. `govern help` lists the core commands and one `extensions:` line; `govern help <command>` of an enabled extension adds the extension's own manpage text; `govern help --topics` lists an extension's documents only while it is enabled; `govern manual --size` prints a third line for them. A workspace enables none by default, so a workspace that used any of them must enable them (`govern ext enable <name>`, or `GOVERN_EXTENSIONS`).
+- `govern desk` and `govern status` never load a disabled extension. `task send`, `task forward` and `task retry` refuse a `NAME@PEER` recipient while peer is off, `task dispatch --loop` relays to peers and renews the mesh only while it is on, and the shadow ask of `decide.shadow` needs the decide extension.
+- `task send`, `task forward` and `task retry` are asynchronous (they load the peer extension for a `NAME@PEER` recipient): their failures reach the caller as rejections, not synchronous throws.
+
 - A Claude run that exits nonzero is a failed run even when it printed a result.
 - `govern install-skill` now links `<skills dir>/govern` to the tracked `tools/govern` folder instead of copying SKILL.md (the owner's rule: skills are tracked beside their tool and `.claude/skills` entries are symlinks); a real directory or file is refused unless `--replace`, and `--check` names what it found. The temp-file copy and its read-back are gone.
 - `SKILL.md` is now the core manual (at most 9,000 bytes, about 2,000 tokens); the detailed operating rules moved to the new [REFERENCE.md](REFERENCE.md) and into each command's `govern help <command>` text.
@@ -26,6 +30,9 @@ All notable changes to govern are documented here, following Keep a Changelog.
 
 ### Added
 
+- `govern ext list|enable|disable`, `extensions` in `.govern/config.json` and `govern.config.json` (an unknown name or a duplicate is refused, naming the file and the JSON path) and `GOVERN_EXTENSIONS` (comma-separated, replaces the file's list). `ext enable` and `ext disable` write `.govern/config.json` and are refused in a `govern.config.json` workspace, which is the owner's file.
+- The desk shows a `PEERS` line (peer extension, when there are peers) and a `REMOTE` line (remote extension, when devices are paired).
+- [ext/](ext/README.md): one folder per extension with its `index.ts`, its manpage text and a README; `lib/ext-registry.ts`, `lib/ext.ts` and `lib/cli.ts` are the core's side of it.
 - `govern help --topics` lists the reference documents with their paths.
 - `govern manual --full` prints the core manual followed by REFERENCE.md; `govern manual --size` prints the bytes and approximate tokens (bytes / 3.6) of both.
 - A run that exits 0 with a reply that does not parse gets one repair call (same engine and profile, `read` only, cheapest model, 120 s) before it fails; the task, the ledger and `task show` record it, `task list` shows `[repaired]`, and a failed repair keeps `.reply.txt` and `.repair.txt`. `GOVERN_QUEUE_REPAIR=0` turns it off.
