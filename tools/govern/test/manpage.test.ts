@@ -4,10 +4,13 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync, readdirSync, existsSync, statSync, mkdirSync, writeFileSync } from "node:fs";
 import { join, resolve, relative } from "node:path";
-import { HERE, tempDir } from "./helpers.ts";
-import { COMMANDS } from "../govern.ts";
+import { HERE, tempDir, fullTable } from "./helpers.ts";
 import { CLAUDE_MARKERS, CODEX_MARKERS } from "../lib/approval.ts";
 import { VAR as COMPACT_WINDOW_VAR } from "../lib/tune.ts";
+import { EXTENSIONS } from "../lib/ext-registry.ts";
+
+/** Every command: the core's and the extensions'. */
+const COMMANDS = await fullTable();
 
 const GOVERN_DIR = resolve(HERE, "..");
 const ROOT = resolve(GOVERN_DIR, "..", "..");
@@ -22,8 +25,10 @@ function manText(launcher: string): string {
   return launcher.slice(start, end).split("\n").slice(1).map((l) => l.replace(/^# ?/, "")).join("\n");
 }
 
-/** The body of one section: the lines after its heading up to the next heading (a line of capitals at column 0). */
-function section(man: string, name: string): string[] {
+/** The body of one section: the lines after its heading up to the next heading (a line of capitals at column 0). Given several
+ *  manpages (the core's and the extensions'), the sections of that name of each, one after the other. */
+function section(man: string | readonly string[], name: string): string[] {
+  if (typeof man !== "string") return man.flatMap((m) => section(m, name));
   const lines = man.split("\n"), at = lines.indexOf(name);
   if (at < 0) return [];
   const rest = lines.slice(at + 1), next = rest.findIndex((l) => /^[A-Z][A-Z ]+$/.test(l));
@@ -48,16 +53,21 @@ function declaredFlags(table: readonly FlagTable[]): Map<string, Set<string>> {
 const ENTRY = /^ {4}(?:-[a-z], )?--([a-z][a-z-]*)(?:[ =][^\s]+)?\s{2,}([a-z][a-z -]*(?:, [a-z][a-z -]*)*):\s/;
 
 /** Every disagreement between the OPTIONS section and the table: a flag with no entry, an entry for a flag no command
- *  declares, a flag listed twice, an entry line that does not parse, and an entry naming the wrong commands. */
-function optionProblems(man: string, table: readonly FlagTable[]): string[] {
+ *  declares, a flag listed twice, an entry line that does not parse, and an entry naming the wrong commands. Given the core
+ *  manpage and the extensions', a flag may have an entry in each (the commands of each), but only one in each. */
+function optionProblems(mans: string | readonly string[], table: readonly FlagTable[]): string[] {
   const declared = declaredFlags(table), seen = new Map<string, Set<string>>(), problems: string[] = [];
-  for (const line of section(man, "OPTIONS")) {
-    if (!/^ {4}-/.test(line)) continue;
-    const m = ENTRY.exec(line);
-    if (!m) { problems.push(`OPTIONS entry does not read as "--flag [ARG]  command, command: text": ${line.trim()}`); continue; }
-    const [, name = "", who = ""] = m;
-    if (seen.has(name)) problems.push(`OPTIONS lists --${name} twice`);
-    seen.set(name, new Set(who.split(", ").map((w) => w.trim())));
+  for (const man of typeof mans === "string" ? [mans] : mans) {
+    const here = new Set<string>();
+    for (const line of section(man, "OPTIONS")) {
+      if (!/^ {4}-/.test(line)) continue;
+      const m = ENTRY.exec(line);
+      if (!m) { problems.push(`OPTIONS entry does not read as "--flag [ARG]  command, command: text": ${line.trim()}`); continue; }
+      const [, name = "", who = ""] = m;
+      if (here.has(name)) problems.push(`OPTIONS lists --${name} twice`);
+      here.add(name);
+      seen.set(name, new Set([...(seen.get(name) ?? []), ...who.split(", ").map((w) => w.trim())]));
+    }
   }
   for (const [name, want] of declared) {
     const got = seen.get(name);
@@ -113,7 +123,7 @@ function envNames(text: string, consts: ReadonlySet<string> = constNames(text)):
 
 /** Every disagreement between ENVIRONMENT and the names the code uses: a name the section omits, and a name it lists
  *  (any capitalised word with an underscore) that the code neither reads nor sets. */
-function envProblems(man: string, code: ReadonlySet<string>): string[] {
+function envProblems(man: string | readonly string[], code: ReadonlySet<string>): string[] {
   const text = section(man, "ENVIRONMENT").join("\n"), problems: string[] = [];
   // A family is listed by one member or by alternations, GROK_(CLAUDE|CURSOR)_(AGENTS|HOOKS)_ENABLED.
   const pattern = (n: string, part: string) => n.split("*").map((s) => s.replace(/[^\w]/g, "\\$&")).join(part);
@@ -131,7 +141,9 @@ const RETIRED = /^>\s*\*\*(?:Superseded|Deprecated)\b/m;
 /** Every problem with SEE ALSO: a path that does not exist or is marked superseded, a tool with no bin/ launcher, and a
  *  document govern serves (`required`, repo-relative) that it does not list. Entries are separated by " - " or ", ". */
 function seeAlsoProblems(man: string, root: string, required: readonly string[]): string[] {
-  const text = section(man, "SEE ALSO").join(" ").trim(), problems: string[] = [];
+  // The documents of the extensions are listed under EXTENSIONS (its entries are the lines that start with a path).
+  const listed = section(man, "EXTENSIONS").filter((l) => /^\s+(?:- )?tools\//.test(l));
+  const text = [section(man, "SEE ALSO").join(" ").trim(), listed.join(" ").trim()].filter(Boolean).join(" - "), problems: string[] = [];
   const refs = text.split(/\s+-\s+|,\s+/).map((e) => e.trim().split(/\s+/)[0] ?? "").filter(Boolean);
   if (!refs.length) problems.push("SEE ALSO is empty");
   for (const r of refs) {
@@ -145,9 +157,11 @@ function seeAlsoProblems(man: string, root: string, required: readonly string[])
   return problems;
 }
 
-/** The documents govern itself serves: SKILL.md (`govern manual`) and each built-in process's manual (`govern manual P`). */
+/** The documents govern itself serves: SKILL.md (`govern manual`), each built-in process's manual (`govern manual P`) and the
+ *  documents of the extensions (`govern help --topics`, while one is enabled). */
 function servedDocs(): string[] {
-  const dir = join(GOVERN_DIR, "processes"), docs = [relative(ROOT, join(GOVERN_DIR, "SKILL.md")), relative(ROOT, join(GOVERN_DIR, "REFERENCE.md"))];
+  const dir = join(GOVERN_DIR, "processes"), docs = [relative(ROOT, join(GOVERN_DIR, "SKILL.md")), relative(ROOT, join(GOVERN_DIR, "REFERENCE.md")),
+    ...[...new Set(EXTENSIONS.flatMap((e) => e.docs.map((d) => d.path)))].map((p) => relative(ROOT, join(GOVERN_DIR, p)))];
   for (const f of readdirSync(dir).filter((x) => x.endsWith(".json")).sort()) {
     const manual: unknown = JSON.parse(readFileSync(join(dir, f), "utf8")).manual;
     if (typeof manual === "string") docs.push(relative(ROOT, resolve(dir, manual)));
@@ -155,16 +169,19 @@ function servedDocs(): string[] {
   return docs;
 }
 
-test("MANPAGE names every peer subcommand and the peer protocol document", () => {
-  for (const sub of ["id", "add", "list", "revoke", "serve", "push"]) assert.ok(MAN.includes(`govern peer ${sub}`), sub);
+const MAN = manText(readFileSync(BIN, "utf8"));
+/** The manpage text of each extension, in registry order: its SYNOPSIS, OPTIONS and ENVIRONMENT beside the core's. */
+const EXT_MANS = await Promise.all(EXTENSIONS.map(async (e) => ((await import(`../ext/${e.name}/index.ts`)) as { manpage: string }).manpage));
+
+test("MANPAGE names every peer subcommand (in the peer extension's text) and the peer protocol document", () => {
+  const peerText = EXT_MANS[EXTENSIONS.findIndex((e) => e.name === "peer")] ?? "";
+  for (const sub of ["id", "add", "list", "revoke", "serve", "push"]) assert.ok(peerText.includes(`govern peer ${sub}`), sub);
   assert.ok(MAN.includes("tools/govern/PEERS.md"));
 });
 
-const MAN = manText(readFileSync(BIN, "utf8"));
-
 test("drift: MANPAGE OPTIONS has one entry per flag the command table declares, naming the commands that take it", () => {
   assert.ok(declaredFlags(COMMANDS).size > 30, "the table's flags are found");
-  assert.deepEqual(optionProblems(MAN, COMMANDS), []);
+  assert.deepEqual(optionProblems([MAN, ...EXT_MANS], COMMANDS), []);
 });
 
 test("drift: MANPAGE ENVIRONMENT names every variable the code reads or sets, and no other", () => {
@@ -174,7 +191,7 @@ test("drift: MANPAGE ENVIRONMENT names every variable the code reads or sets, an
   for (const n of ["GOVERN_REPO", "GOVERN_JOB_DIR", "CLAUDE_CODE_SESSION_ID", "PATH", "GROK_MEMORY", "GROK_CONFIG_PATH", "GROK_*_*_ENABLED"])
     assert.ok(code.has(n), `the scan finds ${n}`);
   assert.ok(!code.has("GROK_MARKERS"), "a constant imported from another file is not a variable");
-  assert.deepEqual(envProblems(MAN, code), []);
+  assert.deepEqual(envProblems([MAN, ...EXT_MANS], code), []);
 });
 
 test("drift: MANPAGE SEE ALSO names files and tools that exist and are current, and every manual govern serves", () => {

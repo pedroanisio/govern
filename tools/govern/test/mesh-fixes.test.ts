@@ -64,14 +64,17 @@ test("a signed snapshot missing the registrar certificate is refused without cha
 function loop(meshStep: object, dispatch = () => {}) {
   const source = readFileSync(join(HERE, "..", "govern.ts"), "utf8");
   const tick = source.slice(source.indexOf("    const tick = async () => {"), source.indexOf("    tick();", source.indexOf("    const tick = async () => {")));
+  const peerSource = readFileSync(join(HERE, "..", "ext", "peer", "index.ts"), "utf8");
+  const relayFn = peerSource.slice(peerSource.indexOf("export function relay()"), peerSource.indexOf("/** The desk's line for this extension"));
   const logs: string[] = [], pending: (() => Promise<void>)[] = []; let discovered = 0;
-  const start = new Function("mesh", "peer", "once", "out", "setTimeout", "tune", "reaping", stripTypeScriptTypes(`
-    let lastTune = 0, lastReap = 0, lastSync = 0;
-    const MESH_SYNC_MS = 0, reapEvery = undefined, max = undefined, secs = 1;
+  const fakePeer = { discover: async () => { discovered++; return []; }, remotes: () => [], push: async () => [] };
+  const relay = new Function("mesh", "peer", "MESH_SYNC_MS", stripTypeScriptTypes(relayFn.replace("export function relay()", "function relay()")) + "; return relay;")(meshStep, fakePeer, 0)();
+  const start = new Function("relay", "once", "out", "setTimeout", "tune", "reaping", stripTypeScriptTypes(`
+    let lastTune = 0, lastReap = 0;
+    const reapEvery = undefined, max = undefined, secs = 1;
     ${tick}
   `) + "return tick;");
-  const run = start(meshStep, { discover: async () => { discovered++; return []; }, remotes: () => [], push: async () => [] }, dispatch,
-    (s: string) => logs.push(s), (f: () => Promise<void>) => pending.push(f), () => "ok", {});
+  const run = start(relay, dispatch, (s: string) => logs.push(s), (f: () => Promise<void>) => pending.push(f), () => "ok", {});
   return { run: run as () => Promise<void>, logs, pending, discoveries: () => discovered };
 }
 
@@ -111,15 +114,14 @@ for (const size of [MAX_BODY, MAX_BODY + 1]) test(`peer transport ${size === MAX
 test("an unnamed session cannot register a live session name or alias but can register free and ephemeral names", async () => {
   const e = makeEnv("unnamed"); use(e);
   write(join(e.env.GOVERN_SESSIONS_DIR!, "alice.json"), JSON.stringify({ pid: 1, name: "alice", sessionId: "alice-session" }));
-  const source = readFileSync(join(HERE, "..", "govern.ts"), "utf8");
-  const fn = source.slice(source.indexOf("async function cmdAgents("), source.indexOf("/** The operator's view"))
-    .replace('await import("./lib/sessions.ts")', "sessionModule");
+  const source = readFileSync(join(HERE, "..", "ext", "peer", "index.ts"), "utf8");
+  const fn = source.slice(source.indexOf("async function cmdAgents("), source.indexOf("\nexport const name"));
   let self: string | undefined;
-  const run = new Function("opt", "flag", "many", "resolveAs", "callingSession", "sessions", "sessionModule", "agents", "peer", "out", "fail", "secondsOpt",
+  const run = new Function("opt", "flag", "many", "resolveAs", "callingSession", "sessions", "liveSessions", "agents", "peer", "out", "fail", "secondsOpt",
     stripTypeScriptTypes(fn) + "; return cmdAgents;")(
     (a: Record<string, unknown>, n: string) => a[n], (a: Record<string, unknown>, n: string) => !!a[n],
     (a: Record<string, unknown>, n: string) => a[n] ?? [], () => self, () => ({ pid: process.pid, sessionId: "caller" }),
-    sessions.sessions, sessions, agents, peer, () => {}, fail, () => undefined);
+    sessions.sessions, sessions.liveSessions, agents, peer, () => {}, fail, () => undefined);
   for (const args of [{ as: "alice" }, { as: "free", alias: ["alice"] }])
     await assert.rejects(run({ _: ["agents", "register"], project: ["p"], ...args }), /alice.*live session/);
   for (const args of [{ as: "free" }, { ephemeral: true }]) await run({ _: ["agents", "register"], project: ["p"], ...args });
@@ -132,7 +134,7 @@ test("an unnamed session cannot register a live session name or alias but can re
 test("bare mesh prints status from a non-terminal origin", async () => {
   use(makeEnv("mesh-default")); process.env.CODEX_THREAD_ID = "agent";
   assert.throws(() => origin(), /Codex session/);
-  const source = readFileSync(join(HERE, "..", "govern.ts"), "utf8");
+  const source = readFileSync(join(HERE, "..", "ext", "peer", "index.ts"), "utf8");
   const fn = source.slice(source.indexOf("async function cmdMesh("), source.indexOf("/** Agents publish and find"));
   const output: string[] = [];
   const run = new Function("opt", "many", "origin", "mesh", "out", "fail", stripTypeScriptTypes(fn) + "; return cmdMesh;")(
@@ -141,11 +143,11 @@ test("bare mesh prints status from a non-terminal origin", async () => {
 });
 
 test("center serve listens and prints the requested IPv6 loopback host", async () => {
-  const source = readFileSync(join(HERE, "..", "govern.ts"), "utf8");
-  const fn = source.slice(source.indexOf("async function cmdCenter("), source.indexOf("/** The text of the user service"));
+  const source = readFileSync(join(HERE, "..", "ext", "center", "index.ts"), "utf8");
+  const fn = source.slice(source.indexOf("async function cmdCenter("), source.indexOf("\nexport const name"));
   const listening: unknown[][] = [], output: string[] = [];
-  const run = new Function("opt", "flag", "remote", "peer", "center", "out", "fail", "process", stripTypeScriptTypes(fn) + "; return cmdCenter;")(
-    (_a: unknown, n: string) => n === "host" ? "::1" : "5004", () => false, { loopback: () => true }, { identity() {} },
+  const run = new Function("opt", "flag", "loopback", "peer", "center", "out", "fail", "process", stripTypeScriptTypes(fn) + "; return cmdCenter;")(
+    (_a: unknown, n: string) => n === "host" ? "::1" : "5004", () => false, () => true, { identity() {} },
     { persistentToken: () => "token", tokenFile: () => "center-token", centerAddress: realCenter.centerAddress, centerServer: () => ({ on() {}, listen(...args: unknown[]) { listening.push(args.slice(0, 2)); (args[2] as () => void)(); } }) },
     (s: string) => output.push(s), assert.fail, process);
   await run({ _: ["center", "serve"] });

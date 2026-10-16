@@ -23,12 +23,10 @@ import * as runtime from "./conversation-runtime.ts";
 import * as jobs from "./jobs.ts";
 import { deskView, laneDetail, sessionDetail, jobDetail, engines, sessions, PROTOCOL, type Desk, type LaneDetail, type SessionDetail } from "./remote-view.ts";
 
-/** Refusals the server maps to a status: a malformed request (400), a signature, clock, nonce or code that does not
- *  prove the request (403), a lane that does not exist (404). Any other GovernError is a state conflict (409). */
-export class BadRequest extends GovernError {}
-export class Forbidden extends GovernError {}
-export class NotFound extends GovernError {}
-export class TooLarge extends GovernError {}
+// The refusals the server maps to a status (400, 403, 404, 413; any other GovernError is a state conflict, 409) live in
+// http-errors.ts, which the lane artifacts the core keeps share.
+import { BadRequest, Forbidden, NotFound, TooLarge } from "./http-errors.ts";
+export { BadRequest, Forbidden, NotFound, TooLarge };
 const parsed = <T>(what: string, raw: unknown, shape: Shape<T>): T => {
   try { return check(what, raw, shape); } catch (e) { throw e instanceof GovernError ? new BadRequest(e.message) : e; }
 };
@@ -466,5 +464,5 @@ export function remoteServer(o: ServeOptions = {}): Server {
   return server;
 }
 
-/** Whether `host` only accepts connections from this machine. */
-export const loopback = (host: string): boolean => host === "localhost" || host === "::1" || /^127\./.test(host);
+// Whether a host only accepts connections from this machine: lib/cli.ts (the peer and center commands ask it too).
+export { loopback } from "./cli.ts";

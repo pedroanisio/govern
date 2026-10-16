@@ -5,11 +5,16 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
-import { makeEnv, govern, HERE, jsonl } from "./helpers.ts";
-import { COMMANDS, HELP, commandHelp } from "../govern.ts";
+import { makeEnv, govern, HERE, jsonl, fullTable } from "./helpers.ts";
+import { HELP, commandHelp } from "../govern.ts";
+import { EXTENSIONS } from "../lib/ext-registry.ts";
 import { skillMentions, approxTokens, coreManualTokens } from "../lib/skill.ts";
 import { HELP_RULES, TOPICS } from "../lib/helprules.ts";
 
+/** Every command: the core's and the extensions'. */
+const COMMANDS = await fullTable();
+/** The documents the extensions bring (each once), as `help --topics` lists them while the extensions are enabled. */
+const EXT_DOCS = [...new Map(EXTENSIONS.flatMap((x) => x.docs).map((d) => [d.path, d])).values()];
 const TOOL = join(HERE, "..");
 const read = (f: string) => readFileSync(join(TOOL, f), "utf8");
 const sha = (s: string) => createHash("sha256").update(s).digest("hex");
@@ -41,7 +46,7 @@ function missingNames(union: string): string[] {
 }
 
 test("nothing the old SKILL.md named is lost: every command, subcommand and flag is in the new manual, REFERENCE.md or a govern help text", () => {
-  const union = [read("SKILL.md"), read("REFERENCE.md"), HELP, ...COMMANDS.map((c) => commandHelp(c.name)), ...TOPICS.map((t) => t.about)].join("\n");
+  const union = [read("SKILL.md"), read("REFERENCE.md"), HELP, ...COMMANDS.map((c) => commandHelp(c.name, undefined, COMMANDS)), ...TOPICS.map((t) => t.about), ...EXT_DOCS.map((d) => d.title)].join("\n");
   assert.deepEqual(missingNames(union), []);
 });
 
@@ -68,12 +73,12 @@ test("govern help --topics lists every reference document with its path and one 
   const r = govern(e, ["help", "--topics"]);
   assert.equal(r.code, 0, r.err);
   const files = readdirSync(TOOL);
-  for (const t of TOPICS) {
+  for (const t of [...TOPICS.map((x) => ({ file: x.file, about: x.about })), ...EXT_DOCS.map((d) => ({ file: d.path, about: d.title }))]) {
     assert.ok(files.includes(t.file), `${t.file} exists`);
     assert.ok(r.out.includes(join(TOOL, t.file)) || r.out.includes(t.file), t.file);
     assert.ok(r.out.includes(t.about), t.file);
   }
-  assert.equal(r.out.split("\n").filter((l) => /\.md\s/.test(l)).length, TOPICS.length, "one path line per document");
+  assert.equal(r.out.split("\n").filter((l) => /\.md\s/.test(l)).length, TOPICS.length + EXT_DOCS.length, "one path line per document");
   assert.match(govern(e, ["help", "--topics", "run"]).err, /takes no command/);
 });
 
@@ -92,6 +97,7 @@ test("govern manual prints the core; --full adds REFERENCE.md; --size prints byt
     const bytes = Buffer.byteLength(read(f));
     assert.match(size.out, new RegExp(`${f}\\s+${bytes} bytes\\s+≈ ${approxTokens(bytes)} tokens \\(bytes / 3\\.6`), size.out);
   }
+  assert.match(size.out, /\nextensions\s+\d+ bytes\s+≈ \d+ tokens/, "a third line: what the enabled extensions' documents add");
   assert.equal(approxTokens(3600), 1000);
   assert.match(govern(e, ["manual", "--size", "--full"]).err, /takes no process and no --full/);
   assert.match(govern(e, ["manual", "video", "--full"]).err, /takes no process/);

@@ -69,7 +69,7 @@ export function repliesToday(day: string): string {
 }
 
 /** The desk's text, with how many of its `lanes` could not be read (each shown as a ✖ row; the caller exits 1). */
-export function desk(): { text: string; failed: number; lanes: number } {
+export function desk(extensionLines: readonly string[] = []): { text: string; failed: number; lanes: number } {
   const L: string[] = [];
   const slugs = laneSlugs();
   const day = today();
@@ -154,5 +154,6 @@ export function desk(): { text: string; failed: number; lanes: number } {
   try { L.push(...deskLines()); } catch (e) { L.push(`  instance scan unreadable: ${(e as Error).message}`); }
   const allow = allowances.shown();
   if (allow.length) L.push("", "ALLOWANCES (used, reserved, left; raise one with govern allow)", ...allow.map((l) => `  ${l}`));
+  L.push(...extensionLines);
   return { text: L.join("\n"), failed, lanes: slugs.length };
 }

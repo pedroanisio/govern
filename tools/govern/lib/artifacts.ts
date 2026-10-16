@@ -5,7 +5,7 @@ import { closeSync, constants, existsSync, fstatSync, lstatSync, mkdirSync, open
 import { projectDir, ledgerFile, appendLedger, load } from "./project.ts";
 import { readJsonl } from "./util.ts";
 import { transaction } from "./lifecycle.ts";
-import { BadRequest, NotFound, TooLarge } from "./remote.ts";
+import { BadRequest, NotFound, TooLarge } from "./http-errors.ts";
 
 export interface ArtifactRef { name: string; sha256: string }
 export interface ArtifactReview { person: string; device: string; at: string }

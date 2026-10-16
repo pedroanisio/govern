@@ -33,6 +33,7 @@ const collect = (path: string) => {
 };
 sources["govern.ts"] = readFileSync(join(root, "govern.ts"), "utf8");
 collect(join(root, "lib"));
+collect(join(root, "ext"));
 const { profiles, unreadable } = readCoverageProfiles(directory);
 console.log(`unreadable V8 profiles: ${unreadable.length} (${unreadable.join(", ")})`);
 for (const profile of profiles) {

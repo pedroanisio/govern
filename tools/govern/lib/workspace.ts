@@ -5,8 +5,9 @@
 import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join, dirname, resolve } from "node:path";
 import { fail } from "./util.ts";
-import { obj, str, bool, posInt, record, arr, parseFile, type Shape } from "./shape.ts";
+import { obj, str, bool, posInt, record, arr, parseFile, reject, type Shape } from "./shape.ts";
 import { RESOURCES } from "./resources.ts";
+import { EXTENSION_NAMES } from "./ext-registry.ts";
 
 export const CONFIG_FILE = "govern.config.json";
 /** The conventional workspace folder; its parent is the workspace root. */
@@ -20,6 +21,8 @@ export const DOT_DEFAULTS = {
 export interface Baseline { mainMedianCtx: number; subagentMedianCtx: number; source: string }
 /** What a workspace keeps in its govern.config.json; each path is relative to the file. */
 export interface WorkspaceConfig {
+  /** The extensions this workspace enables (lib/ext.ts; GOVERN_EXTENSIONS overrides): none by default. */
+  extensions?: string[];
   /** The lanes' folder (required unless GOVERN_PROJECTS). */
   mailboxes?: string[]; mailTtlHours?: number;
   projects?: string; queue?: string; processes?: string; workflow?: string; tuningLog?: string; packages?: string; prompts?: string;
@@ -40,7 +43,18 @@ export interface WorkspaceConfig {
 }
 /** A file path, or the list shape lib/resources.ts checks (kept as written: resources() builds the registry). */
 const resourcesShape: Shape<unknown> = (v, p) => (typeof v === "string" ? v : (RESOURCES(v, p), v));
+/** The extensions a workspace enables: each a name lib/ext-registry.ts knows, none twice. */
+export const extensionsShape: Shape<string[]> = (v, p) => {
+  const names = arr(str)(v, p), seen = new Set<string>();
+  names.forEach((n, i) => {
+    if (!EXTENSION_NAMES.includes(n)) reject(`${p}[${i}]`, `unknown extension "${n}" (known: ${EXTENSION_NAMES.join(", ")})`);
+    if (seen.has(n)) reject(`${p}[${i}]`, `extension "${n}" is listed twice`);
+    seen.add(n);
+  });
+  return names;
+};
 const CONFIG = obj({}, {
+  extensions: extensionsShape,
   mailboxes: arr(str), mailTtlHours: posInt,
   projects: str, queue: str, processes: str, workflow: str, tuningLog: str, packages: str, prompts: str, paths: record(str),
   baseline: obj({ mainMedianCtx: posInt, subagentMedianCtx: posInt, source: str }),

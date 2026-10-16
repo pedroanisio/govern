@@ -13,6 +13,15 @@ import * as queue from "../lib/queue.ts";
 import { registry, readCheck, checkState, checkFile, profileHash, capsOf } from "../lib/caps.ts";
 import { writeJson } from "../lib/util.ts";
 import { type Headers } from "../lib/peer-id.ts";
+import { EXTENSION_NAMES } from "../lib/ext-registry.ts";
+import type { Cmd } from "../lib/cli.ts";
+
+/** The whole command table: the core's and every extension's commands (the table the core alone held before the extensions). */
+export async function fullTable(): Promise<readonly Cmd[]> {
+  const { COMMANDS } = await import("../govern.ts");
+  const exts = await Promise.all(EXTENSION_NAMES.map((n) => import(`../ext/${n}/index.ts`) as Promise<{ commands: Cmd[] }>));
+  return [...COMMANDS, ...exts.flatMap((x) => x.commands)];
+}
 
 export const HERE = dirname(fileURLToPath(import.meta.url));
 export const GOVERN = join(HERE, "..", "govern.ts");
@@ -67,6 +76,8 @@ export function makeEnv(name = "test"): Env {
     root, projects,
     env: {
       GOVERN_REPO: root, GOVERN_PROJECTS: projects, GOVERN_WORKFLOW: wf, GOVERN_CODEX_BIN: fakeBin,
+      GOVERN_EXTENSIONS: EXTENSION_NAMES.join(","), // every subsystem test runs with every extension enabled; test/ext.test.ts runs without
+
       GOVERN_GROK_BIN: fakeGrok, GOVERN_GROK_SESSIONS: join(root, "grok-sessions"), FAKE_GROK_ARGV_OUT: join(root, "grok.log"),
       GOVERN_CLAUDE_PROJECTS: join(root, "claude"), GOVERN_CODEX_SESSIONS: join(root, "codex-sessions"),
       FAKE_CODEX_ARGV_OUT: join(root, "argv.log"), FAKE_CODEX_STDIN_OUT: join(root, "stdin.log"), FAKE_CODEX_COUNTER: join(root, "count"),

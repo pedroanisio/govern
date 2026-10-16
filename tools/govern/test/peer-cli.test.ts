@@ -1,11 +1,11 @@
 // Exercise the CLI's parsed command handlers without a child process.
 import { test, afterEach } from "node:test";
 import assert from "node:assert/strict";
-import { COMMANDS } from "../govern.ts";
 import { parseArgs } from "../lib/util.ts";
-import { makeEnv, childEnv, govern } from "./helpers.ts";
+import { makeEnv, childEnv, govern, fullTable } from "./helpers.ts";
 import * as peer from "../lib/peer.ts";
 import * as queue from "../lib/queue.ts";
+const COMMANDS = await fullTable();
 const original = { ...process.env };
 afterEach(() => { process.env = { ...original }; });
 function run(name: string, sub: string, argv: string[] = []) {
@@ -38,9 +38,9 @@ test("peer command handlers enforce grants, identity, remote options and relay b
   await run("peer", "add", ["b", "--url", "https://b.example", "--key", h.publicKey, "--allow", "codex", "--allow", "owner", "--project", "p", "--project", "q"]);
   assert.deepEqual(peer.peers()[0]!.allow, ["codex", "owner"]); assert.deepEqual(peer.peers()[0]!.projects, ["p", "q"]);
   for (const extra of [["--write"], ["--profile", "codex-read"], ["--lane", "p"], ["--file", "x"], ["--estimate-usd", "0"]])
-    assert.throws(() => run("task", "send", [...args, ...extra]), /receiving host decides/);
-  assert.throws(() => run("task", "send", args.map(x => x === "codex@b" ? "auto@b" : x)), /receiving host decides/);
-  assert.throws(() => run("task", "send", args.map(x => x === "codex@b" ? "codex@missing" : x)), /live peer/);
+    await assert.rejects(async () => run("task", "send", [...args, ...extra]), /receiving host decides/);
+  await assert.rejects(async () => run("task", "send", args.map(x => x === "codex@b" ? "auto@b" : x)), /receiving host decides/);
+  await assert.rejects(async () => run("task", "send", args.map(x => x === "codex@b" ? "codex@missing" : x)), /live peer/);
   assert.equal(queue.all().length, 0);
   await run("task", "send", args.map(x => x === "codex@b" ? "absent@b" : x));
   const m = queue.all()[0]!.m; assert.equal(m.to, "absent@b"); assert.equal(m.profile, undefined); assert.equal(m.access, "read-only"); assert.deepEqual(m.files, []);
@@ -54,5 +54,5 @@ test("peer command handlers enforce grants, identity, remote options and relay b
     for (const sub of ["add", "revoke"]) await assert.rejects(async () => run("peer", sub, ["b"]), /own terminal/);
   }
   process.env = childEnv(e); await run("peer", "revoke", ["b"]);
-  assert.ok(peer.peers()[0]!.revokedAt); assert.throws(() => run("task", "send", args), /live peer/);
+  assert.ok(peer.peers()[0]!.revokedAt); await assert.rejects(async () => run("task", "send", args), /live peer/);
 });

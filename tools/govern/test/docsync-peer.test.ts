@@ -3,8 +3,8 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { HERE } from "./helpers.ts";
-import { COMMANDS } from "../govern.ts";
+import { HERE, fullTable } from "./helpers.ts";
+const COMMANDS = await fullTable();
 const dir = resolve(HERE, "..");
 test("PEERS.md documents exactly the peer HTTP routes and all peer subcommands", () => {
   const doc = readFileSync(resolve(dir, "PEERS.md"), "utf8"), source = readFileSync(resolve(dir, "lib/peer.ts"), "utf8");

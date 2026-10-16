@@ -7,7 +7,7 @@ import { existsSync, appendFileSync } from "node:fs";
 import { join } from "node:path";
 import { obj, str, bool, arr, literal, parseFile, check, reject, type Shape } from "./shape.ts";
 import {
-  NAME, name, nonempty, iso, slug, hex64, project, publicKey, url, file, locked, read, readOr, write, identity, fingerprint,
+  NAME, name, nonempty, iso, slug, hex64, project, publicKey, url, file, locked, read, readOr, write, identity, fingerprint, parseAddress,
   header, sign, verifyBytes, fresh, covers, intersect, error, signedJson, postFetch, MAX_BODY, TIMEOUT_MS,
   type Headers, type Response, type Post,
 } from "./peer-id.ts";
@@ -18,7 +18,7 @@ import * as live from "./livestate.ts";
 import { fail, clip } from "./util.ts";
 import * as queue from "./queue.ts";
 
-export { identity, fingerprint, sign, MAX_BODY, type Identity, type Headers, type Response, type Post } from "./peer-id.ts";
+export { identity, fingerprint, sign, parseAddress, MAX_BODY, type Identity, type Headers, type Response, type Post } from "./peer-id.ts";
 export const PROTOCOL = "govern-peer/2";
 const RECEIVED_TTL_MS = 7 * 86400_000, MAX_ATTEMPTS = 8;
 
@@ -52,11 +52,7 @@ export function revokePeer(n: string): Peer {
     p.revokedAt = new Date().toISOString(); write("peers.json", { peers: list }); return p;
   });
 }
-/** Syntax only: `remote()` checks whether the named host is live. */
-export function parseAddress(address: string): { name: string; peer: string } | undefined {
-  const parts = address.split("@");
-  return parts.length === 2 && parts.every(x => NAME.test(x)) ? { name: parts[0]!, peer: parts[1]! } : undefined;
-}
+// Syntax only (parseAddress, kept in peer-id.ts with the core): `remote()` checks whether the named host is live.
 
 /** A host this one can send to: a live static peer or a live mesh member, under the name this host uses for it. */
 export interface Remote { name: string; url: string; publicKey: string; via: "peer" | "mesh" }
