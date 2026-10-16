@@ -1,0 +1,61 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<scene version="1.1">
+  <project width="2400" height="1200" fps="30" duration="1" background="var(--paper)" supersample="2"/>
+  <styles>
+    <token name="ink" value="#101828"/>
+    <token name="paper" value="#F7F6F2"/>
+    <token name="accent" value="#1F6F5F"/>
+    <token name="accent-2" value="#D98A1E"/>
+    <token name="muted" value="#5C6370"/>
+    <token name="rule" value="#D9D6CE"/>
+  </styles>
+  <assets>
+    <text id="t-42" text="govern" width="1200" height="140" size="120" color="var(--ink)" align="start" verticalAlign="middle" lineHeight="1.2" wrap="word" font="DejaVu Sans" weight="700" tracking="-2.4"/>
+    <text id="t-43" text="agent work, in lanes, with gates" width="1500" height="60" size="42" color="var(--muted)" align="start" verticalAlign="middle" lineHeight="1.2" wrap="word" font="DejaVu Sans" weight="400"/>
+  </assets>
+  <composition>
+    <shape id="s-1" z="1" x="260" y="376" shape="rounded-rect" width="1880" height="8" radius="4" fill="var(--rule)"/>
+    <shape id="s-2" z="2" x="260" y="376" shape="rounded-rect" width="1156" height="8" radius="4" fill="var(--accent)"/>
+    <shape id="s-3" z="3" x="278" y="358" shape="ellipse" width="44" height="44" fill="var(--accent)"/>
+    <shape id="s-4" z="3" x="728" y="358" shape="ellipse" width="44" height="44" fill="var(--accent)"/>
+    <shape id="s-5" z="3" x="1178" y="358" shape="ellipse" width="44" height="44" fill="var(--accent)"/>
+    <shape id="s-6" z="3" x="1628" y="358" shape="ellipse" width="44" height="44" fill="var(--paper)" stroke="var(--muted)" strokeWidth="4"/>
+    <shape id="s-7" z="3" x="2078" y="358" shape="ellipse" width="44" height="44" fill="var(--paper)" stroke="var(--muted)" strokeWidth="4"/>
+    <shape id="s-8" z="4" x="1386" y="350" shape="rounded-rect" width="60" height="60" radius="14" fill="var(--ink)"/>
+    <shape id="s-9" z="5" x="1407" y="371" shape="ellipse" width="18" height="18" fill="var(--paper)"/>
+    <shape id="s-10" z="1" x="260" y="516" shape="rounded-rect" width="1880" height="8" radius="4" fill="var(--rule)"/>
+    <shape id="s-11" z="2" x="260" y="516" shape="rounded-rect" width="688" height="8" radius="4" fill="var(--accent)"/>
+    <shape id="s-12" z="3" x="278" y="498" shape="ellipse" width="44" height="44" fill="var(--accent)"/>
+    <shape id="s-13" z="3" x="728" y="498" shape="ellipse" width="44" height="44" fill="var(--accent)"/>
+    <shape id="s-14" z="3" x="1178" y="498" shape="ellipse" width="44" height="44" fill="var(--paper)" stroke="var(--muted)" strokeWidth="4"/>
+    <shape id="s-15" z="3" x="1628" y="498" shape="ellipse" width="44" height="44" fill="var(--paper)" stroke="var(--muted)" strokeWidth="4"/>
+    <shape id="s-16" z="3" x="2078" y="498" shape="ellipse" width="44" height="44" fill="var(--paper)" stroke="var(--muted)" strokeWidth="4"/>
+    <shape id="s-17" z="4" x="918" y="490" shape="rounded-rect" width="60" height="60" radius="14" fill="var(--ink)"/>
+    <shape id="s-18" z="5" x="939" y="511" shape="ellipse" width="18" height="18" fill="var(--paper)"/>
+    <shape id="s-19" z="1" x="260" y="656" shape="rounded-rect" width="1880" height="8" radius="4" fill="var(--rule)"/>
+    <shape id="s-20" z="2" x="260" y="656" shape="rounded-rect" width="1480" height="8" radius="4" fill="var(--accent)"/>
+    <shape id="s-21" z="3" x="278" y="638" shape="ellipse" width="44" height="44" fill="var(--accent)"/>
+    <shape id="s-22" z="3" x="728" y="638" shape="ellipse" width="44" height="44" fill="var(--accent)"/>
+    <shape id="s-23" z="3" x="1178" y="638" shape="ellipse" width="44" height="44" fill="var(--accent)"/>
+    <shape id="s-24" z="3" x="1628" y="638" shape="ellipse" width="44" height="44" fill="var(--accent)"/>
+    <shape id="s-25" z="3" x="2078" y="638" shape="ellipse" width="44" height="44" fill="var(--paper)" stroke="var(--muted)" strokeWidth="4"/>
+    <shape id="s-26" z="4" x="1710" y="630" shape="rounded-rect" width="60" height="60" radius="14" fill="var(--ink)"/>
+    <shape id="s-27" z="5" x="1731" y="651" shape="ellipse" width="18" height="18" fill="var(--paper)"/>
+    <shape id="s-28" z="1" x="260" y="796" shape="rounded-rect" width="1880" height="8" radius="4" fill="var(--rule)"/>
+    <shape id="s-29" z="2" x="260" y="796" shape="rounded-rect" width="364" height="8" radius="4" fill="var(--accent)"/>
+    <shape id="s-30" z="3" x="278" y="778" shape="ellipse" width="44" height="44" fill="var(--accent)"/>
+    <shape id="s-31" z="3" x="728" y="778" shape="ellipse" width="44" height="44" fill="var(--paper)" stroke="var(--muted)" strokeWidth="4"/>
+    <shape id="s-32" z="3" x="1178" y="778" shape="ellipse" width="44" height="44" fill="var(--paper)" stroke="var(--muted)" strokeWidth="4"/>
+    <shape id="s-33" z="3" x="1628" y="778" shape="ellipse" width="44" height="44" fill="var(--paper)" stroke="var(--muted)" strokeWidth="4"/>
+    <shape id="s-34" z="3" x="2078" y="778" shape="ellipse" width="44" height="44" fill="var(--paper)" stroke="var(--muted)" strokeWidth="4"/>
+    <shape id="s-35" z="4" x="594" y="770" shape="rounded-rect" width="60" height="60" radius="14" fill="var(--ink)"/>
+    <shape id="s-36" z="5" x="615" y="791" shape="ellipse" width="18" height="18" fill="var(--paper)"/>
+    <shape id="s-37" z="3" x="1867" y="320" shape="rounded-rect" width="16" height="530" radius="8" fill="var(--accent-2)"/>
+    <shape id="s-38" z="2" x="260" y="960" shape="rounded-rect" width="1880" height="70" radius="18" fill="var(--ink)"/>
+    <shape id="s-39" z="2" x="0" y="0" shape="path" width="2400" height="1200" fill="#00000000" stroke="var(--ink)" strokeWidth="8" path="M1200 960 L1200 905" strokeJoin="round" strokeCap="round"/>
+    <shape id="s-40" z="3" x="1170" y="850" shape="ellipse" width="60" height="60" fill="var(--paper)" stroke="var(--ink)" strokeWidth="8"/>
+    <shape id="s-41" z="4" x="1188" y="868" shape="ellipse" width="24" height="24" fill="var(--accent-2)"/>
+    <layer id="l-42" z="6" x="300" y="70" asset="t-42"/>
+    <layer id="l-43" z="6" x="300" y="200" asset="t-43"/>
+  </composition>
+</scene>

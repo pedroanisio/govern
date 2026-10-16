@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<scene version="1.1">
+  <project width="1024" height="1024" fps="30" duration="1" background="var(--paper)" supersample="2"/>
+  <styles>
+    <token name="ink" value="#101828"/>
+    <token name="paper" value="#F7F6F2"/>
+    <token name="accent" value="#1F6F5F"/>
+    <token name="accent-2" value="#D98A1E"/>
+    <token name="muted" value="#5C6370"/>
+    <token name="rule" value="#D9D6CE"/>
+  </styles>
+  <assets>
+
+  </assets>
+  <composition>
+    <shape id="s-1" z="1" x="112" y="112" shape="rounded-rect" width="800" height="800" radius="176" fill="var(--ink)"/>
+    <shape id="s-2" z="2" x="176" y="492" shape="rounded-rect" width="656" height="40" radius="20" fill="var(--muted)"/>
+    <shape id="s-3" z="4" x="140" y="460" shape="ellipse" width="104" height="104" fill="var(--paper)"/>
+    <shape id="s-4" z="4" x="276" y="460" shape="ellipse" width="104" height="104" fill="var(--paper)"/>
+    <shape id="s-5" z="4" x="412" y="460" shape="ellipse" width="104" height="104" fill="var(--paper)"/>
+    <shape id="s-6" z="4" x="548" y="460" shape="ellipse" width="104" height="104" fill="var(--paper)"/>
+    <shape id="s-7" z="4" x="732" y="452" shape="ellipse" width="120" height="120" fill="var(--accent)"/>
+    <shape id="s-8" z="3" x="668" y="304" shape="rounded-rect" width="40" height="416" radius="20" fill="var(--accent-2)"/>
+  </composition>
+</scene>

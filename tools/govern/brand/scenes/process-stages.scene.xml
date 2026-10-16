@@ -1,0 +1,54 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<scene version="1.1">
+  <project width="2400" height="1200" fps="30" duration="1" background="var(--paper)" supersample="2"/>
+  <styles>
+    <token name="ink" value="#101828"/>
+    <token name="paper" value="#F7F6F2"/>
+    <token name="accent" value="#1F6F5F"/>
+    <token name="accent-2" value="#D98A1E"/>
+    <token name="muted" value="#5C6370"/>
+    <token name="rule" value="#D9D6CE"/>
+  </styles>
+  <assets>
+    <text id="t-1" text="The dev process: plan, build, test, review, done" width="2100" height="90" size="56" color="var(--ink)" align="start" verticalAlign="middle" lineHeight="1.2" wrap="word" font="DejaVu Sans" weight="700"/>
+    <text id="t-3" text="plan" width="300" height="70" size="56" color="var(--ink)" align="center" verticalAlign="middle" lineHeight="1.2" wrap="word" font="DejaVu Sans" weight="700"/>
+    <text id="t-4" text="Write the plan and&#10;name the checks" width="280" height="90" size="26" color="var(--muted)" align="center" verticalAlign="top" lineHeight="1.2" wrap="word" font="DejaVu Sans" weight="400"/>
+    <text id="t-7" text="build" width="300" height="70" size="56" color="var(--ink)" align="center" verticalAlign="middle" lineHeight="1.2" wrap="word" font="DejaVu Sans" weight="700"/>
+    <text id="t-8" text="Do the work in&#10;the worktree" width="280" height="90" size="26" color="var(--muted)" align="center" verticalAlign="top" lineHeight="1.2" wrap="word" font="DejaVu Sans" weight="400"/>
+    <text id="t-11" text="test" width="300" height="70" size="56" color="var(--ink)" align="center" verticalAlign="middle" lineHeight="1.2" wrap="word" font="DejaVu Sans" weight="700"/>
+    <text id="t-12" text="Run the checks;&#10;the exit decides" width="280" height="90" size="26" color="var(--muted)" align="center" verticalAlign="top" lineHeight="1.2" wrap="word" font="DejaVu Sans" weight="400"/>
+    <text id="t-15" text="review" width="300" height="70" size="56" color="var(--ink)" align="center" verticalAlign="middle" lineHeight="1.2" wrap="word" font="DejaVu Sans" weight="700"/>
+    <text id="t-16" text="A reviewer reads&#10;the change" width="280" height="90" size="26" color="var(--muted)" align="center" verticalAlign="top" lineHeight="1.2" wrap="word" font="DejaVu Sans" weight="400"/>
+    <text id="t-19" text="done" width="300" height="70" size="56" color="var(--paper)" align="center" verticalAlign="middle" lineHeight="1.2" wrap="word" font="DejaVu Sans" weight="700"/>
+    <text id="t-20" text="The owner opens the&#10;gate; work is closed" width="280" height="90" size="26" color="var(--paper)" align="center" verticalAlign="top" lineHeight="1.2" wrap="word" font="DejaVu Sans" weight="400"/>
+    <text id="t-23" text="exit check passes" width="360" height="50" size="30" color="var(--muted)" align="center" verticalAlign="top" lineHeight="1.2" wrap="word" font="DejaVu Sans" weight="400"/>
+    <text id="t-25" text="gate: the owner" width="380" height="80" size="34" color="var(--accent-2)" align="center" verticalAlign="bottom" lineHeight="1.2" wrap="word" font="DejaVu Sans" weight="700"/>
+  </assets>
+  <composition>
+    <layer id="l-1" z="6" x="150" y="60" asset="t-1"/>
+    <shape id="s-2" z="1" x="150" y="480" shape="rounded-rect" width="300" height="220" radius="24" fill="var(--paper)" stroke="var(--ink)" strokeWidth="5"/>
+    <layer id="l-3" z="3" x="150" y="510" asset="t-3"/>
+    <layer id="l-4" z="3" x="160" y="600" asset="t-4"/>
+    <shape id="s-5" z="2" x="0" y="0" shape="path" width="2400" height="1200" fill="#00000000" stroke="var(--muted)" strokeWidth="6" path="M458 590 L527 590" strokeJoin="round" strokeCap="round" markerEnd="arrow" markerSize="3.6"/>
+    <shape id="s-6" z="1" x="535" y="480" shape="rounded-rect" width="300" height="220" radius="24" fill="var(--paper)" stroke="var(--ink)" strokeWidth="5"/>
+    <layer id="l-7" z="3" x="535" y="510" asset="t-7"/>
+    <layer id="l-8" z="3" x="545" y="600" asset="t-8"/>
+    <shape id="s-9" z="2" x="0" y="0" shape="path" width="2400" height="1200" fill="#00000000" stroke="var(--muted)" strokeWidth="6" path="M843 590 L912 590" strokeJoin="round" strokeCap="round" markerEnd="arrow" markerSize="3.6"/>
+    <shape id="s-10" z="1" x="920" y="480" shape="rounded-rect" width="300" height="220" radius="24" fill="var(--paper)" stroke="var(--ink)" strokeWidth="5"/>
+    <layer id="l-11" z="3" x="920" y="510" asset="t-11"/>
+    <layer id="l-12" z="3" x="930" y="600" asset="t-12"/>
+    <shape id="s-13" z="2" x="0" y="0" shape="path" width="2400" height="1200" fill="#00000000" stroke="var(--muted)" strokeWidth="6" path="M1228 590 L1297 590" strokeJoin="round" strokeCap="round" markerEnd="arrow" markerSize="3.6"/>
+    <shape id="s-14" z="1" x="1305" y="480" shape="rounded-rect" width="300" height="220" radius="24" fill="var(--paper)" stroke="var(--ink)" strokeWidth="5"/>
+    <layer id="l-15" z="3" x="1305" y="510" asset="t-15"/>
+    <layer id="l-16" z="3" x="1315" y="600" asset="t-16"/>
+    <shape id="s-17" z="2" x="0" y="0" shape="path" width="2400" height="1200" fill="#00000000" stroke="var(--muted)" strokeWidth="6" path="M1613 590 L1682 590" strokeJoin="round" strokeCap="round"/>
+    <shape id="s-18" z="1" x="1690" y="480" shape="rounded-rect" width="300" height="220" radius="24" fill="var(--accent)" stroke="var(--ink)" strokeWidth="5"/>
+    <layer id="l-19" z="3" x="1690" y="510" asset="t-19"/>
+    <layer id="l-20" z="3" x="1700" y="600" asset="t-20"/>
+    <shape id="s-21" z="3" x="1020" y="760" shape="ellipse" width="100" height="100" fill="var(--accent)"/>
+    <shape id="s-22" z="4" x="0" y="0" shape="path" width="2400" height="1200" fill="#00000000" stroke="var(--paper)" strokeWidth="10" path="M1048 812 L1064 828 L1094 794" strokeJoin="round" strokeCap="round"/>
+    <layer id="l-23" z="3" x="890" y="880" asset="t-23"/>
+    <shape id="s-24" z="3" x="1638.5" y="410" shape="rounded-rect" width="18" height="360" radius="9" fill="var(--accent-2)"/>
+    <layer id="l-25" z="3" x="1457.5" y="310" asset="t-25"/>
+  </composition>
+</scene>

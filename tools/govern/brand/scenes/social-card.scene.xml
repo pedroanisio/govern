@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<scene version="1.1">
+  <project width="1200" height="630" fps="30" duration="1" background="var(--paper)" supersample="2"/>
+  <styles>
+    <token name="ink" value="#101828"/>
+    <token name="paper" value="#F7F6F2"/>
+    <token name="accent" value="#1F6F5F"/>
+    <token name="accent-2" value="#D98A1E"/>
+    <token name="muted" value="#5C6370"/>
+    <token name="rule" value="#D9D6CE"/>
+  </styles>
+  <assets>
+    <text id="t-9" text="govern" width="630" height="240" size="150" color="var(--ink)" align="start" verticalAlign="middle" lineHeight="1.2" wrap="word" font="DejaVu Sans" weight="700" tracking="-3"/>
+    <text id="t-11" text="agent work, in lanes, with gates" width="900" height="60" size="40" color="var(--muted)" align="start" verticalAlign="middle" lineHeight="1.2" wrap="word" font="DejaVu Sans" weight="400"/>
+  </assets>
+  <composition>
+    <shape id="s-1" z="1" x="150" y="130" shape="rounded-rect" width="240" height="240" radius="52.8" fill="var(--ink)"/>
+    <shape id="s-2" z="2" x="169.2" y="244" shape="rounded-rect" width="196.8" height="12" radius="6" fill="var(--muted)"/>
+    <shape id="s-3" z="4" x="158.4" y="234.4" shape="ellipse" width="31.2" height="31.2" fill="var(--paper)"/>
+    <shape id="s-4" z="4" x="199.2" y="234.4" shape="ellipse" width="31.2" height="31.2" fill="var(--paper)"/>
+    <shape id="s-5" z="4" x="240" y="234.4" shape="ellipse" width="31.2" height="31.2" fill="var(--paper)"/>
+    <shape id="s-6" z="4" x="280.8" y="234.4" shape="ellipse" width="31.2" height="31.2" fill="var(--paper)"/>
+    <shape id="s-7" z="4" x="336" y="232" shape="ellipse" width="36" height="36" fill="var(--accent)"/>
+    <shape id="s-8" z="3" x="316.8" y="187.6" shape="rounded-rect" width="12" height="124.8" radius="6" fill="var(--accent-2)"/>
+    <layer id="l-9" z="1" x="457.2" y="130" asset="t-9"/>
+    <shape id="s-10" z="1" x="150" y="400" shape="rounded-rect" width="120" height="6" radius="3" fill="var(--accent-2)"/>
+    <layer id="l-11" z="2" x="150" y="430" asset="t-11"/>
+  </composition>
+</scene>

@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<scene version="1.1">
+  <project width="2400" height="600" fps="30" duration="1" background="var(--paper)" supersample="2"/>
+  <styles>
+    <token name="ink" value="#101828"/>
+    <token name="paper" value="#F7F6F2"/>
+    <token name="accent" value="#1F6F5F"/>
+    <token name="accent-2" value="#D98A1E"/>
+    <token name="muted" value="#5C6370"/>
+    <token name="rule" value="#D9D6CE"/>
+  </styles>
+  <assets>
+    <text id="t-9" text="govern" width="756" height="300" size="180" color="var(--ink)" align="start" verticalAlign="middle" lineHeight="1.2" wrap="word" font="DejaVu Sans" weight="700" tracking="-3.6"/>
+    <text id="t-11" text="press release" width="640" height="300" size="84" color="var(--muted)" align="start" verticalAlign="middle" lineHeight="1.2" wrap="word" font="DejaVu Sans" weight="400"/>
+  </assets>
+  <composition>
+    <shape id="s-1" z="1" x="150" y="150" shape="rounded-rect" width="300" height="300" radius="66" fill="var(--ink)"/>
+    <shape id="s-2" z="2" x="174" y="292.5" shape="rounded-rect" width="246" height="15" radius="7.5" fill="var(--muted)"/>
+    <shape id="s-3" z="4" x="160.5" y="280.5" shape="ellipse" width="39" height="39" fill="var(--paper)"/>
+    <shape id="s-4" z="4" x="211.5" y="280.5" shape="ellipse" width="39" height="39" fill="var(--paper)"/>
+    <shape id="s-5" z="4" x="262.5" y="280.5" shape="ellipse" width="39" height="39" fill="var(--paper)"/>
+    <shape id="s-6" z="4" x="313.5" y="280.5" shape="ellipse" width="39" height="39" fill="var(--paper)"/>
+    <shape id="s-7" z="4" x="382.5" y="277.5" shape="ellipse" width="45" height="45" fill="var(--accent)"/>
+    <shape id="s-8" z="3" x="358.5" y="222" shape="rounded-rect" width="15" height="156" radius="7.5" fill="var(--accent-2)"/>
+    <layer id="l-9" z="1" x="534" y="150" asset="t-9"/>
+    <shape id="s-10" z="1" x="1600" y="150" shape="rounded-rect" width="6" height="300" radius="3" fill="var(--rule)"/>
+    <layer id="l-11" z="2" x="1660" y="150" asset="t-11"/>
+  </composition>
+</scene>
