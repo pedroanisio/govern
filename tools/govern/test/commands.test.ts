@@ -129,7 +129,7 @@ test("HELP is generated from the table: every command, every subcommand, every d
 });
 
 test("drift: every command and subcommand is in SKILL.md and HELP; SKILL.md names no command that does not exist", () => {
-  const md = readFileSync(join(HERE, "..", "SKILL.md"), "utf8");
+  const md = `${readFileSync(join(HERE, "..", "SKILL.md"), "utf8")}\n${readFileSync(join(HERE, "..", "REFERENCE.md"), "utf8")}`;
   assert.ok(skillMentions(md).length > 20, "SKILL.md's govern mentions are found");
   assert.deepEqual(skillProblems(md, COMMANDS), [], "SKILL.md against the command table");
   for (const c of COMMANDS) {

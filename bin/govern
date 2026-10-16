@@ -37,7 +37,7 @@
 #     govern remote serve [--host H] [--port 5002] [--tls-cert F --tls-key F]
 #     govern caps [PROFILE]  |  caps --check PROFILE
 #     govern decide ask --questions F (--state S | --state-file F) [--purpose P] [--json]  |  decide report
-#     govern help [COMMAND]  |  COMMAND --help  |  manual [PROCESS]  |  install-skill [SKILLS-DIR] [--check]
+#     govern help [COMMAND]  |  help --topics  |  COMMAND --help  |  manual [PROCESS | --full | --size]  |  install-skill [SKILLS-DIR] [--check]
 #     govern peer id [--name N]
 #     govern peer add NAME --url URL --key BASE64 [--allow NAME]... [--project SLUG|*]...
 #     govern peer list
@@ -65,7 +65,9 @@
 #     (codex exec --json --output-schema) and verifies the reply against its schema and house rules, with
 #     one repair. `usage` attributes the tokens of Claude Code, Codex and Grok sessions to (lane, stage)
 #     segments opened by `govern work`, against the chat baseline the workspace config gives under "baseline".
-#     The operating manual for the AI is tools/govern/SKILL.md (`govern manual`); a process may own one too (`govern manual PROCESS`).
+#     The operating manual for the AI is the short core tools/govern/SKILL.md (`govern manual`); the detailed rules are in
+#     tools/govern/REFERENCE.md (`govern manual --full`) and in each command's `govern help COMMAND`; `govern help --topics` lists
+#     the reference documents. A process may own a manual too (`govern manual PROCESS`).
 #     A lane follows a process: a JSON file (tools/govern/processes/*.json built in: video, ops, dev; a workspace
 #     adds or overrides its own in its processes folder) naming the stages, each stage's exit condition and the
 #     command that checks it, and the owner's gates. `advance` moves a lane on only when the stage's check passes
@@ -154,6 +156,9 @@
 #     --action NAME           conversation recover, recover: conversation recover: continue, retry or cancel the interrupted run;
 #                             recover: retry an investigated failure or confirm compensation with compensated
 #     --nested                init: make a workspace inside another workspace (refused otherwise)
+#     --full                  manual: the core manual followed by REFERENCE.md
+#     --size                  manual: the bytes and approximate tokens (bytes / 3.6) of SKILL.md and REFERENCE.md
+#     --topics                help: the reference documents, one line each, with their paths
 #     --process P             new: the process the lane follows (govern process list)
 #     --kind K                new, task send, task reply: new: the lane's kind (long|short|ops, or one the process names);
 #                             task: the message kind (TASK, the default for send; ACK, REVIEW, HANDOFF, BLOCKED…)
@@ -335,7 +340,7 @@
 # KEYWORDS
 #     lanes process workflow video codex claude grok tokens usage orchestration pals-notes youtube
 # SEE ALSO
-#     st-man - tools/govern/SKILL.md (govern manual) - tools/govern/processes/video/MANUAL.md (govern manual video)
+#     st-man - tools/govern/SKILL.md (govern manual) - tools/govern/REFERENCE.md (govern manual --full) - tools/govern/processes/video/MANUAL.md (govern manual video)
 #     - tools/govern/BUSINESS.md - tools/govern/PURPOSE.md - tools/govern/CONVERSATIONS.md - tools/govern/REMOTE.md - tools/govern/PEERS.md
 # MANPAGE <<<
 set -eu

@@ -10,6 +10,7 @@ import * as queue from "./queue.ts";
 import { tag } from "./replycheck.ts";
 import { registry, readCheck, checkState, profileHash } from "./caps.ts";
 import { tuningState } from "./tune.ts";
+import { coreManualTokens } from "./skill.ts";
 import * as allowances from "./allowances.ts";
 import { machineSummary, machineEntries, stateDir } from "./resources.ts";
 import { deskLines } from "./reap.ts";
@@ -83,7 +84,7 @@ export function desk(): { text: string; failed: number; lanes: number } {
   // ---- queue
   const count = (state: string, to?: string) => msgs.filter((x) => x.state === state && (!to || x.m.to === to)).length;
   const bad = msgs.filter((x) => x.m.verification?.state === "unverified" && x.state !== "done").length;
-  L.push("", tuningState());
+  L.push("", `${tuningState()} · manual ≈ ${coreManualTokens()} tokens`);
   let runners: readonly string[] = queue.BUILTIN_RUNNERS;
   try { runners = queue.plainRunners(); } catch (e) { L.push(`queue: config error — ${e instanceof Error ? e.message : String(e)}`); }
   const claims = msgs.filter((x) => x.state === "claimed").map(({ m }) => ({ m, holder: queue.claimState(m) }));

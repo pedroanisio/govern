@@ -3,6 +3,7 @@
 import { readFileSync, writeFileSync, renameSync, rmSync, mkdirSync, existsSync, statSync } from "node:fs";
 import { dirname, join, basename } from "node:path";
 import { randomUUID } from "node:crypto";
+import { fileURLToPath } from "node:url";
 import { fail, sha256, type FlagSpec } from "./util.ts";
 
 /** The SHA-256 hex digest of file `f`'s bytes; a missing or unreadable file throws the fs error. */
@@ -102,6 +103,18 @@ export function skillProblems(md: string, commands: readonly SkillCmd[]): string
   }
   return problems;
 }
+
+/** The bytes per token `govern manual --size` and the desk divide by: an estimate for English markdown, not a tokenizer. */
+export const BYTES_PER_TOKEN = 3.6;
+
+/** The approximate token count of `bytes` bytes of manual text. */
+export const approxTokens = (bytes: number): number => Math.round(bytes / BYTES_PER_TOKEN);
+
+/** The tool's folder: where SKILL.md, REFERENCE.md and the topic documents live. */
+export const TOOL_DIR = join(dirname(fileURLToPath(import.meta.url)), "..");
+
+/** The core manual's approximate token count, for the desk's tuning line. */
+export const coreManualTokens = (dir = TOOL_DIR): number => approxTokens(statSync(join(dir, "SKILL.md")).size);
 
 /** Whether `dest` is byte for byte `src`: null when it is, else the reason, naming both paths and both sha256s. A source
  *  that is not a file, or a directory at `dest`, is a GovernError (exit 1). */
