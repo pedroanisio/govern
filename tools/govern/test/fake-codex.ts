@@ -6,7 +6,7 @@
 //   FAKE_CODEX_EXIT       exit code (default 0)
 //   FAKE_CODEX_HOME_OUT   append {home, files, config, authIsLink} (JSON) describing the CODEX_HOME the child saw
 // The text of the last agent_message is also written to the file after -o, like codex exec does.
-import { appendFileSync, readFileSync, writeFileSync, existsSync, readdirSync, lstatSync } from "node:fs";
+import { appendFileSync, readFileSync, writeFileSync, existsSync, readdirSync, lstatSync, mkdirSync } from "node:fs";
 
 const argv = process.argv.slice(2);
 if (process.env.FAKE_CODEX_ARGV_OUT) appendFileSync(process.env.FAKE_CODEX_ARGV_OUT, JSON.stringify(argv) + "\n");
@@ -18,10 +18,23 @@ if (process.env.FAKE_CODEX_HOME_OUT) {
 const chunks: Buffer[] = [];
 process.stdin.on("data", (c) => chunks.push(c as Buffer));
 //   FAKE_CODEX_SLEEP_MS   wait this long before answering; FAKE_CODEX_TIMES_OUT gets a "start"/"end" line (epoch ms) around the wait
+//   FAKE_CODEX_BARRIER    DIR:N — after "start", enter DIR and wait until N calls have entered it, at most BARRIER_CAP_MS
+//                         (a dispatcher that never runs N at once still ends: by a smaller overlap, or by the caller's timeout)
+const BARRIER_CAP_MS = 30000;
+function barrier(then: () => void): void {
+  const spec = process.env.FAKE_CODEX_BARRIER;
+  if (!spec) return then();
+  const cut = spec.lastIndexOf(":"), dir = spec.slice(0, cut), n = Number(spec.slice(cut + 1));
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(`${dir}/${process.pid}`, "");
+  const until = Date.now() + BARRIER_CAP_MS;
+  const poll = () => (readdirSync(dir).length >= n || Date.now() >= until ? then() : setTimeout(poll, 20));
+  poll();
+}
 process.stdin.on("end", () => {
   const stamp = (what: string) => { if (process.env.FAKE_CODEX_TIMES_OUT) appendFileSync(process.env.FAKE_CODEX_TIMES_OUT, `${what} ${Date.now()}\n`); };
   stamp("start");
-  setTimeout(() => { stamp("end"); answer(); }, Number(process.env.FAKE_CODEX_SLEEP_MS ?? 0));
+  barrier(() => setTimeout(() => { stamp("end"); answer(); }, Number(process.env.FAKE_CODEX_SLEEP_MS ?? 0)));
 });
 function answer(): void {
   if (process.env.FAKE_CODEX_STDIN_OUT) appendFileSync(process.env.FAKE_CODEX_STDIN_OUT, JSON.stringify(Buffer.concat(chunks).toString("utf8")) + "\n");

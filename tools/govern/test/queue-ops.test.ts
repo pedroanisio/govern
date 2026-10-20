@@ -348,12 +348,11 @@ test("another runner's claims do not count against this runner", (t) => {
 
 // ---------------------------------------------------------------- one dispatcher, several runs
 
-/** The most runs that overlapped in time, from the fake's start/end log. */
+/** The most runs that overlapped, from the fake's start/end log. The log is read in the order it was appended, which is
+ *  the order the runs reached each stamp; the epoch ms can tie between a start and an end, so they never reorder it. */
 function overlap(file: string): number {
-  const ev = readFileSync(file, "utf8").split("\n").filter(Boolean).map((l) => l.split(" ") as [string, string]).map(([w, t]) => [w, Number(t)] as const);
-  ev.sort((a, b) => a[1] - b[1] || (a[0] === "end" ? -1 : 1));
   let now = 0, max = 0;
-  for (const [w] of ev) { now += w === "start" ? 1 : -1; max = Math.max(max, now); }
+  for (const l of readFileSync(file, "utf8").split("\n").filter(Boolean)) { now += l.startsWith("start ") ? 1 : -1; max = Math.max(max, now); }
   return max;
 }
 function backlog(e: Env, n: number): string[] { return Array.from({ length: n }, () => send(e)); }
@@ -363,9 +362,10 @@ test("dispatch --parallel N runs up to N messages at once when the runner's limi
   queueConfig(e, { concurrency: { codex: 3 } });
   const ids = backlog(e, 3);
   const times = join(e.root, "times.log");
-  const r = govern(e, ["task", "dispatch", "--parallel", "3"], { FAKE_CODEX_SCRIPTS: reply(e, "ok", answer), FAKE_CODEX_SLEEP_MS: "1500", FAKE_CODEX_TIMES_OUT: times });
+  // each run waits for all three to have started, so the overlap does not depend on how fast the host starts them
+  const r = govern(e, ["task", "dispatch", "--parallel", "3"], { FAKE_CODEX_SCRIPTS: reply(e, "ok", answer), FAKE_CODEX_BARRIER: `${join(e.root, "barrier")}:3`, FAKE_CODEX_TIMES_OUT: times });
   assert.equal(r.code, 0, r.err);
-  assert.equal(overlap(times), 3);
+  assert.equal(overlap(times), 3, readFileSync(times, "utf8"));
   for (const id of ids) assert.match(r.out, new RegExp(`${id} → codex: REVIEW`));
   assert.deepEqual(readdirSync(join(e.root, "queue", "open")).filter((f) => f.endsWith(".json") && ids.some((i) => f.startsWith(i))), []);
   assert.equal(readdirSync(join(e.root, "queue", "done")).length, 3);
