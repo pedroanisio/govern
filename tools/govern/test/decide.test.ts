@@ -211,7 +211,8 @@ test("the key: TYPESAFE_API_KEY, else the dotenv file the config's decide.envFil
   assert.equal(jsonl(log).length, 0);
   const dotenv = write(join(tempDir("dotenv"), ".env"), `OTHER_KEY=nope\nexport TYPESAFE_API_KEY="${KEY}"\n# comment\n`);
   setConfig(e, { decide: { envFile: dotenv } });
-  assert.equal(govern(e, ["decide", "ask", "--questions", questions(e), "--state", "x"]).code, 0);
+  const abs = govern(e, ["decide", "ask", "--questions", questions(e), "--state", "x"]);
+  assert.equal(abs.code, 0, abs.err);
   assert.equal(present(jsonl(log)[0], "request").authorization, `Bearer ${KEY}`);
   setConfig(e, { decide: { envFile: join(e.root, "nope.env") } });
   assert.match(govern(e, ["decide", "ask", "--questions", questions(e), "--state", "x"]).err, /nope\.env/);
@@ -219,9 +220,11 @@ test("the key: TYPESAFE_API_KEY, else the dotenv file the config's decide.envFil
   assert.match(govern(e, ["decide", "ask", "--questions", questions(e), "--state", "x"]).err, /unknown key "envfile"/);
   write(join(e.root, "secrets", ".env"), `TYPESAFE_API_KEY='${KEY}-rel'\n`);
   setConfig(e, { decide: { envFile: "secrets/.env" } });
-  assert.equal(govern(e, ["decide", "ask", "--questions", questions(e), "--state", "x"]).code, 0, "a relative envFile is read from the workspace");
+  const rel = govern(e, ["decide", "ask", "--questions", questions(e), "--state", "x"]);
+  assert.equal(rel.code, 0, `a relative envFile is read from the workspace: ${rel.err}`);
   assert.equal(jsonl(log).at(-1).authorization, `Bearer ${KEY}-rel`);
-  assert.equal(govern(e, ["decide", "ask", "--questions", questions(e), "--state", "x"], { TYPESAFE_API_KEY: `${KEY}-env` }).code, 0);
+  const fromEnv = govern(e, ["decide", "ask", "--questions", questions(e), "--state", "x"], { TYPESAFE_API_KEY: `${KEY}-env` });
+  assert.equal(fromEnv.code, 0, fromEnv.err);
   assert.equal(jsonl(log).at(-1).authorization, `Bearer ${KEY}-env`, "the environment wins over the file");
 });
 
