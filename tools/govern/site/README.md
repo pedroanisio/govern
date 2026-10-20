@@ -8,7 +8,8 @@ The generator, theme and deploy files for the govern website. It turns the Markd
 
 From the repository root:
 
-```
+<!-- readme-example: skip: writes tools/govern/site/dist inside the checkout -->
+```sh
 node --disable-warning=ExperimentalWarning tools/govern/site/build.ts
 ```
 
@@ -29,14 +30,16 @@ To look at the result, serve `dist/` from any static server, for example `python
 
 From `tools/govern`:
 
-```
+<!-- readme-example: skip: builds and runs a Docker image -->
+```sh
 docker build -f site/Dockerfile --build-arg SITE_COMMIT=$(git rev-parse --short HEAD) -t govern-site .
 docker run --rm -p 8080:80 govern-site
 ```
 
 Or, from `tools/govern/site`:
 
-```
+<!-- readme-example: skip: builds and runs a Docker image -->
+```sh
 SITE_COMMIT=$(git rev-parse --short HEAD) docker compose up --build
 ```
 

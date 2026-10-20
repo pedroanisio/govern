@@ -9,6 +9,7 @@ metadata, images, and CLI failures. No model is called.
 
 From `tools/govern`, with the pinned requirements installed:
 
+<!-- readme-example: skip: runs from tools/govern and writes press/dist; test_render.py covers the CLI -->
 ```sh
 python press/render.py --out press/dist
 ```
@@ -21,6 +22,7 @@ Generated PDFs belong in `dist/` and are not committed.
 
 From the repository root, with pytest installed in the Python environment:
 
+<!-- readme-example: cwd=repo requires=pytest,reportlab,pypdf -->
 ```sh
 python -m pytest tools/govern/press -q
 ```
