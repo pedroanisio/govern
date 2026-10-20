@@ -27,6 +27,8 @@ SECTIONS = ("Subheadline", "Key facts", "About govern", "Contact")
 
 
 class ReleaseError(ValueError):
+    """release.md breaks the press-release structure; the message names its line."""
+
     def __init__(self, line: int, message: str):
         self.line = line
         super().__init__(f"line {line}: {message}")
@@ -34,6 +36,8 @@ class ReleaseError(ValueError):
 
 @dataclass
 class Release:
+    """The parsed press release: one field per section, body paragraphs in order."""
+
     headline: str
     subheadline: str
     dateline: str
@@ -157,11 +161,14 @@ def parse_release(source: str) -> Release:
 
 
 class TitleBlock(Flowable):
+    """The drawn title band used when no banner image is given."""
+
     def __init__(self, width: float):
         super().__init__()
         self.width, self.height = width, 44
 
     def draw(self):
+        """Paint the band, its accent stripe and square, and the govern wordmark."""
         self.canv.setFillColor(PAPER)
         self.canv.rect(0, 0, self.width, self.height, fill=1, stroke=0)
         self.canv.setFillColor(ACCENT)
@@ -173,6 +180,7 @@ class TitleBlock(Flowable):
 
 
 def image_flowable(path: Path, width: float, max_height: float) -> Image:
+    """The image at PATH scaled to fit WIDTH and MAX_HEIGHT, aspect ratio kept."""
     image_width, image_height = ImageReader(str(path)).getSize()
     scale = min(width / image_width, max_height / image_height)
     return Image(str(path), width=image_width * scale, height=image_height * scale)
@@ -243,11 +251,15 @@ def render_release(release: Release, out: Path, banner: Path | None = None,
 
 
 class CommandParser(argparse.ArgumentParser):
+    """An argument parser that raises usage errors instead of exiting."""
+
     def error(self, message):
+        """Raise MESSAGE as a ValueError, so main() reports it on one line."""
         raise ValueError(message)
 
 
 def main(argv: list[str] | None = None) -> int:
+    """Render the --release file into --out; print the PDF path and page count, or one error line and return 1."""
     try:
         parser = CommandParser(description=__doc__)
         parser.add_argument("--out", type=Path, required=True)
