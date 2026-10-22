@@ -38,7 +38,7 @@ Replies have exactly `kind`, `summary` and `body`. Kinds are `ACK`, `PROGRESS`, 
 
 Checks selected by the task kind and reply kind both apply. Built-in `file-refs` verifies that cited file lines exist. `commit-refs` checks named commits and is applied to HANDOFF replies; a handoff naming no commit remains shape-only. `claims-cited` requires every ID from the attached claims ledger to appear in the reply.
 
-`--check NAME` adds checks and is repeatable. Names resolve from the profile's checks, queue `checks.named`, then built-ins. Unknown names fail with exit 2. `--verify -- ARGV...` runs a command without a shell in the project folder, bounded to 600 seconds. Only exit 0 gives the verification pass. `govern task show ID` exposes the reason and kept check logs when verification fails.
+`--check NAME` adds checks and is repeatable. Names resolve from the profile's checks, queue `checks.named`, then built-ins. Unknown names fail with exit 4. `--verify -- ARGV...` runs a command without a shell in the project folder, bounded to 600 seconds. Only exit 0 gives the verification pass. `govern task show ID` exposes the reason and kept check logs when verification fails.
 
 A successful run with malformed reply text gets one repair call, sealed read-only, to wrap the same content. A failed repair retains both texts. Nonzero runs and timeouts are not repaired. `GOVERN_QUEUE_REPAIR=0` disables repair. The desk counts checked, shape-only, unverified and repaired replies.
 

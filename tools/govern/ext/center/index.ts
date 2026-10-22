@@ -3,7 +3,7 @@
 // it on with `govern ext enable center`.
 import * as peer from "../peer/peer.ts";
 import * as center from "./center.ts";
-import { fail, opt, flag } from "../../lib/util.ts";
+import { fail, usage, opt, flag } from "../../lib/util.ts";
 import type { Args } from "../../lib/util.ts";
 import { out, loopback, type Cmd } from "../../lib/cli.ts";
 import type { ExtDoc } from "../../lib/ext-registry.ts";
@@ -18,7 +18,7 @@ async function cmdCenter(a: Args): Promise<void> {
   }
   const host = opt(a, "host") ?? "127.0.0.1", port = Number(opt(a, "port") ?? 5004);
   if (!loopback(host)) fail(`center ${sub} binds loopback only: the view shows every host's messages and spend`);
-  if (!Number.isInteger(port) || port < 1 || port > 65535) fail("--port must be 1..65535");
+  if (!Number.isInteger(port) || port < 1 || port > 65535) usage("--port must be 1..65535");
   peer.identity();
   const token = center.persistentToken({ rotate: sub === "serve" && flag(a, "new-token") });
   if (sub === "url") return out(center.centerAddress(host, port, token));

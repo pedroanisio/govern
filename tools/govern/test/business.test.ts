@@ -90,7 +90,7 @@ test("typed case defaults, validation, unknown fields and required data protect 
   assert.deepEqual(state(e).data, { currency: "USD" });
   assert.match(govern(e, ["advance", "p", ...note]).err, /missing required fields/);
   for (const data of [{ amount: -1 }, { amount: "100" }, { currency: "EUR" }, { unknown: true }]) {
-    assert.equal(govern(e, ["data", "p", "--set", JSON.stringify(data)]).code, 2);
+    assert.equal(govern(e, ["data", "p", "--set", JSON.stringify(data)]).code, 4);
     assert.deepEqual(state(e).data, { currency: "USD" });
   }
   ok(e, ["data", "p", "--set", JSON.stringify({ amount: 10, requester: "bob" })]);
@@ -99,7 +99,7 @@ test("typed case defaults, validation, unknown fields and required data protect 
   assert.match(govern(e, ["work", "p", "legal"]).err, /not active/);
   ok(e, ["advance", "p", ...note]);
   assert.ok(state(e).finished);
-  assert.equal(govern(e, ["data", "p", "--set", '{"amount":20}']).code, 2);
+  assert.equal(govern(e, ["data", "p", "--set", '{"amount":20}']).code, 4);
 });
 
 test("fork activates independent tasks; all-join waits; human completion cannot be bypassed", () => {

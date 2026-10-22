@@ -119,7 +119,7 @@ Exit-check failures can declare:
 
 `attempts` includes the first attempt. Retries are durable scheduled times, with delays of 60, 120, … elapsed seconds; the failing invocation returns nonzero and never loops or sleeps through the backoff. Try `advance` after the retry time, or use `tick --advance`. Unscheduled early attempts are refused. A successful check clears failure state. Missing/unusable check commands also follow a declared error policy.
 
-When the exit check fails, `advance` exits 1 if the stage declares `onError`: the failure has been recorded under that policy, as a scheduled retry or as compensation and the error route. Without `onError` it exits 2 and records no failure state. Refusals before the check, such as a blocked lane, missing required data, an unfinished human task, a retry not yet due or exhausted retries, also exit 2, as does an unapproved gate after a passing check.
+When the exit check fails, `advance` exits 1 if the stage declares `onError`: the failure has been recorded under that policy, as a scheduled retry or as compensation and the error route. Without `onError` it exits 4 and records no failure state. Refusals before the check, such as a blocked lane, missing required data, an unfinished human task, a retry not yet due or exhausted retries, also exit 4, as does an unapproved gate after a passing check.
 
 After retries are exhausted, the optional named compensation command runs through govern's existing job runner. Only exit 0 records successful compensation. Failed compensation blocks progress; a process interrupted while checking or compensating records an uncertain outcome and refuses blind repetition. Inspect the underlying job and external system before recovering:
 

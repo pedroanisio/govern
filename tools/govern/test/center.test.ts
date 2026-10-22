@@ -166,5 +166,5 @@ test("govern center prints the view, as JSON on request, and its server binds lo
   let r = govern(e, ["center"]); assert.equal(r.code, 0, r.err); assert.match(r.out, /COMMAND CENTER .* not in a mesh/); assert.match(r.out, /HOSTS \(1\)/);
   r = govern(e, ["center", "show", "--json"]); assert.equal(r.code, 0, r.err);
   const v = JSON.parse(r.out); assert.equal(v.hosts.length, 1); assert.equal(v.hosts[0].self, true); assert.equal(v.mesh, undefined);
-  for (const args of [["--host", "0.0.0.0"], ["--port", "0"]]) { r = govern(e, ["center", "serve", ...args]); assert.equal(r.code, 2); }
+  for (const args of [["--host", "0.0.0.0"], ["--port", "0"]]) { r = govern(e, ["center", "serve", ...args]); assert.equal(r.code, args[0] === "--host" ? 4 : 2, r.err); }
 });

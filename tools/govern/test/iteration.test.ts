@@ -208,7 +208,7 @@ test("empty foreach completes without creating cases and array items are validat
     })
   );
   ok(e, ["new", "p", "--process", "p"]);
-  assert.equal(govern(e, ["data", "p", "--set", '{"items":[-1]}']).code, 2);
+  assert.equal(govern(e, ["data", "p", "--set", '{"items":[-1]}']).code, 4);
   advance(e);
   assert.ok(state(e).finished);
   assert.deepEqual(state(e).data.results, []);

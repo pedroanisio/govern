@@ -19,7 +19,7 @@ const bare = (o: unknown) => Object.assign(emptyRecord<unknown>(), o);
 const refused = (f: () => unknown, text: string) => {
   assert.throws(f, (e: unknown) => {
     assert.ok(e instanceof GovernError, `a GovernError, got ${e}`);
-    assert.equal(e.code, 2);
+    assert.equal(e.code, 4);
     assert.ok(e.message.includes(text), `"${e.message}" should include "${text}"`);
     return true;
   });
@@ -188,7 +188,7 @@ test("__proto__ is no name: a process's stage or gate, a govern.json map key, an
   ] as const;
   for (const [args, text] of cli) {
     const r = govern(e, [...args]);
-    assert.equal(r.code, 2, `${args.join(" ")}: ${r.out}`);
+    assert.equal(r.code, 4, `${args.join(" ")}: ${r.out}`);
     assert.ok(r.err.includes(text), `${args.join(" ")}: "${r.err}" should include "${text}"`);
     assert.equal(readFileSync(f, "utf8"), before, `${args.join(" ")}: govern.json is unchanged`);
   }
@@ -243,10 +243,10 @@ test("a govern.json map (approvals, commands, files, checks) holds only its own 
   for (const m of maps) assert.equal(JSON.stringify(saved[m]), JSON.stringify(stored[m]), `${m} is written back unchanged`);
 });
 
-test("save never writes a govern.json that load would refuse: an empty --lang exits 2 and writes nothing", () => {
+test("save never writes a govern.json that load would refuse: an empty --lang exits 4 and writes nothing", () => {
   const e = makeEnv();
   const r = govern(e, ["new", "l9", "--kind", "long", "--lang="]);
-  assert.equal(r.code, 2, r.err);
+  assert.equal(r.code, 4, r.err);
   const f = join(e.projects, "l9", "govern.json");
   assert.match(r.err, /\$\.lang: must be a non-empty string \(got ""\)/);
   assert.ok(r.err.includes(f), r.err);
@@ -256,7 +256,7 @@ test("save never writes a govern.json that load would refuse: an empty --lang ex
   assert.equal(govern(e, ["new", "l9", "--kind", "long", "--lang=pt"]).code, 0, "the lane can then be made");
 });
 
-test("a bad govern.json stops the commands that read that lane with exit 2, naming the file and the path", () => {
+test("a bad govern.json stops the commands that read that lane with exit 4, naming the file and the path", () => {
   const e = makeEnv();
   assert.equal(govern(e, ["new", "lane", "--process", "dev"]).code, 0);
   const f = join(e.projects, "lane", "govern.json");
@@ -264,7 +264,7 @@ test("a bad govern.json stops the commands that read that lane with exit 2, nami
   write(f, JSON.stringify({ ...good, commands: { t: { argv: ["x"], timeout: -1 } } }));
   for (const args of [["brief", "lane"], ["status", "lane"], ["advance", "lane"]]) {
     const r = govern(e, args);
-    assert.equal(r.code, 2, args.join(" "));
+    assert.equal(r.code, 4, args.join(" "));
     assert.ok(r.err.includes(`${f}: $.commands.t.timeout: must be a whole number, 1 or more (got -1)`), `${args.join(" ")}: ${r.err}`);
   }
   write(f, JSON.stringify(good));
@@ -286,7 +286,7 @@ test("status and desk list every lane: a bad govern.json is one row naming file,
     assert.ok(r.out.includes(`bad ✖ ${problem}`), `${cmd} reports the bad lane in its row: ${r.out}`);
     assert.match(r.err, /1 of 2 lanes could not be read/, `${cmd}: ${r.err}`);
   }
-  assert.equal(govern(e, ["status", "bad"]).code, 2, "a single-lane command stays strict");
+  assert.equal(govern(e, ["status", "bad"]).code, 4, "a single-lane command stays strict");
   write(f, JSON.stringify(json));
   for (const cmd of ["status", "desk"]) assert.equal(govern(e, [cmd]).code, 0, cmd);
 });
@@ -297,13 +297,13 @@ test("a workspace process with an unknown key stops every command that reads pro
   const f = write(join(e.root, "PALS-Notes", "processes", "typo.json"), proc({ stages: [{ name: "a", chek: "lint" }] }));
   const problem = `${f}: $.stages[0].chek: unknown key "chek" (known: name, exit, check, requires, next, join, human, requiredFields, timer, event, onError, call, foreach)`;
   const r = govern(e, ["process", "list"]);
-  assert.equal(r.code, 2);
+  assert.equal(r.code, 4);
   assert.ok(r.err.includes(problem), r.err);
-  assert.equal(govern(e, ["new", "x", "--process", "dev"]).code, 2);
+  assert.equal(govern(e, ["new", "x", "--process", "dev"]).code, 4);
   // Not degraded per lane like a bad govern.json: every lane's stages and gates come from the processes.
   for (const cmd of ["status", "desk"]) {
     const s = govern(e, [cmd]);
-    assert.equal(s.code, 2, cmd);
+    assert.equal(s.code, 4, cmd);
     assert.ok(s.err.includes(problem), `${cmd}: ${s.err}`);
     assert.doesNotMatch(s.out, /lane/, `${cmd} prints no lane row`);
   }
@@ -327,7 +327,7 @@ test("a slug's `.` segments name the same lane, as they did before govern.json w
   assert.equal(d.code, 0, d.err);
   assert.deepEqual(JSON.parse(readFileSync(join(e.projects, "l1", "govern.json"), "utf8")).after, [{ lane: "l2" }]);
   const loop = govern(e, ["dep", "l2", "--after", "l1"]);
-  assert.equal(loop.code, 2);
+  assert.equal(loop.code, 4);
   assert.match(loop.err, /l2 cannot wait on l1: l1 → l2 already waits the other way/);
   // A govern.json written before slugs were normalized: `govern new ./l3` stored "./l3", `dep --after ./l1` stored "./l1".
   assert.equal(govern(e, ["new", "l3", "--process", "dev"]).code, 0);

@@ -55,7 +55,7 @@ test("work sets the stage, records a segment with the Claude session id, and pri
   const w = ledger(e, slug).find((x) => x.kind === "work");
   assert.equal(w.engine, "claude");
   assert.equal(w.session, "sess-1");
-  assert.equal(govern(e, ["work", slug, "editing"]).code, 2);
+  assert.equal(govern(e, ["work", slug, "editing"]).code, 4);
 });
 
 test("notes are kept and the brief shows the latest ones", () => {
@@ -259,13 +259,13 @@ test("ask: a repair call's input is hashed too; promptSha stays the first call's
   assert.deepEqual(l.callShas, sent.map(sha256));
 });
 
-test("ask: a prompt without schema exits 2 naming the file before any codex call", () => {
+test("ask: a prompt without schema exits 4 naming the file before any codex call", () => {
   const { e, slug } = video();
   const prompts = join(e.root, "prompts"), file = join(prompts, "free.md");
   for (const text of ["Say something as JSON.\n", "---\neffort: low\n---\nSay something as JSON.\n", "---\nschema: \n---\nSay something as JSON.\n"]) {
     write(file, text);
     const r = govern(e, ["ask", slug, "free"], { GOVERN_PROMPTS: prompts, FAKE_CODEX_SCRIPTS: reply(e, "free", { said: "hi" }) });
-    assert.equal(r.code, 2, r.err + r.out);
+    assert.equal(r.code, 4, r.err + r.out);
     assert.ok(r.err.includes(`${file}: schema is required`), r.err);
     assert.doesNotMatch(r.out, /verified/);
   }
@@ -293,7 +293,7 @@ test("ask: {{var.constructor}} is a required var not given until --var sets it (
   write(join(prompts, "need.md"), "---\nschema: reply.json\n---\nUse {{var.constructor}} as JSON.\n");
   write(join(prompts, "reply.json"), JSON.stringify({ type: "object", additionalProperties: false, properties: { said: { type: "string" } }, required: ["said"] }));
   const r = govern(e, ["ask", slug, "need"], env);
-  assert.equal(r.code, 2, r.out);
+  assert.equal(r.code, 4, r.out);
   assert.match(r.err, /prompt need: unfilled var\.constructor \(pass --var NAME=VALUE\)/);
   assert.equal(jsonl(join(e.root, "argv.log")).length, 0, "codex was never called");
   assert.equal(govern(e, ["ask", slug, "need", "--var", "constructor=the builder"], env).code, 0);
@@ -331,7 +331,7 @@ test("ask: a prompt whose repairs is not a whole number 0 or more is refused bef
   for (const bad of ["lots", "-1", "1.5", ""]) {
     write(join(prompts, "free.md"), `---\nschema: reply.json\nrepairs: ${bad}\n---\nSay something as JSON.\n`);
     const r = govern(e, ["ask", slug, "free"], { GOVERN_PROMPTS: prompts, FAKE_CODEX_SCRIPTS: reply(e, "free", { said: "hi" }) });
-    assert.equal(r.code, 2, `repairs: ${bad}: ${r.out}`);
+    assert.equal(r.code, 4, `repairs: ${bad}: ${r.out}`);
     assert.match(r.err, new RegExp(`free\\.md: repairs must be a whole number, 0 or more \\(got "${bad.replace(".", "\\.")}"\\)`));
   }
   assert.equal(jsonl(join(e.root, "argv.log")).length, 0, "codex was never called");
@@ -353,7 +353,7 @@ test("ask: a prompt whose front matter has an unknown key or a line that is not 
   for (const [line, want] of cases) {
     write(join(prompts, "free.md"), `---\n${line}\n---\nSay something as JSON.\n`);
     const r = govern(e, ["ask", slug, "free"], { GOVERN_PROMPTS: prompts, FAKE_CODEX_SCRIPTS: reply(e, "free", { said: "hi" }) });
-    assert.equal(r.code, 2, `${line}: ${r.out}`);
+    assert.equal(r.code, 4, `${line}: ${r.out}`);
     assert.match(r.err, want);
   }
   assert.equal(jsonl(join(e.root, "argv.log")).length, 0, "codex was never called");
@@ -368,7 +368,7 @@ test("ask: a prompt whose front matter has an unknown key or a line that is not 
   for (const [text, want] of refused) {
     write(join(prompts, "free.md"), text);
     const r = govern(e, ["ask", slug, "free"], { GOVERN_PROMPTS: prompts, FAKE_CODEX_SCRIPTS: reply(e, "free", { said: "hi" }) });
-    assert.equal(r.code, 2, `${JSON.stringify(text)}: ${r.out}`);
+    assert.equal(r.code, 4, `${JSON.stringify(text)}: ${r.out}`);
     assert.match(r.err, want);
   }
   assert.equal(jsonl(join(e.root, "argv.log")).length, 0, "codex was never called");
@@ -583,7 +583,7 @@ test("publish refuses a lane whose process has no final and publish gates, and d
   const e = makeEnv();
   assert.equal(govern(e, ["new", "tool", "--process", "dev", "--title", "A tool"]).code, 0);
   const r = govern(e, ["publish", "tool"]);
-  assert.equal(r.code, 2, r.out);
+  assert.equal(r.code, 4, r.out);
   assert.match(r.err, /tool: govern publish is for a lane whose process has the gates final and publish; process "dev" has no final, publish gate/);
   assert.doesNotMatch(r.err, /govern approve/);
 });

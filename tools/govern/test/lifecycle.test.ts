@@ -81,7 +81,7 @@ test("external events block advance, correlate exactly, map typed output and ded
   assert.match(govern(e, wrong).err, /no active event wait/);
   const invalid = receipt();
   invalid[invalid.indexOf("--data") + 1] = '{"settled":"yes"}';
-  assert.equal(govern(e, invalid).code, 2);
+  assert.equal(govern(e, invalid).code, 4);
   assert.equal(state(e).events, undefined);
   assert.match(ok(e, receipt()), /accepted/);
   assert.equal(state(e).data?.paid, true);
@@ -470,7 +470,7 @@ test("migration refuses incompatible case data without writing a partial state",
   (raw.fields.orderId as { type: string }).type = "number";
   definition(e, "fulfillment", raw);
   const before = readFileSync(path(e), "utf8");
-  assert.equal(govern(e, ["process", "migrate", "p", "--quote", "Update policy"]).code, 2);
+  assert.equal(govern(e, ["process", "migrate", "p", "--quote", "Update policy"]).code, 4);
   assert.equal(readFileSync(path(e), "utf8"), before);
 });
 
@@ -605,7 +605,7 @@ test("event waits can require an explicit activation generation", () => {
 test("missing exit-check commands enter the declared error path", () => {
   const e = setup(retryDefinition(1));
   lane(e);
-  assert.equal(govern(e, ["advance", "p"]).code, 2);
+  assert.equal(govern(e, ["advance", "p"]).code, 4);
   assert.equal(state(e).stage, "manual");
   assert.equal(state(e).runtime?.charge?.checkInFlight, undefined);
 });

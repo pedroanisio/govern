@@ -198,7 +198,7 @@ test("decide ask takes the state from a file, refuses an empty or oversized one,
   assert.match(govern(e, ["decide", "ask", "--questions", questions(e), "--state", "  "]).err, /state is empty/);
   const big = write(join(e.root, "big.md"), "word ".repeat(40000));
   const r = govern(e, ["decide", "ask", "--questions", questions(e), "--state-file", big]);
-  assert.equal(r.code, 2);
+  assert.equal(r.code, 4);
   assert.match(r.err, /32k tokens/);
   assert.equal(jsonl(log).length, 1, "nothing oversized was sent");
 });
@@ -206,7 +206,7 @@ test("decide ask takes the state from a file, refuses an empty or oversized one,
 test("the key: TYPESAFE_API_KEY, else the dotenv file the config's decide.envFile names; missing is a clear error", async () => {
   const { e, log } = await env({ key: false });
   const r = govern(e, ["decide", "ask", "--questions", questions(e), "--state", "x"]);
-  assert.equal(r.code, 2);
+  assert.equal(r.code, 4);
   assert.match(r.err, /TYPESAFE_API_KEY is not set/);
   assert.equal(jsonl(log).length, 0);
   const dotenv = write(join(tempDir("dotenv"), ".env"), `OTHER_KEY=nope\nexport TYPESAFE_API_KEY="${KEY}"\n# comment\n`);
@@ -232,7 +232,7 @@ test("an HTTP error or a malformed reply fails clearly, is recorded, and never e
   const { e, replyFile } = await env();
   write(replyFile, JSON.stringify({ status: 401, body: { error: `invalid api key ${KEY}` } }));
   const r = govern(e, ["decide", "ask", "--questions", questions(e), "--state", "x"]);
-  assert.equal(r.code, 2);
+  assert.equal(r.code, 4);
   assert.match(r.err, /TypeSafe answered 401/);
   assert.ok(!r.err.includes(KEY) && !r.out.includes(KEY), "the key is redacted from the error");
   write(replyFile, JSON.stringify({ status: 200, body: { model: "jev-x", answers: {}, usage: { input_tokens: 1, output_tokens: 1 } } }));
@@ -244,7 +244,7 @@ test("an HTTP error or a malformed reply fails clearly, is recorded, and never e
   assert.ok(rows.every((d) => typeof d.error === "string" && !d.answers), JSON.stringify(rows));
   assert.ok(!allText(e.root).includes(KEY));
   const down = govern(e, ["decide", "ask", "--questions", questions(e), "--state", "x"], { GOVERN_TYPESAFE_URL: "http://127.0.0.1:9" });
-  assert.equal(down.code, 2);
+  assert.equal(down.code, 4);
   assert.match(down.err, /could not reach TypeSafe/);
 });
 

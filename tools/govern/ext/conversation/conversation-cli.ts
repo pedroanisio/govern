@@ -1,5 +1,5 @@
 import { readFileSync } from "node:fs";
-import { fail, opt, flag, secondsOpt, type Args, type FlagSpec } from "../../lib/util.ts";
+import { usage, opt, flag, secondsOpt, type Args, type FlagSpec } from "../../lib/util.ts";
 import * as sessions from "../../lib/conversation.ts";
 import * as runtime from "./conversation-runtime.ts";
 const json = (v: unknown) => {
@@ -7,12 +7,12 @@ const json = (v: unknown) => {
 };
 type Sub = { flags?: FlagSpec; lines: readonly (readonly [string, string])[]; run: (a: Args) => void | Promise<void> };
 const id = (a: Args) => sessions.sessionId(a._[2]);
-const required = (a: Args, k: string) => opt(a, k) ?? fail(`--${k} required`);
+const required = (a: Args, k: string) => opt(a, k) ?? usage(`--${k} required`);
 const number = (a: Args, k: string) => {
   const value = opt(a, k);
   if (value === undefined) return undefined;
   const n = Number(value);
-  if (!Number.isFinite(n) || n < 0) fail(`--${k} must be nonnegative`);
+  if (!Number.isFinite(n) || n < 0) usage(`--${k} must be nonnegative`);
   return n;
 };
 const stream = (e: sessions.Event) => json(e);
@@ -67,10 +67,10 @@ export const SUBS: Record<string, Sub> = {
       ]
     ],
     run: async (a) => {
-      if (flag(a, "bg") && !flag(a, "run")) fail("--bg requires --run");
+      if (flag(a, "bg") && !flag(a, "run")) usage("--bg requires --run");
       const message = opt(a, "message"),
         file = opt(a, "message-file");
-      if ((message === undefined) === (file === undefined)) fail("choose --message or --message-file");
+      if ((message === undefined) === (file === undefined)) usage("choose --message or --message-file");
       json(
         sessions.send(id(a), file ? readFileSync(file, "utf8") : message!, {
           requestId: opt(a, "request-id"),
@@ -100,7 +100,7 @@ export const SUBS: Record<string, Sub> = {
       ["<id> <run-id> [--reason TEXT]", "cancel a queued turn or request active cancellation; retain partial progress"]
     ],
     run: (a) => {
-      sessions.cancel(id(a), a._[3] ?? fail("run ID required"), opt(a, "reason") ?? "cancelled by caller");
+      sessions.cancel(id(a), a._[3] ?? usage("run ID required"), opt(a, "reason") ?? "cancelled by caller");
       json({ requested: true });
     }
   },
@@ -140,7 +140,7 @@ export const SUBS: Record<string, Sub> = {
     ],
     run: async (a) => {
       let cursor = number(a, "after") ?? 0;
-      if (!Number.isSafeInteger(cursor)) fail("--after must be an integer");
+      if (!Number.isSafeInteger(cursor)) usage("--after must be an integer");
       if (!flag(a, "follow")) {
         json(sessions.inspect(id(a)).events.filter((e) => e.seq > cursor));
         return;

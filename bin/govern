@@ -59,9 +59,9 @@
 #     command that checks it, and the owner's gates. `advance` moves a lane on only when the stage's check passes
 #     (or, when the stage has none, with --note evidence), no gate holds the stage and no lane it waits on (`dep`)
 #     is behind. `work` to a later stage holds every stage it skips to the same rules (a failing check, an open
-#     gate or a pending dependency refuses it, exit 2); going back is always allowed. `dep` refuses a cycle.
+#     gate or a pending dependency refuses it, exit 4); going back is always allowed. `dep` refuses a cycle.
 #     `hook stop` is a Claude Code Stop hook: while the session's lane has a failing check it refuses
-#     the stop (exit 2, the check's log as the reason), at most 3 times per work segment;
+#     the stop ({"decision":"block","reason":...} on stdout, exit 0, the check's log as the reason), at most 3 times per work segment;
 #     it closes nothing (Stop fires after every response). `hook session-end` is the SessionEnd hook: it closes the
 #     work segment the SessionStart hook opened for the session (a `done` entry with closedBy "hook"), leaves one opened
 #     by `work` alone, prints nothing and always exits 0. `hook session-start` is a Claude Code
@@ -110,14 +110,14 @@
 #     repository; a reply naming none stays [shape only]). `task send --check NAME` adds a check, resolved from the
 #     profile's capabilities file `checks`, QUEUE/config.json `checks.named`, then the built-ins (file-refs,
 #     commit-refs, claims-cited: every id of the --file ledger {"claims": [{"id": ...}]} must appear in the reply);
-#     an unknown NAME is refused (exit 2). `task send --verify -- ARGV...` has govern run ARGV (no shell, 600 s, in the
+#     an unknown NAME is refused (exit 4). `task send --verify -- ARGV...` has govern run ARGV (no shell, 600 s, in the
 #     project folder) after the other checks: [checked: verify (exit 0)] only on exit 0, else [unverified] with the
 #     exit code and the last 12 lines under QUEUE/replychecks/. `desk` counts the day's replies: checked, shape only,
 #     unverified, repaired.
 #     No profile runs unchecked: for a message whose profile has no passing self-test of its current definition the dispatcher runs `caps --check`
 #     itself, once per profile hash; a failed check holds the message (open) and sends the sender one BLOCKED notice, and later messages on
 #     that hash are refused until `caps --check P` passes. A codex run gets a private CODEX_HOME (GOVERN_CODEX_HOME, default the state
-#     folder's codex-home): the login and a minimal config.toml, not ~/.codex. `task send` refuses (exit 2) a message to a profile that cannot write
+#     folder's codex-home): the login and a minimal config.toml, not ~/.codex. `task send` refuses (exit 4) a message to a profile that cannot write
 #     whose summary or body asks for file changes (an edit verb within six words of file, test, module, function, branch, commit, .ts, .py or .md);
 #     --write or --profile P with a write profile fixes it, --read-only sends it and records readOnlyConfirmed. `task show` and `desk` print
 #     `bound: N turns · T s` for a running or recorded grok run: grok has no dollar cap, so that is its only limit.
@@ -231,7 +231,9 @@
 #     give such a value as --flag=VALUE. A flag the command does not declare is refused (exit 2).
 # EXIT STATUS
 #     0 ok · 1 a failed check (install-skill --check, a lane status or desk could not read, a failed exit check)
-#     · 2 usage or state error · 3 a Codex reply failed verification · a job's exit code for run/wait · 124 wait timed out
+#     · 2 usage error (unknown command or flag, a missing argument, a malformed flag value) · 3 a Codex reply failed
+#     verification · 4 refused by the workspace's state (no such lane, a gate or check holds, a bad govern.json or
+#     config, a disabled extension) · a job's exit code for run/wait · 124 wait timed out
 # ENVIRONMENT
 #     Workspace: GOVERN_REPO (the workspace; else the nearest .govern/ or govern.config.json above the cwd).
 #     Each overrides its config key: GOVERN_PROJECTS · GOVERN_QUEUE · GOVERN_TUNING_LOG · GOVERN_PROCESSES · GOVERN_WORKFLOW
@@ -300,7 +302,7 @@
 # EXTENSIONS
 #     Peer, mesh, agents, center, remote, decide, conversation and the business event commands are extensions: a workspace enables each
 #     with `govern ext enable NAME` ("extensions" in .govern/config.json, or GOVERN_EXTENSIONS), and `govern help COMMAND` prints an enabled
-#     extension's own manpage text. A command of a disabled extension is refused (exit 2). `govern ext list` shows the state of each.
+#     extension's own manpage text. A command of a disabled extension is refused (exit 4). `govern ext list` shows the state of each.
 #     tools/govern/PEERS.md (extensions peer and center) - tools/govern/REMOTE.md (extension remote) - tools/govern/CONVERSATIONS.md (extension conversation)
 #     - tools/govern/BUSINESS.md (extension business) - tools/govern/LIFECYCLE.md (extension business)
 # SEE ALSO

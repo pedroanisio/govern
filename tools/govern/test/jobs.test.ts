@@ -178,7 +178,7 @@ for (const [src, env] of SOURCES) test(`a foreground job past its timeout has it
     assert.equal(ledger(e, slug).filter((x) => x.kind === "job").at(-1).status, "timeout");
     assert.match(govern(e, ["jobs", slug], env).out, /-hang timeout/);
     const a = govern(e, ["advance", slug], env);
-    assert.equal(a.code, 2);
+    assert.equal(a.code, 4);
     assert.match(a.err, /check hang failed \(timed out after 1s\)/);
   } finally { cleanup(e); }
 });
@@ -344,7 +344,7 @@ test("a recycled pid is not the job: it reads lost and kill refuses to signal it
   try {
     assert.match(govern(e, ["jobs", slug]).out, /-x lost/);
     const k = govern(e, ["kill", slug, "20260101T000000Z-x"]);
-    assert.equal(k.code, 2);
+    assert.equal(k.code, 4);
     assert.match(k.err, /now belongs to another process: not signalling it/);
     assert.equal(ledger(e, slug).at(-1).outcome, "not-owned");
     assert.ok(!dead(child.pid!), "the other process must be untouched");
@@ -357,7 +357,7 @@ test("a job.json without a start time falls back to the pid, and kill will not s
   try {
     assert.match(govern(e, ["jobs", slug]).out, /-old running/);
     const k = govern(e, ["kill", slug]);
-    assert.equal(k.code, 2);
+    assert.equal(k.code, 4);
     assert.match(k.err, /no start time recorded: cannot verify .* not signalling it/);
     assert.equal(ledger(e, slug).at(-1).outcome, "not-owned");
     assert.ok(!dead(child.pid!));

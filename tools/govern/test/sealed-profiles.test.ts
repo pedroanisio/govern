@@ -166,17 +166,17 @@ test("asksForChanges: an edit verb within six words of a file word, any case and
   assert.match(WRITE_RULE, /within 6 words/);
 });
 
-test("task send to a read profile refuses (exit 2) a message that asks for file changes, naming the rule, the matched words and the fix", () => {
+test("task send to a read profile refuses (exit 4) a message that asks for file changes, naming the rule, the matched words and the fix", () => {
   const e = env();
   const r = send(e, ["--to", "codex"], "fix the failing test in lib/x.ts");
-  assert.equal(r.code, 2);
+  assert.equal(r.code, 4);
   assert.match(r.err, /profile codex-read cannot change files, but the message asks for it/);
   assert.match(r.err, /rule: an edit verb .* within 6 words of file/);
   assert.match(r.err, /matched "fix" and "test"/);
   assert.match(r.err, /--write \(or --profile codex-write\)/);
   assert.equal(existsSync(join(e.root, "queue", "open")) ? readdirSync(join(e.root, "queue", "open")).length : 0, 0, "nothing was queued");
   // the body counts too
-  assert.equal(send(e, ["--to", "claude", "--body", "then refactor the module"], "look at the notes").code, 2);
+  assert.equal(send(e, ["--to", "claude", "--body", "then refactor the module"], "look at the notes").code, 4);
   // --write and a write profile fix it
   for (const via of [["--to", "codex", "--write"], ["--to", "codex", "--profile", "codex-write"]]) {
     const w = send(e, via, "fix the failing test");

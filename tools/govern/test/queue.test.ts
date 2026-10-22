@@ -300,7 +300,7 @@ test("send checks --to: runners, auto and owner pass; a live session passes with
   assert.ok(r.out.includes(`govern task show ${id}`));
   for (const to of ["e4", "old-one"]) {
     const f = govern(e, [...SEND, "--to", to], S);
-    assert.equal(f.code, 2, to);
+    assert.equal(f.code, 4, to);
     assert.match(f.err, /no live session "[^"]+"/);
     assert.match(f.err, /render-frontend-js-e4/);
     assert.match(f.err, /sr-core-d4/);
@@ -327,7 +327,7 @@ test("inbox lists the open messages for NAME, oldest first; --all adds closed on
   assert.match(govern(e, ["task", "inbox", "--as", "alice", "--all"], S).out, /done\s+TASK/);
   assert.match(govern(e, ["task", "inbox", "--as", "carol"], S).out, /\(no messages\)/);
   const nameless = govern(e, ["task", "inbox"], { GOVERN_SESSIONS_DIR: sess([]), GOVERN_AS: "" }); // the test process itself is a registered session in S
-  assert.equal(nameless.code, 2);
+  assert.equal(nameless.code, 4);
   assert.match(nameless.err, /--as/);
 });
 
@@ -352,7 +352,7 @@ test("send without --from is from the sending session, never silently the owner;
   const id = idOf(govern(e, [...SEND, "--to", "codex"], { ...S, GOVERN_AS: "alice" }).out);
   assert.match(govern(e, ["task", "show", id]).out, /\[TASK\] alice→codex/);
   const none = govern(e, [...SEND, "--to", "codex"], { GOVERN_SESSIONS_DIR: sess([]), GOVERN_AS: "" });
-  assert.equal(none.code, 2);
+  assert.equal(none.code, 4);
   assert.match(none.err, /--from/);
   const explicit = govern(e, [...SEND, "--to", "codex", "--from", "owner"], { GOVERN_SESSIONS_DIR: sess([]), GOVERN_AS: "" });
   assert.equal(explicit.code, 0, explicit.err);
@@ -394,7 +394,7 @@ test("forward sends a copy to the right name and closes the original with a note
   const e = env();
   const S = { GOVERN_SESSIONS_DIR: sess(["alice", "bob", "real-e4"]) };
   const id = idOf(govern(e, [...SEND, "--to", "bob", "--from", "alice", "--write"], S).out);
-  assert.equal(govern(e, ["task", "forward", id, "--to", "e4", "--as", "bob"], S).code, 2);
+  assert.equal(govern(e, ["task", "forward", id, "--to", "e4", "--as", "bob"], S).code, 4);
   assert.equal(govern(e, ["task", "list", "--state", "open"], S).out.trim().split("\n").length, 1); // nothing was queued for e4
   const r = govern(e, ["task", "forward", id, "--to", "real-e4", "--as", "bob"], S);
   assert.equal(r.code, 0, r.err);

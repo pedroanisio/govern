@@ -422,7 +422,7 @@ test("govern remote pair needs the owner's terminal; serve refuses a public host
   assert.equal(inSession.code, 1);
   assert.match(inSession.err, /owner's own terminal/);
   const pub = govern(e, ["remote", "serve", "--host", "0.0.0.0"]);
-  assert.equal(pub.code, 2);
+  assert.equal(pub.code, 4);
   assert.match(pub.err, /serve TLS/);
   assert.match(govern(e, ["remote", "serve", "--tls-cert", "x"]).err, /go together/);
   assert.match(govern(e, ["remote", "devices"]).out, /no paired devices/);

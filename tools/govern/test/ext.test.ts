@@ -74,21 +74,21 @@ test("the core and the extensions' commands together are the old table: no comma
   for (const e of EXTENSIONS) for (const c of e.commands) assert.ok(OLD_TABLE.includes(c), c);
 });
 
-test("a disabled extension's command prints the one refusal line and exits 2; the name is still recognised", () => {
+test("a disabled extension's command prints the one refusal line and exits 4; the name is still recognised", () => {
   const e = makeEnv("ext-disabled");
   const off = { GOVERN_EXTENSIONS: "" };
   for (const info of EXTENSIONS) for (const cmd of info.commands) {
     const r = govern(e, [cmd], off);
-    assert.equal(r.code, 2, `${cmd}: ${r.err}`);
+    assert.equal(r.code, 4, `${cmd}: ${r.err}`);
     assert.equal(r.err, `govern: ${disabledMessage(cmd, info.name)}\n`, cmd);
     assert.equal(r.out, "", `${cmd} prints nothing else`);
     assert.doesNotMatch(r.err, /unknown command/);
   }
   assert.equal(govern(e, ["peer", "list"], off).err, "govern: peer is part of the peer extension, which this workspace does not enable — govern ext enable peer\n");
-  assert.equal(govern(e, ["peer", "--help"], off).code, 2);
+  assert.equal(govern(e, ["peer", "--help"], off).code, 4);
   assert.equal(govern(e, ["help", "remote"], off).err, "govern: remote is part of the remote extension, which this workspace does not enable — govern ext enable remote\n");
   assert.match(govern(e, ["frobnicate"], off).err, /unknown command "frobnicate"/);
-  assert.equal(govern(e, ["peer", "list"], { GOVERN_EXTENSIONS: "remote" }).code, 2, "another extension's being enabled does not enable this one");
+  assert.equal(govern(e, ["peer", "list"], { GOVERN_EXTENSIONS: "remote" }).code, 4, "another extension's being enabled does not enable this one");
   assert.equal(govern(e, ["peer", "list"], { GOVERN_EXTENSIONS: "peer" }).code, 0);
 });
 
@@ -96,10 +96,10 @@ test("task send to NAME@PEER is refused with the disabled message when the peer 
   const e = makeEnv("ext-send");
   const send = ["task", "send", "--to", "codex@b", "--project", "p", "--task", "t", "--from", "alice", "--summary", "s", "--body", "b"];
   const off = govern(e, send, { GOVERN_EXTENSIONS: "" });
-  assert.equal(off.code, 2);
+  assert.equal(off.code, 4);
   assert.equal(off.err, `govern: ${disabledMessage("task send --to codex@b", "peer")}\n`);
   const on = govern(e, send, { GOVERN_EXTENSIONS: "peer" });
-  assert.equal(on.code, 2);
+  assert.equal(on.code, 4);
   assert.match(on.err, /live peer/, "enabled: the old check of the host");
   assert.equal(govern(e, ["task", "forward", "x", "--to", "codex@b", "--as", "alice"], { GOVERN_EXTENSIONS: "" }).err, `govern: ${disabledMessage("task forward --to codex@b", "peer")}\n`);
   assert.equal(govern(e, ["task", "send", "--to", "owner", "--project", "p", "--task", "t", "--from", "alice", "--summary", "s", "--body", "b"], { GOVERN_EXTENSIONS: "" }).code, 0, "a local recipient needs no extension");
@@ -155,19 +155,19 @@ test("ext enable and disable write extensions in .govern/config.json, keep its o
   assert.match(off.out, /^disabled peer in .*\(extensions: remote\)$/m);
   assert.deepEqual(JSON.parse(readFileSync(w.config, "utf8")), { queue: "q2", extensions: ["remote"] });
   assert.match(w.run(["ext", "disable", "peer"]).out, /^peer is already disabled in /m);
-  assert.equal(w.run(["peer", "list"]).code, 2);
+  assert.equal(w.run(["peer", "list"]).code, 4);
   assert.equal(w.run(["ext", "enable", "nope"]).code, 2);
   assert.match(w.run(["ext", "enable", "nope"]).err, /unknown extension "nope" \(extensions: peer, center, remote, decide, conversation, business\)/);
   assert.equal(w.run(["ext", "enable"]).code, 2, "a name is required");
   assert.match(w.run(["ext", "enable", "business"], { GOVERN_EXTENSIONS: "decide" }).out, /note: GOVERN_EXTENSIONS is set and overrides /);
 });
 
-test("in a govern.config.json workspace ext enable and disable are refused (exit 2), naming the file to edit by hand", () => {
+test("in a govern.config.json workspace ext enable and disable are refused (exit 4), naming the file to edit by hand", () => {
   const e = makeEnv("ext-owner");
   const before = readFileSync(join(e.root, "govern.config.json"), "utf8");
   for (const verb of ["enable", "disable"]) {
     const r = govern(e, ["ext", verb, "peer"], { GOVERN_EXTENSIONS: "" });
-    assert.equal(r.code, 2, r.err);
+    assert.equal(r.code, 4, r.err);
     assert.match(r.err, new RegExp(`${join(e.root, "govern.config.json").replace(/[.*+?^${}()|[\]\\]/g, "\\$&")} is the owner's file: edit "extensions" in it by hand`));
   }
   assert.equal(readFileSync(join(e.root, "govern.config.json"), "utf8"), before, "the owner's file is untouched");
@@ -181,11 +181,11 @@ test("a bad extensions value is refused naming the file and the JSON path; GOVER
   const with_ = (extensions: unknown) => writeFileSync(cfg, JSON.stringify({ ...base, extensions }));
   with_(["peer", "nope"]);
   let r = govern(e, ["ext", "list"], off);
-  assert.equal(r.code, 2);
+  assert.equal(r.code, 4);
   assert.match(r.err, new RegExp(`${cfg.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}: \\$\\.extensions\\[1\\]: unknown extension "nope" \\(known: peer, center, remote, decide, conversation, business\\)`));
   with_(["peer", "remote", "peer"]);
   r = govern(e, ["help"], off);
-  assert.equal(r.code, 2);
+  assert.equal(r.code, 4);
   assert.match(r.err, /govern\.config\.json: \$\.extensions\[2\]: extension "peer" is listed twice/);
   with_("peer");
   assert.match(govern(e, ["ext", "list"], off).err, /govern\.config\.json: \$\.extensions: must be an array \(got "peer"\)/);
@@ -220,7 +220,7 @@ test("govern help lists the core commands only, then one line naming each extens
   assert.match(peer.out, /\nSYNOPSIS\n {4}govern peer id \[--name N\]/);
   assert.match(peer.out, /\nOPTIONS\n[\s\S]*--key BASE64 +peer add:/);
   assert.equal(govern(e, ["peer", "--help"], { GOVERN_EXTENSIONS: "peer" }).out, peer.out);
-  assert.equal(govern(e, ["help", "peer"], { GOVERN_EXTENSIONS: "" }).code, 2);
+  assert.equal(govern(e, ["help", "peer"], { GOVERN_EXTENSIONS: "" }).code, 4);
   assert.doesNotMatch(govern(e, ["help", "advance"], { GOVERN_EXTENSIONS: ALL }).out, /SYNOPSIS/, "a core command's help has no manpage text");
 });
 

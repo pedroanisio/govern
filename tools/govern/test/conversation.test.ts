@@ -74,7 +74,7 @@ test("history and context survive new CLI processes; successful turns commit onc
   assert.equal(state(e).runs[0].state, "completed");
   assert.equal(state(e).messages.at(-1).content, "reply:hello:previous=0");
   assert.equal(send(e, "hello", ["--request-id", "first"]).run.id, first.run.id);
-  assert.equal(govern(e, ["conversation", "send", "chat", "--message", "different", "--request-id", "first"]).code, 2);
+  assert.equal(govern(e, ["conversation", "send", "chat", "--message", "different", "--request-id", "first"]).code, 4);
   send(e, "next");
   ok(e, ["run", "chat"]);
   assert.equal(state(e).messages.at(-1).content, "reply:next:previous=1");
@@ -175,7 +175,7 @@ test("queued cancellation, close, input validation, and traversal preserve exist
   ])
     assert.equal(govern(e, ["conversation", ...args]).code, 2);
   ok(e, ["close", "chat"]);
-  assert.equal(govern(e, ["conversation", "send", "chat", "--message", "closed"]).code, 2);
+  assert.equal(govern(e, ["conversation", "send", "chat", "--message", "closed"]).code, 4);
   assert.equal(state(e).messages.length, 1);
 });
 test("timeouts and output limits fail without committing a reply", () => {
@@ -363,14 +363,14 @@ test("usage and allowance reservations cover conversation execution", () => {
 });
 test("missing sessions do not poison listing and malformed persisted state fails closed", () => {
   const e = setup();
-  assert.equal(govern(e, ["conversation", "show", "missing"]).code, 2);
+  assert.equal(govern(e, ["conversation", "show", "missing"]).code, 4);
   assert.deepEqual(json(e, ["list"]), []);
   create(e);
   const path = join(e.root, "PALS-Notes/govern-state/conversations/chat/session.json");
   const s = JSON.parse(readFileSync(path, "utf8"));
   s.user = "another-user";
   write(path, JSON.stringify(s));
-  assert.equal(govern(e, ["conversation", "show", "chat"]).code, 2);
+  assert.equal(govern(e, ["conversation", "show", "chat"]).code, 4);
 });
 test("tool progress requires a finished lifecycle before committing a successful reply", () => {
   const e = setup();
@@ -605,10 +605,11 @@ test("Grok stream adapter emits tool events and covers every parse failure", asy
 test("conversation CLI rejects incomplete options and invalid numeric bounds without queuing work", () => {
   const e = setup();
   create(e);
-  const cases: [string[], RegExp][] = [
+  // 2: the command line is wrong; 4: the workspace refuses it (no such adapter, the conversation exists)
+  const cases: [string[], RegExp, number?][] = [
     [["create", "both", "--profile", "codex-read", "--adapter", "echo"], /choose --profile or --adapter/],
-    [["create", "unknown", "--adapter", "absent"], /unknown conversation adapter/],
-    [["create", "chat", "--adapter", "echo"], /already exists/],
+    [["create", "unknown", "--adapter", "absent"], /unknown conversation adapter/, 4],
+    [["create", "chat", "--adapter", "echo"], /already exists/, 4],
     [["create", "invalid", "--max-context-chars", "NaN"], /must be nonnegative/],
     [["create", "invalid", "--max-context-chars", "-1"], /must be nonnegative/],
     [["create", "invalid", "--max-context-chars", "1.5"], /must be between/],
@@ -625,9 +626,9 @@ test("conversation CLI rejects incomplete options and invalid numeric bounds wit
     [["recover", "chat", "--action", "continue"], /--note required/],
     [["context", "chat"], /--summary required/],
   ];
-  for (const [args, error] of cases) {
+  for (const [args, error, code = 2] of cases) {
     const result = govern(e, ["conversation", ...args]);
-    assert.equal(result.code, 2, result.err + result.out);
+    assert.equal(result.code, code, result.err + result.out);
     assert.match(result.err, error);
   }
   assert.equal(state(e).runs.length, 0);

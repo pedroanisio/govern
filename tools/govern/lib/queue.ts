@@ -10,7 +10,7 @@ import { tmpdir, homedir } from "node:os";
 import { existsSync, statSync, mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync, appendFileSync } from "node:fs";
 import { join, resolve, dirname, relative } from "node:path";
 import { fileURLToPath } from "node:url";
-import { fail, stamp, nowIso, clip, charLimit, writeJson } from "./util.ts";
+import { fail, usage, stamp, nowIso, clip, charLimit, writeJson } from "./util.ts";
 import { repo, projectsDir, queueDir, config as workspaceConfig, expandPlaceholders } from "./workspace.ts";
 import * as allowances from "./allowances.ts";
 import * as jobs from "./jobs.ts";
@@ -144,7 +144,7 @@ export function resolveTarget(to: string, o: { profile?: string; write: boolean 
   const reg = registry();
   let name: string | undefined;
   if (o.profile !== undefined) {
-    if (o.write) fail("--write cannot be combined with --profile: the profile decides what may change");
+    if (o.write) usage("--write cannot be combined with --profile: the profile decides what may change");
     const p = getProfile(o.profile, reg);
     if (to !== p.name && to !== p.engine) fail(`--profile ${p.name} is a ${p.engine} profile; --to ${to} runs ${(BUILTIN_RUNNERS as readonly string[]).includes(to) ? to : "no profile"}`);
     name = p.name;
@@ -171,11 +171,11 @@ export function send(m: Omit<Message, "id" | "created">): Message {
   for (const [k, v] of [["task", m.task], ["to", m.to], ["from", m.from]] as const)
     if (!(NAME.test(v) || (k !== "task" && v.split("@").length === 2 && v.split("@").every((part) => NAME.test(part))))) fail(`--${k} must be lowercase letters, digits, dots and dashes: ${v}`);
   if (!/^[a-z0-9][a-z0-9.\/-]*$/.test(m.project) || m.project.split("/").some((x) => x === ".." || x === ""))
-    fail(`--project must be a project slug (lowercase, digits, dots, dashes, /): ${m.project}`);
-  if (!KINDS.includes(m.kind as any)) fail(`--kind must be one of ${KINDS.join(", ")}`);
-  if (!m.summary.trim()) fail("--summary is required");
+    usage(`--project must be a project slug (lowercase, digits, dots, dashes, /): ${m.project}`);
+  if (!KINDS.includes(m.kind as any)) usage(`--kind must be one of ${KINDS.join(", ")}`);
+  if (!m.summary.trim()) usage("--summary is required");
   if (m.timeoutSec !== undefined) {
-    if (!Number.isInteger(m.timeoutSec) || m.timeoutSec < 1) fail(`--timeout must be a whole number of seconds, 1 or more: ${m.timeoutSec}`);
+    if (!Number.isInteger(m.timeoutSec) || m.timeoutSec < 1) usage(`--timeout must be a whole number of seconds, 1 or more: ${m.timeoutSec}`);
     if (m.timeoutSec > maxTimeout()) fail(`--timeout ${m.timeoutSec} is above maxTimeoutSec ${maxTimeout()} (${join(QUEUE(), "config.json")}; default ${DEFAULT_MAX_TIMEOUT_SEC})`);
   }
   if (m.profile) {
@@ -189,7 +189,7 @@ export function send(m: Omit<Message, "id" | "created">): Message {
     const { missing } = resolveNamed(m.check, profileChecks, config().checks?.named ?? {});
     if (missing.length) fail(`--check ${missing.join(", ")}: no such check (have: ${checkNames(profileChecks, config().checks?.named ?? {}).join(", ")})`);
   }
-  if (m.verify !== undefined && (!Array.isArray(m.verify) || !m.verify.length || m.verify.some((a) => typeof a !== "string") || !m.verify[0]!.trim())) fail("--verify needs a command: --verify -- ARGV…");
+  if (m.verify !== undefined && (!Array.isArray(m.verify) || !m.verify.length || m.verify.some((a) => typeof a !== "string") || !m.verify[0]!.trim())) usage("--verify needs a command: --verify -- ARGV…");
   if (m.replyTo && !find(m.replyTo)) fail(`--reply-to ${m.replyTo}: no such message`);
   for (const f of m.files) if (!existsSync(resolve(repo(), f))) fail(`--file not found (paths are relative to ${repo()}): ${f}`);
   const msg: Message = { ...m, id: `${stamp()}-${m.to}-${Math.random().toString(36).slice(2, 6)}`, created: nowIso() };
@@ -236,7 +236,7 @@ export function close(ref: string, by: string, note?: string): Message {
 /** Answer an open message: a reply to its sender, threaded to it, then close it. */
 export function reply(ref: string, by: string, r: { kind: string; summary: string; body: string }): Message {
   const orig = openMessage(ref);
-  if (!(REPLY_KINDS as readonly string[]).includes(r.kind)) fail(`--kind must be one of ${REPLY_KINDS.join(", ")}`);
+  if (!(REPLY_KINDS as readonly string[]).includes(r.kind)) usage(`--kind must be one of ${REPLY_KINDS.join(", ")}`);
   const answer = send({ project: orig.project, task: orig.task, kind: r.kind, from: by, to: orig.from, summary: r.summary, body: r.body, files: [], replyTo: orig.id, access: "read-only" });
   close(orig.id, by, `replied with ${answer.id}`);
   return answer;
@@ -362,7 +362,7 @@ export function reclaimDead(now = Date.now()): string[] {
 
 /** Explicit recovery after checking external effects; a live holder can never be released this way. */
 export function reclaim(ref: string, by: string, note: string): Message {
-  if (!note.trim()) fail("task reclaim requires --note explaining what was checked");
+  if (!note.trim()) usage("task reclaim requires --note explaining what was checked");
   return claimGuard(() => {
     const hit = find(ref) ?? fail(`no message ${ref}`);
     if (hit.state !== "claimed") fail(`message ${hit.m.id} is not claimed (it is ${hit.state})`);
@@ -446,7 +446,7 @@ export function triage(o: { all?: boolean; project?: string; to?: string } = {},
  *  one original (retries of its retries count): never automatic, and bounded here, in code. */
 export function retry(ref: string, o: { note: string; to?: string; write?: boolean; profile?: string; timeoutSec?: number }): Message {
   const note = o.note.trim();
-  if (!note) fail("task retry requires --note saying what was fixed");
+  if (!note) usage("task retry requires --note saying what was fixed");
   const hit = find(ref) ?? fail(`no message ${ref}`);
   const orig = hit.m;
   if (hit.state === "open" || hit.state === "claimed") fail(`message ${orig.id} is still ${hit.state}: retry a failed or closed message`);

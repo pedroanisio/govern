@@ -163,7 +163,7 @@ export function deliverEvent(
   appendLedger(p.slug, { kind: "event", id, name, stage, generation: r.generation });
   return true;
 }
-/** Fail (GovernError, exit 2) unless the current stage's lifecycle lets it advance at `at`: its event received, its
+/** Fail (GovernError, exit 4) unless the current stage's lifecycle lets it advance at `at`: its event received, its
  *  subprocess or foreach items synced, no uncertain check or compensation, no pending retry and retries not exhausted. */
 export function requireLifecycleReady(p: Project, at = Date.now()): void {
   const s = processOf(p).stages.find((s) => s.name === p.stage)!;

@@ -121,6 +121,15 @@ test("a lane can set its own check for any stage; gates hold advance", () => {
   assert.match(govern(e, ["approve", "film", "publish", "--quote", "go"]).err, /no final-cut approval recorded yet/);
 });
 
+/** The reason of a Stop hook refusal: Claude Code's JSON block decision on stdout, exit 0. */
+const blocked = (r: { code: number | null; out: string; err: string }): string => {
+  assert.equal(r.code, 0, r.err);
+  const j = JSON.parse(r.out) as { decision?: unknown; reason?: unknown };
+  assert.equal(j.decision, "block");
+  assert.equal(typeof j.reason, "string");
+  return j.reason as string;
+};
+
 test("the Stop hook keeps a session on its lane until the stage's check passes, at most 3 times", () => {
   const e = env();
   govern(e, ["new", "lib", "--process", "dev"]);
@@ -128,20 +137,22 @@ test("the Stop hook keeps a session on its lane until the stage's check passes, 
   govern(e, ["work", "lib", "test"], { CLAUDE_CODE_SESSION_ID: "S1" });
   assert.equal(stop(e, "OTHER").code, 0); // not this session's lane
   const r = stop(e, "S1");
-  assert.equal(r.code, 2);
-  assert.match(r.err, /lib: stage test is not done — check test failed \(exit 1\)/);
-  assert.match(r.err, /boom/);
-  assert.match(r.err, /govern check lib/);
-  assert.equal(stop(e, "S1").code, 2);
-  assert.equal(stop(e, "S1").code, 2);
+  assert.equal(r.code, 0, r.err);
+  const reason = blocked(r);
+  assert.match(reason, /lib: stage test is not done — check test failed \(exit 1\)/);
+  assert.match(reason, /boom/);
+  assert.match(reason, /govern check lib/);
+  blocked(stop(e, "S1"));
+  blocked(stop(e, "S1"));
   const capped = stop(e, "S1");
   assert.equal(capped.code, 0);
+  assert.equal(capped.out, "");
   assert.match(capped.err, /stopped 3 times/);
   assert.equal(ledger(e, "lib").filter((x) => x.kind === "stop-block").length, 3);
   govern(e, ["work", "lib", "test"], { CLAUDE_CODE_SESSION_ID: "S1" }); // a new segment resets the count
-  assert.equal(stop(e, "S1").code, 2);
+  blocked(stop(e, "S1"));
   govern(e, ["cmd", "lib", "test", "--", "sh", "-c", "exit 0"]);
-  assert.equal(stop(e, "S1").code, 0);
+  assert.equal(stop(e, "S1").out, "");
   govern(e, ["cmd", "lib", "test", "--", "sh", "-c", "exit 1"]);
   govern(e, ["done", "lib"], { CLAUDE_CODE_SESSION_ID: "S1" });
   assert.equal(stop(e, "S1").code, 0); // segment closed
@@ -223,7 +234,7 @@ test("work can move a lane forward only past stages whose check, gate and depend
   govern(e, ["new", "lib", "--process", "dev"]);
   govern(e, ["cmd", "lib", "test", "--", "sh", "-c", "echo 1 failing; exit 1"]);
   const skip = govern(e, ["work", "lib", "review"]);
-  assert.equal(skip.code, 2, "a refusal, like advance's");
+  assert.equal(skip.code, 4, "a refusal, like advance's");
   assert.match(skip.err, /lib: cannot skip stage test: check test failed \(exit 1\)[\s\S]*1 failing[\s\S]*govern advance lib/);
   assert.match(govern(e, ["status"]).out, /lib\s+dev\s+1\/5 plan/);
   assert.match(govern(e, ["work", "lib", "test"]).out, /stage 3\/5 test/);
@@ -249,7 +260,7 @@ test("dependencies cannot form a cycle", () => {
   govern(e, ["dep", "a", "--after", "b:review"]);
   govern(e, ["dep", "b", "--after", "c"]);
   const r = govern(e, ["dep", "c", "--after", "a"]);
-  assert.equal(r.code, 2);
+  assert.equal(r.code, 4);
   assert.match(r.err, /c cannot wait on a: a → b → c already waits the other way/);
   assert.match(govern(e, ["dep", "c"]).out, /c: no dependencies/);
 });
@@ -387,11 +398,11 @@ test("a stage that requires a check cannot be passed on a note or skipped while 
   assert.match(govern(e, ["process", "show", "dev"]).out, /3 test\s+.*check: command "test"\s+requires a check/);
   govern(e, ["new", "s", "--process", "strict"]);
   const skip = govern(e, ["work", "s", "out"]);
-  assert.equal(skip.code, 2);
+  assert.equal(skip.code, 4);
   assert.match(skip.err, /s: cannot skip stage verify: it requires a check and has none \(set one: govern check s --set <command> --stage verify\)/);
   assert.match(govern(e, ["advance", "s", "--note", "drafted"]).out, /s: draft → verify/);
   const r = govern(e, ["advance", "s", "--note", "looks fine to me"]);
-  assert.equal(r.code, 2);
+  assert.equal(r.code, 4);
   assert.match(r.err, /s: stage verify requires a check and has none: a note cannot pass it \(set one: govern check s --set <command> --stage verify\)/);
   assert.match(govern(e, ["status"]).out, /s\s+strict\s+2\/3 verify/);
   govern(e, ["cmd", "s", "ok", "--", "sh", "-c", "exit 0"]);
@@ -406,7 +417,7 @@ test("a process whose stage requires anything but a check is refused, naming the
     version: 1, name: "loose", stages: [{ name: "a" }, { name: "b", requires: "note" }],
   }));
   const r = govern(e, ["process", "list"]);
-  assert.equal(r.code, 2);
+  assert.equal(r.code, 4);
   assert.ok(r.err.includes(`${f}: stage b: requires must be "check" (got "note")`), r.err);
 });
 

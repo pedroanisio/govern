@@ -140,11 +140,11 @@ test("a resource named on the command line must exist; the error lists the ones 
   const { e, slug } = withResources([R(), { name: "bench", kind: "vm", sharing: "dedicated", to: "lane" }]);
   govern(e, ["cmd", slug, "hi", "--", "echo", "hi"]);
   const r = govern(e, ["run", slug, "hi", "--on", "nope"]);
-  assert.equal(r.code, 2);
+  assert.equal(r.code, 4);
   assert.match(r.err, /no resource "nope" \(have: lab-vm, bench\)/);
   assert.deepEqual(existsSync(join(e.projects, slug, "govern", "jobs")) ? jobIds(e) : [], [], "nothing started");
   const show = govern(e, ["resources", "nope"]);
-  assert.equal(show.code, 2);
+  assert.equal(show.code, 4);
   assert.match(show.err, /no resource "nope"/);
   const none = makeEnv();
   assert.equal(govern(none, ["resources"]).out.trim(), "no resources declared (govern.config.json: resources)");
@@ -157,7 +157,7 @@ test("a dedicated resource refuses jobs from a lane it is not dedicated to, and 
   ]);
   govern(e, ["cmd", slug, "hi", "--", "echo", "hi"]);
   const no = govern(e, ["run", slug, "hi", "--on", "bench-a"]);
-  assert.equal(no.code, 2);
+  assert.equal(no.code, 4);
   assert.match(no.err, /bench-a is dedicated to other-lane; lane is not it/);
   const ok = govern(e, ["run", slug, "hi", "--on", "bench-b"]);
   assert.equal(ok.code, 0, ok.err);
@@ -375,10 +375,10 @@ test("locks: a waiter swept from the line comes back at its own ticket, ahead of
 test("govern cmd --resource is checked when the command is set: an unknown or not-allowed resource is refused and nothing is saved", () => {
   const { e, slug } = withResources([R(), { name: "theirs", kind: "vm", sharing: "dedicated", to: "other-lane" }]);
   const nope = govern(e, ["cmd", slug, "x", "--resource", "nope", "--", "echo"]);
-  assert.equal(nope.code, 2);
+  assert.equal(nope.code, 4);
   assert.match(nope.err, /no resource "nope" \(have: lab-vm, theirs\)/);
   const no = govern(e, ["cmd", slug, "x", "--resource", "theirs", "--", "echo"]);
-  assert.equal(no.code, 2);
+  assert.equal(no.code, 4);
   assert.match(no.err, /theirs is dedicated to other-lane; lane is not it/);
   assert.equal(govern(e, ["cmd", slug]).out.trim(), "", "no command was saved");
   assert.equal(govern(e, ["cmd", slug, "x", "--resource", "lab-vm", "--", "echo"]).code, 0);
@@ -388,7 +388,7 @@ test("--on does not override a command's own resource unless --override-resource
   const { e, slug } = withResources([R(), R({ name: "other" })]);
   assert.equal(govern(e, ["cmd", slug, "hi", "--resource", "lab-vm", "--", "echo", "hi"]).code, 0);
   const no = govern(e, ["run", slug, "hi", "--on", "other"]);
-  assert.equal(no.code, 2);
+  assert.equal(no.code, 4);
   assert.match(no.err, /hi runs on lab-vm; --on other would move it \(add --override-resource to do that\)/);
   assert.deepEqual(existsSync(join(e.projects, slug, "govern", "jobs")) ? jobIds(e) : [], [], "nothing started");
   assert.equal(govern(e, ["run", slug, "hi", "--on", "lab-vm"]).code, 0, "naming the same resource is no override");

@@ -3,7 +3,7 @@ import { existsSync, readFileSync, appendFileSync, mkdirSync, globSync } from "n
 import { join, dirname, resolve, relative } from "node:path";
 import { WORKFLOW, HUMAN_TASKS, VOTES, value, type Value, type Workflow, type HumanTask, type Vote } from './business-schema.ts';
 import { initializeBusiness, validateCase, gateApproved, setData } from './business.ts';
-import { GovernError, fail, readJson, writeJson, nowIso, latest, plain, clip, readJsonl } from "./util.ts";
+import { GovernError, fail, usage, readJson, writeJson, nowIso, latest, plain, clip, readJsonl } from "./util.ts";
 import type { Source } from "./approval.ts";
 import { repo, projectsDir, workflowFile, config, configFile } from "./workspace.ts";
 import { getProcess, processOf, processes, processName, manualOf, freezeProcess, snapshotProcess } from "./process.ts";
@@ -80,10 +80,10 @@ const laneSlug = (slug: string): string | null => {
   const parts = slug.split("/").filter((p) => p !== ".");
   return parts.length && !parts.some((p) => p === ".." || p === "") ? parts.join("/") : null;
 };
-/** The lane's slug as its folder names it (see laneSlug); a missing or bad slug is a GovernError (exit 2). */
+/** The lane's slug as its folder names it (see laneSlug); a missing or bad slug is a usage error (exit 2). */
 export function checkSlug(slug: string | undefined): string {
-  if (!slug) fail(`missing <slug> (a folder under ${relative(repo(), projectsDir()) || projectsDir()}, e.g. a-millionth-apart or ops/engine)`);
-  return laneSlug(slug!) ?? fail(`bad slug: ${slug}`);
+  if (!slug) usage(`missing <slug> (a folder under ${relative(repo(), projectsDir()) || projectsDir()}, e.g. a-millionth-apart or ops/engine)`);
+  return laneSlug(slug!) ?? usage(`bad slug: ${slug}`);
 }
 
 /** A timestamp as nowIso() writes it (an offset is accepted too). */
@@ -137,8 +137,8 @@ export function parseProject(file: string, text: string, slug: string): Project 
   });
 }
 
-/** Read and parse lane `given`'s govern.json (see parseProject). A bad slug, a missing file or a failed parse is a
- *  GovernError (exit 2); a missing file's message says how to start the lane. */
+/** Read and parse lane `given`'s govern.json (see parseProject). A bad slug is a usage error (exit 2); a missing file or
+ *  a failed parse is a GovernError (exit 4), and a missing file's message says how to start the lane. */
 export function load(given: string | undefined): Project {
   const slug = checkSlug(given);
   const f = stateFile(slug);
@@ -172,11 +172,11 @@ export function create(given: string, o: { kind?: string; process?: string; titl
     if(pr.name!==o.process)fail("snapshot names a different process");
     proc = pr.name;
     if (pr.kinds) {
-      if (!o.kind || !pr.kinds.includes(o.kind)) fail(`--kind must be ${pr.kinds.join(" or ")}`);
+      if (!o.kind || !pr.kinds.includes(o.kind)) usage(`--kind must be ${pr.kinds.join(" or ")}`);
       kind = o.kind!;
     } else kind = pr.name;
   } else {
-    if (!o.kind || !(KINDS as readonly string[]).includes(o.kind)) fail("--kind must be long, short or ops (or name a --process)");
+    if (!o.kind || !(KINDS as readonly string[]).includes(o.kind)) usage("--kind must be long, short or ops (or name a --process)");
     kind = o.kind!;
     proc = kind === "ops" ? "ops" : "video";
   }
@@ -212,7 +212,7 @@ function warnMissingPaths(commands: Record<string, string[]>): void {
 /** The stage names of the lane's process, in order. */
 export const stagesOf = (p: Pick<Project, "process" | "kind">): string[] => processOf(p).stages.map((s) => s.name);
 
-/** `s` when it is a stage of the lane's process; otherwise a GovernError (exit 2) listing the valid stages. */
+/** `s` when it is a stage of the lane's process; otherwise a GovernError (exit 4) listing the valid stages. */
 export function stageOf(s: string | undefined, p: Pick<Project, "process" | "kind">): string {
   const list = stagesOf(p);
   if (!s || !list.includes(s)) fail(`stage must be one of: ${list.join(", ")}`);
@@ -232,7 +232,7 @@ export const laneSlugs = (): string[] => globSync("**/govern.json", { cwd: proje
  *  <message>`, and the other lanes still show. `failed` counts those rows; the caller exits 1 after printing them.
  *
  *  Process files are not degraded per lane: they are read once here, before any lane, and a bad one stops the whole
- *  listing (exit 2). Every lane's stages, gates and checks come from that shared config, so with a broken process
+ *  listing (exit 4). Every lane's stages, gates and checks come from that shared config, so with a broken process
  *  file no lane's row would be trustworthy. */
 export function laneRows(slugs: string[], row: (slug: string, p: Project) => string, indent = ""): { rows: string[]; failed: number } {
   if(slugs.some(s=>{try{return !JSON.parse(readFileSync(stateFile(s),"utf8")).processSnapshot;}catch{return true;}}))processes();

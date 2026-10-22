@@ -8,7 +8,7 @@ import {
   fingerprint, header, signBytes, verifyBytes, sign, fresh, error, signedJson, postFetch, MAX_BODY, TIMEOUT_MS,
   type Keys, type Headers, type Response, type Post,
 } from "../../lib/peer-id.ts";
-import { fail, clip } from "../../lib/util.ts";
+import { fail, usage, clip } from "../../lib/util.ts";
 
 export const MESH_PROTOCOL = "govern-mesh/1";
 export const CERT_MS = 30 * 86400_000, DEFAULT_INVITE_S = 3600, MAX_INVITE_S = 7 * 86400;
@@ -113,7 +113,7 @@ export const observers = (): string[] => { const s = state(); return s ? s.polic
 
 function checkPolicy(p: Policy): Policy {
   const out = check("policy", p, POLICY);
-  if (!out.projects.length) fail("--project is required: name the projects mesh members may address here (or '*')");
+  if (!out.projects.length) usage("--project is required: name the projects mesh members may address here (or '*')");
   return out;
 }
 /** Make this host the registrar of a new mesh and its first member. */
@@ -132,7 +132,7 @@ const sha = (s: string) => createHash("sha256").update(s).digest();
 /** A single-use invite code for one new host, valid `ttlSeconds`; `host` pins the name the joining host must have. */
 export function invite(o: { host?: string; ttlSeconds?: number; now?: number } = {}): { code: string; expires: string } {
   const now = o.now ?? Date.now(), ttl = o.ttlSeconds ?? DEFAULT_INVITE_S;
-  if (!Number.isInteger(ttl) || ttl < 60 || ttl > MAX_INVITE_S) fail(`--ttl must be a whole number of seconds from 60 to ${MAX_INVITE_S}`);
+  if (!Number.isInteger(ttl) || ttl < 60 || ttl > MAX_INVITE_S) usage(`--ttl must be a whole number of seconds from 60 to ${MAX_INVITE_S}`);
   if (o.host !== undefined) check("--host", o.host, name);
   return locked(() => {
     const r = registrarState() ?? fail("only the registrar invites: run govern mesh invite on the host that ran govern mesh create");
@@ -144,7 +144,7 @@ export function invite(o: { host?: string; ttlSeconds?: number; now?: number } =
 }
 /** The registrar URL, mesh key, invite id and secret in an invite code. */
 export function parseInvite(code: string): ReturnType<typeof INVITE> {
-  if (!code.startsWith(INVITE_PREFIX)) fail(`not a mesh invite code (it starts with ${INVITE_PREFIX})`);
+  if (!code.startsWith(INVITE_PREFIX)) usage(`not a mesh invite code (it starts with ${INVITE_PREFIX})`);
   return parseFile("invite code", Buffer.from(code.slice(INVITE_PREFIX.length), "base64url").toString("utf8"), INVITE);
 }
 

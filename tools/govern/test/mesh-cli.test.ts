@@ -19,7 +19,7 @@ test("two hosts form a mesh over HTTP with one invite, discover each other and d
     const code = ok(govern(a, ["mesh", "invite", "--host", "b"])).split("\n")[0]!;
     assert.match(code, /^govern-mesh:/);
     assert.match(ok(govern(b, ["mesh", "join", code, "--url", bs.url, "--project", "p"])), /joined mesh lab as b: 2 members/);
-    assert.equal(govern(b, ["mesh", "join", code, "--url", bs.url, "--project", "p"]).code, 2);
+    assert.equal(govern(b, ["mesh", "join", code, "--url", bs.url, "--project", "p"]).code, 4);
     ok(govern(a, ["mesh", "sync"]));
     const status = ok(govern(a, ["mesh"]));
     assert.match(status, /mesh lab \(this host is the registrar\)/); assert.match(status, /\n {2}b {2}http:\/\/127\.0\.0\.1/);
@@ -48,21 +48,21 @@ for (const [args, why] of [
 
 test("an agent registers only itself, never as a runner, and the owner sees why a mesh command is refused", () => {
   const e = makeEnv("mcli-reg");
-  let r = govern(e, ["agents", "register", "--as", "other", "--project", "p"], { GOVERN_AS: "me" }); assert.equal(r.code, 2); assert.match(r.err, /registers only itself \(this is me\)/);
-  r = govern(e, ["agents", "register", "--project", "p"], { GOVERN_AS: "codex" }); assert.equal(r.code, 2); assert.match(r.err, /only the owner grants it/);
+  let r = govern(e, ["agents", "register", "--as", "other", "--project", "p"], { GOVERN_AS: "me" }); assert.equal(r.code, 4); assert.match(r.err, /registers only itself \(this is me\)/);
+  r = govern(e, ["agents", "register", "--project", "p"], { GOVERN_AS: "codex" }); assert.equal(r.code, 4); assert.match(r.err, /only the owner grants it/);
   ok(govern(e, ["agents", "register", "--project", "p", "--ttl", "120"], { GOVERN_AS: "me" }));
   assert.match(ok(govern(e, ["agents"])), /me {2}agent \(stable\) {2}p/);
   const eph = ok(govern(e, ["agents", "register", "--ephemeral", "--project", "p", "--alias", "helper"], { GOVERN_AS: "me" }));
   const generated = /registered (e-[a-z2-7]{8})@\S+ \(ephemeral\)/.exec(eph)?.[1]; assert.ok(generated, eph);
   assert.match(eph, /also helper@/); assert.match(eph, new RegExp(`inbox --as ${generated}`));
-  r = govern(e, ["agents", "register", "--as", "helper", "--project", "p"], { GOVERN_AS: "helper" }); assert.equal(r.code, 2); assert.match(r.err, new RegExp(`helper is held by agent ${generated}`));
-  r = govern(e, ["agents", "unregister", generated!], { GOVERN_AS: "other" }); assert.equal(r.code, 2); assert.match(r.err, /another owner/);
+  r = govern(e, ["agents", "register", "--as", "helper", "--project", "p"], { GOVERN_AS: "helper" }); assert.equal(r.code, 4); assert.match(r.err, new RegExp(`helper is held by agent ${generated}`));
+  r = govern(e, ["agents", "unregister", generated!], { GOVERN_AS: "other" }); assert.equal(r.code, 4); assert.match(r.err, /another owner/);
   assert.match(ok(govern(e, ["agents", "unregister", generated!], { GOVERN_AS: "me" })), /unregistered/);
   assert.match(ok(govern(e, ["agents", "unregister"], { GOVERN_AS: "me" })), /unregistered me/);
   assert.match(ok(govern(e, ["agents"])), /no other hosts discovered yet/);
   assert.match(ok(govern(e, ["mesh", "status"])), /not in a mesh/);
-  r = govern(e, ["mesh", "revoke", "x"]); assert.equal(r.code, 2); assert.match(r.err, /only the registrar/);
+  r = govern(e, ["mesh", "revoke", "x"]); assert.equal(r.code, 4); assert.match(r.err, /only the registrar/);
   r = govern(e, ["mesh", "join", "nope", "--url", "https://e.example", "--project", "p"]); assert.equal(r.code, 2); assert.match(r.err, /not a mesh invite code/);
-  r = govern(e, ["task", "send", "--to", "codex@nowhere", "--project", "p", "--task", "t", "--from", "alice", "--summary", "s"]); assert.equal(r.code, 2); assert.match(r.err, /no live peer or mesh member nowhere/);
+  r = govern(e, ["task", "send", "--to", "codex@nowhere", "--project", "p", "--task", "t", "--from", "alice", "--summary", "s"]); assert.equal(r.code, 4); assert.match(r.err, /no live peer or mesh member nowhere/);
   void peer;
 });

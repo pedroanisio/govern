@@ -46,11 +46,11 @@ test("task send --timeout records the limit and task show prints it; above maxTi
   assert.equal(stored(e, "open", id).timeoutSec, 1200);
   assert.match(govern(e, ["task", "show", id]).out, /limit: 1200 s/);
   const big = govern(e, [...SEND, "--timeout", "9000"]);
-  assert.equal(big.code, 2);
+  assert.equal(big.code, 4);
   assert.match(big.err, /--timeout 9000.*maxTimeoutSec 7200/);
   queueConfig(e, { maxTimeoutSec: 100 });
   const low = govern(e, [...SEND, "--timeout", "200"]);
-  assert.equal(low.code, 2);
+  assert.equal(low.code, 4);
   assert.match(low.err, /--timeout 200.*maxTimeoutSec 100/);
   assert.equal(govern(e, [...SEND, "--timeout", "100"]).code, 0, "the cap itself is allowed");
   assert.equal(govern(e, [...SEND, "--timeout", "0"]).code, 2);
@@ -206,7 +206,7 @@ test("task retry files a new open message from a failed one: same fields, chaine
   inProcess(e, t);
   const id = send(e, ["--timeout", "300", "--estimate-usd", "2"]);
   const open = govern(e, ["task", "retry", id, "--note", "too early"]);
-  assert.equal(open.code, 2);
+  assert.equal(open.code, 4);
   assert.match(open.err, /still open/);
   Object.assign(process.env, { FAKE_CODEX_EXIT: "3" });
   queue.dispatch();
@@ -231,13 +231,13 @@ test("task retry files a new open message from a failed one: same fields, chaine
   const second = present(/queued (\S+)/.exec(govern(e, ["task", "retry", id, "--note", "again"]).out)?.[1], "the second id");
   assert.notEqual(second, first);
   const third = govern(e, ["task", "retry", id, "--note", "once more"]);
-  assert.equal(third.code, 2);
+  assert.equal(third.code, 4);
   assert.match(third.err, /already retried 2 times/);
   // a claimed message cannot be retried
   const c = queue.find(first)!.m;
   assert.equal(queue.claim(c, "dispatcher"), true);
   const claimed = govern(e, ["task", "retry", first, "--note", "x"]);
-  assert.equal(claimed.code, 2);
+  assert.equal(claimed.code, 4);
   assert.match(claimed.err, /claimed/);
 });
 
@@ -268,7 +268,7 @@ test("task retry can override --to, --write, --profile and --timeout; --timeout 
   const m = stored(e, "open", present(/queued (\S+)/.exec(r.out)?.[1], "id"));
   assert.deepEqual([m.to, m.access, m.profile, m.timeoutSec], ["claude", "write", "claude-write", 600]);
   const big = govern(e, ["task", "retry", orig.id, "--note", "x", "--timeout", "99999"]);
-  assert.equal(big.code, 2);
+  assert.equal(big.code, 4);
   assert.match(big.err, /maxTimeoutSec 7200/);
   const clash = govern(e, ["task", "retry", orig.id, "--note", "x", "--write", "--profile", "codex-read"]);
   assert.equal(clash.code, 2);

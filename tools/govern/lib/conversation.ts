@@ -21,7 +21,7 @@ import { owner, ownerLive, type Owner } from "./conversation-owner.ts";
 import { registry, getProfile, profileHash, guardProblem, checkProblem } from "./caps.ts";
 import { obj, arr, str, name, posInt, literal, parseFile, type Shape } from "./shape.ts";
 import { timestamp } from "./business-schema.ts";
-import { fail, nowIso } from "./util.ts";
+import { fail, usage, nowIso } from "./util.ts";
 import * as allowances from "./allowances.ts";
 
 export type RunState = "queued" | "running" | "completed" | "failed" | "cancelled" | "interrupted";
@@ -158,10 +158,10 @@ const SHAPE = obj(
   { lane: str, context: obj({ summary: str, through: name }), closedAt: timestamp }
 );
 /** Validate a conversation ID (1–80 chars of lowercase letters, digits, dots and dashes, starting alphanumeric) and
- *  return it; anything else fails with GovernError (exit 2). */
+ *  return it; anything else is a usage error (exit 2). */
 export function sessionId(id: string | undefined): string {
   if (!id || !/^[a-z0-9][a-z0-9.-]{0,79}$/.test(id))
-    fail("conversation ID must be 1–80 lowercase letters, digits, dots or dashes, starting with a letter or digit");
+    usage("conversation ID must be 1–80 lowercase letters, digits, dots or dashes, starting with a letter or digit");
   return id!;
 }
 /** The folder holding every conversation: `<state dir>/conversations`. */
@@ -289,7 +289,7 @@ export function create(
   } = {}
 ): Conversation {
   sessionId(id);
-  if (o.profile && o.adapter) fail("choose --profile or --adapter, not both");
+  if (o.profile && o.adapter) usage("choose --profile or --adapter, not both");
   const reg = registry();
   let adapter: Adapter;
   if (o.adapter) {
@@ -307,7 +307,7 @@ export function create(
     ["timeout", timeoutSeconds, 86400],
     ["max-context-chars", maxContextChars, 1000000]
   ] as const)
-    if (!Number.isSafeInteger(n) || n < 1 || n > max) fail(`${key} must be between 1 and ${max}`);
+    if (!Number.isSafeInteger(n) || n < 1 || n > max) usage(`${key} must be between 1 and ${max}`);
   mkdirSync(directory(id), { recursive: true, mode: 0o700 });
   return withLaneLock(join(directory(id), "lock"), () => {
     if (existsSync(file(id))) fail(`conversation ${id} already exists`);
@@ -349,12 +349,12 @@ export function send(
   text: string,
   o: { requestId?: string; mode?: string; estimateUsd?: number } = {}
 ): { run: Run; duplicate: boolean } {
-  if (!text.trim() || Buffer.byteLength(text) > 262144) fail("message must be nonempty and at most 256 KiB");
-  if (o.mode && o.mode !== "queue" && o.mode !== "interrupt") fail("mode must be queue or interrupt");
+  if (!text.trim() || Buffer.byteLength(text) > 262144) usage("message must be nonempty and at most 256 KiB");
+  if (o.mode && o.mode !== "queue" && o.mode !== "interrupt") usage("mode must be queue or interrupt");
   if (o.estimateUsd !== undefined && (!Number.isFinite(o.estimateUsd) || o.estimateUsd < 0))
-    fail("estimate-usd must be nonnegative");
+    usage("estimate-usd must be nonnegative");
   if (o.requestId !== undefined && (!o.requestId.trim() || o.requestId.length > 256))
-    fail("request-id must be nonempty and at most 256 characters");
+    usage("request-id must be nonempty and at most 256 characters");
   return transact(id, (s) => {
     if (s.closedAt) fail("conversation is closed");
     const requestId = o.requestId ?? randomUUID(),
@@ -434,7 +434,7 @@ export function checkpoint(id: string, summary: string, through: string): void {
  *  message, or cancel it. Fails while that run's runtime host is still alive or when no run needs recovery. */
 export function recover(id: string, action: string, note: string): void {
   if (!["continue", "retry", "cancel"].includes(action) || !note.trim())
-    fail("recover requires action continue|retry|cancel and a nonempty note");
+    usage("recover requires action continue|retry|cancel and a nonempty note");
   transact(id, (s) => {
     const r =
       s.runs.findLast((r) => r.state === "interrupted" && !r.acknowledgedAt) ??

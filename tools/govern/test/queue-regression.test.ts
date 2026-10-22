@@ -60,7 +60,7 @@ for (const [label, patch, path] of [
     const before = messages(e, "open");
     write(file, JSON.stringify({ ...valid, ...patch }));
     const r = govern(e, ["task", "dispatch"]);
-    assert.equal(r.code, 2, r.err + r.out);
+    assert.equal(r.code, 4, r.err + r.out);
     assert.ok(r.err.includes(`${file}: ${path}:`), r.err);
     assert.deepEqual(messages(e, "open"), before, "the queued task stays untouched");
     for (const state of ["claimed", "done", "failed"]) assert.deepEqual(messages(e, state), []);

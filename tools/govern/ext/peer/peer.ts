@@ -15,7 +15,7 @@ import * as mesh from "./mesh.ts";
 import * as agents from "../../lib/agents.ts";
 import * as telemetry from "./telemetry.ts";
 import * as live from "../../lib/livestate.ts";
-import { fail, clip } from "../../lib/util.ts";
+import { fail, usage, clip } from "../../lib/util.ts";
 import * as queue from "../../lib/queue.ts";
 
 export { identity, fingerprint, sign, parseAddress, MAX_BODY, type Identity, type Headers, type Response, type Post } from "../../lib/peer-id.ts";
@@ -298,7 +298,7 @@ export async function fetchProcess(host: string, name: string, hash: string, o: 
 const RECEIPT = obj({ protocol: literal(PROTOCOL), id: nonempty }, { duplicate: bool });
 /** One relay pass; a retry is bounded by eight attempts and an exponential backoff capped at one hour. */
 export async function push(o: { max?: number; now?: number | (() => number); post?: Post } = {}): Promise<string[]> {
-  if (o.max !== undefined && (!Number.isInteger(o.max) || o.max < 1)) fail("max must be a positive integer");
+  if (o.max !== undefined && (!Number.isInteger(o.max) || o.max < 1)) usage("max must be a positive integer");
   const clock = () => typeof o.now === "function" ? o.now() : o.now ?? Date.now(), post = o.post ?? postFetch, lines = queue.reclaimDead();
   const todo = queue.all().filter(x => x.state === "open" && parseAddress(x.m.to) && (!x.m.relay || Date.parse(x.m.relay.nextAt) <= clock())).slice(0, o.max ?? Infinity);
   for (const { m } of todo) {

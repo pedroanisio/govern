@@ -4,7 +4,7 @@ import { readdirSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { config, findRepo } from "./workspace.ts";
-import { fail, procStat, hasProc, exited } from "./util.ts";
+import { fail, usage, procStat, hasProc, exited } from "./util.ts";
 
 /** procStart: the session process's start time as Claude Code recorded it (field 22 of /proc/<pid>/stat). */
 export interface Session { pid: number; name: string; sessionId?: string; cwd?: string; kind?: string; status?: string; procStart?: string }
@@ -65,7 +65,7 @@ export const requireAs = (as?: string): string =>
 
 /** The recipient check of `task send`/`forward`: a runner, auto, owner, configured mailbox or a live session. Returns whether it is a session. */
 export function checkRecipient(to: string, runners: readonly string[]): { session: boolean } {
-  if (!/^[a-z0-9][a-z0-9.-]*$/.test(to)) fail(`--to must be lowercase letters, digits, dots and dashes: ${to}`);
+  if (!/^[a-z0-9][a-z0-9.-]*$/.test(to)) usage(`--to must be lowercase letters, digits, dots and dashes: ${to}`);
   const mailboxes = findRepo() ? config().mailboxes ?? [] : [];
   if ([...runners, "auto", "owner", ...mailboxes].includes(to)) return { session: false };
   const live = liveSessions();

@@ -215,7 +215,7 @@ test("--machines above the resource's maxMachines is refused before anything sta
     recipes: { r: { ...recipe({ resource: "theirs" }), split: ["true"], piece: ["true"], join: ["true"], verify: ["true"] } } }));
   assert.equal(g(r, ["new", "lane2", "--process", "batch2", "--title", "L2"]).code, 0);
   const b = g(r, ["slice", "lane2", "r"]);
-  assert.equal(b.code, 2);
+  assert.equal(b.code, 4);
   assert.match(b.err, /dedicated to other/);
   assert.match(g(r, ["slice", "lane", "nope"]).err, /no recipe "nope" in process batch \(have: batch, shorty\)/);
 });
@@ -455,7 +455,7 @@ test("sliceRunner: usage, governed refusal and filesystem failures exit with the
   assert.equal(usage.status, 2);
   assert.match(usage.stderr, /usage: sliceRunner/);
   const refused = run(["lane", "missing", "1"]);
-  assert.equal(refused.status, 2);
+  assert.equal(refused.status, 4);
   assert.match(refused.stderr, /no recipe/);
   // load reads this path as a file: a directory produces an ordinary filesystem error.
   write(join(r.e.projects, "broken", "govern.json", "child"), "");

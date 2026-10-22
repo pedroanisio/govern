@@ -42,11 +42,11 @@ test("--file contents over the inline limit stop the step before any call: 60000
   write(join(e.projects, "film", "shorts", "over.txt"), "x".repeat(60001));
   assert.equal(ask("at.txt").code, 0);
   const over = ask("over.txt");
-  assert.equal(over.code, 2);
+  assert.equal(over.code, 4);
   assert.match(over.err, /inline files are 60001 chars \(> 60000\); pass fewer or smaller files/);
   assert.equal(sent(e).length, 1);
   const small = ask("at.txt", { GOVERN_MAX_INLINE: "100" });
-  assert.equal(small.code, 2);
+  assert.equal(small.code, 4);
   assert.match(small.err, /inline files are 60000 chars \(> 100\)/);
   assert.equal(ask("over.txt", { GOVERN_MAX_INLINE: "70000" }).code, 0);
   assert.equal(sent(e).length, 2);
@@ -57,7 +57,7 @@ test("GOVERN_MAX_INLINE that is not a whole number is refused, never read as no 
   write(join(e.projects, "film", "shorts", "f.txt"), "x".repeat(200000));
   for (const bad of ["abc", "", "1e3", "-5", "12.5", " 100"]) {
     const r = govern(e, ["ask", "film/shorts", "inc", "--file", "f.txt"], { GOVERN_PROMPTS: join(e.root, "my-prompts"), FAKE_CODEX_SCRIPTS: reply(e, "ok", { done: true }), GOVERN_MAX_INLINE: bad });
-    assert.equal(r.code, 2, JSON.stringify(bad));
+    assert.equal(r.code, 4, JSON.stringify(bad));
     assert.match(r.err, /GOVERN_MAX_INLINE must be a whole number of characters/, JSON.stringify(bad));
   }
   assert.deepEqual(sent(e), []);
@@ -66,7 +66,7 @@ test("GOVERN_MAX_INLINE that is not a whole number is refused, never read as no 
 test("{{include:paths.KEY}} with no such key is an error naming the prompt, the key and the config, before any call", () => {
   const { e, ask } = lane("{{include:paths.styleGuide}}");
   const r = ask();
-  assert.equal(r.code, 2);
+  assert.equal(r.code, 4);
   assert.match(r.err, /prompt inc: include paths\.styleGuide: no such key in govern\.config\.json paths/);
   assert.deepEqual(sent(e), []);
 });
@@ -75,7 +75,7 @@ test("{{include:paths.KEY}} whose file is missing is an error naming the key and
   const { e, ask } = lane("{{include:paths.styleGuide}}");
   setConfig(e, { paths: { styleGuide: "docs/gone.md" } });
   const r = ask();
-  assert.equal(r.code, 2);
+  assert.equal(r.code, 4);
   assert.ok(r.err.includes(`prompt inc: include paths.styleGuide: file not found: ${resolve(e.root, "docs", "gone.md")}`), r.err);
   assert.deepEqual(sent(e), []);
 });
@@ -88,7 +88,7 @@ test("a plain {{include:repo/path}} still inlines a file inside the workspace an
   const out = lane("{{include:../outside.md}}");
   write(join(out.e.root, "..", "outside.md"), "x");
   const r = out.ask();
-  assert.equal(r.code, 2);
+  assert.equal(r.code, 4);
   assert.match(r.err, /prompt inc: include not found: \.\.\/outside\.md/);
 });
 

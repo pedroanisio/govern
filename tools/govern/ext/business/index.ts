@@ -8,7 +8,7 @@ import { activeStages, requireActive, setData, authenticatedPerson, humanAction 
 import { scalar, value } from "../../lib/business-schema.ts";
 import { check, record } from "../../lib/shape.ts";
 import { verifyQuote } from "../../lib/approval.ts";
-import { GovernError, fail, parseArgs, opt, flag, secondsOpt, nowIso } from "../../lib/util.ts";
+import { GovernError, fail, usage, parseArgs, opt, flag, secondsOpt, nowIso } from "../../lib/util.ts";
 import type { Args } from "../../lib/util.ts";
 import { load, save, appendLedger, laneSlugs, checkSlug } from "../../lib/project.ts";
 import { processOf } from "../../lib/process.ts";
@@ -19,7 +19,7 @@ import { MANPAGE } from "./manpage.ts";
 function cmdData(a:Args):void {
   const p=load(a._[1]), text=opt(a,'set');
   if(text!==undefined) {
-    let raw:unknown; try {raw=JSON.parse(text);} catch {fail('--set must be a JSON object');}
+    let raw:unknown; try {raw=JSON.parse(text);} catch {usage('--set must be a JSON object');}
     const patch=check('case data',raw,record(value));
     setData(p,patch); save(p); appendLedger(p.slug,{kind:'data',fields:Object.keys(patch)});
   }
@@ -45,23 +45,23 @@ function cmdHumanInbox(a:Args):void {
 function cmdHuman(a:Args):void {
   const p=load(a._[1]), action=a._[2]??'list';
   if(action==='list') { out(Object.entries(p.humanTasks??{}).map(([s,t])=>`${s}: ${t.completedAt ? `completed by ${t.completedBy}` : t.assignee??'unclaimed'}${activeStages(p).includes(s)?' (active)':''}`).join('\n')||'(no human tasks)'); return; }
-  if(!['claim','delegate','complete'].includes(action)) fail('human action must be list, claim, delegate or complete');
-  const stage=a._[3]??fail('human action requires a stage'), quote=opt(a,'quote');
-  if(!quote || quote.trim().length<2) fail('--quote is required: the human instruction');
+  if(!['claim','delegate','complete'].includes(action)) usage('human action must be list, claim, delegate or complete');
+  const stage=a._[3]??usage('human action requires a stage'), quote=opt(a,'quote');
+  if(!quote || quote.trim().length<2) usage('--quote is required: the human instruction');
   const actor=authenticatedPerson(processOf(p),opt(a,'as')), source=verifyQuote(quote!);
   humanAction(p,stage,action as 'claim'|'delegate'|'complete',actor,quote!,opt(a,'to'));
   save(p); appendLedger(p.slug,{kind:'human-'+action,stage,by:actor,to:opt(a,'to'),quote,source});
   out(`${p.slug}: ${stage} ${action} by ${actor}`);
 }
 function cmdEvent(a:Args):void {
-  const p=load(a._[1]),name=a._[2]??fail('event name required'),id=opt(a,'id')??fail('--id required'),correlation=check('correlation',jsonValue(opt(a,'correlation'),null),scalar);
-  const data=check('event data',jsonValue(opt(a,'data')),record(scalar)),generation=secondsOpt(a,'generation');if(generation!==undefined&&!Number.isSafeInteger(generation))fail('--generation must be a positive safe integer');
+  const p=load(a._[1]),name=a._[2]??usage('event name required'),id=opt(a,'id')??usage('--id required'),correlation=check('correlation',jsonValue(opt(a,'correlation'),null),scalar);
+  const data=check('event data',jsonValue(opt(a,'data')),record(scalar)),generation=secondsOpt(a,'generation');if(generation!==undefined&&!Number.isSafeInteger(generation))usage('--generation must be a positive safe integer');
   const accepted=lifecycle.deliverEvent(p,name,id,correlation,data,generation);save(p);out(accepted?'event accepted; stage ready':'duplicate event ignored');
 }
 function cmdRecover(a:Args):void {
   const p=load(a._[1]),stage=opt(a,'stage')??p.stage;requireActive(p,stage);p.stage=stage;
-  const action=opt(a,'action');if(action!=='retry'&&action!=='compensated')fail('--action must be retry or compensated');
-  const quote=opt(a,'quote');if(!quote||quote.trim().length<2)fail('--quote is required: the human recovery decision');
+  const action=opt(a,'action');if(action!=='retry'&&action!=='compensated')usage('--action must be retry or compensated');
+  const quote=opt(a,'quote');if(!quote||quote.trim().length<2)usage('--quote is required: the human recovery decision');
   const source=verifyQuote(quote!);lifecycle.recover(p,action as 'retry'|'compensated',quote!);save(p);appendLedger(p.slug,{kind:'recover-source',source});out(`${p.slug}: recovery recorded`);
 }
 function cmdTick(a:Args):void {
@@ -95,7 +95,7 @@ export const commands: Cmd[] = [
   {name:'event',section:1,flags:{value:['id','correlation','data','generation']},lines:[["<slug> <name> --id ID --correlation JSON [--data JSON] [--generation N]","deliver a deduplicated event to one matching active stage; adapters supply a stable id"]],run:cmdEvent},
   {name:'event-listen',section:1,flags:{value:['port']},lines:[["[--port 5001]","loopback POST /events listener; Bearer token comes from GOVERN_WEBHOOK_TOKEN (minimum 16 characters)"]],run:a=>{
     const token=process.env.GOVERN_WEBHOOK_TOKEN??fail('GOVERN_WEBHOOK_TOKEN is not set; configure it securely before starting the listener');
-    const port=Number(opt(a,'port')??5001);if(!Number.isInteger(port)||port<1||port>65535)fail('--port must be 1..65535');
+    const port=Number(opt(a,'port')??5001);if(!Number.isInteger(port)||port<1||port>65535)usage('--port must be 1..65535');
     const server=eventServer(token);server.on('error',e=>{process.stderr.write(`event listener: ${e.message}\n`);process.exitCode=1;});server.listen(port,'127.0.0.1',()=>out(`event listener ready on port ${port}`));
   }},
   {name:'tick',section:1,flags:{value:['interval'],bool:['advance','loop']},lines:[["[<slug>] [--advance] [--loop --interval 30]","emit due reminders/escalations; optionally advance ready event, child and retry stages through normal checks and gates"]],run:cmdTick},

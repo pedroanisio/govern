@@ -2,7 +2,7 @@
 // answers predicted outcomes. A workspace turns this extension on with `govern ext enable decide`.
 import { readFileSync } from "node:fs";
 import * as jev from "./decide.ts";
-import { fail, opt, flag } from "../../lib/util.ts";
+import { fail, usage, opt, flag } from "../../lib/util.ts";
 import { out, type Cmd } from "../../lib/cli.ts";
 import type { Message } from "../../lib/queue.ts";
 import type { ExtDoc } from "../../lib/ext-registry.ts";
@@ -23,10 +23,10 @@ export const commands: Cmd[] = [
           "(choice: {key: description}, score: [levels…], noul: yes/no; key TYPESAFE_API_KEY or the config's decide.envFile)"]],
         run: (a) => {
           const text = opt(a, "state"), file = opt(a, "state-file");
-          if ((text === undefined) === (file === undefined)) fail("give the state with --state or --state-file (one of them)");
+          if ((text === undefined) === (file === undefined)) usage("give the state with --state or --state-file (one of them)");
           const state = text ?? readFileSync(file!, "utf8");
           if (!state.trim()) fail("the state is empty");
-          const qs = jev.loadQuestions(opt(a, "questions") ?? fail("--questions <file.json> is required"));
+          const qs = jev.loadQuestions(opt(a, "questions") ?? usage("--questions <file.json> is required"));
           const d = jev.decide(state, qs, { purpose: opt(a, "purpose") ?? "ask" });
           out(flag(a, "json") ? JSON.stringify(d, null, 2) : jev.show(d));
         } },

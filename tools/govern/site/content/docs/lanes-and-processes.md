@@ -54,7 +54,7 @@ Workspace files in `.govern/processes/` add processes or override a built-in nam
 
 A definition contains `version: 1`, `name` and `stages`, and may name gates, kinds, a description, exit-condition source, manual, prompts, recipes and setup. A stage names its exit condition, check and whether it requires a check. A gate names its stage, prerequisite gates, owner and message. Paths are relative to the process file. Graph, case and lifecycle fields extend this structure as described in [business processes](/docs/business-processes/).
 
-Unknown keys, wrong types, duplicate stage or gate names, invalid stage/gate references and cyclic gate prerequisites fail with exit 2 and the file's JSON path. Lane state is also parsed strictly: its slug must match its folder, process and kind must fit, stages and checks must exist, and timestamps must be ISO values. Status and desk still show other lanes when one is invalid, but exit 1. Nothing guesses past invalid state.
+Unknown keys, wrong types, duplicate stage or gate names, invalid stage/gate references and cyclic gate prerequisites fail with exit 4 and the file's JSON path. Lane state is also parsed strictly: its slug must match its folder, process and kind must fit, stages and checks must exist, and timestamps must be ISO values. Status and desk still show other lanes when one is invalid, but exit 1. Nothing guesses past invalid state.
 
 A positive process `revision` pins a definition snapshot for new cases. `govern new SLUG --process NAME --pin` or `govern process pin SLUG` also freezes an unversioned definition. Explicit migration requires a higher revision and human instruction; it never silently upgrades existing cases.
 
