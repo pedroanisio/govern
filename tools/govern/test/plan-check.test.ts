@@ -18,7 +18,8 @@ function run(args: string[]) {
 /** A git worktree stand-in: a repository with one test file and one acceptance spec, committed unless `dirty`. */
 function root(testBody: string, spec: Record<string, unknown>, o: { dirty?: boolean } = {}): { root: string; spec: string } {
   const r = tempDir("plan-check");
-  const git = (...a: string[]) => assert.equal(spawnSync("git", a, { cwd: r, encoding: "utf8" }).status, 0, `git ${a.join(" ")}`);
+  // hooks off: the operator's global commit hooks are not part of the stand-in
+  const git = (...a: string[]) => assert.equal(spawnSync("git", ["-c", "core.hooksPath=/dev/null", ...a], { cwd: r, encoding: "utf8" }).status, 0, `git ${a.join(" ")}`);
   git("init", "-q");
   git("config", "user.email", "t@example.invalid");
   git("config", "user.name", "t");
@@ -92,7 +93,7 @@ test("the JUnit reader names each case Class.method and its outcome", () => {
 
 test("a branch that edits a protected path fails the stage", () => {
   const r = root(`test("does one", () => assert.ok(true));`, { stage: "s", untouched: { base: "HEAD~1", paths: ["rules"] } });
-  const git = (...a: string[]) => assert.equal(spawnSync("git", a, { cwd: r.root, encoding: "utf8" }).status, 0, `git ${a.join(" ")}`);
+  const git = (...a: string[]) => assert.equal(spawnSync("git", ["-c", "core.hooksPath=/dev/null", ...a], { cwd: r.root, encoding: "utf8" }).status, 0, `git ${a.join(" ")}`);
   writeFileSync(join(r.root, "other.txt"), "fine");
   git("add", "-A");
   git("commit", "-qm", "unrelated");

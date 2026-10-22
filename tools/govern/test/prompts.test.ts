@@ -95,7 +95,7 @@ test("a plain {{include:repo/path}} still inlines a file inside the workspace an
 // Every prompt a built-in process ships, rendered for a real lane of that process with a file and its paths includes
 // in place: each must render whole (no {{...}} left, no error) and reach codex.
 const processes = readdirSync(join(ROOT, "processes")).filter((f) => f.endsWith(".json"))
-  .map((f) => ({ name: f.slice(0, -5), def: JSON.parse(readFileSync(join(ROOT, "processes", f), "utf8")) as { kinds: string[]; prompts?: string } }))
+  .map((f) => ({ name: f.slice(0, -5), def: JSON.parse(readFileSync(join(ROOT, "processes", f), "utf8")) as { kinds?: string[]; prompts?: string } }))
   .filter((p) => p.def.prompts !== undefined);
 
 test("some built-in process ships prompts (the render test below is not vacuous)", () => {
@@ -114,8 +114,9 @@ for (const { name, def } of processes) {
 
   test(`process ${name}: every shipped prompt renders whole for a lane with a file and reaches codex`, () => {
     const e = makeEnv("render");
-    const kind = present(def.kinds[0], `${name} kind`);
-    const r0 = govern(e, ["new", "lane/one", "--process", name, "--kind", kind, "--title", "A Test", "--lang", "en"]);
+    // a process that declares kinds needs one of them; one that declares none takes no --kind
+    const kind = def.kinds ? ["--kind", present(def.kinds[0], `${name} kind`)] : [];
+    const r0 = govern(e, ["new", "lane/one", "--process", name, ...kind, "--title", "A Test", "--lang", "en"]);
     assert.equal(r0.code, 0, r0.err);
     const keys = [...new Set(bodies.flatMap((b) => [...b.matchAll(/\{\{\s*include:paths\.(\w+)\s*\}\}/g)].map((m) => present(m[1], "key"))))];
     const paths: Record<string, string> = { filmBuild: "film_build.py" };

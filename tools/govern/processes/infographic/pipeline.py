@@ -33,15 +33,18 @@ class PipelineError(Exception):
 
 
 def digest(path: Path) -> str:
+    """The SHA-256 hex digest of the file at `path`."""
     with path.open('rb') as stream:
         return hashlib.file_digest(stream, 'sha256').hexdigest()
 
 
 def canonical(value: Any) -> bytes:
+    """Canonical JSON bytes (sorted keys, no spaces, UTF-8): the input every hash in this file is taken over."""
     return json.dumps(value, sort_keys=True, separators=(',', ':'), ensure_ascii=False).encode()
 
 
 def fingerprint(value: dict[str, Any]) -> str:
+    """The SHA-256 of a candidate manifest without its own candidateSha256 field."""
     return hashlib.sha256(canonical({k: v for k, v in value.items() if k != 'candidateSha256'})).hexdigest()
 
 
@@ -59,10 +62,12 @@ def local(root: Path, name: str) -> Path:
 
 
 def reject_constant(value: str) -> None:
+    """json.loads parse_constant hook: NaN and Infinity are not JSON, so they are refused."""
     raise ValueError(f'non-finite JSON number: {value}')
 
 
 def read_json(path: Path) -> Any:
+    """Strict JSON of at most MAX_JSON bytes; an unreadable, oversized or non-finite file is a PipelineError."""
     try:
         if path.stat().st_size > MAX_JSON: raise PipelineError(f'JSON too large: {path}')
         return json.loads(path.read_text(encoding='utf-8'), parse_constant=reject_constant)
@@ -71,6 +76,7 @@ def read_json(path: Path) -> Any:
 
 
 def checked(kind: str, value: Any) -> dict[str, Any]:
+    """`value` unchanged once it passes schemas/<kind>.json; the first violation is a PipelineError."""
     schema = read_json(SCHEMAS / f'{kind}.json')
     error = next(Draft202012Validator(schema).iter_errors(value), None)
     if error: raise PipelineError(f'{kind} {error.json_path}: {error.message}')
@@ -78,10 +84,12 @@ def checked(kind: str, value: Any) -> dict[str, Any]:
 
 
 def document(root: Path, kind: str) -> dict[str, Any]:
+    """The lane's <kind>.json, read from a safe local path and checked against its schema."""
     return checked(kind, read_json(local(root, f'{kind}.json')))
 
 
 def write_json(path: Path, value: Any) -> None:
+    """Write `value` to a new file (never overwriting) with mode 600, its folders with mode 700."""
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     with path.open('x', encoding='utf-8') as f:
         os.chmod(path, 0o600)
@@ -90,16 +98,19 @@ def write_json(path: Path, value: Any) -> None:
 
 
 def check_input(root: Path) -> dict[str, Any]:
+    """The input stage: a schema-valid brief with non-blank content."""
     brief = document(root, 'brief')
     if not brief['content'].strip(): raise PipelineError('brief content is blank')
     return brief
 
 
 def dimensions(brief: dict[str, Any]) -> tuple[int, int]:
+    """The 4K (width, height) the brief's orientation asks for: portrait 2160x3840, otherwise 3840x2160."""
     return (2160, 3840) if brief.get('orientation', 'landscape') == 'portrait' else (3840, 2160)
 
 
 def check_plan(root: Path) -> dict[str, Any]:
+    """The plan stage: unique sources under sources/ whose hashes match, unique claims citing known sources, caveats on hypotheses."""
     check_input(root)
     plan = document(root, 'plan')
     ids: set[str] = set()
@@ -141,6 +152,7 @@ def run(argv: list[str], cwd: Path, log: Path, timeout: int = 120) -> str:
 
 
 def source_files(root: Path) -> list[Path]:
+    """Every file under `root` (no __pycache__), each path checked local; empty or over 4096 files or MAX_SOURCE bytes is refused."""
     files = []
     total = 0
     for p in sorted(root.rglob('*')):
@@ -255,6 +267,7 @@ def render(root: Path, engine: str) -> dict[str, Any]:
 
 
 def candidate(root: Path) -> tuple[dict[str, Any], Path]:
+    """The current candidate manifest and its frozen revision folder, once its hashes, inputs and authored source still match."""
     check_plan(root)
     out = root / 'generated/infographic'
     m = checked('candidate', read_json(local(root, 'generated/infographic/candidate.json')))
@@ -275,6 +288,7 @@ def candidate(root: Path) -> tuple[dict[str, Any], Path]:
 
 
 def check_review(root: Path) -> dict[str, Any]:
+    """The review stage: a ready review of the current candidate, all images inspected, no issues, the score floors met."""
     m, _ = candidate(root)
     review = document(root, 'review')
     if review['candidateSha256'] != m['candidateSha256']: raise PipelineError('review is for a different candidate')
@@ -313,6 +327,7 @@ def deliver(root: Path) -> dict[str, str]:
 
 
 def main() -> int:
+    """Run one stage check on a lane folder; print its JSON result and exit 0, or the reason on stderr and exit 1."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('command', choices=['input', 'plan', 'render', 'candidate', 'review', 'deliver'])
     parser.add_argument('lane', type=Path)

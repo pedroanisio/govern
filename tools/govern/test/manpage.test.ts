@@ -84,10 +84,10 @@ function optionProblems(mans: string | readonly string[], table: readonly FlagTa
 function sources(dir = GOVERN_DIR): string[] {
   const out: string[] = [];
   for (const e of readdirSync(dir, { withFileTypes: true })) {
-    if (["node_modules", "test"].includes(e.name)) continue;
+    if (["node_modules", "test", "__pycache__"].includes(e.name)) continue;
     const p = join(dir, e.name);
     if (e.isDirectory()) out.push(...sources(p));
-    else if (e.name.endsWith(".ts")) out.push(p);
+    else if (e.name.endsWith(".ts") || e.name.endsWith(".py")) out.push(p);
   }
   return out;
 }
@@ -100,8 +100,9 @@ function constNames(text: string): Set<string> {
 /** The environment variables a source text reads or sets: every GOVERN_* and GROK_* name that is not a constant's name
  *  (`consts`, by default those the text declares; one imported from another file needs the caller's), and every
  *  `process.env.X`, `process.env["X"]` and `env.X`; the keys of an object that copies the environment
- *  (`{ ...process.env, X: v }`, `{ ...childEnv(), X: v }`); and the names a loop over a literal list deletes
- *  (`for (const k of ["X"]) delete e[k]`). A templated name is a family, `*` standing for each interpolation
+ *  (`{ ...process.env, X: v }`, `{ ...childEnv(), X: v }`) and those a destructuring leaves out of a copy
+ *  (`const { X: _, ...env } = process.env`); the names a loop over a literal list deletes
+ *  (`for (const k of ["X"]) delete e[k]`); and in Python, `os.environ["X"]`, `os.environ.get("X")` and `os.getenv("X")`. A templated name is a family, `*` standing for each interpolation
  *  (`GROK_${v}_${k}_ENABLED` is GROK_*_*_ENABLED); one that ends in an interpolation (`GOVERN_${w}`) names no family and is
  *  left out. Names read through a variable (`env[k]`) are added by the caller. */
 function envNames(text: string, consts: ReadonlySet<string> = constNames(text)): Set<string> {
@@ -116,6 +117,9 @@ function envNames(text: string, consts: ReadonlySet<string> = constNames(text)):
     for (const m of text.matchAll(re)) if (m[1]) names.add(m[1]);
   for (const m of text.matchAll(/\{\s*\.\.\.(?:process\.env|childEnv\(\))\s*,([^{}]*)\}/g))
     for (const k of m[1]!.matchAll(/(?:^|,)\s*([A-Z][A-Z0-9_]*)\s*:/g)) names.add(k[1]!);
+  for (const m of text.matchAll(/\{([^{}]*)\.\.\.\w+\s*\}\s*=\s*process\.env\b/g))
+    for (const k of m[1]!.matchAll(/(?:^|,)\s*([A-Z][A-Z0-9_]*)\s*[:,]/g)) names.add(k[1]!);
+  for (const m of text.matchAll(/\bos\.(?:environ(?:\.get\(|\[)|getenv\()\s*["']([A-Z_][A-Z0-9_]*)["']/g)) names.add(m[1]!);
   for (const m of text.matchAll(/for\s*\(\s*const\s+(\w+)\s+of\s+\[([^\]]*)\]\s*\)\s*delete\s+[\w.]+\[\1\]/g))
     for (const n of strings(m[2]!)) names.add(n);
   return names;
@@ -188,7 +192,8 @@ test("drift: MANPAGE ENVIRONMENT names every variable the code reads or sets, an
   const code = new Set<string>([...CLAUDE_MARKERS, ...CODEX_MARKERS, COMPACT_WINDOW_VAR]);
   const texts = sources().map((f) => readFileSync(f, "utf8")), consts = constNames(texts.join("\n"));
   for (const t of texts) for (const n of envNames(t, consts)) code.add(n);
-  for (const n of ["GOVERN_REPO", "GOVERN_JOB_DIR", "CLAUDE_CODE_SESSION_ID", "PATH", "GROK_MEMORY", "GROK_CONFIG_PATH", "GROK_*_*_ENABLED"])
+  for (const n of ["GOVERN_REPO", "GOVERN_JOB_DIR", "CLAUDE_CODE_SESSION_ID", "PATH", "GROK_MEMORY", "GROK_CONFIG_PATH", "GROK_*_*_ENABLED",
+    "NODE_TEST_CONTEXT", "SCENE_RENDER_BIN"])
     assert.ok(code.has(n), `the scan finds ${n}`);
   assert.ok(!code.has("GROK_MARKERS"), "a constant imported from another file is not a variable");
   assert.deepEqual(envProblems([MAN, ...EXT_MANS], code), []);

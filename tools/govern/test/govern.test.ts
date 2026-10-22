@@ -599,7 +599,7 @@ test("the shipped prompts all render with a brief and their schemas compile", ()
   const guides = { scriptStyleGuide: "guides/style.md", enUsWritingGuide: "guides/en-US.md", ptBrWritingGuide: "guides/pt-BR.md" };
   for (const f of Object.values(guides)) write(join(e.root, f), "rules");
   setConfig(e, { paths: { filmBuild: "film_build.py", ...guides } });
-  const steps = govern(e, ["prompts"]).out.split("\n").filter(Boolean).map((l) => l.replace(/\s.*/s, ""));
+  const steps = govern(e, ["prompts", "video"]).out.split("\n").filter(Boolean).map((l) => l.replace(/\s.*/s, ""));
   // The inventory is prompts/*.md; each has its schemas/<name>.json, and schemas/ holds nothing else but the queue's.
   const shipped = readdirSync(join(HERE, "..", "processes", "video", "prompts")).filter((f) => f.endsWith(".md")).map((f) => f.slice(0, -3)).sort();
   assert.ok(shipped.length > 0);
