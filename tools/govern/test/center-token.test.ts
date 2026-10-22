@@ -27,7 +27,7 @@ test("a token file readable by group or other is refused, and a malformed one is
   chmodSync(center.tokenFile(), 0o644);
   assert.throws(() => center.persistentToken(), /readable by group or other.*chmod 600/s);
   const r = govern(e, ["center", "url"]);
-  assert.equal(r.code, 2); assert.match(r.err, /readable by group or other/);
+  assert.equal(r.code, 4); assert.match(r.err, /readable by group or other/);
   chmodSync(center.tokenFile(), 0o600); writeFileSync(center.tokenFile(), "short\n", { mode: 0o600 });
   assert.throws(() => center.persistentToken(), /center-token.*not a token/s);
 });
@@ -49,7 +49,7 @@ test("govern center url prints the address without starting a server, creating t
   assert.match(a.out, /^http:\/\/127\.0\.0\.1:5004\/#token=[A-Za-z0-9_-]{32}\n$/);
   assert.equal(a.out, b.out);
   assert.match(govern(e, ["center", "url", "--port", "5123"]).out, /^http:\/\/127\.0\.0\.1:5123\/#token=/);
-  assert.equal(govern(e, ["center", "url", "--host", "0.0.0.0"]).code, 2);
+  assert.equal(govern(e, ["center", "url", "--host", "0.0.0.0"]).code, 4);
   assert.equal(govern(e, ["center", "url", "--port", "0"]).code, 2);
   assert.equal(govern(e, ["center", "url", "--new-token"]).code, 2, "url never rotates: serve --new-token does");
 });

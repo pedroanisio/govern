@@ -1,6 +1,6 @@
 // What the command table and the extensions share without importing each other: the output writer, the command types,
 // two small helpers and the two core operations an extension's command calls back into.
-import { fail, type Args, type FlagSpec } from "./util.ts";
+import { usage, type Args, type FlagSpec } from "./util.ts";
 import type { Project } from "./project.ts";
 import type { GateDef } from "./process.ts";
 
@@ -29,7 +29,7 @@ export interface Cmd {
 
 /** A JSON text read as a value, `fallback` when there is no text; anything that does not parse is refused (exit 2). */
 export function jsonValue(text: string | undefined, fallback: unknown = {}): unknown {
-  try { return text === undefined ? fallback : JSON.parse(text); } catch { return fail("value must be valid JSON"); }
+  try { return text === undefined ? fallback : JSON.parse(text); } catch { return usage("value must be valid JSON"); }
 }
 
 /** Whether `host` only accepts connections from this machine. */

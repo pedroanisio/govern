@@ -21,11 +21,11 @@ const dispatch = (e: Env, body = "an answer", kind = "NOTICE") => govern(e, ["ta
 const opened = (e: Env) => !existsSync(join(e.root, "queue", "open")) ? [] : readdirSync(join(e.root, "queue", "open")).filter((f) => f.endsWith(".json")).map((f) => JSON.parse(readFileSync(join(e.root, "queue", "open", f), "utf8")));
 const filed = (e: Env) => present(opened(e).find((m) => m.from === "codex" || m.from === "scout"), "the reply");
 
-test("an unknown check name is refused at send with exit 2, listing the names there are", () => {
+test("an unknown check name is refused at send with exit 4, listing the names there are", () => {
   const e = env();
   config(e, { checks: { named: { "my-lint": pass } } });
   const r = sendTo(e, ["--check", "nope"]);
-  assert.equal(r.code, 2);
+  assert.equal(r.code, 4);
   assert.match(r.err, /--check nope: no such check \(have: claims-cited, commit-refs, file-refs, my-lint\)/);
   assert.equal(opened(e).length, 0, "nothing was queued");
   assert.equal(sendTo(e, ["--check", "my-lint", "--check", "my-lint"]).code, 0, "the same name twice is one check");

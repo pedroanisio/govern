@@ -125,7 +125,7 @@ Starts a lane on a named process or a built-in kind. Optional title, language an
 govern work SLUG STAGE [--engine claude|codex|grok] [--open]
 ```
 
-Opens a measured lane/stage work segment and prints the brief. Moving to a later stage checks every skipped stage, gate and dependency; a blocked move exits 2. Going back is allowed in a linear process.
+Opens a measured lane/stage work segment and prints the brief. Moving to a later stage checks every skipped stage, gate and dependency; a blocked move exits 4. Going back is allowed in a linear process.
 
 ### brief
 
@@ -334,7 +334,7 @@ Lists, adds or removes lane dependencies. A dependency waits for a whole lane or
 govern hook stop
 ```
 
-Runs the Claude Code Stop hook. It refuses a stop while the lane check fails, at most three times per work segment, and closes no segment because Stop fires after every response.
+Runs the Claude Code Stop hook. It refuses a stop while the lane check fails (a JSON block decision on stdout, exit 0), at most three times per work segment, and closes no segment because Stop fires after every response.
 
 ### hook session-start
 
@@ -1056,5 +1056,7 @@ The manpage defines these flags and the commands that accept them. Unknown flags
 
 ```text
 0 ok · 1 a failed check (install-skill --check, a lane status or desk could not read, a failed exit check)
-    · 2 usage or state error · 3 a Codex reply failed verification · a job's exit code for run/wait · 124 wait timed out
+    · 2 usage error (unknown command or flag, a missing argument, a malformed flag value) · 3 a Codex reply failed
+    verification · 4 refused by the workspace's state (no such lane, a gate or check holds, a bad govern.json or
+    config, a disabled extension) · a job's exit code for run/wait · 124 wait timed out
 ```

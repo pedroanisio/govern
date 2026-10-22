@@ -6,7 +6,7 @@ import * as remotePair from "./remote-pair.ts";
 import * as qr from "./qr.ts";
 import { origin } from "../../lib/approval.ts";
 import { checkSlug } from "../../lib/project.ts";
-import { fail, opt, flag, many } from "../../lib/util.ts";
+import { fail, usage, opt, flag, many } from "../../lib/util.ts";
 import type { Args } from "../../lib/util.ts";
 import { out, type Cmd } from "../../lib/cli.ts";
 import type { ExtDoc } from "../../lib/ext-registry.ts";
@@ -23,18 +23,18 @@ function cmdRemote(a: Args): void {
   }
   if (sub === "confirm") {
     const lanes = many(a, "lane");
-    const d = remotePair.confirmPairing(a._[2] ?? fail("govern remote confirm <id> --code NNNNNN"), opt(a, "code") ?? fail("--code is required"),
+    const d = remotePair.confirmPairing(a._[2] ?? usage("govern remote confirm <id> --code NNNNNN"), opt(a, "code") ?? usage("--code is required"),
       { person: opt(a, "person"), lanes: lanes.length ? lanes : undefined, all: flag(a, "all") });
     out(`${d.id} (${d.name}) paired as ${d.person}; lanes: ${d.lanes?.join(", ") ?? "all"}`);
     return;
   }
   if (sub === "refuse") {
-    const id = a._[2] ?? fail("govern remote refuse <id>");
+    const id = a._[2] ?? usage("govern remote refuse <id>");
     remotePair.refusePairing(id); out(`${id} refused`); return;
   }
   if (sub === "link") {
     const url = opt(a, "url") ?? "http://127.0.0.1:5002", cert = opt(a, "tls-cert"), lane = opt(a, "lane");
-    if (!/^https?:\/\/[^\s]+$/.test(url)) fail("--url must be the server's http(s) address, as the phone reaches it");
+    if (!/^https?:\/\/[^\s]+$/.test(url)) usage("--url must be the server's http(s) address, as the phone reaches it");
     const q = new URLSearchParams({ url });
     if (cert) q.set("pin", remote.certPin(readFileSync(cert, "utf8")));
     if (lane) q.set("lane", checkSlug(lane));
@@ -47,10 +47,10 @@ function cmdRemote(a: Args): void {
     const minutes = Number(opt(a, "minutes") ?? 10);
     const { code, expires } = remote.createPairing(opt(a, "as") ?? "owner", minutes);
     const url = opt(a, "url"), cert = opt(a, "tls-cert");
-    if (cert && !url) fail("--tls-cert needs --url (the pin goes into the pairing link)");
+    if (cert && !url) usage("--tls-cert needs --url (the pin goes into the pairing link)");
     out(`pairing code ${code} (one device, until ${expires}; ${remote.PAIR_ATTEMPTS} wrong tries void it)`);
     if (url) {
-      if (!/^https?:\/\/[^\s]+$/.test(url)) fail("--url must be the server's http(s) address, as the phone reaches it");
+      if (!/^https?:\/\/[^\s]+$/.test(url)) usage("--url must be the server's http(s) address, as the phone reaches it");
       const q = new URLSearchParams({ url, code });
       if (cert) q.set("pin", remote.certPin(readFileSync(cert, "utf8")));
       const link = `govern-remote://pair?${q}`;
@@ -65,14 +65,14 @@ function cmdRemote(a: Args): void {
     return;
   }
   if (sub === "revoke") {
-    const d = remote.revoke(a._[2] ?? fail("govern remote revoke <device-id>"));
+    const d = remote.revoke(a._[2] ?? usage("govern remote revoke <device-id>"));
     out(`${d.id} (${d.name}) revoked`);
     return;
   }
   const host = opt(a, "host") ?? "127.0.0.1", port = Number(opt(a, "port") ?? 5002);
-  if (!Number.isInteger(port) || port < 1 || port > 65535) fail("--port must be 1..65535");
+  if (!Number.isInteger(port) || port < 1 || port > 65535) usage("--port must be 1..65535");
   const certFile = opt(a, "tls-cert"), keyFile = opt(a, "tls-key");
-  if (!certFile !== !keyFile) fail("--tls-cert and --tls-key go together");
+  if (!certFile !== !keyFile) usage("--tls-cert and --tls-key go together");
   if (!certFile && !remote.loopback(host))
     fail(`${host} is reachable from other machines: serve TLS (--tls-cert, --tls-key), or keep loopback and publish it with tailscale serve`);
   const tls = certFile ? { cert: readFileSync(certFile, "utf8"), key: readFileSync(keyFile!, "utf8") } : undefined;

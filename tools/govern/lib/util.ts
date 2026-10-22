@@ -7,12 +7,21 @@ import { createHash } from "node:crypto";
 /** The hex sha256 of a text (hashed as UTF-8) or of bytes. */
 export const sha256 = (b: string | Buffer) => createHash("sha256").update(b).digest("hex");
 
+/** Exit 2: the command line is wrong (unknown command or flag, a missing argument, a malformed flag value). */
+export const EXIT_USAGE = 2;
+/** Exit 4: the command line is fine but the workspace's state refuses it (no such lane, a gate holds, a bad govern.json).
+ *  4, not 2, because 2 means usage only; 1 (a failed check) and 3 (a failed Codex reply) already mean something else. */
+export const EXIT_STATE = 4;
+
 export class GovernError extends Error {
   code: number;
-  constructor(message: string, code = 2) { super(message); this.code = code; }
+  constructor(message: string, code = EXIT_STATE) { super(message); this.code = code; }
 }
-/** Raise a GovernError. A function declaration, not an arrow const, so a call narrows the code after it (asserts never). */
-export function fail(msg: string, code = 2): never { throw new GovernError(msg, code); }
+/** Raise a GovernError, a state error unless `code` says otherwise. A function declaration, not an arrow const, so a
+ *  call narrows the code after it (asserts never). */
+export function fail(msg: string, code = EXIT_STATE): never { throw new GovernError(msg, code); }
+/** Raise a usage error (exit 2): the command line itself is wrong. */
+export function usage(msg: string): never { throw new GovernError(msg, EXIT_USAGE); }
 
 /** A character limit from the environment variable `name`, or `fallback` when it is unset. Any value other than a whole
  *  number is refused: read as a number it would be NaN, and a NaN limit compares false and so switches the limit off. */
@@ -50,17 +59,17 @@ export function parseArgs(argv: string[], spec: FlagSpec, label: string, vocabul
     if (!a.startsWith("--")) { out._.push(a); continue; }
     let [k, v] = a.slice(2).split(/=(.*)/s, 2) as [string, string | undefined];
     if (bool.has(k)) {
-      if (v !== undefined && v !== "true" && v !== "false") fail(`${label}: --${k} is a switch: it takes no value (got ${JSON.stringify(v)})`);
+      if (v !== undefined && v !== "true" && v !== "false") usage(`${label}: --${k} is a switch: it takes no value (got ${JSON.stringify(v)})`);
       out.opts[k] = v !== "false";
       continue;
     }
     if (!value.has(k) && !multi.has(k)) {
       const valid = flagNames(spec);
-      fail(`${label}: unknown flag ${k ? `--${k}` : a} ${valid ? `(valid: ${valid})` : "(takes no flags)"}`);
+      usage(`${label}: unknown flag ${k ? `--${k}` : a} ${valid ? `(valid: ${valid})` : "(takes no flags)"}`);
     }
     if (v === undefined) {
       v = next();
-      if (v === undefined || v === "--" || isDeclaredFlag(v)) fail(`${label}: --${k} needs a value (give --${k}=VALUE when the value starts with --)`);
+      if (v === undefined || v === "--" || isDeclaredFlag(v)) usage(`${label}: --${k} needs a value (give --${k}=VALUE when the value starts with --)`);
     }
     if (multi.has(k)) (out.multi[k] ??= []).push(v);
     else out.opts[k] = v;
@@ -82,7 +91,7 @@ export const many = (a: Args, k: string): string[] => { declared(a, k, "multi", 
 export function secondsOpt(a: Args, k: string): number | undefined {
   const v = opt(a, k);
   if (v === undefined) return undefined;
-  if (!/^[1-9]\d*$/.test(v)) fail(`--${k} must be a whole number of seconds, 1 or more: ${JSON.stringify(v)}`);
+  if (!/^[1-9]\d*$/.test(v)) usage(`--${k} must be a whole number of seconds, 1 or more: ${JSON.stringify(v)}`);
   return Number(v);
 }
 

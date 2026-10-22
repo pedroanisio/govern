@@ -4,7 +4,7 @@
 import { existsSync, readFileSync, statSync, writeFileSync, mkdirSync } from "node:fs";
 import { dirname, join, resolve, basename } from "node:path";
 import { fileURLToPath } from "node:url";
-import { fail } from "./util.ts";
+import { fail, usage } from "./util.ts";
 import { check, record, ShapeError } from "./shape.ts";
 import { configFile, config, findRepo, CONFIG_FILE, extensionsShape } from "./workspace.ts";
 import { EXTENSIONS, EXTENSION_NAMES, type ExtDoc, type ExtInfo } from "./ext-registry.ts";
@@ -54,10 +54,10 @@ export const isEnabled = (name: string): boolean => enabledNames().includes(name
 
 /** The registry entry named `name`, or a usage error listing the known names. */
 export function infoOf(name: string | undefined): ExtInfo {
-  return EXTENSIONS.find((e) => e.name === name) ?? fail(`unknown extension ${JSON.stringify(name ?? "")} (extensions: ${EXTENSION_NAMES.join(", ")})`);
+  return EXTENSIONS.find((e) => e.name === name) ?? usage(`unknown extension ${JSON.stringify(name ?? "")} (extensions: ${EXTENSION_NAMES.join(", ")})`);
 }
 
-/** The refusal for a command of a disabled extension: exit 2, this line and nothing else. */
+/** The refusal for a command of a disabled extension: exit 4, this line and nothing else. */
 export function disabledMessage(command: string, ext: string): string {
   return `${command} is part of the ${ext} extension, which this workspace does not enable — govern ext enable ${ext}`;
 }

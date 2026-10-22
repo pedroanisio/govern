@@ -210,7 +210,13 @@ test("hook stop still refuses while the check fails, and writes no done entry", 
   govern(e, ["check", LANE, "--set", "gate", "--stage", "plan"]);
   start(e, "S1", join(e.projects, LANE));
   const s = stop(e, "S1");
-  assert.equal(s.code, 2, s.err);
+  // Claude Code's JSON form of a Stop refusal: exit 0, {"decision":"block","reason":…} on stdout (exit 2 is reserved for usage errors)
+  assert.equal(s.code, 0, s.err);
+  const j = JSON.parse(s.out) as { decision: string; reason: string };
+  assert.deepEqual(Object.keys(j).sort(), ["decision", "reason"]);
+  assert.equal(j.decision, "block");
+  assert.match(j.reason, /ops\/film: stage plan is not done — check gate failed/);
+  assert.match(j.reason, /next: govern check ops\/film/);
   assert.equal(ledger(e, LANE).some((x) => x.kind === "done"), false);
   assert.equal(ledger(e, LANE).at(-1).kind, "stop-block");
 });

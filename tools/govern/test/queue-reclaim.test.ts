@@ -80,7 +80,7 @@ test("unknown claims are listed without moving; task reclaim requires a note and
   const live = message();
   assert.equal(queue.claim(live, "peer-relay"), true);
   const refused = govern(e, ["task", "reclaim", live.id, "--note", "checked"]);
-  assert.equal(refused.code, 2);
+  assert.equal(refused.code, 4);
   assert.match(refused.err, /live/);
 });
 

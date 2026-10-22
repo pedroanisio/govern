@@ -460,7 +460,7 @@ test("a grok profile that holds a capability grok cannot honour fails to load wi
   const e = env();
   write(join(e.root, "caps", "bad.json"), JSON.stringify({ version: 1, profiles: [{ name: "grok-web", engine: "grok", capabilities: ["web"] }] }));
   const r = govern(e, ["caps"]);
-  assert.equal(r.code, 2);
+  assert.equal(r.code, 4);
   assert.match(r.err, /profile grok-web: capability web is not available on grok/);
   write(join(e.root, "caps", "bad.json"), JSON.stringify({ version: 1, profiles: [{ name: "grok", engine: "grok", capabilities: ["read"] }] }));
   assert.match(govern(e, ["caps"]).err, /profile name "grok" is reserved/);

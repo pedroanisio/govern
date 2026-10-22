@@ -28,7 +28,7 @@ test("peer CLI creates identity, lists relay state and revokes grants", () => {
   const { a, ai, bi } = pair();
   let r = govern(a, ["peer", "id", "--name", "a"]); assert.equal(r.code, 0, r.err);
   for (const s of ["a", ai.publicKey, peer.fingerprint(ai.publicKey)]) assert.ok(r.out.includes(s), r.out);
-  r = govern(a, ["peer", "id", "--name", "other"]); assert.equal(r.code, 2); assert.match(r.err, /already.*name/);
+  r = govern(a, ["peer", "id", "--name", "other"]); assert.equal(r.code, 4); assert.match(r.err, /already.*name/);
   const ck = newKeys().publicKey;
   r = govern(a, ["peer", "add", "c", "--url", "https://c.example", "--key", ck, "--allow", "owner", "--allow", "codex", "--project", "p", "--project", "q"]); assert.equal(r.code, 0, r.err);
   assert.equal(govern(a, sendArgs).code, 0);
@@ -37,7 +37,7 @@ test("peer CLI creates identity, lists relay state and revokes grants", () => {
   outbound.relay = { attempts: 1, lastError: "offline test", nextAt: new Date(Date.now() + 30000).toISOString() }; queue.save(outbound, "open");
   r = govern(a, ["peer", "list"]); assert.equal(r.code, 0, r.err); assert.match(r.out, /https:\/\/c.example/); assert.match(r.out, /owner, codex/); assert.match(r.out, /p, q/); assert.match(r.out, /open: 1/); assert.match(r.out, /last relay error: offline test/); assert.ok(r.out.includes(peer.fingerprint(ck)));
   r = govern(a, ["peer", "revoke", "b"]); assert.equal(r.code, 0, r.err);
-  r = govern(a, sendArgs); assert.equal(r.code, 2); assert.match(r.err, /live peer/);
+  r = govern(a, sendArgs); assert.equal(r.code, 4); assert.match(r.err, /live peer/);
 });
 for (const extra of [["--write"], ["--profile", "codex-read"], ["--lane", "p"], ["--estimate-usd", "0"], ["--file", "x"], ["--to", "auto@b"]]) test(`remote send refuses ${extra[0]} ${extra[1] ?? ""}`, () => {
   const { a } = pair();
@@ -47,7 +47,7 @@ for (const extra of [["--write"], ["--profile", "codex-read"], ["--lane", "p"], 
 test("remote send skips session liveness but requires a live peer and explains waking", () => {
   const { a } = pair();
   let r = govern(a, sendArgs.map(x => x === "codex@b" ? "absent-session@b" : x)); assert.equal(r.code, 0, r.err); assert.match(r.out, /sessions on b are not woken by the queue/);
-  r = govern(a, sendArgs.map(x => x === "codex@b" ? "codex@unknown" : x)); assert.equal(r.code, 2); assert.match(r.err, /live peer/);
+  r = govern(a, sendArgs.map(x => x === "codex@b" ? "codex@unknown" : x)); assert.equal(r.code, 4); assert.match(r.err, /live peer/);
 });
 for (const sub of ["add", "revoke"]) test(`peer ${sub} requires the owner's terminal`, () => {
   const { a, bi } = pair(); const r = govern(a, ["peer", sub, "b", ...(sub === "add" ? ["--url", "https://b.example", "--key", bi.publicKey] : [])], { CODEX_THREAD_ID: "agent" });
@@ -56,7 +56,7 @@ for (const sub of ["add", "revoke"]) test(`peer ${sub} requires the owner's term
 test("peer serve refuses public binds and invalid ports", () => {
   const { a } = pair();
   for (const args of [["--host", "0.0.0.0"], ["--host", "example.com"], ["--port", "0"], ["--port", "65536"], ["--port", "NaN"]]) {
-    const r = govern(a, ["peer", "serve", ...args]); assert.equal(r.code, 2); assert.match(r.err, args[0] === "--host" ? /loopback.*TLS.*tunnel/ : /1\.\.65535/);
+    const r = govern(a, ["peer", "serve", ...args]); assert.equal(r.code, args[0] === "--host" ? 4 : 2, r.err); assert.match(r.err, args[0] === "--host" ? /loopback.*TLS.*tunnel/ : /1\.\.65535/);
   }
 });
 test("peer server bounds requests, authenticates bytes, routes strictly and injects its clock", async () => {

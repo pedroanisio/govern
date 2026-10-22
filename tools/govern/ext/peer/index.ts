@@ -7,7 +7,7 @@ import * as agents from "../../lib/agents.ts";
 import * as queue from "../../lib/queue.ts";
 import { origin } from "../../lib/approval.ts";
 import { resolveAs, callingSession, sessions, liveSessions } from "../../lib/sessions.ts";
-import { fail, opt, flag, many, secondsOpt, nowIso } from "../../lib/util.ts";
+import { fail, usage, opt, flag, many, secondsOpt, nowIso } from "../../lib/util.ts";
 import type { Args } from "../../lib/util.ts";
 import { out, loopback, type Cmd } from "../../lib/cli.ts";
 import type { ExtDoc } from "../../lib/ext-registry.ts";
@@ -24,10 +24,10 @@ async function cmdPeer(a: Args): Promise<void> {
     return out(`${h.name}\nfingerprint: ${peer.fingerprint(h.publicKey)}\npublic key: ${h.publicKey}`);
   }
   if (sub === "add") {
-    const p = peer.addPeer({ name: a._[2] ?? fail("govern peer add <name>"), url: opt(a, "url") ?? fail("--url is required"), publicKey: opt(a, "key") ?? fail("--key is required"), allow: many(a, "allow"), projects: many(a, "project") });
+    const p = peer.addPeer({ name: a._[2] ?? usage("govern peer add <name>"), url: opt(a, "url") ?? usage("--url is required"), publicKey: opt(a, "key") ?? usage("--key is required"), allow: many(a, "allow"), projects: many(a, "project") });
     return out(`added ${p.name} (${peer.fingerprint(p.publicKey)})`);
   }
-  if (sub === "revoke") return out(`revoked ${peer.revokePeer(a._[2] ?? fail("govern peer revoke <name>")).name}`);
+  if (sub === "revoke") return out(`revoked ${peer.revokePeer(a._[2] ?? usage("govern peer revoke <name>")).name}`);
   if (sub === "list") {
     const rows = queue.all();
     return out(peer.peers().map(p => {
@@ -42,7 +42,7 @@ async function cmdPeer(a: Args): Promise<void> {
   }
   const host = opt(a, "host") ?? "127.0.0.1", port = Number(opt(a, "port") ?? 5003);
   if (!loopback(host)) fail("peer serve binds loopback only; TLS comes from the tunnel (Cloudflare or Tailscale)");
-  if (!Number.isInteger(port) || port < 1 || port > 65535) fail("--port must be 1..65535");
+  if (!Number.isInteger(port) || port < 1 || port > 65535) usage("--port must be 1..65535");
   peer.identity();
   const server = peer.peerServer();
   server.on("error", e => { process.stderr.write(`peer: ${e.message}\n`); process.exitCode = 1; });
@@ -56,7 +56,7 @@ async function cmdMesh(a: Args): Promise<void> {
     fail("manage the mesh from the owner's own terminal: mesh grants authorize runs on this host", 1);
   const policy = () => ({ allow: many(a, "allow"), projects: many(a, "project"), ...(many(a, "observer").length ? { observers: many(a, "observer") } : {}) });
   if (sub === "create") {
-    const m = mesh.create({ name: opt(a, "name") ?? fail("--name is required"), url: opt(a, "url") ?? fail("--url is required (this host's public https address)"), policy: policy() });
+    const m = mesh.create({ name: opt(a, "name") ?? usage("--name is required"), url: opt(a, "url") ?? usage("--url is required (this host's public https address)"), policy: policy() });
     return out(`mesh ${m.mesh.name} created; this host (${peer.identity().name}) is its registrar\nmesh key fingerprint: ${peer.fingerprint(m.mesh.publicKey)}\nnext: govern mesh invite, once per host that joins`);
   }
   if (sub === "invite") {
@@ -64,14 +64,14 @@ async function cmdMesh(a: Args): Promise<void> {
     return out(`${i.code}\nsingle use, expires ${i.expires}\non the joining host, from its owner's terminal:\n  govern mesh join CODE --url https://THAT-HOST --project P [--allow NAME]…`);
   }
   if (sub === "join") {
-    const m = await mesh.join(a._[2] ?? fail("govern mesh join <code> --url URL --project P"), { url: opt(a, "url") ?? fail("--url is required (this host's public https address)"), policy: policy() });
+    const m = await mesh.join(a._[2] ?? usage("govern mesh join <code> --url URL --project P"), { url: opt(a, "url") ?? usage("--url is required (this host's public https address)"), policy: policy() });
     return out(`joined mesh ${m.mesh.name} as ${peer.identity().name}: ${m.members.length} members (mesh key ${peer.fingerprint(m.mesh.publicKey)})`);
   }
   if (sub === "policy") {
     const m = mesh.setPolicy(policy());
     return out(`members may address: ${m.policy.allow.join(", ") || "(no runners or profiles; registered agents only)"} in projects ${m.policy.projects.join(", ")}; telemetry observers: ${mesh.observers().join(", ") || "none"}`);
   }
-  if (sub === "revoke") { mesh.revoke(a._[2] ?? fail("govern mesh revoke <host>")); return out(`revoked ${a._[2]}: members drop it at their next sync`); }
+  if (sub === "revoke") { mesh.revoke(a._[2] ?? usage("govern mesh revoke <host>")); return out(`revoked ${a._[2]}: members drop it at their next sync`); }
   if (sub === "sync") {
     const m = await mesh.sync({ url: opt(a, "url") }), hosts = await peer.discover();
     out(`synced mesh ${m.mesh.name}: ${m.members.length} members, certificate renewed`);
@@ -98,7 +98,7 @@ async function cmdAgents(a: Args): Promise<void> {
     const asked = opt(a, "as");
     if (self && asked !== undefined && asked !== self) fail(`an agent registers only itself (this is ${self})`);
     if (sub === "unregister") {
-      const n = a._[2] ?? asked ?? self ?? fail("govern agents unregister [NAME]: which registration");
+      const n = a._[2] ?? asked ?? self ?? usage("govern agents unregister [NAME]: which registration");
       return out(agents.unregister(n, holder.owner) ? `unregistered ${n}` : `${n} was not registered`);
     }
     const ephemeral = flag(a, "ephemeral");
@@ -131,7 +131,7 @@ export const description = "other hosts: peers, mesh, NAME@PEER addressing and t
 export const docs: ExtDoc[] = [{ title: "other hosts: peers, mesh, NAME@PEER addressing, the command center", path: "PEERS.md" }];
 export const manpage = MANPAGE;
 
-/** Refuse (exit 2) a host that is not a live peer or mesh member: what `task send --to NAME@PEER` checks. */
+/** Refuse (exit 4) a host that is not a live peer or mesh member: what `task send --to NAME@PEER` checks. */
 export function requireHost(host: string): void { peer.remote(host); }
 
 /** The dispatcher loop's federation work, one call per tick: a mesh sync with discovery every ten minutes while in a mesh, then one

@@ -155,7 +155,7 @@ const STATED: readonly Stated[] = [
       ["REMOTE.md", /--url https:\/\/<host>:(\d+)/]] },
   { what: "the pairing code's default minutes", code: () => codeNumber("ext/remote/index.ts", /opt\(a, "minutes"\) \?\? (\d+)/),
     docs: [["MANPAGE", /1\.\.60, default (\d+)\)/]] },
-  { what: "the pairing code's longest minutes", code: () => codeNumber("ext/remote/remote.ts", /minutes > (\d+)\) fail/),
+  { what: "the pairing code's longest minutes", code: () => codeNumber("ext/remote/remote.ts", /minutes > (\d+)\) usage\(/),
     docs: [["MANPAGE", /valid \(1\.\.(\d+),/]] },
   { what: "the dispatcher's default interval", code: () => codeNumber("govern.ts", /opt\(a, "interval"\) \?\? (\d+)/),
     docs: [["MANPAGE", /seconds between rounds \(default (\d+)\)/], ["SKILL.md", /install-service \[--interval (\d+)\]/]] },

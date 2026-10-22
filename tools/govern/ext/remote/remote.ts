@@ -10,7 +10,7 @@ import { createHash, createPublicKey, randomBytes, randomInt, timingSafeEqual, v
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync, appendFileSync, createReadStream, closeSync, fstatSync } from "node:fs";
 import { join } from "node:path";
 import { check, obj, str, name, literal, arr, type Shape, reject } from "../../lib/shape.ts";
-import { GovernError, fail, nowIso, readJsonl } from "../../lib/util.ts";
+import { GovernError, fail, usage, nowIso, readJsonl } from "../../lib/util.ts";
 import { stateDir, config } from "../../lib/workspace.ts";
 import { withLaneLock } from "../../lib/lane-lock.ts";
 import { load, save, appendLedger, ledgerFile, stateFile, checkSlug } from "../../lib/project.ts";
@@ -74,7 +74,7 @@ export const devices = (): Device[] => readState<{ devices: Device[] }>("devices
 /** A one-time pairing code for `person`, valid for `minutes`; it replaces any earlier code. The code is shown once and only its hash is stored. */
 export function createPairing(person: string, minutes: number): { code: string; expires: string } {
   if (!/^[a-z][a-z0-9_.-]*$/i.test(person)) fail(`bad person name: ${person}`);
-  if (!Number.isInteger(minutes) || minutes < 1 || minutes > 60) fail("--minutes must be 1..60");
+  if (!Number.isInteger(minutes) || minutes < 1 || minutes > 60) usage("--minutes must be 1..60");
   const raw = Array.from({ length: 12 }, () => CODE_ALPHABET[randomInt(CODE_ALPHABET.length)]).join("");
   const code = raw.match(/.{4}/g)!.join("-");
   const expires = new Date(Date.now() + minutes * 60_000).toISOString();

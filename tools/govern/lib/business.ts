@@ -4,7 +4,7 @@ import { userInfo } from "node:os";
 import { processOf, type GateDef, type Process } from "./process.ts";
 import type { Project } from "./project.ts";
 import type { Source } from "./approval.ts";
-import { fail, nowIso } from "./util.ts";
+import { fail, usage, nowIso } from "./util.ts";
 import { check, emptyRecord, reject } from "./shape.ts";
 import { fieldValue, type Scalar, type Value, type Condition, type Vote } from "./business-schema.ts";
 
@@ -116,11 +116,11 @@ export function initializeBusiness(p: Project): void {
   if (isGraph(pr)) p.workflow = { active: [p.stage], completed: [], waiting: [], cancelled: [] };
   enterTasks(p);
 }
-/** Fail (GovernError, exit 2) unless `stage` (default: the current stage) is one of the lane's active stages. */
+/** Fail (GovernError, exit 4) unless `stage` (default: the current stage) is one of the lane's active stages. */
 export function requireActive(p: Project, stage = p.stage): void {
   if (!activeStages(p).includes(stage)) fail(`${p.slug}: stage ${stage} is not active`);
 }
-/** Fail (GovernError, exit 2) naming every missing field required by the process or by `stage` (default: the current stage). */
+/** Fail (GovernError, exit 4) naming every missing field required by the process or by `stage` (default: the current stage). */
 export function validateRequired(p: Project, stage = p.stage): void {
   const pr = processOf(p),
     required = [
@@ -385,7 +385,7 @@ export function humanAction(
     }
   }
 }
-/** Fail (GovernError, exit 2) when `stage` (default: the current stage) is a human task its assignee has not completed. */
+/** Fail (GovernError, exit 4) when `stage` (default: the current stage) is a human task its assignee has not completed. */
 export function requireHumanComplete(p: Project, stage = p.stage): void {
   if (processOf(p).stages.find((s) => s.name === stage)?.human && !p.humanTasks?.[stage]?.completedAt)
     fail(`${p.slug}: human task ${stage} must be completed by its assignee`);
@@ -430,7 +430,7 @@ export function requireGateOwner(g: GateDef, by: string | undefined): string {
  *  where the words came from; it runs after those checks, so a refusal names the missing approval before the quote is checked. */
 export function ownerApproval(p: Project, g: GateDef, by: string | undefined, quote: string | undefined, source: () => Source): void {
   const owner = requireGateOwner(g, by), gates = processOf(p).gates;
-  if (!quote || quote.trim().length < 2) fail(`--quote is required: ${owner}'s own words approving the ${g.name} (only ${owner} approves)`);
+  if (!quote || quote.trim().length < 2) usage(`--quote is required: ${owner}'s own words approving the ${g.name} (only ${owner} approves)`);
   for (const need of g.needs ?? []) if (!gateApproved(p, gates.find((x) => x.name === need)!)) fail(g.message ?? `needs the ${need} approval first`);
   const src = source();
   p.approvals[g.name] = { at: nowIso(), quote, by: owner, source: src };

@@ -13,7 +13,7 @@ import { readFileSync, globSync, mkdirSync } from "node:fs";
 import { join, dirname, resolve, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import { randomUUID, createHash } from "node:crypto";
-import { GovernError, fail, parseArgs, opt, flag, many, flagNames, secondsOpt, nowIso, readJsonl, kTok, clip, type Args, type FlagSpec } from "./lib/util.ts";
+import { GovernError, EXIT_STATE, fail, usage, parseArgs, opt, flag, many, flagNames, secondsOpt, nowIso, readJsonl, kTok, clip, type Args, type FlagSpec } from "./lib/util.ts";
 import { stagesOf, load, save, create, stageOf, brief, appendLedger, resolveFile, ledgerFile, projectDir, checkSlug, checkOf, pendingCheckChanges, blockedBy, laneState, driftWarning, laneSlugs, laneRows, stateFile, argvOf, commandLine, type Project, type Command } from "./lib/project.ts";
 import { processes, getProcess, processOf, listLine, show, manualOf } from "./lib/process.ts";
 import { repo, findRepo, projectsDir, packagesDir, initWorkspace, stateDir, decideConfig } from "./lib/workspace.ts";
@@ -73,7 +73,7 @@ type Engine = (typeof ENGINES)[number];
  *  by the GROK_AGENT / GROK_SESSION_ID its shells export), else codex. */
 function engineOf(a: Args): Engine {
   const e = opt(a, "engine") ?? (process.env.CLAUDE_CODE_SESSION_ID ? "claude" : process.env.GROK_AGENT || process.env.GROK_SESSION_ID ? "grok" : "codex");
-  if (!(ENGINES as readonly string[]).includes(e)) fail(`--engine must be ${ENGINES.slice(0, -1).join(", ")} or ${ENGINES.at(-1)}`);
+  if (!(ENGINES as readonly string[]).includes(e)) usage(`--engine must be ${ENGINES.slice(0, -1).join(", ")} or ${ENGINES.at(-1)}`);
   return e as Engine;
 }
 /** The id of the running session of `engine` (what the usage report finds its transcript by); codex has none. */
@@ -182,7 +182,7 @@ function cmdApprove(a: Args): void {
 function cmdPolicyDecision(a: Args, p: Project, g: import('./lib/process.ts').GateDef, decision: 'approve'|'reject'): void {
   const actor=authenticatedPerson(processOf(p), opt(a,'by'));
   const quote=opt(a,'quote');
-  if(!quote || quote.trim().length<2) fail('--quote is required: the human decision');
+  if(!quote || quote.trim().length<2) usage('--quote is required: the human decision');
   const source=verifyQuote(quote!);
   const vote=policyVote(p,g,actor,decision,quote!);
   if(decision==='reject') rejectRoute(p,g);
@@ -196,18 +196,18 @@ function amountOpt(a: Args, k: string): number | undefined {
   const v = opt(a, k);
   if (v === undefined) return undefined;
   const n = Number(v);
-  return v.trim() !== "" && Number.isFinite(n) && n > 0 ? n : fail(`--${k} must be a positive number: ${JSON.stringify(v)}`);
+  return v.trim() !== "" && Number.isFinite(n) && n > 0 ? n : usage(`--${k} must be a positive number: ${JSON.stringify(v)}`);
 }
 
 /** `govern allow <allowance> --extra N --quote "…"`: the allowance's decision owner raises its limit for the current period, in their own words. */
 function cmdAllow(a: Args): void {
-  const al = allowances.allowanceNamed(a._[1] ?? fail("govern allow <allowance> --extra N --quote \"…\" (govern usage lists the allowances)"));
-  const extra = amountOpt(a, "extra") ?? fail("--extra must be a positive number: the amount to add to the limit");
+  const al = allowances.allowanceNamed(a._[1] ?? usage("govern allow <allowance> --extra N --quote \"…\" (govern usage lists the allowances)"));
+  const extra = amountOpt(a, "extra") ?? usage("--extra must be a positive number: the amount to add to the limit");
   const owner = al.owner, by = opt(a, "by");
   if (by === undefined && owner !== "owner") fail(`allowance ${al.name} is decided by ${owner}: pass --by ${owner}`);
   if (by !== undefined && by !== owner) fail(`allowance ${al.name} is decided by ${owner}, not ${by}`);
   const quote = opt(a, "quote");
-  if (!quote || quote.trim().length < 2) fail(`--quote is required: ${owner}'s own words approving ${extra} ${allowances.unitName(al)} more for ${al.name} (only ${owner} approves)`);
+  if (!quote || quote.trim().length < 2) usage(`--quote is required: ${owner}'s own words approving ${extra} ${allowances.unitName(al)} more for ${al.name} (only ${owner} approves)`);
   const source = verifyQuote(quote!);
   allowances.grant(al, extra, quote!, source, owner);
   out(`${al.name}: +${extra} ${allowances.unitName(al)} approved by ${owner} · limit ${Math.round((al.limit + allowances.status(al).extra) * 1e6) / 1e6}`);
@@ -228,7 +228,7 @@ function cmdCheck(a: Args): void {
   if (flag(a, "accept")) {
     const stage = stageOf(a._[2], p);
     const quote = opt(a, "quote");
-    if (!quote || quote.trim().length < 2) fail(`--quote is required: the owner's own words accepting the change to the check of stage ${stage} (only the owner accepts)`);
+    if (!quote || quote.trim().length < 2) usage(`--quote is required: the owner's own words accepting the change to the check of stage ${stage} (only the owner accepts)`);
     if (!pendingCheckChanges(p, readJsonl(ledgerFile(p.slug))).some((x) => x.stage === stage)) return out(`${p.slug}: stage ${stage} has no change to accept — nothing changed`);
     const source = verifyQuote(quote!);
     p.notes.push({ at: nowIso(), stage: p.stage, text: `owner accepted the changes to the check of stage ${stage}: "${quote}"` });
@@ -279,7 +279,7 @@ function cmdAdvance(a: Args): void {
     lifecycle.beginAttempt(p);
     let r:ReturnType<typeof runCheck>;
     try{r=runCheck(p,chk);}catch(e){if(e instanceof GovernError && stageDef.onError)lifecycle.checkFailed(p,e.message);throw e;}
-    if (!r.ok) {lifecycle.checkFailed(p, `${chk}: ${r.why}`);fail(`${p.slug}: check ${chk} failed (${r.why})\n${r.text}`,stageDef.onError?1:2);}
+    if (!r.ok) {lifecycle.checkFailed(p, `${chk}: ${r.why}`);fail(`${p.slug}: check ${chk} failed (${r.why})\n${r.text}`,stageDef.onError?1:EXIT_STATE);}
     lifecycle.checkSucceeded(p);
   } else if (requiresCheck(p, p.stage)) fail(`${p.slug}: stage ${p.stage} requires a check and has none: a note cannot pass it (${setCheckHint(p, p.stage)})`);
   else if (!note) fail(`${p.slug}: stage ${p.stage} has no check: give the evidence with --note "…"`);
@@ -326,13 +326,13 @@ function cmdDep(a: Args): void {
 }
 
 function cmdMigrate(a:Args):void {
-  const quote=opt(a,'quote');if(!quote||quote.trim().length<2)fail('--quote is required: the human migration decision');const source=verifyQuote(quote!);
+  const quote=opt(a,'quote');if(!quote||quote.trim().length<2)usage('--quote is required: the human migration decision');const source=verifyQuote(quote!);
   const map=check('stage map',jsonValue(opt(a,'map')),record((x,p)=>typeof x==='string'?x:fail(`${p} must be a stage name`))),data=check('migration data',jsonValue(opt(a,'data')),record((x,p)=>x===null?null:value(x,p)));
   lifecycle.transaction(checkSlug(a._[2]),()=>{const p=load(a._[2]);lifecycle.migrate(p,map,data,quote!);appendLedger(p.slug,{kind:'migration-source',source});out(`${p.slug}: migrated to revision ${p.processSnapshot!.revision}`);});
 }
 function cmdProcess(a: Args): void {
-  if (a._[1] === "show") return out(show(getProcess(a._[2] ?? fail("govern process show <name>"))));
-  if (a._[1] && a._[1] !== "list") fail("govern process list|show <name>");
+  if (a._[1] === "show") return out(show(getProcess(a._[2] ?? usage("govern process show <name>"))));
+  if (a._[1] && a._[1] !== "list") usage("govern process list|show <name>");
   for (const p of processes().values()) out(listLine(p));
 }
 
@@ -353,13 +353,13 @@ function openSegment(sid: string): { slug: string; at: number; t: string; stage:
   return hit;
 }
 
-/** Claude Code Stop hook. Exit 2 (stderr = the reason) keeps the session working while its lane's stage check fails;
- *  3 refusals per work segment at most. It closes nothing: Stop fires after every response, a segment lasts a session
+/** Claude Code Stop hook. `{"decision":"block","reason":…}` on stdout (exit 0) keeps the session working while its lane's
+ *  stage check fails; 3 refusals per work segment at most. The JSON form, not exit 2: govern's 2 means a usage error. It closes nothing: Stop fires after every response, a segment lasts a session
  *  (see `hook session-end`). Silent and exit 0 on anything else, including its own errors. */
 function cmdHook(a: Args): void {
   if (a._[1] === "session-start") return hookSessionStart();
   if (a._[1] === "session-end") return hookSessionEnd();
-  if (a._[1] !== "stop") fail("govern hook stop|session-start|session-end");
+  if (a._[1] !== "stop") usage("govern hook stop|session-start|session-end");
   try {
     const sid = String(JSON.parse(readFileSync(0, "utf8")).session_id ?? "");
     if (!sid) return;
@@ -381,7 +381,8 @@ function hookSessionEnd(): void {
   } catch { process.exitCode = 0; }
 }
 
-/** Whether the Stop hook refuses this stop (exit 2): the lane's check fails and fewer than 3 refusals were ledgered since the segment opened. */
+/** Whether the Stop hook refuses this stop (the block decision on stdout): the lane's check fails and fewer than 3 refusals
+ *  were ledgered since the segment opened. */
 function stopRefused(slug: string, since: Record<string, unknown>[], sid: string): boolean {
   const blocks = since.filter((e) => e.kind === "stop-block" && e.session === sid).length;
   if (blocks >= 3) { process.stderr.write(`govern: ${slug}: stopped 3 times in this segment with the check failing; letting the session stop\n`); return false; }
@@ -391,9 +392,9 @@ function stopRefused(slug: string, since: Record<string, unknown>[], sid: string
   const r = runCheck(p, chk);
   if (r.ok) return false;
   appendLedger(p.slug, { kind: "stop-block", session: sid, stage: p.stage, check: chk });
-  process.stderr.write(`${p.slug}: stage ${p.stage} is not done — check ${chk} failed (${r.why})\n${r.text}\n` +
-    `next: govern check ${p.slug} after fixing, or govern advance ${p.slug} / govern note ${p.slug} "…" if the stage changed\n`);
-  process.exitCode = 2;
+  const reason = `${p.slug}: stage ${p.stage} is not done — check ${chk} failed (${r.why})\n${r.text}\n` +
+    `next: govern check ${p.slug} after fixing, or govern advance ${p.slug} / govern note ${p.slug} "…" if the stage changed`;
+  process.stdout.write(JSON.stringify({ decision: "block", reason }) + "\n");
   return true;
 }
 
@@ -470,7 +471,7 @@ function cmdFile(a: Args): void {
 function cmdRun(a: Args): void {
   const p = load(a._[1]);
   const name = a._[2];
-  if (!name) fail(`govern run ${p.slug} <command> (have: ${Object.keys(p.commands).join(", ") || "none"})`);
+  if (!name) usage(`govern run ${p.slug} <command> (have: ${Object.keys(p.commands).join(", ") || "none"})`);
   const st = jobs.start(p, name, a._.slice(3), flag(a, "bg"), opt(a, "on"), amountOpt(a, "estimate"), flag(a, "override-resource"));
   if (st.queued) return out(`job ${st.id} queued on ${st.queued.resource} (${st.queued.ahead} ahead) · wait with: govern wait ${p.slug} ${st.id}`);
   if (st.status === "running") return out(`job ${st.id} started in the background · wait with: govern wait ${p.slug} ${st.id}`);
@@ -481,9 +482,9 @@ function cmdRun(a: Args): void {
 /** `govern slice <lane> <recipe>`: a recipe job (split, pieces on machines, join, verify, machines always down). */
 function cmdSlice(a: Args): void {
   const p = load(a._[1]);
-  const recipe = a._[2] ?? fail(`govern slice ${p.slug} <recipe> [--machines N] [--estimate HOURS] [--bg]`);
+  const recipe = a._[2] ?? usage(`govern slice ${p.slug} <recipe> [--machines N] [--estimate HOURS] [--bg]`);
   const m = opt(a, "machines");
-  const machines = m === undefined ? undefined : /^[1-9]\d*$/.test(m) ? Number(m) : fail(`--machines must be a positive whole number: ${JSON.stringify(m)}`);
+  const machines = m === undefined ? undefined : /^[1-9]\d*$/.test(m) ? Number(m) : usage(`--machines must be a positive whole number: ${JSON.stringify(m)}`);
   const st = slicing.start(p.slug, recipe, { ...(machines !== undefined ? { machines } : {}), ...(amountOpt(a, "estimate") !== undefined ? { estimate: amountOpt(a, "estimate")! } : {}), bg: flag(a, "bg") });
   if (st.queued) return out(`job ${st.id} queued on ${st.queued.resource} (${st.queued.ahead} ahead) · wait with: govern wait ${p.slug} ${st.id}`);
   if (st.status === "running") return out(`job ${st.id} started in the background · wait with: govern wait ${p.slug} ${st.id}`);
@@ -505,12 +506,12 @@ function cmdWait(a: Args): void {
 function cmdAsk(a: Args): void {
   const p = load(a._[1]);
   const step = a._[2];
-  if (!step) fail("govern ask <slug> <step> (see govern prompts)");
+  if (!step) usage("govern ask <slug> <step> (see govern prompts)");
   const vars = emptyRecord<string>();
   for (const kv of many(a, "var")) {
     const i = kv.indexOf("=");
-    if (i < 1) fail(`--var needs NAME=VALUE: ${kv}`);
-    if (kv.slice(0, i) === PROTO) fail(`--var ${kv}: "${PROTO}" is not a name`);
+    if (i < 1) usage(`--var needs NAME=VALUE: ${kv}`);
+    if (kv.slice(0, i) === PROTO) usage(`--var ${kv}: "${PROTO}" is not a name`);
     vars[kv.slice(0, i)] = kv.slice(i + 1);
   }
   const r = ask(p, step, { files: many(a, "file"), vars, images: many(a, "image"), effort: opt(a, "effort"), model: opt(a, "model") });
@@ -545,7 +546,7 @@ function cmdPrompts(a: Args): void {
 function cmdManual(a: Args): void {
   const name = a._[1];
   if (flag(a, "size")) {
-    if (name || flag(a, "full")) fail("govern manual --size takes no process and no --full");
+    if (name || flag(a, "full")) usage("govern manual --size takes no process and no --full");
     for (const f of [SKILL, REFERENCE]) {
       const bytes = statSync(f).size;
       out(`${basename(f).padEnd(13)} ${String(bytes).padStart(6)} bytes  ≈ ${approxTokens(bytes)} tokens (bytes / ${BYTES_PER_TOKEN}, an estimate)`);
@@ -553,7 +554,7 @@ function cmdManual(a: Args): void {
     out(extensions.docsSizeLine());
     return;
   }
-  if (flag(a, "full") && name) fail("govern manual --full is the core manual and REFERENCE.md; it takes no process");
+  if (flag(a, "full") && name) usage("govern manual --full is the core manual and REFERENCE.md; it takes no process");
   if (!name) {
     out(readFileSync(SKILL, "utf8"));
     if (flag(a, "full")) out(readFileSync(REFERENCE, "utf8"));
@@ -593,7 +594,7 @@ function cmdPublish(a: Args): void {
 function recipient(to: string, host?: (peer: string) => void): { to: string; routed: boolean } {
   const address = parseAddress(to);
   if (address) {
-    if (address.name === "auto") fail("the receiving host decides routing; --to auto@PEER is not allowed");
+    if (address.name === "auto") usage("the receiving host decides routing; --to auto@PEER is not allowed");
     host!(address.peer);
     return { to, routed: false };
   }
@@ -604,7 +605,7 @@ function recipient(to: string, host?: (peer: string) => void): { to: string; rou
   return { to: c.runner, routed: true };
 }
 /** The peer extension's host check for a `NAME@PEER` recipient, loaded only for one; undefined for a local recipient. A workspace
- *  that does not enable the extension refuses the recipient (exit 2) with the disabled message. */
+ *  that does not enable the extension refuses the recipient (exit 4) with the disabled message. */
 async function hostCheck(to: string | undefined, via: string): Promise<((peer: string) => void) | undefined> {
   if (to === undefined || !parseAddress(to)) return undefined;
   if (!extensions.isEnabled("peer")) return fail(extensions.disabledMessage(`${via} --to ${to}`, "peer"));
@@ -653,7 +654,7 @@ function cmdInbox(a: Args): void {
 }
 
 function localTaskName(name: string, option: string): string {
-  if (name.includes("@")) fail(`${option} must be a local name without @; only receive() files a remote sender`);
+  if (name.includes("@")) usage(`${option} must be a local name without @; only receive() files a remote sender`);
   return name;
 }
 
@@ -661,11 +662,11 @@ function localTaskName(name: string, option: string): string {
 function parallelOpt(a: Args): number {
   const v = opt(a, "parallel");
   if (v === undefined) return 1;
-  if (!/^[1-9]\d*$/.test(v)) fail(`--parallel must be a whole number, 1 or more: ${JSON.stringify(v)}`);
+  if (!/^[1-9]\d*$/.test(v)) usage(`--parallel must be a whole number, 1 or more: ${JSON.stringify(v)}`);
   return Number(v);
 }
 
-/** Refuse (exit 2) a message to a profile with no write capability whose summary or body asks for file changes (lib/writeask.ts). */
+/** Refuse (exit 4) a message to a profile with no write capability whose summary or body asks for file changes (lib/writeask.ts). */
 function writeRefusal(profile: string, summary: string, body: string): void {
   const reg = registry(), p = getProfile(profile, reg);
   if (writes(reg, p)) return;
@@ -684,12 +685,12 @@ async function cmdTask(a: Args): Promise<void> {
     const { to, routed } = recipient(opt(a, "to") ?? "", await hostCheck(opt(a, "to"), "task send"));
     const address = parseAddress(to);
     if (address && (flag(a, "write") || flag(a, "read-only") || flag(a, "verify") || ["profile", "lane", "estimate-usd", "timeout"].some(k => opt(a, k) !== undefined) || many(a, "file").length || many(a, "check").length))
-      fail("the receiving host decides write access, profile, lane, estimate, timeout, files and checks; these options cannot be sent to a peer");
+      usage("the receiving host decides write access, profile, lane, estimate, timeout, files and checks; these options cannot be sent to a peer");
     const checks = [...new Set(many(a, "check"))], verifyArgv = flag(a, "verify") ? a._.slice(2) : [];
-    if (flag(a, "verify") && !verifyArgv.length) fail("--verify needs the command after --: govern task send … --verify -- npm test");
+    if (flag(a, "verify") && !verifyArgv.length) usage("--verify needs the command after --: govern task send … --verify -- npm test");
     const t = address ? { access: "read-only" as const } : queue.resolveTarget(to, { write: flag(a, "write"), profile: opt(a, "profile") });
     const readOnly = flag(a, "read-only");
-    if (readOnly && flag(a, "write")) fail("--read-only and --write contradict each other");
+    if (readOnly && flag(a, "write")) usage("--read-only and --write contradict each other");
     const summary = opt(a, "summary") ?? "";
     if (!address && t.profile && !readOnly) writeRefusal(t.profile, summary, body);
     const lane = opt(a, "lane"), estimateUsd = amountOpt(a, "estimate-usd"), timeoutSec = secondsOpt(a, "timeout");
@@ -741,7 +742,7 @@ async function cmdTask(a: Args): Promise<void> {
   }
   if (sub === "reply") {
     const bodyFile = opt(a, "body-file"), b = opt(a, "body");
-    if (bodyFile === undefined && b === undefined) fail("--body or --body-file is required");
+    if (bodyFile === undefined && b === undefined) usage("--body or --body-file is required");
     const by = localTaskName(requireAs(opt(a, "as")), "--as");
     const m = queue.reply(a._[2] ?? "", by, { kind: opt(a, "kind") ?? "", summary: opt(a, "summary") ?? "", body: bodyFile ? readFileSync(bodyFile, "utf8") : b! });
     out(`replied ${m.id} (${m.kind} to ${m.to}); closed ${a._[2]}`);
@@ -760,7 +761,7 @@ async function cmdTask(a: Args): Promise<void> {
     const parallel = parallelOpt(a);
     const worker = [process.execPath, ...process.execArgv, join(HERE, "govern.ts")];
     const once = async () => (parallel > 1 ? await queue.dispatchParallel({ max, only: opt(a, "only"), parallel, worker }) : queue.dispatch({ max, only: opt(a, "only") })).forEach((l) => out(l));
-    if (!flag(a, "loop")) { if (opt(a, "reap-every")) fail("--reap-every needs --loop (it lists on the loop's timer; a single dispatch never lists instances)"); return once(); }
+    if (!flag(a, "loop")) { if (opt(a, "reap-every")) usage("--reap-every needs --loop (it lists on the loop's timer; a single dispatch never lists instances)"); return once(); }
     const secs = Number(opt(a, "interval") ?? 30);
     const pidf = join(queue.QUEUE(), "dispatcher.json");
     mkdirSync(queue.QUEUE(), { recursive: true });
@@ -821,7 +822,7 @@ function sceneRender(): string | undefined {
 /** `govern bpmn <process|lane>`: the BPMN diagram of a process (with the live state of every lane on it) or of one lane (its own
  *  process, with that lane's progress). Read-only: SVG to a file or stdout, a scene-render scene, or a PNG the engine renders. */
 function cmdBpmn(a: Args): void {
-  const name = a._[1] ?? fail("govern bpmn <process|lane-slug> [--svg FILE] [--scene FILE] [--png FILE] [--width N] [--height N] [--static]");
+  const name = a._[1] ?? usage("govern bpmn <process|lane-slug> [--svg FILE] [--scene FILE] [--png FILE] [--width N] [--height N] [--static]");
   const stat = flag(a, "static"), now = Date.now();
   let p: ReturnType<typeof getProcess>, overlay: Overlay | undefined;
   if (processes().has(name)) {
@@ -920,7 +921,7 @@ export const COMMANDS: readonly Cmd[] = [
     run: (a) => {
       const p = load(a._[1]);
       const text = a._.slice(2).join(" ").trim();
-      if (!text) fail("govern note <slug> \"<decision>\"");
+      if (!text) usage("govern note <slug> \"<decision>\"");
       p.notes.push({ at: nowIso(), stage: p.stage, text });
       save(p);
       appendLedger(p.slug, { kind: "note", text });
@@ -982,8 +983,8 @@ export const COMMANDS: readonly Cmd[] = [
       "read the instance ids it prints one per line, and record tag, ids, lane and start time (state and ledger)"]],
     run: (a) => {
       const n = opt(a, "count") ?? "1";
-      if (!/^[1-9]\d*$/.test(n)) fail(`--count must be a whole number, 1 or more: ${JSON.stringify(n)}`);
-      const { rec, problem } = reaping.up(a._[1] ?? fail("govern up <resource> [--lane <slug>] [--count N]"), { lane: opt(a, "lane"), count: Number(n), timeout: secondsOpt(a, "timeout") ?? REAP_TIMEOUT });
+      if (!/^[1-9]\d*$/.test(n)) usage(`--count must be a whole number, 1 or more: ${JSON.stringify(n)}`);
+      const { rec, problem } = reaping.up(a._[1] ?? usage("govern up <resource> [--lane <slug>] [--count N]"), { lane: opt(a, "lane"), count: Number(n), timeout: secondsOpt(a, "timeout") ?? REAP_TIMEOUT });
       if (problem) fail(problem, 1);
       out([`started ${rec.resource}: tag ${rec.tag}`, ...rec.ids].join("\n"));
     } },
@@ -991,7 +992,7 @@ export const COMMANDS: readonly Cmd[] = [
     lines: [["<tag|id> [--forget] [--timeout 120]", "run the stop command (placeholder {id}) for a tag's instances or one id, and book the machine time from up;\n" +
       "--forget books it without running stop, for a machine that is already gone"]],
     run: (a) => {
-      const r = reaping.down(a._[1] ?? fail("govern down <tag|id> [--forget]"), { timeout: secondsOpt(a, "timeout") ?? REAP_TIMEOUT, forget: flag(a, "forget") });
+      const r = reaping.down(a._[1] ?? usage("govern down <tag|id> [--forget]"), { timeout: secondsOpt(a, "timeout") ?? REAP_TIMEOUT, forget: flag(a, "forget") });
       if (r.lines.length) out(r.lines.join("\n"));
       if (r.problems.length) fail(r.problems.join("\n"), 1);
     } },
@@ -1025,7 +1026,7 @@ export const COMMANDS: readonly Cmd[] = [
     lines: [["[<command> | --topics]", "this text, or one command's lines and rules (also: govern <command> --help); --topics lists the reference documents"]],
     run: async (a) => {
       if (flag(a, "topics")) {
-        if (a._[1]) fail("govern help --topics takes no command");
+        if (a._[1]) usage("govern help --topics takes no command");
         return out(topicsText());
       }
       out(a._[1] ? await helpFor(a._[1]) : helpText());
@@ -1049,7 +1050,7 @@ export const COMMANDS: readonly Cmd[] = [
       const skills = a._[1] ?? join(repo(), ".claude", "skills");
       const dest = join(skills, "govern");
       if (flag(a, "check")) {
-        if (flag(a, "replace")) fail("govern install-skill --check installs nothing; --replace belongs to the install");
+        if (flag(a, "replace")) usage("govern install-skill --check installs nothing; --replace belongs to the install");
         const drift = skillDrift(HERE, skills);
         if (drift) fail(drift, 1);
         out(`${dest} is a link to ${HERE}; SKILL.md is current (sha256 ${sha256File(SKILL)}), REFERENCE.md sha256 ${sha256File(REFERENCE)}`);
@@ -1093,9 +1094,9 @@ export const COMMANDS: readonly Cmd[] = [
       const reg = registry(), name = a._[1];
       if (flag(a, "all") && !flag(a, "check")) fail("--all goes with --check: govern caps --check --all");
       if (flag(a, "check")) {
-        if (flag(a, "all") && name) fail("govern caps --check --all takes no profile name");
+        if (flag(a, "all") && name) usage("govern caps --check --all takes no profile name");
         const todo = flag(a, "all") ? [...reg.profiles.values()].filter((p) => checkState(readCheck(queue.QUEUE(), p.name), profileHash(reg, p)) !== "passed").map((p) => p.name)
-          : [name ?? fail("govern caps --check <profile> (or --all)")];
+          : [name ?? usage("govern caps --check <profile> (or --all)")];
         if (!todo.length) out("every profile has a current passing check");
         for (const n of todo) {
           const rec = checkProfile(queue.QUEUE(), reg, n);
@@ -1123,7 +1124,7 @@ export const COMMANDS: readonly Cmd[] = [
     subs: {
       add: { flags: { value: ["name", "title", "caption"] },
         lines: [["<slug> <file> [--name N] [--title T] [--caption C]", "copy evidence into the lane and record its digest and version"]],
-        run: (a) => { out(JSON.stringify(artifacts.add(checkSlug(a._[2]), a._[3] ?? fail("govern artifact add <slug> <file>"), { name: opt(a, "name"), title: opt(a, "title"), caption: opt(a, "caption") }), null, 2)); } },
+        run: (a) => { out(JSON.stringify(artifacts.add(checkSlug(a._[2]), a._[3] ?? usage("govern artifact add <slug> <file>"), { name: opt(a, "name"), title: opt(a, "title"), caption: opt(a, "caption") }), null, 2)); } },
       list: { lines: [["<slug>", "list artifacts with current digests and reviews"]],
         run: (a) => { const slug = checkSlug(a._[2]); load(slug); out(JSON.stringify(artifacts.list(slug), null, 2)); } },
     } },
@@ -1155,7 +1156,7 @@ const cmdLines = (c: Cmd, only?: string): string[] =>
   c.subs ? Object.entries(c.subs).filter(([s]) => !only || s === only).flatMap(([s, sub]) => helpLines(`${c.name} ${s}`, sub.lines)) : helpLines(c.name, c.lines ?? []);
 
 function unknownCommand(name: string): never {
-  return fail(`unknown command "${name}" (commands: ${[...COMMANDS.map((c) => c.name), ...EXTENSIONS.flatMap((e) => e.commands)].join(", ")}; govern help)`);
+  return usage(`unknown command "${name}" (commands: ${[...COMMANDS.map((c) => c.name), ...EXTENSIONS.flatMap((e) => e.commands)].join(", ")}; govern help)`);
 }
 
 /** One command's help lines: all its subcommands, or only `sub`. `extra` holds the commands of a loaded extension, whose names are then known. */
@@ -1166,7 +1167,7 @@ export function commandHelp(name: string, sub?: string, extra: readonly Cmd[] = 
 }
 
 /** What `govern help <command>` and `govern <command> --help` print: a core command's lines and rules; an enabled extension's
- *  command's lines and rules followed by the extension's own manpage text; for a disabled extension, its refusal (exit 2). */
+ *  command's lines and rules followed by the extension's own manpage text; for a disabled extension, its refusal (exit 4). */
 async function helpFor(name: string, sub?: string): Promise<string> {
   const owned = await extensions.commandOf(name);
   return owned ? `${commandHelp(name, sub, owned.ext.commands)}\n\n${owned.ext.manpage.trimEnd()}` : commandHelp(name, sub);
@@ -1211,8 +1212,8 @@ export const ALIASES: Readonly<Record<string, string>> = { "--version": "version
 async function main(argv: string[]): Promise<void> {
   const name = argv[0] !== undefined && Object.hasOwn(ALIASES, argv[0]) ? ALIASES[argv[0]] : argv[0];
   if (name === undefined || name === "-h" || name === "--help") return void out(helpText());
-  if (name.startsWith("--")) fail(`the command comes first: govern <command> [<args>] [--flags] (got ${name} first; govern help)`);
-  // A command of an extension: refused (exit 2) when the workspace does not enable it, else loaded from ext/<name>/ for this one call.
+  if (name.startsWith("--")) usage(`the command comes first: govern <command> [<args>] [--flags] (got ${name} first; govern help)`);
+  // A command of an extension: refused (exit 4) when the workspace does not enable it, else loaded from ext/<name>/ for this one call.
   const c = byName.get(name) ?? (await extensions.commandOf(name))?.cmd ?? unknownCommand(name);
   let entry: { flags?: FlagSpec; run?: (a: Args) => void | Promise<void> } = c, label = c.name, sub: string | undefined, rest = argv.slice(1);
   const lead = [name];
@@ -1222,7 +1223,7 @@ async function main(argv: string[]): Promise<void> {
     if (!given && word === "--help" && argv.length === 2) return void out(await helpFor(c.name));
     sub = given ? word : c.defaultSub;
     const named = sub && Object.hasOwn(c.subs, sub) ? c.subs[sub] : undefined;
-    if (!named) fail(c.noSub ?? `govern ${c.name} ${Object.keys(c.subs).join("|")}`);
+    if (!named) usage(c.noSub ?? `govern ${c.name} ${Object.keys(c.subs).join("|")}`);
     entry = named;
     label = `${c.name} ${sub}`;
     if (given) { rest = argv.slice(2); lead.push(word); }

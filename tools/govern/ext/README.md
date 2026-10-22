@@ -29,13 +29,13 @@ its text, or when `govern desk` asks for its lines.
 
 - `govern ext list` prints every extension with its state, its size in bytes and its commands.
 - `govern ext enable <name>` and `govern ext disable <name>` write `extensions` in `.govern/config.json` (created with only that
-  key when absent). In a workspace that has a `govern.config.json`, that file is the owner's: they are refused (exit 2) and
+  key when absent). In a workspace that has a `govern.config.json`, that file is the owner's: they are refused (exit 4) and
   name the file to edit by hand.
 - `GOVERN_EXTENSIONS` (comma-separated names) replaces the file's list. An unknown name or a duplicate, in the file or in the
-  variable, is refused with exit 2, naming the file and the JSON path or the variable.
+  variable, is refused with exit 4, naming the file and the JSON path or the variable.
 - `govern init` writes no `extensions`: a fresh workspace enables none.
 - A command of a disabled extension prints `govern: <command> is part of the <name> extension, which this workspace does not
-  enable — govern ext enable <name>` and exits 2.
+  enable — govern ext enable <name>` and exits 4.
 
 ## What an extension exports
 

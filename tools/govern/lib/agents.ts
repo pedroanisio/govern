@@ -8,7 +8,7 @@ import { name, iso, project, locked, readOr, write } from "./peer-id.ts";
 import { sessions, isAlive } from "./sessions.ts";
 import { runners } from "./queue.ts";
 import { LEGACY_PROFILES } from "./caps.ts";
-import { fail } from "./util.ts";
+import { fail, usage } from "./util.ts";
 
 export const DEFAULT_TTL_S = 12 * 3600, MAX_TTL_S = 7 * 86400, EPHEMERAL_TTL_S = 3600, MAX_EPHEMERAL_TTL_S = 86400, MAX_DESCRIPTION = 200, MAX_ALIASES = 8;
 /** Names no agent may register: the dispatcher runs them or govern itself sends as them. */
@@ -53,7 +53,7 @@ function ephemeralName(taken: Set<string>): string {
 export function register(o: Holder & { name?: string; ephemeral?: boolean; aliases?: string[]; projects: string[]; description?: string; ttlSeconds?: number; now?: number }): Agent {
   const now = o.now ?? Date.now(), kind = o.ephemeral ? "ephemeral" : "stable";
   const ttl = o.ttlSeconds ?? (o.ephemeral ? EPHEMERAL_TTL_S : DEFAULT_TTL_S), max = o.ephemeral ? MAX_EPHEMERAL_TTL_S : MAX_TTL_S;
-  if (!Number.isInteger(ttl) || ttl < 60 || ttl > max) fail(`--ttl must be a whole number of seconds from 60 to ${max} for a${o.ephemeral ? "n ephemeral" : " stable"} name`);
+  if (!Number.isInteger(ttl) || ttl < 60 || ttl > max) usage(`--ttl must be a whole number of seconds from 60 to ${max} for a${o.ephemeral ? "n ephemeral" : " stable"} name`);
   if (o.ephemeral && o.name !== undefined) fail("an ephemeral name is generated: pass --ephemeral or --as, not both");
   if (!o.ephemeral && o.name === undefined) fail("a stable registration needs a name: --as NAME, GOVERN_AS, or --ephemeral");
   const aliases = [...new Set(o.aliases ?? [])];

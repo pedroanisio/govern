@@ -235,11 +235,11 @@ test("govern init makes the cwd a .govern/ workspace that the next command finds
   assert.equal(made.status, 0, made.stderr);
   assert.ok(existsSync(join(dir, ".govern", "projects", "lane", "govern.json")));
   const again = run(["init"]);
-  assert.equal(again.status, 2);
+  assert.equal(again.status, 4);
   assert.match(again.stderr, /already a govern workspace/);
   const sub = join(dir, "deeper");
   const inner = spawnSync(BIN, ["init", sub], { cwd: dir, env, encoding: "utf8", timeout: 60000 });
-  assert.equal(inner.status, 2);
+  assert.equal(inner.status, 4);
   assert.match(inner.stderr, /inside the govern workspace at .*--nested/);
   const nested = spawnSync(BIN, ["init", sub, "--nested"], { cwd: dir, env, encoding: "utf8", timeout: 60000 });
   assert.equal(nested.status, 0, nested.stderr);

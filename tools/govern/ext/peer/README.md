@@ -20,7 +20,7 @@ and the agent directory (`NAME@HOST`). Enable it with `govern ext enable peer`.
 - [index.ts](index.ts): the commands, the desk line (peers and the messages waiting for them), `requireHost()` (what `task send
   --to NAME@PEER` checks) and `relay()` (what `task dispatch --loop` runs each tick: a mesh sync every ten minutes, then one relay pass).
 - [manpage.ts](manpage.ts): the SYNOPSIS, OPTIONS and DESCRIPTION text `govern help peer` prints.
-- Without it, a `NAME@PEER` recipient of `task send`, `task forward` and `task retry` is refused with exit 2, and the dispatcher
+- Without it, a `NAME@PEER` recipient of `task send`, `task forward` and `task retry` is refused with exit 4, and the dispatcher
   loop neither relays nor renews the mesh.
 - It loads `ext/peer/peer.ts`, `ext/peer/mesh.ts` and `ext/peer/telemetry.ts`; `lib/agents.ts` and `lib/peer-id.ts` stay in the core because the
   queue and the live-session view read them.

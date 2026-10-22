@@ -40,7 +40,7 @@ function audit(): string {
 test("no govern.config.json: a clear error naming the file, and no workspace guessed", () => {
   const lonely = tempDir("lonely");
   const r = gov(lonely, ["status"]);
-  assert.notEqual(r.code, 0);
+  assert.equal(r.code, 4, "no workspace is a state error, not a usage error");
   assert.match(r.err, /govern\.config\.json/);
   assert.match(r.err, /GOVERN_REPO/);
   assert.doesNotMatch(r.err, /PALS|render-frontend/i);

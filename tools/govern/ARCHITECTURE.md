@@ -61,7 +61,7 @@ block in `bin/govern`, and the operating manual for agents is the short core [SK
 detailed rules in [REFERENCE.md](REFERENCE.md) (`govern manual --full`) and in each command's rules text
 ([lib/helprules.ts](lib/helprules.ts), shown by `govern help <command>`).
 
-An extension loads with a dynamic `import()` ([lib/ext.ts](lib/ext.ts)) only when the command typed belongs to it, when `help` shows one of its commands, when `desk` asks for its lines, or when the queue calls it (a `NAME@PEER` recipient, the dispatcher loop's relay, the shadow ask). A command of a disabled extension is recognised and refused with exit 2. A test fails when `govern.ts` statically reaches a file only an extension loads. An extension's commands reach the core's `advance` and policy decision through `lib/cli.ts`, never by importing `govern.ts`.
+An extension loads with a dynamic `import()` ([lib/ext.ts](lib/ext.ts)) only when the command typed belongs to it, when `help` shows one of its commands, when `desk` asks for its lines, or when the queue calls it (a `NAME@PEER` recipient, the dispatcher loop's relay, the shadow ask). A command of a disabled extension is recognised and refused with exit 4. A test fails when `govern.ts` statically reaches a file only an extension loads. An extension's commands reach the core's `advance` and policy decision through `lib/cli.ts`, never by importing `govern.ts`.
 
 ## Servers
 
