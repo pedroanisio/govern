@@ -1,0 +1,150 @@
+{
+  "version": 1,
+  "name": "portability",
+  "description": "lane portability for govern: freeze, export, import, clone (plans/lane-portability/PLAN.md)",
+  "manual": "../PLAN.md",
+  "stages": [
+    {
+      "name": "spec",
+      "exit": "the owner has read PLAN.md and approved the design (gate design)"
+    },
+    {
+      "name": "freeze",
+      "exit": "govern freeze/unfreeze: a read-only lane state; every write refused while frozen; the owner's words recorded (acceptance: freeze.json)",
+      "check": "accept-freeze",
+      "requires": "check"
+    },
+    {
+      "name": "export",
+      "exit": "govern export: a consistent, hashed bundle of a lane, full or template, optionally freezing first (acceptance: export.json)",
+      "check": "accept-export",
+      "requires": "check"
+    },
+    {
+      "name": "import",
+      "exit": "govern import: a new lane from an untrusted bundle, verified, with provenance, closed gates and checks pending acceptance (acceptance: import.json)",
+      "check": "accept-import",
+      "requires": "check"
+    },
+    {
+      "name": "clone",
+      "exit": "govern clone: export and import in one step inside a workspace; the round trip between two workspaces proven (acceptance: clone.json)",
+      "check": "accept-clone",
+      "requires": "check"
+    },
+    {
+      "name": "remote",
+      "exit": "govern-remote/2: frozen and imported lanes on the desk and in the app; actions on a frozen lane refused (acceptance: remote.json)",
+      "check": "accept-remote",
+      "requires": "check"
+    },
+    {
+      "name": "docs",
+      "exit": "PORTABILITY.md, manpage, SKILL.md and READMEs describe the feature; every drift test passes (acceptance: docs.json)",
+      "check": "accept-docs",
+      "requires": "check"
+    },
+    {
+      "name": "review",
+      "exit": "the whole gate and the Android build pass; a second engine reviewed the diff; findings fixed or answered; the plan folder untouched (acceptance: review.json)",
+      "check": "accept-review",
+      "requires": "check"
+    },
+    {
+      "name": "done",
+      "exit": "the branch is merged into origin/main (acceptance: done.json)",
+      "check": "accept-done",
+      "requires": "check"
+    }
+  ],
+  "gates": [
+    {
+      "name": "design",
+      "stage": "spec",
+      "message": "the owner approves the design in PLAN.md first"
+    },
+    {
+      "name": "security",
+      "stage": "review",
+      "message": "the owner reads the import threat review first"
+    },
+    {
+      "name": "merge",
+      "stage": "review",
+      "needs": [
+        "security"
+      ],
+      "message": "needs the security approval first"
+    }
+  ],
+  "setup": [
+    {
+      "commands": {
+        "accept-freeze": [
+          "node",
+          "--disable-warning=ExperimentalWarning",
+          "{paths.plan}/check.ts",
+          "freeze",
+          "--root",
+          "{dir}/src"
+        ],
+        "accept-export": [
+          "node",
+          "--disable-warning=ExperimentalWarning",
+          "{paths.plan}/check.ts",
+          "export",
+          "--root",
+          "{dir}/src"
+        ],
+        "accept-import": [
+          "node",
+          "--disable-warning=ExperimentalWarning",
+          "{paths.plan}/check.ts",
+          "import",
+          "--root",
+          "{dir}/src"
+        ],
+        "accept-clone": [
+          "node",
+          "--disable-warning=ExperimentalWarning",
+          "{paths.plan}/check.ts",
+          "clone",
+          "--root",
+          "{dir}/src"
+        ],
+        "accept-remote": [
+          "node",
+          "--disable-warning=ExperimentalWarning",
+          "{paths.plan}/check.ts",
+          "remote",
+          "--root",
+          "{dir}/src"
+        ],
+        "accept-docs": [
+          "node",
+          "--disable-warning=ExperimentalWarning",
+          "{paths.plan}/check.ts",
+          "docs",
+          "--root",
+          "{dir}/src"
+        ],
+        "accept-review": [
+          "node",
+          "--disable-warning=ExperimentalWarning",
+          "{paths.plan}/check.ts",
+          "review",
+          "--root",
+          "{dir}/src"
+        ],
+        "accept-done": [
+          "node",
+          "--disable-warning=ExperimentalWarning",
+          "{paths.plan}/check.ts",
+          "done",
+          "--root",
+          "{dir}/src"
+        ]
+      }
+    }
+  ]
+}

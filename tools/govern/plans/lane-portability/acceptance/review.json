@@ -1,0 +1,15 @@
+{
+  "stage": "review",
+  "typecheck": true,
+  "clean": true,
+  "make": [
+    "check",
+    "android"
+  ],
+  "untouched": {
+    "base": "main",
+    "paths": [
+      "tools/govern/plans/lane-portability"
+    ]
+  }
+}

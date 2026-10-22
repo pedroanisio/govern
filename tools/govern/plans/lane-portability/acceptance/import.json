@@ -1,0 +1,25 @@
+{
+  "stage": "import",
+  "typecheck": true,
+  "clean": true,
+  "node": {
+    "files": [
+      "tools/govern/test/import.test.ts",
+      "tools/govern/test/export.test.ts",
+      "tools/govern/test/freeze.test.ts"
+    ],
+    "required": [
+      "import creates a new lane with provenance and never reuses the source identity",
+      "import refuses a bundle whose manifest or any file hash does not match",
+      "import refuses paths that escape the lane folder",
+      "import refuses unknown fields and unknown bundle versions",
+      "import refuses a slug that already exists",
+      "imported approvals become history and every gate starts closed",
+      "imported checks must be accepted by the owner before they can pass a stage",
+      "import refuses dependencies on lanes the workspace does not have unless --drop-deps",
+      "imported device approvals still verify with the carried public key",
+      "timers restart from the import, not from the source's deadlines",
+      "a failed import leaves no lane folder behind"
+    ]
+  }
+}
