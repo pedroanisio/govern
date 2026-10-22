@@ -247,7 +247,7 @@
 #     codex home; default $XDG_STATE_HOME, else ~/.local/state, /govern/codex-home) · CODEX_HOME (the user's codex home, where
 #     the login is read from; default ~/.codex).
 #     Programs: SCENE_RENDER (the scene-render engine bpmn --png runs) · GOVERN_CODEX_BIN (codex) · GOVERN_CLAUDE_BIN (claude) · GOVERN_GROK_BIN (grok) · GOVERN_PYTHON (python3;
-#     fills {python}).
+#     fills {python}). SCENE_RENDER_BIN (scene-render; the engine the infographic process's pipeline.py render stage runs).
 #     Limits and models: GOVERN_CTX_WARN (150000) · GOVERN_TARGET_CTX (150000, tune) · GOVERN_MAX_INLINE (60000, ask)
 #     · GOVERN_QUEUE_MAX_INLINE (40000) · GOVERN_QUEUE_CLAUDE_MODEL (sonnet) · GOVERN_QUEUE_CODEX_EFFORT (medium)
 #     · GOVERN_QUEUE_REPAIR (1; 0 turns off the one envelope-repair call) · GOVERN_QUEUE_REPAIR_EFFORT (low, codex repair)
@@ -255,7 +255,8 @@
 #     · GOVERN_QUEUE_GROK_MODEL (grok's default) · GOVERN_GROK_MAX_TURNS (25; grok has no dollar cap)
 #     · GOVERN_QUEUE_TIMEOUT_SEC (900, one dispatched run); a message's --timeout replaces it for that run; holderless claims fail after twice the run's limit, at least 3600 s.
 #     Conversation workers: GOVERN_CONVERSATION_RUN (set by the runtime; model-origin approvals are refused).
-#     Test and diagnostic: GOVERN_NOW (the allowances clock) · GOVERN_PROC=ps (read the process table with ps).
+#     Test and diagnostic: GOVERN_NOW (the allowances clock) · GOVERN_PROC=ps (read the process table with ps)
+#     · NODE_TEST_CONTEXT (set by a parent node --test; plans/lane-portability/check.ts removes it from its child runs).
 #     Coverage: ST_VAR (npm run coverage writes V8 profiles and coverage.json under $ST_VAR/out/govern/coverage;
 #     default <repo>/var) · NODE_V8_COVERAGE (set by npm run coverage so every child node process writes its profile)
 #     · SOURCE_DATE_EPOCH (npm run package: the archive's file times; default the last commit's time).
@@ -304,7 +305,7 @@
 #     - tools/govern/BUSINESS.md (extension business) - tools/govern/LIFECYCLE.md (extension business)
 # SEE ALSO
 #     st-man - tools/govern/SKILL.md (govern manual) - tools/govern/REFERENCE.md (govern manual --full) - tools/govern/processes/video/MANUAL.md (govern manual video)
-#     - tools/govern/PURPOSE.md
+#     - tools/govern/processes/infographic/MANUAL.md (govern manual infographic) - tools/govern/PURPOSE.md
 # MANPAGE <<<
 set -eu
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)

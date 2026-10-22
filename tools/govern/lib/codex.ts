@@ -161,9 +161,9 @@ export class SchemaError extends GovernError {}
 
 // The JSON-schema subset validate() enforces. Every keyword here is checked against the value; any other keyword in a
 // schema is a SchemaError, because a keyword that is silently ignored is a check that cannot fail.
-const ENFORCED = ["type", "enum", "required", "properties", "additionalProperties", "items", "minItems", "maxItems", "minLength", "maxLength"];
+const ENFORCED = ["type", "enum", "required", "properties", "additionalProperties", "items", "minItems", "maxItems", "minLength", "maxLength", "pattern", "minimum", "maximum"];
 // Annotations: they carry no constraint, so allowing them weakens nothing.
-const ANNOTATIONS = ["$schema", "$comment", "title", "description"];
+const ANNOTATIONS = ["$schema", "$id", "$comment", "title", "description"];
 const TYPES = ["object", "array", "string", "number", "integer", "boolean", "null"];
 const isObj = (x: unknown): x is Record<string, unknown> => typeof x === "object" && x !== null && !Array.isArray(x);
 const isCount = (x: unknown) => Number.isInteger(x) && (x as number) >= 0;
@@ -182,6 +182,11 @@ export function checkSchema(schema: unknown, at = "#"): void {
   if ("enum" in s && !Array.isArray(s.enum)) bad("enum must be an array");
   if ("required" in s && !(Array.isArray(s.required) && s.required.every((r) => typeof r === "string"))) bad("required must be an array of strings");
   for (const k of ["minItems", "maxItems", "minLength", "maxLength"]) if (k in s && !isCount(s[k])) bad(`${k} must be a whole number >= 0, got ${JSON.stringify(s[k])}`);
+  for (const k of ["minimum", "maximum"]) if (k in s && !Number.isFinite(s[k])) bad(`${k} must be a finite number, got ${JSON.stringify(s[k])}`);
+  if ("pattern" in s) {
+    if (typeof s.pattern !== "string") bad(`pattern must be a string, got ${JSON.stringify(s.pattern)}`);
+    try { new RegExp(s.pattern as string, "u"); } catch (e) { bad(`pattern is not a valid regular expression: ${(e as Error).message}`); }
+  }
   if ("properties" in s) {
     if (!isObj(s.properties)) bad("properties must be an object of schemas");
     for (const [k, sub] of Object.entries(s.properties as object)) checkSchema(sub, `${at}/properties/${k}`);
@@ -195,7 +200,8 @@ export function checkSchema(schema: unknown, at = "#"): void {
 /**
  * Check a parsed reply against a JSON schema and return every violation as "path: problem" (empty when it conforms).
  * Enforced: type, enum, required, properties, additionalProperties (false or a schema for objects), items, minItems,
- * maxItems, minLength, maxLength. The schema is checked first (checkSchema), so a keyword outside that subset throws
+ * maxItems, minLength, maxLength, pattern (an unanchored regular expression read with the u flag, as JSON Schema says)
+ * and minimum/maximum (inclusive). The schema is checked first (checkSchema), so a keyword outside that subset throws
  * SchemaError instead of being ignored. Only own fields count: an inherited name such as "constructor" is not present.
  */
 export function validate(schema: any, v: any, path = "$"): string[] {
@@ -214,6 +220,11 @@ function conform(schema: any, v: any, path: string): string[] {
   if (typeof v === "string") {
     if (schema.maxLength != null && v.length > schema.maxLength) errs.push(`${path}: longer than ${schema.maxLength} chars`);
     if (schema.minLength != null && v.length < schema.minLength) errs.push(`${path}: shorter than ${schema.minLength} chars`);
+    if (schema.pattern != null && !new RegExp(schema.pattern, "u").test(v)) errs.push(`${path}: does not match /${schema.pattern}/`);
+  }
+  if (typeof v === "number") {
+    if (schema.minimum != null && v < schema.minimum) errs.push(`${path}: less than ${schema.minimum}`);
+    if (schema.maximum != null && v > schema.maximum) errs.push(`${path}: greater than ${schema.maximum}`);
   }
   if (Array.isArray(v)) {
     if (schema.minItems != null && v.length < schema.minItems) errs.push(`${path}: fewer than ${schema.minItems} items`);

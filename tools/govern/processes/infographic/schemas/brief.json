@@ -1,0 +1,49 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://govern.local/infographic/brief/1.0.0",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "version",
+    "title",
+    "content",
+    "audience",
+    "language"
+  ],
+  "properties": {
+    "version": {
+      "type": "integer",
+      "enum": [
+        1
+      ]
+    },
+    "title": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 180
+    },
+    "content": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 100000
+    },
+    "audience": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 600
+    },
+    "language": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 24
+    },
+    "orientation": {
+      "type": "string",
+      "enum": [
+        "landscape",
+        "portrait"
+      ],
+      "default": "landscape"
+    }
+  }
+}

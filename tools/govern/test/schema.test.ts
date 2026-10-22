@@ -69,8 +69,8 @@ test("additionalProperties may be a schema that validates every extra field", ()
 
 test("a schema keyword validate() does not enforce is a SchemaError, never ignored", () => {
   for (const [schema, word] of [
-    [{ type: "string", pattern: "^a" }, "pattern"],
-    [{ type: "object", additionalProperties: false, properties: { n: { type: "number", minimum: 0 } } }, "minimum"],
+    [{ type: "string", format: "date" }, "format"],
+    [{ type: "object", additionalProperties: false, properties: { n: { type: "number", exclusiveMinimum: 0 } } }, "exclusiveMinimum"],
     [{ type: "array", items: { type: "object", additionalProperties: false, properties: { x: { type: "string", format: "uri" } } } }, "format"],
     [{ type: "object", additionalProperties: { type: "string", oneOf: [] } }, "oneOf"],
     [{ anyOf: [{ type: "string" }] }, "anyOf"],
@@ -79,6 +79,36 @@ test("a schema keyword validate() does not enforce is a SchemaError, never ignor
     // the keyword sits on a branch the value never reaches, and it is still refused
     assert.throws(() => validate(schema, {}), (e: Error) => e instanceof SchemaError && e.message.includes(`"${word}"`), word);
   }
+});
+
+test("pattern, minimum and maximum are enforced: a miss is named with its path and bound", () => {
+  const schema = { type: "object", additionalProperties: false, required: ["id", "score", "items"], properties: {
+    id: { type: "string", pattern: "^[a-z][a-z0-9-]*$" },
+    score: { type: "number", minimum: 0, maximum: 1 },
+    items: { type: "array", items: { type: "integer", minimum: 1, maximum: 3 } },
+  } };
+  assert.deepEqual(validate(schema, { id: "a-1", score: 0, items: [1, 3] }), []);
+  assert.deepEqual(validate(schema, { id: "a-1", score: 1, items: [] }), []);
+  assert.deepEqual(validate(schema, { id: "A 1", score: 1.5, items: [0, 2, 4] }), [
+    '$.id: does not match /^[a-z][a-z0-9-]*$/',
+    "$.score: greater than 1",
+    "$.items[0]: less than 1",
+    "$.items[2]: greater than 3",
+  ]);
+  // an unanchored pattern matches anywhere, as JSON Schema says; it is read with the u flag, so \\p{L} is a letter class
+  assert.deepEqual(validate({ type: "string", pattern: "b" }, "abc"), []);
+  assert.deepEqual(validate({ type: "string", pattern: "^\\p{L}+$" }, "ação"), []);
+  assert.deepEqual(validate({ type: "string", pattern: "^\\p{L}+$" }, "a1"), ['$: does not match /^\\p{L}+$/']);
+  // the bounds apply to numbers only, and the pattern to strings only, as in JSON Schema
+  assert.deepEqual(validate({ minimum: 5, pattern: "^x" }, true), []);
+});
+
+test("a malformed pattern, minimum or maximum is a SchemaError; $id is an annotation", () => {
+  for (const schema of [
+    { type: "string", pattern: 1 }, { type: "string", pattern: "(" }, { type: "string", pattern: "\\q" },
+    { type: "number", minimum: "0" }, { type: "number", maximum: Number.POSITIVE_INFINITY }, { type: "number", minimum: null },
+  ]) assert.throws(() => checkSchema(schema), SchemaError, JSON.stringify(schema));
+  checkSchema({ $id: "https://govern.local/x/1.0.0", type: "object", additionalProperties: false, properties: {} });
 });
 
 test("a malformed schema is a SchemaError: bad type name, tuple items, non-boolean additionalProperties, bad bounds", () => {

@@ -1,0 +1,103 @@
+{
+  "version": 1,
+  "revision": 1,
+  "name": "infographic",
+  "description": "one original, sourced 4K editorial infographic, inspected and owner-approved",
+  "manual": "infographic/MANUAL.md",
+  "prompts": "infographic/prompts",
+  "setup": [
+    {
+      "commands": {
+        "input": [
+          "{python}",
+          "{paths.infographicPipeline}",
+          "input",
+          "{dir}"
+        ],
+        "plan": [
+          "{python}",
+          "{paths.infographicPipeline}",
+          "plan",
+          "{dir}"
+        ],
+        "render": [
+          "{python}",
+          "{paths.infographicPipeline}",
+          "render",
+          "{dir}"
+        ],
+        "candidate": [
+          "{python}",
+          "{paths.infographicPipeline}",
+          "candidate",
+          "{dir}"
+        ],
+        "review": [
+          "{python}",
+          "{paths.infographicPipeline}",
+          "review",
+          "{dir}"
+        ],
+        "deliver": [
+          "{python}",
+          "{paths.infographicPipeline}",
+          "deliver",
+          "{dir}"
+        ]
+      },
+      "files": {
+        "brief": "brief.json",
+        "plan": "plan.json",
+        "review": "review.json",
+        "candidate": "generated/infographic/candidate.json",
+        "frame": "generated/infographic/r*/frame.png",
+        "package": "generated/infographic/delivery-*/reproduce.vpkg.zip"
+      }
+    }
+  ],
+  "stages": [
+    {
+      "name": "intake",
+      "exit": "operator content, audience and language are explicit; orientation is resolved",
+      "check": "input",
+      "requires": "check"
+    },
+    {
+      "name": "design",
+      "exit": "source snapshots, claim provenance, central message, visual grammar and reading order pass checks",
+      "check": "plan",
+      "requires": "check"
+    },
+    {
+      "name": "produce",
+      "exit": "SDK-authored scene strictly renders one 4K PNG; local assets and source package are verified",
+      "check": "candidate",
+      "requires": "check"
+    },
+    {
+      "name": "review",
+      "exit": "the exact full, half and quarter-size frames were inspected; issues fixed and editorial scores pass",
+      "check": "review",
+      "requires": "check"
+    },
+    {
+      "name": "approval",
+      "exit": "owner approves the complete candidate by its SHA-256",
+      "check": "review",
+      "requires": "check"
+    },
+    {
+      "name": "deliver",
+      "exit": "PNG and reproducible package match the reviewed and explicitly approved candidate",
+      "check": "deliver",
+      "requires": "check"
+    }
+  ],
+  "gates": [
+    {
+      "name": "final",
+      "stage": "approval",
+      "message": "the owner must inspect the complete candidate and quote its SHA-256"
+    }
+  ]
+}

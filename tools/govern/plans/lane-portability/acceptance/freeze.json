@@ -1,0 +1,18 @@
+{
+  "stage": "freeze",
+  "typecheck": true,
+  "clean": true,
+  "node": {
+    "files": [
+      "tools/govern/test/freeze.test.ts"
+    ],
+    "required": [
+      "freeze records the owner's words, and unfreeze lifts it",
+      "a frozen lane refuses every write command and names the freeze",
+      "a frozen lane still answers brief, status and desk",
+      "freeze is refused while a job of the lane is running",
+      "freeze from an agent session without the owner's typed words is refused",
+      "a frozen lane can name where its work continued"
+    ]
+  }
+}

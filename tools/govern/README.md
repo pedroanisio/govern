@@ -27,7 +27,7 @@ starts from `govern brief` instead of re-reading history.
 - each stage's exit condition and the command that checks it;
 - the owner's gates.
 
-The built-in processes are in [processes/](processes/): video, ops and dev. A
+The built-in processes are in [processes/](processes/): video, ops, dev and infographic. A
 workspace can add its own or override these.
 
 **Seeing a process.** - `govern bpmn <process|lane>` draws a process as a BPMN diagram, read-only: owner, coordinator, worker-agent and stage-check lanes, stages as tasks, each check as a task with a pass/gap gateway and a dashed loop back, each gate as a user task in its owner's lane, `next` routes, splits and joins as gateways. Given a process name it adds the live state of the lanes on it (how many lanes stand at each stage, with clickable slugs in the page; pending gates; failing checks); given a lane slug it draws that lane's own process (its frozen snapshot) with its progress: stages done, current, blocked or not yet reached, each gate approved, rejected, pending or waiting with who and when, each check's last result and the first failing line. The SVG goes to stdout or `--svg FILE`; `--scene FILE` writes a scene-render scene; `--png FILE` renders it with `$SCENE_RENDER` or `scene-render` on PATH and fails plainly, writing nothing, when neither exists (`--width`/`--height`, default 3840 wide; `--static` leaves out the live state). A process name wins over a lane slug of the same name.
@@ -98,6 +98,9 @@ Without `--json`, the report goes to `coverage.json` in that directory;
 Each run keeps its raw profiles in a fresh `v8-*` subdirectory of the output
 directory. Directories use mode 700 and files use mode 600. Profile collection
 requires normal process exit; a forcibly killed process may leave no profile.
+The **infographic** process produces one sourced 4K frame through intake, design,
+production, visual review, owner approval and reproducible delivery. See its
+[manual](processes/infographic/MANUAL.md) for configuration and operator input.
 
 Documentation:
 

@@ -1,0 +1,19 @@
+{
+  "stage": "clone",
+  "typecheck": true,
+  "clean": true,
+  "node": {
+    "files": [
+      "tools/govern/test/clone.test.ts",
+      "tools/govern/test/import.test.ts",
+      "tools/govern/test/export.test.ts",
+      "tools/govern/test/freeze.test.ts"
+    ],
+    "required": [
+      "clone --full continues at the source stage with history and closed gates",
+      "clone --template starts at the first stage with no history",
+      "clone leaves the source lane unchanged",
+      "a bundle round-trips between two workspaces"
+    ]
+  }
+}
