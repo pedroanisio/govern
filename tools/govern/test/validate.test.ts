@@ -81,7 +81,7 @@ test("a process file: every key known, every field typed, references resolved", 
 test("the built-in process files load under the strict parse", () => {
   const dir = join(HERE, "..", "processes");
   const files = readdirSync(dir).filter((f) => f.endsWith(".json")).sort();
-  assert.deepEqual(files, ["dev.json", "ops.json", "video.json"]);
+  assert.deepEqual(files, ["dev.json", "infographic.json", "ops.json", "video.json"]);
   for (const f of files) assert.ok(parseProcess(join(dir, f), readFileSync(join(dir, f), "utf8")).stages.length, f);
 });
 
