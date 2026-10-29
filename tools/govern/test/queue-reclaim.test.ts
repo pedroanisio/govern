@@ -51,7 +51,7 @@ test("claim records process identity and only one claimer wins; live claims cann
   assert.equal(queue.claim(m, "peer-relay"), true);
   assert.equal(queue.claim({ ...m }, "dispatcher"), false);
   assert.deepEqual(m.claim, { by: "peer-relay", pid: process.pid, start: present(identity(process.pid), "identity").start, at: m.claim!.at });
-  assert.ok(Number.isFinite(Date.parse(m.claim!.at)));
+  assert.ok(Number.isFinite(Date.parse(m.claim?.at ?? "")));
   assert.deepEqual(queue.reclaimDead(), []);
   assert.throws(() => queue.reclaim(m.id, "reviewer", "checked"), /live/);
   assert.equal(queue.find(m.id)!.state, "claimed");

@@ -139,7 +139,7 @@ test("relay records its live process claim before posting", async () => {
     const hit = queue.find(m.id)!;
     assert.equal(hit.state, "claimed");
     assert.deepEqual(hit.m.claim, { by: "relay", pid: process.pid, start: identity(process.pid)!.start, at: hit.m.claim?.at });
-    assert.ok(Number.isFinite(Date.parse(hit.m.claim!.at)));
+    assert.ok(Number.isFinite(Date.parse(hit.m.claim?.at ?? "")));
     assert.equal(queue.claimState(hit.m), "live");
     return { status: 200, text: JSON.stringify({ protocol: peer.PROTOCOL, id: "delivered" }) };
   } });

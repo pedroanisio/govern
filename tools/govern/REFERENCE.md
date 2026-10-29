@@ -131,6 +131,8 @@ A step is a prompt: a markdown file with a front matter (`schema`, `rules`, `eff
 
 ## Asking another agent: the task queue
 
+Stored message JSON is parsed strictly: unknown fields and wrong types are refused with exit 4, naming the file and JSON path; invalid JSON names the file. Queue listing skips a file moved by another dispatcher between listing and reading it.
+
 Do not message other sessions, and do not start subagents. Put the request in the queue:
 
 ```bash

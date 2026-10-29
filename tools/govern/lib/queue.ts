@@ -20,7 +20,7 @@ import { prepareGrokHome, syncBackAuth } from "./grokhome.ts";
 import { prepareCodexHome, syncBackCodexAuth } from "./codexhome.ts";
 import { parseEvents, execArgs, validate, type Usage } from "./codex.ts";
 import { type CheckDef, type ConfigChecks, configChecks, declared, verify, resolveNamed, checkNames, verifyDeclared, type Verification } from "./replycheck.ts";
-import { obj, arr, str, posInt, record, literal, parseFile, keyPath, type Shape } from "./shape.ts";
+import { obj, arr, str, bool, posInt, record, literal, parseFile, keyPath, reject, type Shape } from "./shape.ts";
 import { checkProfile } from "./capcheck.ts";
 import { registry, getProfile, writes, guardProblem, checkProblem, checkState, readCheck, checkFile, failing, profileHash, claudeArgs, codexSpec, grokArgs, LEGACY_PROFILES, type Profile, type Registry } from "./caps.ts";
 
@@ -123,8 +123,8 @@ export interface Message {
   verify?: string[];
   /** On a reply: its envelope did not parse and one repair call made it a valid reply (the details are in the task's result). */
   repaired?: true;
-  /** The process that took this message, regardless of which service claimed it. */
-  claim?: { by: string; pid: number; start: string; at: string };
+  /** The process that took this message, regardless of which service claimed it. A claim without `start` (or `at`) has an unknown holder. */
+  claim?: { by: string; pid: number; start?: string; at?: string };
   remote?: { peer: string; id: string };
   relay?: { attempts: number; lastError: string; nextAt: string };
   /** failure: where a dispatched run went wrong, the runner itself ("runner") or the reply it gave ("reply": empty, not JSON, off schema). */
@@ -134,6 +134,26 @@ export interface Message {
 }
 /** The one envelope-repair call of a run: what it used. */
 export interface Repair { engine: string; model?: string; seconds: number; usage?: Usage & { costUsd?: number }; turns?: number }
+
+/** Finite stored measurements, including zero costs, token counts and durations. */
+const number: Shape<number> = (v, p) => typeof v === "number" && Number.isFinite(v) ? v : reject(p, "must be a finite number");
+const yes: Shape<true> = (v, p) => v === true ? true : reject(p, "must be true");
+const USAGE: Shape<Usage & { costUsd?: number }> = obj({ input: number, cached: number, cacheWrite: number, output: number, reasoning: number }, { costUsd: number });
+const REPAIR: Shape<Repair> = obj({ engine: str, seconds: number }, { model: str, usage: USAGE, turns: number });
+const VERIFICATION: Shape<Verification> = obj({ state: literal("checked", "unverified", "shape only") }, {
+  reason: str, label: str, argv: arr(str), exit: number, seconds: number, log: str, source: str,
+});
+/** Every field govern writes to a message; unknown keys are refused at every nesting level. */
+const MESSAGE: Shape<Message> = obj({
+  id: str, project: str, task: str, kind: literal(...KINDS), from: str, to: str, summary: str, body: str, files: arr(str), created: str, access: literal("read-only", "write"),
+}, {
+  replyTo: str, profile: str, readOnlyConfirmed: bool, lane: str, estimateUsd: number, routed: bool, forwardedFrom: str, timeoutSec: posInt,
+  retryOf: str, retryNote: str, retries: arr(obj({ id: str, note: str, at: str })), verification: VERIFICATION, check: arr(str), verify: arr(str), repaired: yes,
+  claim: obj({ by: str, pid: posInt }, { start: str, at: str }), remote: obj({ peer: str, id: str }), relay: obj({ attempts: number, lastError: str, nextAt: str }),
+  result: obj({ agent: str, ok: bool, seconds: number }, {
+    profile: str, profileHash: str, closedBy: str, note: str, usage: USAGE, turns: number, reply: str, error: str, failure: literal("runner", "reply"), repaired: yes, repair: REPAIR,
+  }),
+});
 
 const dir = (s: State) => join(QUEUE(), s);
 const NAME = /^[a-z0-9][a-z0-9.-]*$/;
@@ -202,8 +222,13 @@ export function all(): { state: State; m: Message }[] {
   const out: { state: State; m: Message }[] = [];
   for (const s of STATES) {
     if (!existsSync(dir(s))) continue;
-    for (const f of readdirSync(dir(s)).filter((x) => x.endsWith(".json")).sort())
-      out.push({ state: s, m: JSON.parse(readFileSync(join(dir(s), f), "utf8")) });
+    for (const f of readdirSync(dir(s)).filter((x) => x.endsWith(".json")).sort()) {
+      const file = join(dir(s), f);
+      let text: string;
+      try { text = readFileSync(file, "utf8"); }
+      catch (e) { if ((e as NodeJS.ErrnoException).code === "ENOENT") continue; throw e; }
+      out.push({ state: s, m: parseFile(file, text, MESSAGE) });
+    }
   }
   return out.sort((a, b) => a.m.created.localeCompare(b.m.created) || a.m.id.localeCompare(b.m.id)); // ids carry whole seconds only
 }
