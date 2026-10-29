@@ -687,8 +687,8 @@ export function runSealed(reg: Registry, prof: Profile, cwd: string, p: string, 
 
 /** The environment half of a codex seal: CODEX_HOME is govern's own (lib/codexhome.ts: the login and a minimal config, nothing else), so the
  *  user's config.toml (project trust, MCP servers, instructions), plugins and skills are not found. */
-export function codexEnv(home: string): NodeJS.ProcessEnv {
-  return { ...childEnv(), CODEX_HOME: home };
+export function codexEnv(home: string, env: NodeJS.ProcessEnv = childEnv()): NodeJS.ProcessEnv {
+  return { ...env, CODEX_HOME: home };
 }
 
 /** The environment half of a grok seal. HOME is a private empty folder, so the user's skills (~/.agents), plugins and Claude settings

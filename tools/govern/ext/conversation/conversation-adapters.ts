@@ -4,7 +4,8 @@ import { tmpdir } from "node:os";
 import { registry, getProfile, claudeArgs, codexSpec, grokArgs } from "../../lib/caps.ts";
 import { execArgs } from "../../lib/codex.ts";
 import { prepareGrokHome, syncBackAuth } from "../../lib/grokhome.ts";
-import { grokEnv } from "../../lib/queue.ts";
+import { prepareCodexHome, syncBackCodexAuth } from "../../lib/codexhome.ts";
+import { codexEnv, grokEnv } from "../../lib/queue.ts";
 import { cost } from "../../lib/usage.ts";
 import { fail } from "../../lib/util.ts";
 import type { Conversation, Run, Usage } from "../../lib/conversation.ts";
@@ -128,9 +129,15 @@ export function build(
     return {
       bin: process.env.GOVERN_CODEX_BIN ?? "codex",
       args,
-      env,
+      env: codexEnv(prepareCodexHome(), env),
       input: prompt,
-      finish,
+      finish: () => {
+        try {
+          syncBackCodexAuth();
+        } finally {
+          finish();
+        }
+      },
       parse: (o: any) => {
         if (!o || typeof o !== "object") fail("invalid codex event", 1);
         if (o.type === "turn.failed" || o.type === "error")
