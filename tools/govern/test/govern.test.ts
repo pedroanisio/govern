@@ -1,11 +1,13 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync, writeFileSync, readdirSync, chmodSync } from "node:fs";
-import { join } from "node:path";
+import { join, dirname } from "node:path";
+import { createRequire, syncBuiltinESMExports } from "node:module";
+import type { Project } from "../lib/project.ts";
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { makeEnv, govern, childEnv, jsonl, write, reply, setConfig, fixture, present, GOVERN, HERE } from "./helpers.ts";
-import { parseEvents, execArgs, validate } from "../lib/codex.ts";
+import { ask, readPrompt, parseEvents, execArgs, validate, type AskResult } from "../lib/codex.ts";
 
 const state = (e: ReturnType<typeof makeEnv>, slug: string) => JSON.parse(readFileSync(join(e.projects, slug, "govern.json"), "utf8"));
 const ledger = (e: ReturnType<typeof makeEnv>, slug: string) => jsonl(join(e.projects, slug, "govern", "ledger.jsonl"));
@@ -385,6 +387,56 @@ test("ask: a prompt named constructor has no house-rule checks and its reply is 
   assert.match(c.out, /verified/);
   assert.doesNotMatch(c.out, /FAILED/);
   assert.equal(ledger(e, slug).find((x) => x.kind === "ask").ok, true);
+});
+
+test("ask: overlapping same-name asks with a fixed clock keep distinct artifacts and their own replies", { timeout: 5000 }, (t) => {
+  const e = makeEnv(), old = { ...process.env }, prompts = join(e.root, "prompts");
+  const cp = createRequire(import.meta.url)("node:child_process") as typeof import("node:child_process");
+  t.after(() => { t.mock.restoreAll(); syncBuiltinESMExports(); process.env = old; });
+  Object.assign(process.env, childEnv(e), { GOVERN_PROMPTS: prompts });
+  t.mock.timers.enable({ apis: ["Date"], now: new Date("2026-10-29T12:00:00Z") });
+  write(join(prompts, "free.md"), "---\nschema: reply.json\nrepairs: 0\n---\nSay something as JSON.\n");
+  write(join(prompts, "reply.json"), JSON.stringify({ type: "object", additionalProperties: false, properties: { said: { type: "string" } }, required: ["said"] }));
+  const p: Project = { version: 1, slug: "film", title: "Test", kind: "short", lang: "en", stage: "plan", created: new Date().toISOString(), commands: {}, files: {}, approvals: {}, notes: [] };
+  const paths: string[] = [];
+  let nested: AskResult | undefined;
+  t.mock.method(cp, "spawnSync", (_bin: string, args: string[]) => {
+    const last = present(args[args.indexOf("-o") + 1], "last-message path");
+    paths.push(last);
+    const said = paths.length === 1 ? "outer" : "inner";
+    if (said === "outer") nested = ask(p, "free", {});
+    else write(last, JSON.stringify({ said }));
+    // The outer call only returns events: another ask's last message must never override them.
+    return { status: 0, stdout: JSON.stringify({ type: "item.completed", item: { type: "agent_message", text: JSON.stringify({ said }) } }) + "\n", stderr: "" };
+  });
+  syncBuiltinESMExports();
+  const outer = ask(p, "free", {}), inner = present(nested, "overlapping ask");
+  assert.equal(paths.length, 2);
+  assert.notEqual(paths[0], paths[1], "each invocation needs its own last-message path");
+  assert.notEqual(outer.out, inner.out, "each invocation needs its own result path");
+  assert.equal(outer.ok, true); assert.equal(inner.ok, true);
+  assert.deepEqual(outer.value, { said: "outer" }); assert.deepEqual(inner.value, { said: "inner" });
+  assert.deepEqual(JSON.parse(readFileSync(outer.out, "utf8")), outer.value);
+  assert.deepEqual(JSON.parse(readFileSync(inner.out, "utf8")), inner.value);
+  for (const path of paths) assert.equal(readdirSync(dirname(path)).filter((f) => f.endsWith(".events.jsonl")).length, 1, "each invocation keeps its events");
+  assert.equal(new Set(ledger(e, p.slug).map((x) => x.id)).size, 2, "ledger ids identify distinct invocations");
+});
+
+for (const bad of ["6", "9007199254740992", "9".repeat(400)]) {
+  test(`ask: repairs ${bad.length > 20 ? "overflow" : bad} is refused at prompt load before any model call`, () => {
+    const e = makeEnv(), prompts = join(e.root, "prompts");
+    write(join(prompts, "free.md"), `---\nschema: reply.json\nrepairs: ${bad}\n---\nSay something as JSON.\n`);
+    assert.throws(() => readPrompt("free", [prompts]), /free\.md: repairs must be a whole number from 0 to 5/);
+    assert.deepEqual(jsonl(join(e.root, "argv.log")), [], "codex was never called");
+  });
+}
+
+test("ask: repairs accepts both bounds 0 and 5 at prompt load", () => {
+  const e = makeEnv(), prompts = join(e.root, "prompts");
+  for (const repairs of ["0", "5"]) {
+    write(join(prompts, "free.md"), `---\nschema: reply.json\nrepairs: ${repairs}\n---\nSay something as JSON.\n`);
+    assert.equal(readPrompt("free", [prompts]).meta.repairs, repairs);
+  }
 });
 
 test("ask: a prompt whose repairs is not a whole number 0 or more is refused before calling codex, never passed as verified", () => {

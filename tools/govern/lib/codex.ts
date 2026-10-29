@@ -4,8 +4,8 @@
 //
 // One-shot Codex steps: prompt template → `codex exec --json --output-schema` → verified JSON.
 import { spawnSync } from "node:child_process";
-import { existsSync, readFileSync, mkdirSync, writeFileSync, globSync } from "node:fs";
-import { join, dirname, resolve, relative } from "node:path";
+import { existsSync, readFileSync, mkdirSync, mkdtempSync, writeFileSync, globSync } from "node:fs";
+import { join, dirname, basename, resolve, relative } from "node:path";
 import { MODEL_TIMEOUT_SIGNAL, fail, stamp, sha256, GovernError, charLimit } from "./util.ts";
 import { emptyRecord } from "./shape.ts";
 import { type Project, projectDir, governDir, appendLedger, brief } from "./project.ts";
@@ -85,10 +85,12 @@ export function promptFiles(processName?: string): { name: string; file: string 
 }
 /** The front matter keys a prompt may set; govern.ts and ask() read each of them. */
 export const PROMPT_KEYS = ["description", "effort", "model", "repairs", "rules", "schema"] as const;
+/** The most repair calls a prompt may request after the initial model call. */
+export const MAX_REPAIRS = 5;
 /** Read prompt `name` from the first of `dirs` that has `<name>.md`, splitting its `---` front matter (LF or CRLF) into
  *  meta; fails on a bad name, a missing prompt, a front matter block with no closing `---`, a front matter line that is
  *  not `key: value` or names a key outside PROMPT_KEYS (a misspelt `schema:` would otherwise drop the check silently),
- *  no `schema:` declaration, or a `repairs` value that is not a whole number. */
+ *  no `schema:` declaration, or a `repairs` value outside the whole numbers 0 through MAX_REPAIRS. */
 export function readPrompt(name: string, dirs: string[]): PromptFile {
   if (!/^[a-z0-9-]+$/.test(name)) fail(`bad prompt name: ${name}`);
   const dir = dirs.find((d) => existsSync(join(d, `${name}.md`)));
@@ -110,6 +112,7 @@ export function readPrompt(name: string, dirs: string[]): PromptFile {
   // ask() loops 1 + repairs times and an ask with no call has no errors: a repairs value that is not a whole number 0 or
   // more would make zero calls and pass as verified, so it is refused here.
   if (meta.repairs !== undefined && !/^\d+$/.test(meta.repairs)) fail(`${f}: repairs must be a whole number, 0 or more (got ${JSON.stringify(meta.repairs)})`);
+  if (meta.repairs !== undefined && (!Number.isSafeInteger(Number(meta.repairs)) || Number(meta.repairs) > MAX_REPAIRS)) fail(`${f}: repairs must be a whole number from 0 to ${MAX_REPAIRS} (got ${JSON.stringify(meta.repairs)})`);
   if (!meta.schema) fail(`${f}: schema is required`);
   return { name, meta, body: m ? text.slice(m[0].length) : text, dir: dir! };
 }
@@ -271,8 +274,8 @@ function conform(schema: any, v: any, path: string): string[] {
  */
 export interface AskResult { ok: boolean; value?: any; errors: string[]; usage: Usage; turns: number; calls: number; out: string; seconds: number }
 /** Run prompt `name` for `p` through `codex exec`: the reply is JSON-parsed and checked against the prompt's schema and
- *  house rules, with at most `repairs` (default 1) repair calls given the errors; a reply that still fails comes back
- *  with ok=false. Writes each call's events, last message and the result under govern/ask and appends an "ask" ledger
+ *  house rules, with at most `repairs` (default 1, maximum MAX_REPAIRS) repair calls given the errors; a reply that still fails comes back
+ *  with ok=false. Writes each call's events, last message and the result in a unique directory under govern/ask and appends an "ask" ledger
  *  entry; fails before any call on a missing prompt, schema or rules file, or an unfilled placeholder. */
 export function ask(p: Project, name: string, o: { files?: string[]; vars?: Record<string, string>; images?: string[]; effort?: string; model?: string; timeoutSec?: number }): AskResult {
   const pf = readPrompt(name, promptDirs(processName(p)));
@@ -287,7 +290,8 @@ export function ask(p: Project, name: string, o: { files?: string[]; vars?: Reco
   checkSchema(schema); // before any model call: a schema validate() cannot enforce must not cost one
   const outDir = join(governDir(p.slug), "ask");
   mkdirSync(outDir, { recursive: true });
-  const id = `${stamp()}-${name}`;
+  const callDir = mkdtempSync(join(outDir, `${stamp()}-${name}-`));
+  const id = basename(callDir);
   const total: Usage = { input: 0, cached: 0, cacheWrite: 0, output: 0, reasoning: 0 };
   let turns = 0, calls = 0, errors: string[] = [], value: any;
   const callShas: string[] = []; // the sha256 of each call's stdin, in order: what the model was actually given
@@ -296,7 +300,7 @@ export function ask(p: Project, name: string, o: { files?: string[]; vars?: Reco
   const maxRepairs = Number(pf.meta.repairs ?? 1);
   let input = prompt;
   for (let attempt = 0; attempt <= maxRepairs; attempt++) {
-    const last = join(outDir, `${id}.${attempt}.txt`);
+    const last = join(callDir, `${attempt}.txt`);
     const args = execArgs({ cwd: projectDir(p.slug), schema: schemaPath, lastMessage: last, model, effort, images: o.images });
     callShas.push(sha256(input));
     const r = spawnSync(codexBin(), args, { input, encoding: "utf8", killSignal: MODEL_TIMEOUT_SIGNAL, timeout: (o.timeoutSec ?? 600) * 1000, maxBuffer: 64 * 1024 * 1024 });
@@ -304,7 +308,7 @@ export function ask(p: Project, name: string, o: { files?: string[]; vars?: Reco
     const ev = parseEvents(r.stdout ?? "");
     turns += ev.turns;
     for (const k of Object.keys(total) as (keyof Usage)[]) total[k] += ev.usage[k];
-    writeFileSync(join(outDir, `${id}.${attempt}.events.jsonl`), r.stdout ?? "");
+    writeFileSync(join(callDir, `${attempt}.events.jsonl`), r.stdout ?? "");
     errors = [];
     if (r.error) errors.push(`codex: ${r.error.message}`);
     else if (r.status !== 0) errors.push(`codex exit ${r.status}: ${(ev.errors[0] ?? r.stderr ?? "").slice(0, 300)}`);
@@ -319,7 +323,7 @@ export function ask(p: Project, name: string, o: { files?: string[]; vars?: Reco
     input = `${prompt}\n\nYour previous reply:\n${text}\n\nIt failed these checks; reply again with the whole corrected JSON and change only what the checks require:\n- ${errors.join("\n- ")}\n`;
   }
   const ok = errors.length === 0;
-  const out = join(outDir, `${id}.json`);
+  const out = join(callDir, "result.json");
   writeFileSync(out, JSON.stringify(ok ? value : { errors, last: value }, null, 2) + "\n");
   const seconds = Math.round((Date.now() - t0) / 1000);
   // Provenance: promptSha is the rendered prompt (the first call's stdin, byte for byte), callShas every call's stdin
