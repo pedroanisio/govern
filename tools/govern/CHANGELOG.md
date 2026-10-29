@@ -32,6 +32,7 @@ All notable changes to govern are documented here, following Keep a Changelog.
 
 ### Added
 
+- The `slack` extension (`govern ext enable slack`, [SLACK.md](SLACK.md)): `govern slack serve` takes Slack's interactivity requests on loopback, checks the request signature, clock, replays, team and the person mapped by the new `people.<id>.slack`, and records a button's decision (a policy vote, an owner's approval, a human task completed) as that person's, with the new decision source `{"kind": "slack", …}`. A button carries a digest of the case data and loop counters, so a decision on a changed case is refused. The workspace config gains `slack: {team, envFile?}`.
 - Brand images in `brand/`: seven scene-render scenes (logo, favicon, wordmark, hero, social card, press banner, process-stages figure), `brand/render.sh` that validates and renders them to `site/static/brand/`, and `brand/BRAND.md`.
 - A validated press-release PDF renderer with optional banner and logo images, page numbers, and parser and output tests.
 - The govern announcement and press page with PDF and brand-asset links.

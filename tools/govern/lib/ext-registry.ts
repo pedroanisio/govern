@@ -51,6 +51,11 @@ export const EXTENSIONS: readonly ExtInfo[] = [
       { title: "timers, business calendars, events, recovery, subprocesses, process revisions", path: "LIFECYCLE.md" }],
     files: ["ext/business/index.ts", "ext/business/event-server.ts"],
     flags: ["ack", "action", "advance", "as", "by", "correlation", "data", "generation", "id", "interval", "loop", "port", "quote", "set", "stage", "to"] },
+  { name: "slack", description: "Slack: decisions people make with buttons in Slack, verified by Slack's signature",
+    commands: ["slack"],
+    docs: [{ title: "Slack: decisions from Slack buttons, signature checks, people mapping", path: "SLACK.md" }],
+    files: ["ext/slack/index.ts", "ext/slack/slack.ts"],
+    flags: ["port"] },
 ];
 
 /** The extension names, in registry order. */

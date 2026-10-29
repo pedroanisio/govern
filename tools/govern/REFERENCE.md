@@ -19,6 +19,7 @@ Sections (headings are stable; other changes add to them):
 - Business processes
 - Durable lifecycle
 - Persistent conversations
+- Slack decisions
 - Extensions
 
 ## Overview and other hosts
@@ -249,12 +250,18 @@ Provider transport decoders reject malformed JSON, primitives, unknown fields on
 
 Context is bounded and never silently truncated. `govern conversation context <id> --summary "..." --through <completed-assistant-message-id>` checkpoints completed history while retaining original messages and events. Summaries are historical context, not authority. `govern conversation close <id>` closes an idle session; history remains readable. Conversation state lives under the workspace's state folder and must be retained for restart. Never edit its JSON directly.
 
+## Slack decisions
+
+*Extension: slack; `govern ext enable slack`.*
+
+See [SLACK.md](SLACK.md). `govern slack serve [--port 5003]` takes Slack's interactivity requests on loopback (POST /slack/actions, behind an HTTPS proxy). A `govern.decide` button approves or rejects a gate, or completes a human task, as the person whose `people.<id>.slack` is the clicking Slack user, in the config's `slack.team`. govern checks Slack's request signature (`SLACK_SIGNING_SECRET`, or the config's `slack.envFile`), the clock, replays and the case digest the button carries; the decision records the signed request as its source. Never post or click such a button for a person: the decision is theirs, as an approval is.
+
 ## Extensions
 
-Peer, center, remote, decide, conversation and business are extensions: a workspace enables each one it uses, and the others are not loaded. A fresh workspace enables none.
+Peer, center, remote, decide, conversation, business and slack are extensions: a workspace enables each one it uses, and the others are not loaded. A fresh workspace enables none.
 
 - `govern ext list` shows every extension with its state, its size in bytes and its commands. `govern ext enable <name>` and `govern ext disable <name>` write `extensions` in `.govern/config.json`; in a workspace with a `govern.config.json` that file is the owner's, so they are refused (exit 4) and name the file to edit by hand. `GOVERN_EXTENSIONS` (comma-separated) replaces the file's list. Enabling is workspace setup: nothing is ledgered.
-- The commands: peer owns `peer`, `mesh` and `agents`; center owns `center`; remote owns `remote`; decide owns `decide`; conversation owns `conversation`; business owns `event`, `event-listen`, `tick`, `alerts`, `subprocess`, `recover`, `human`, `human-inbox`, `data` and `reject`. The rest of the commands are the core's.
+- The commands: peer owns `peer`, `mesh` and `agents`; center owns `center`; remote owns `remote`; decide owns `decide`; conversation owns `conversation`; business owns `event`, `event-listen`, `tick`, `alerts`, `subprocess`, `recover`, `human`, `human-inbox`, `data` and `reject`; slack owns `slack`. The rest of the commands are the core's.
 - A command of a disabled extension prints one line, `govern: <command> is part of the <name> extension, which this workspace does not enable — govern ext enable <name>`, and exits 4. `govern task send --to NAME@PEER` is refused the same way while peer is off, and `govern task dispatch --loop` relays to peers and renews the mesh only while it is on.
 - `govern help` lists the core commands and one `extensions:` line with each extension's state. `govern help <command>` of an enabled extension prints the command's lines and rules, then the extension's own manpage text. `govern help --topics` lists an extension's documents only while it is enabled, each marked `(extension: <name>)`; `govern manual --size` prints a third line for them.
 - `govern desk` and `govern status` never load a disabled extension and do not fail because of an enabled one: peer adds a line with its peers and the messages waiting for them, and remote one with its paired devices, when there is something to show.
