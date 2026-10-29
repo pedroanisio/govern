@@ -39,7 +39,7 @@ test("command adapter validates event shapes and preserves normalized usage and 
     { type: "tool.finished", id: "t", name: "read" }, { type: "done", text: " " },
     { type: "done", text: "ok", usage: null }, { type: "done", text: "ok", usage: "bad" },
     { type: "done", text: "ok", usage: { input: -1 } }, { type: "error", text: 1 }, { type: "unknown" }])
-    assert.throws(() => a.parse(value), /adapter|delta|tool|done|unknown/);
+    assert.equal(a.parse(value)[0]?.type, "error");
   assert.deepEqual(a.parse({ type: "assistant.delta", text: "part" }), [{ type: "assistant.delta", text: "part" }]);
   assert.deepEqual(a.parse({ type: "tool.started", id: "t", name: "read" }), [{ type: "tool.started", id: "t", name: "read" }]);
   assert.deepEqual(a.parse({ type: "tool.finished", id: "t", name: "read", ok: false }), [{ type: "tool.finished", id: "t", name: "read", ok: false }]);
@@ -53,24 +53,25 @@ test("command adapter validates event shapes and preserves normalized usage and 
 test("Codex adapter tracks revisions, terminal errors, usage and tool completion", () => isolated(() => {
   const s = sessions.create("chat"), a = build(s, turn(s), []);
   try {
-    assert.throws(() => a.parse(null), /invalid codex/);
+    assert.match(a.parse(null)[0]?.text ?? "", /invalid codex/);
     for (const [input, text] of [[{ type: "turn.failed", error: { message: "failed" } }, "failed"],
-      [{ type: "error", message: "bad" }, "bad"], [{ type: "error" }, "codex failed"]] as const)
+      [{ type: "error", message: "bad" }, "bad"]] as const)
       assert.deepEqual(a.parse(input), [{ type: "error", text }]);
+    assert.equal(a.parse({ type: "error" })[0]?.type, "error");
     const item = (type: string, text: string) => a.parse({ type, item: { type: "agent_message", text } });
     assert.equal(item("item.started", "a")[0]?.text, "a");
     assert.equal(item("item.updated", "ab")[0]?.text, "b");
     assert.deepEqual(item("item.updated", "ab"), []);
     assert.equal(item("item.completed", "replacement")[0]?.text, "replacement");
     assert.deepEqual(a.parse({ type: "turn.completed" }), [{ type: "done", text: "replacement" }]);
-    assert.throws(() => a.parse({ type: "turn.completed", usage: { input_tokens: "many" } }), /invalid runtime usage/);
-    assert.throws(() => a.parse({ type: "turn.completed", usage: { input_tokens: -1 } }), /invalid runtime usage/);
-    assert.equal(a.parse({ type: "turn.completed", usage: {} })[0]?.usage?.input, 0);
+    assert.match(a.parse({ type: "turn.completed", usage: { input_tokens: "many" } })[0]?.text ?? "", /invalid runtime usage/);
+    assert.match(a.parse({ type: "turn.completed", usage: { input_tokens: -1 } })[0]?.text ?? "", /invalid runtime usage/);
+    assert.equal(a.parse({ type: "turn.completed", usage: {} })[0]?.usage, undefined);
     for (const type of ["item.started", "item.completed"])
       assert.deepEqual(a.parse({ type, item: { id: "t", type: "command_execution", status: "failed" } }),
         [{ type: type === "item.started" ? "tool.started" : "tool.finished", id: "t", name: "command_execution", ok: false }]);
     assert.deepEqual(a.parse({ type: "item.completed", item: { type: "reasoning" } }), []);
-    assert.deepEqual(a.parse({ type: "thread.started" }), []);
+    assert.equal(a.parse({ type: "thread.started" })[0]?.type, "error");
   } finally { a.finish(); }
 }));
 
@@ -78,22 +79,22 @@ test("Claude adapter deduplicates streamed text and handles tool results and uns
   const s = sessions.create("chat", { profile: "claude-read" }), a = build(s, turn(s), [], 0.1);
   try {
     assert.ok(a.args.includes("stream-json"));
-    assert.throws(() => a.parse(null), /invalid claude/);
+    assert.match(a.parse(null)[0]?.text ?? "", /invalid claude/);
     const delta = (text: unknown) => a.parse({ type: "stream_event", event: { type: "content_block_delta", delta: { type: "text_delta", text } } });
-    assert.throws(() => delta(4), /invalid claude text/);
+    assert.equal(delta(4)[0]?.type, "error");
     assert.equal(delta("hello")[0]?.text, "hello");
     assert.deepEqual(a.parse({ type: "assistant", message: { content: [{ type: "text", text: "hello" }] } }), []);
     assert.deepEqual(a.parse({ type: "assistant", message: { content: [{ type: "text", text: "more" }, { type: "tool_use", id: "t", name: "read" }] } }),
       [{ type: "assistant.delta", text: "more" }, { type: "tool.started", id: "t", name: "read" }]);
     assert.deepEqual(a.parse({ type: "user", message: { content: [{ type: "text", text: "ignored" }, { type: "tool_result", tool_use_id: "t", is_error: true }] } }),
       [{ type: "tool.finished", id: "t", name: "tool", ok: false }]);
-    assert.deepEqual(a.parse({ type: "user" }), []);
-    assert.deepEqual(a.parse({ type: "assistant" }), []);
+    assert.equal(a.parse({ type: "user" })[0]?.type, "error");
+    assert.equal(a.parse({ type: "assistant" })[0]?.type, "error");
     for (const result of [{ subtype: "error" }, { subtype: "success", is_error: true }])
       assert.equal(a.parse({ type: "result", ...result })[0]?.type, "error");
-    assert.deepEqual(a.parse({ type: "result", subtype: "success" }), [{ type: "done", text: "hellomore" }]);
+    assert.equal(a.parse({ type: "result", subtype: "success" })[0]?.type, "error");
     const result = a.parse({ type: "result", subtype: "success", result: "final", total_cost_usd: 0.1,
-      usage: { input_tokens: 2, cache_read_input_tokens: 3, cache_creation_input_tokens: 4 } })[0];
+      usage: { input_tokens: 2, output_tokens: 0, cache_read_input_tokens: 3, cache_creation_input_tokens: 4 } })[0];
     assert.equal(result?.text, "final");
     assert.equal(result?.usage?.input, 9);
     assert.deepEqual(a.parse({ type: "system" }), []);

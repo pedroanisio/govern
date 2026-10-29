@@ -1,9 +1,14 @@
+// ARCHITECTURAL REQUIREMENT: LLMs will always produce some form of error.
+// Absence of output verification is a design defect, not a runtime bug.
+// All LLM output must be treated as untrusted and validated explicitly.
 // Task queue between agents (the protocol of the old internal mail, without a mail server).
 //
 // A message is one JSON file. Its folder is its state: open/ → claimed/ → done/ or failed/. A rename is atomic, so two
 // dispatchers never take the same message. The dispatcher runs no model while it waits: for each open message addressed
 // to an AI agent it starts ONE fresh headless session (codex exec or claude -p) with only that message, its thread and
 // the files it names, verifies the reply, files it as a new message to the sender and closes the original.
+import { ShapeError } from "./shape.ts";
+import { transportEvent, transportResult, STREAM_LIMIT, type TransportResult } from "./model-transport.ts";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir, homedir } from "node:os";
@@ -682,7 +687,7 @@ export function runSealed(reg: Registry, prof: Profile, cwd: string, p: string, 
   try { syncBackCodexAuth(); } catch { /* the login stays where codex left it */ }
   const ev = parseEvents(r.stdout ?? "");
   const text = existsSync(o.lastMessage) ? readFileSync(o.lastMessage, "utf8") : ev.message;
-  return { text, ...(ev.spendUnknown ? (r.pid > 0 ? { spendUnknown: true } : {}) : { usage: ev.usage }), turns: ev.turns, error: r.error ? r.error.message : r.status !== 0 ? `codex exit ${r.status}: ${clip(ev.errors[0] ?? r.stderr ?? "", 300)}` : undefined };
+  return { text, ...(ev.spendUnknown ? (r.pid > 0 ? { spendUnknown: true } : {}) : { usage: ev.usage }), turns: ev.turns, error: ev.invalid ?? (r.error ? r.error.message : r.status !== 0 ? `codex exit ${r.status}: ${clip(ev.errors[0] ?? r.stderr ?? "", 300)}` : undefined) };
 }
 
 /** The environment half of a codex seal: CODEX_HOME is govern's own (lib/codexhome.ts: the login and a minimal config, nothing else), so the
@@ -767,24 +772,26 @@ export function grokResult(stdout: string | undefined, status: number | null, st
   if (code === "ETIMEDOUT") return { error: `timed out after ${timeoutSec}s`, spendUnknown: true };
   // grok never started: nothing was spent
   if (code === "ENOENT" || code === "EACCES") return { error: error!.message.trim() ? error!.message : code };
-  let o: any;
+  let o: TransportResult | undefined;
+  if (Buffer.byteLength(stdout ?? "", "utf8") > STREAM_LIMIT) return { error: "stream exceeds 64 MiB limit", spendUnknown: true };
   const lines = (stdout ?? "").split("\n");
   for (const [i, line] of lines.entries()) {
     if (!line.trim()) continue;
-    let event: any;
-    try { event = JSON.parse(line); }
-    catch { return { error: `invalid JSON on line ${i + 1}: ${clip(line, 300)}`, spendUnknown: true }; }
+    let event;
+    try { event = transportEvent("grok", JSON.parse(line), "unknown"); }
+    catch (e) { return { error: `invalid JSON on line ${i + 1}: ${e instanceof ShapeError ? e.path + ": " + e.message : (e as Error).message}`, spendUnknown: true }; }
     // The CLI may fail before streaming starts.
     if (event?.type === "error") return { error: typeof event.message === "string" && event.message.trim() ? event.message : `exit ${status}`, spendUnknown: true };
-    if (event?.type === "result") o = event;
+    if (event?.type === "result") o = { ...event, type: "result" };
   }
   if (!o) return { error: `no result line (exit ${status}): ${clip(stderr || stdout || "", 300)}`, spendUnknown: true };
   const u = o.usage;
   // Usage that is absent, flagged incomplete or with a partial cost is not a measurement: never record it as zeros, and what the run
   // spent is unknown (settled as reserved).
-  const known = u !== null && typeof u === "object" && o.usage_is_incomplete !== true && o.cost_is_partial !== true;
+  const known = u != null && u.input_tokens !== undefined && u.output_tokens !== undefined && o.usage_is_incomplete !== true && o.cost_is_partial !== true;
   // The captured stream excludes cache reads from input_tokens: 12546 + 17024; sum them as for Claude.
   const usage = known ? { input: (u.input_tokens ?? 0) + (u.cache_read_input_tokens ?? 0) + (u.cache_creation_input_tokens ?? 0), cached: u.cache_read_input_tokens ?? 0, cacheWrite: u.cache_creation_input_tokens ?? 0, output: u.output_tokens ?? 0, reasoning: u.reasoning_tokens ?? 0, ...(typeof o.total_cost_usd === "number" ? { costUsd: o.total_cost_usd } : {}) } : undefined;
+  if (usage && !validUsage(usage)) return { error: "invalid grok usage: counters overflow or cache partitions exceed input", spendUnknown: true };
   const out: RunOut = { text: typeof o.result === "string" ? o.result : undefined, turns: o.num_turns, ...(usage ? { usage } : { spendUnknown: true }) };
   // Never an empty message: an empty error string would read as success.
   if (o.is_error === true || o.subtype !== "success") out.error = typeof o.errors?.[0] === "string" && o.errors[0].trim() ? o.errors[0] : `grok failed: subtype ${JSON.stringify(o.subtype ?? null)}${o.is_error === true ? ", is_error" : ""}`;
@@ -802,27 +809,38 @@ export function grokResult(stdout: string | undefined, status: number | null, st
  * All LLM output must be treated as untrusted and validated explicitly.
  */
 export function claudeResult(stdout: string | undefined, status: number | null, stderr: string | undefined, error?: Error, structured = false): RunOut {
-  let o: any;
-  try { o = JSON.parse(stdout ?? ""); } catch { return { error: `no JSON result (exit ${status}): ${clip(stderr ?? stdout ?? "", 300)}` }; }
+  let o: TransportResult;
+  try {
+    if (Buffer.byteLength(stdout ?? "", "utf8") > STREAM_LIMIT) throw new Error("result exceeds 64 MiB limit");
+    o = transportResult(JSON.parse(stdout ?? ""), "claude", "unknown");
+  } catch (e) {
+    // A binary that never started spent nothing; a process that ran and printed no valid result may have.
+    const code = (error as NodeJS.ErrnoException | undefined)?.code;
+    return { error: `no JSON result (exit ${status}): ${e instanceof ShapeError ? e.path + ": " + e.message : (e as Error).message}`, ...(code === "ENOENT" || code === "EACCES" ? {} : { spendUnknown: true }) };
+  }
   const u = o.usage;
   const input = u?.input_tokens, output = u?.output_tokens;
   const cached = u?.cache_read_input_tokens === undefined ? 0 : u.cache_read_input_tokens;
   const cacheWrite = u?.cache_creation_input_tokens === undefined ? 0 : u.cache_creation_input_tokens;
   const counters = { input, cached, cacheWrite, output, reasoning: 0 };
-  const usage = Object.values(counters).every((n) => typeof n === "number" && Number.isFinite(n) && n >= 0)
+  const usage = typeof input === "number" && typeof output === "number" && Object.values(counters).every((n) => typeof n === "number" && Number.isFinite(n) && n >= 0)
     ? { ...counters, input: input + cached + cacheWrite } : undefined;
   const known = usage && validUsage(usage);
   // a run that exited nonzero is a failure even when it printed a result
-  const exit = error || o.is_error || status == null || status === 0 ? undefined : `exit ${status}: ${clip(stderr ?? "", 300)}`;
+  const exit = error || o.is_error || status === 0 ? undefined : `exit ${status}: ${clip(stderr ?? "", 300)}`;
   return {
     text: structured ? (o.structured_output === undefined ? undefined : JSON.stringify(o.structured_output)) : o.result, turns: o.num_turns,
     ...(structured && o.structured_output === undefined && typeof o.result === "string" && o.result.trim() ? { prose: o.result } : {}),
     ...(known ? { usage: { ...usage, costUsd: o.total_cost_usd } } : { spendUnknown: true }),
-    error: o.is_error ? `${clip(String(o.result ?? o.subtype), 300)}` : error ? error.message : exit,
+    error: o.is_error || (o.subtype !== undefined && o.subtype !== "success") ? `${clip(String(o.result || o.subtype || "claude failed"), 300)}` : error ? error.message.trim() ? error.message : `process error ${error.name}` : exit,
   };
 }
 
-/** A runner from config.json. Its reply goes through parseReply like every other runner's (PALS's LAW). */
+/** A runner from config.json. Its reply goes through parseReply like every other runner's (PALS's LAW).
+ * ARCHITECTURAL REQUIREMENT: LLMs will always produce some form of error.
+ * Absence of output verification is a design defect, not a runtime bug.
+ * All LLM output must be treated as untrusted and validated explicitly.
+ */
 function runConfigured(def: RunnerDef, m: Message, p: string, timeoutSec: number): RunOut {
   const cwd = existsSync(join(projectsDir(), m.project)) ? join(projectsDir(), m.project) : repo();
   const argv = def.argv.map((x) => expandPlaceholders(x, cwd));
@@ -831,7 +849,7 @@ function runConfigured(def: RunnerDef, m: Message, p: string, timeoutSec: number
   const r = spawnSync(bin, args, { cwd, input: p, encoding: "utf8", killSignal: MODEL_TIMEOUT_SIGNAL, timeout: timeoutSec * 1000, maxBuffer: 64 << 20, env: childEnv() });
   // A process that started may have spent money even when it returns no usable usage (timeout, signal or bad JSON).
   // Only a spawn failure, with no child PID, establishes that execution cost nothing.
-  const result: RunOut = def.format === "json-result" ? claudeResult(r.stdout, r.status, r.stderr) : { text: r.stdout };
+  const result: RunOut = def.format === "json-result" ? claudeResult(r.stdout, r.status, r.stderr, r.error) : { text: r.stdout };
   const error = r.error ? r.error.message : r.status !== 0 ? `${m.to} exit ${r.status ?? r.signal}: ${clip(r.stderr ?? "", 300)}` : result.error;
   return { ...result, ...(error ? { error } : {}), ...(r.pid > 0 && result.usage?.costUsd == null ? { spendUnknown: true } : {}) };
 }

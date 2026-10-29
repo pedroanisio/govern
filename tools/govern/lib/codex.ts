@@ -7,6 +7,7 @@ import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync, mkdirSync, mkdtempSync, writeFileSync, globSync } from "node:fs";
 import { join, dirname, basename, resolve, relative } from "node:path";
 import { MODEL_TIMEOUT_SIGNAL, fail, stamp, sha256, GovernError, charLimit } from "./util.ts";
+import { transportEvent, STREAM_LIMIT } from "./model-transport.ts";
 import { emptyRecord } from "./shape.ts";
 import { type Project, projectDir, governDir, appendLedger, brief } from "./project.ts";
 import { repo, promptsDir, pathEntry, configFile } from "./workspace.ts";
@@ -16,21 +17,26 @@ import { loadRules, applyRules } from "./rules.ts";
 const codexBin = () => process.env.GOVERN_CODEX_BIN ?? "codex";
 
 export interface Usage { input: number; cached: number; cacheWrite: number; output: number; reasoning: number }
-export interface Events { thread?: string; usage: Usage; spendUnknown?: boolean; turns: number; message?: string; errors: string[] }
+export interface Events { thread?: string; usage: Usage; spendUnknown?: boolean; turns: number; message?: string; invalid?: string; errors: string[] }
 
 /** Token counters are measurements only when finite, non-negative and the cache partitions fit inside input. */
-export function validUsage(u: Usage): boolean {
-  return Object.values(u).every((n) => typeof n === "number" && Number.isFinite(n) && n >= 0) && u.cached + u.cacheWrite <= u.input;
+export function validUsage(u: { [K in keyof Usage]: number | undefined }): u is Usage {
+  return Object.values(u).every((n) => typeof n === "number" && Number.isFinite(n) && n >= 0) && typeof u.cached === "number" && typeof u.cacheWrite === "number" && typeof u.input === "number" && u.cached + u.cacheWrite <= u.input;
 }
 
 /** Sum a `codex exec --json` event stream: thread id, token usage and turn count over completed turns, the last agent
- *  message, and the error messages of failed turns; lines that are not JSON are skipped. */
+ *  message, and the error messages of failed turns; invalid transport fails closed. */
 export function parseEvents(jsonl: string): Events {
   const ev: Events = { usage: { input: 0, cached: 0, cacheWrite: 0, output: 0, reasoning: 0 }, turns: 0, errors: [] };
+  const invalid = (e: unknown): Events => {
+    const message = `invalid codex transport: ${(e as Error).message}`;
+    return { ...ev, message: undefined, invalid: message, spendUnknown: true, errors: [...ev.errors, message] };
+  };
+  if (Buffer.byteLength(jsonl, "utf8") > STREAM_LIMIT) return invalid(new Error("stream exceeds 64 MiB limit"));
   for (const line of jsonl.split("\n")) {
     if (!line.trim()) continue;
-    let o: any;
-    try { o = JSON.parse(line); } catch { continue; }
+    let o;
+    try { o = transportEvent("codex", JSON.parse(line), "unknown"); } catch (e) { return invalid(e); }
     if (o?.type === "thread.started") ev.thread = o.thread_id;
     else if (o?.type === "turn.completed") {
       ev.turns++;
@@ -42,7 +48,7 @@ export function parseEvents(jsonl: string): Events {
       ev.usage.input += usage.input; ev.usage.cached += usage.cached;
       ev.usage.cacheWrite += usage.cacheWrite; ev.usage.output += usage.output; ev.usage.reasoning += usage.reasoning;
     } else if (o?.type === "item.completed" && o.item?.type === "agent_message") ev.message = o.item.text;
-    else if (o?.type === "turn.failed" || o?.type === "error") ev.errors.push(o.error?.message ?? o.message ?? JSON.stringify(o));
+    else if (o?.type === "turn.failed" || o?.type === "error") ev.errors.push(o.error?.message ?? (typeof o.message === "string" ? o.message : JSON.stringify(o)));
   }
   if (!ev.turns || !validUsage(ev.usage)) ev.spendUnknown = true;
   return ev;
@@ -310,6 +316,7 @@ export function ask(p: Project, name: string, o: { files?: string[]; vars?: Reco
     for (const k of Object.keys(total) as (keyof Usage)[]) total[k] += ev.usage[k];
     writeFileSync(join(callDir, `${attempt}.events.jsonl`), r.stdout ?? "");
     errors = [];
+    if (ev.invalid) errors.push(ev.invalid);
     if (r.error) errors.push(`codex: ${r.error.message}`);
     else if (r.status !== 0) errors.push(`codex exit ${r.status}: ${(ev.errors[0] ?? r.stderr ?? "").slice(0, 300)}`);
     const text = existsSync(last) ? readFileSync(last, "utf8") : ev.message;

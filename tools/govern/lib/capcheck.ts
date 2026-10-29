@@ -1,3 +1,6 @@
+// ARCHITECTURAL REQUIREMENT: LLMs will always produce some form of error.
+// Absence of output verification is a design defect, not a runtime bug.
+// All LLM output must be treated as untrusted and validated explicitly.
 // Grant self-test: one probe per capability of a profile, each in a sealed session with the profile's own grant, answered in a
 // fixed JSON shape and verified by govern, never trusted. The result is recorded with the profile's hash (see caps.ts).
 /**
@@ -50,6 +53,11 @@ export function parseProbe(text: string | undefined, cap: string): { reply: { st
   return { reply: { status: r.status, evidence: r.evidence } };
 }
 
+/** Run one bounded probe and validate its reply against ground truth.
+ * ARCHITECTURAL REQUIREMENT: LLMs will always produce some form of error.
+ * Absence of output verification is a design defect, not a runtime bug.
+ * All LLM output must be treated as untrusted and validated explicitly.
+ */
 function probeOne(reg: Registry, prof: Profile, c: Capability, dir: string, model: string, timeoutSec: number): ProbeResult {
   const probe = c.probe;
   if (!probe) return { capability: c.name, status: "untested", evidence: "the capability defines no probe" };
@@ -83,7 +91,11 @@ function probeOne(reg: Registry, prof: Profile, c: Capability, dir: string, mode
 
 /** The negative probe: ask a session whose profile lacks `c` to use it. It passes when the reply does not claim success
  *  (a refusal, or an error such as "tool not available") and the capability's own check (file) found no trace of it working;
- *  a reply claiming success or a trace of the work is a leak of the seal. */
+ *  a reply claiming success or a trace of the work is a leak of the seal.
+ * ARCHITECTURAL REQUIREMENT: LLMs will always produce some form of error.
+ * Absence of output verification is a design defect, not a runtime bug.
+ * All LLM output must be treated as untrusted and validated explicitly.
+ */
 function probeAbsent(reg: Registry, prof: Profile, c: Capability, dir: string, model: string, timeoutSec: number): ProbeResult {
   const name = `not-${c.name}`, probe = c.probe!;
   const nonce = `chk-${randomBytes(8).toString("hex")}`;

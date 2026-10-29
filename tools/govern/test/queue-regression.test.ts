@@ -239,7 +239,7 @@ for (const [label, usage] of [
 test("measured zero and valid Claude and Codex usage retain token pricing", () => {
   const zero = { input_tokens: 0, output_tokens: 0 };
   assert.deepEqual(usdOf(claudeResult(JSON.stringify({ result: "done", usage: zero }), 0, ""), "claude-opus-5"), { usd: 0 });
-  const claude = claudeResult(JSON.stringify({ usage: { input_tokens: 1000000, output_tokens: 1000000, cache_read_input_tokens: 1000000, cache_creation_input_tokens: 1000000 } }), 0, "");
+  const claude = claudeResult(JSON.stringify({ result: "done", usage: { input_tokens: 1000000, output_tokens: 1000000, cache_read_input_tokens: 1000000, cache_creation_input_tokens: 1000000 } }), 0, "");
   assert.deepEqual(usdOf(claude, "claude-opus-5"), { usd: 29.4 });
   for (const usage of [zero, { input_tokens: 3000000, output_tokens: 1000000, cached_input_tokens: 1000000, cache_write_input_tokens: 1000000 }]) {
     const ev = parseEvents(JSON.stringify({ type: "turn.completed", usage }));
