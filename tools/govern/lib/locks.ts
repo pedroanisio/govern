@@ -1,13 +1,13 @@
 // Slots on a shared resource: crash-safe, with no daemon. A slot is a file in <dir>/held, a place in line a file in
 // <dir>/queue (numbered in the order they came), and both name the process they belong to by pid and start time, so a
 // holder that died without releasing (SIGKILL, power cut) is noticed and its slot reclaimed by the next caller.
-// Node has no flock: one directory, made with mkdir (atomic), guards each change instead, and a guard left by a dead
-// caller is broken once it is older than a few seconds (a change takes milliseconds) or its owner is gone. The guard is a
+// Node has no flock: a file, claimed with a hard link (atomic), guards each change instead. A guard is broken when its
+// owner is gone; only guards without a readable owner expire by age. The guard is a
 // file holding its owner's token (pid, start time, random nonce): a breaker removes only the token it judged stale, and a
 // holder releases only its own.
 import { mkdirSync, readdirSync, readFileSync, writeFileSync, unlinkSync, statSync, renameSync, rmSync, existsSync, linkSync } from "node:fs";
 import { randomBytes } from "node:crypto";
-import { join, basename } from "node:path";
+import { join, basename, dirname } from "node:path";
 import { procOf, exited, sleepSync, nowIso } from "./util.ts";
 
 /** Who asks for or holds a slot: `id` is unique across lanes, `label` is what people read, pid and start name the process. */
@@ -34,34 +34,47 @@ export function live(e: { pid: number; start?: string }): boolean {
 export function readMutex(m: string): string | undefined {
   try { return readFileSync(m, "utf8"); } catch (e) { return (e as NodeJS.ErrnoException).code === "ENOENT" ? undefined : ""; }
 }
-/** Remove the guard `m` only if it still holds exactly `seen` (the token a breaker judged stale). The guard is renamed
- *  away and its token read again there: if it is not `seen`, a live holder's guard was caught, and it is linked back. */
+/** Reservations and displaced tokens also exclude acquirers while their owners live. */
+const displacedGuards = (m: string): string[] => readdirSync(dirname(m)).filter((f) => f.startsWith(`${basename(m)}.stale-`)).map((f) => join(dirname(m), f));
+
+/** Reserve recovery before checking and renaming `m`; remove only `seen`, restoring or preserving any other token. */
 export function breakStale(m: string, seen: string): boolean {
-  if (readMutex(m) !== seen) return false;
   const gone = `${m}.stale-${randomBytes(6).toString("hex")}`;
-  try { renameSync(m, gone); } catch { return false; }
-  const moved = readMutex(gone);
-  if (moved !== seen) { try { linkSync(gone, m); } catch { /* a newer guard took its place */ } }
-  rmSync(gone, { recursive: true, force: true });
-  return moved === seen;
-}
-/** Remove the guard `m` if it carries `nonce`: a holder gives back its own guard, never one that replaced it. */
-export function releaseMutex(m: string, nonce: string): boolean {
-  const raw = readMutex(m);
-  if (!raw) return false;
-  try { if ((JSON.parse(raw) as { nonce?: string }).nonce !== nonce) return false; } catch { return false; }
-  rmSync(m, { force: true });
-  return true;
-}
-/** A guard is stale when it is older than a few seconds (a change takes milliseconds) or its holder no longer runs. */
-function staleGuard(m: string, raw: string): boolean {
-  try { if (Date.now() - statSync(m).mtimeMs > STALE_MUTEX_MS) return true; } catch { return false; }
+  const reservation = `${gone}.owner`, me = procOf(process.pid);
+  writeFileSync(reservation, JSON.stringify({ pid: process.pid, ...(me ? { start: me.start } : {}), nonce: randomBytes(8).toString("hex") }), { flag: "wx" });
   try {
-    const t = JSON.parse(raw) as { pid?: number; start?: string };
-    if (typeof t.pid !== "number") return false;
-    const s = procOf(t.pid);
-    return !s || exited(s) || (t.start !== undefined && s.start !== t.start);
-  } catch { return false; }
+    if (readMutex(m) !== seen) return false;
+    try { renameSync(m, gone); } catch { return false; }
+    const moved = readMutex(gone);
+    if (moved !== seen) {
+      try { linkSync(gone, m); } catch {
+        console.warn(`lock ${m}: could not restore displaced guard; preserved at ${gone}`);
+        return false;
+      }
+    }
+    rmSync(gone, { recursive: true, force: true });
+    return moved === seen;
+  } finally { rmSync(reservation, { force: true }); }
+}
+/** Release this holder's guard, including a displaced token, without removing another holder's token. */
+export function releaseMutex(m: string, nonce: string): boolean {
+  let released = false;
+  for (const path of [m, ...displacedGuards(m)]) {
+    const raw = readMutex(path);
+    if (!raw) continue;
+    try { if ((JSON.parse(raw) as { nonce?: string }).nonce !== nonce) continue; } catch { continue; }
+    rmSync(path, { force: true });
+    released = true;
+  }
+  return released;
+}
+/** A named live owner never expires; age reclaims only guards without a readable owner. */
+function staleGuard(m: string, raw: string): boolean {
+  try {
+    const t = JSON.parse(raw) as { pid?: number; start?: string } | null;
+    if (typeof t?.pid === "number") return !live({ pid: t.pid, ...(t.start !== undefined ? { start: t.start } : {}) });
+  } catch { /* an unparseable guard is reclaimed by age */ }
+  try { return Date.now() - statSync(m).mtimeMs > STALE_MUTEX_MS; } catch { return false; }
 }
 
 /** Run `f` holding the guard of `dir` (other callers wait, up to 30 s). */
@@ -70,11 +83,18 @@ export function withMutex<T>(dir: string, f: () => T): T {
   const m = join(dir, "mutex");
   const me = procOf(process.pid), nonce = randomBytes(8).toString("hex");
   const tmp = `${m}.own-${nonce}`;
-  writeFileSync(tmp, JSON.stringify({ pid: process.pid, ...(me ? { start: me.start } : {}), nonce }) + "\n");
+  const token = JSON.stringify({ pid: process.pid, ...(me ? { start: me.start } : {}), nonce }) + "\n";
+  writeFileSync(tmp, token);
   try {
     for (const end = Date.now() + MUTEX_WAIT_MS; ; sleepSync(10)) {
       // a hard link is atomic and arrives with the token in it: no guard exists without its owner's name
-      try { linkSync(tmp, m); break; } catch (e) { if ((e as NodeJS.ErrnoException).code !== "EEXIST") throw e; }
+      let claimed = false;
+      try { linkSync(tmp, m); claimed = true; } catch (e) { if ((e as NodeJS.ErrnoException).code !== "EEXIST") throw e; }
+      if (claimed) {
+        const blocked = displacedGuards(m).some((p) => { const raw = readMutex(p); return raw !== undefined && !staleGuard(p, raw); });
+        if (!blocked && readMutex(m) === token) break;
+        releaseMutex(m, nonce);
+      }
       const seen = readMutex(m);
       if (seen !== undefined && staleGuard(m, seen)) breakStale(m, seen);
       if (Date.now() > end) throw new Error(`lock ${dir}: the guard did not free up in ${MUTEX_WAIT_MS / 1000}s`);
