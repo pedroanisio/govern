@@ -226,30 +226,38 @@ function openMessage(ref: string): Message {
 
 /** Close an open message by hand (no model ran): open → done, with who closed it. */
 export function close(ref: string, by: string, note?: string): Message {
-  const m = openMessage(ref);
+  return claimGuard(() => closeOpen(openMessage(ref), by, note));
+}
+
+/** Close a freshly resolved open message while holding the claim guard. */
+function closeOpen(m: Message, by: string, note?: string): Message {
   m.result = { agent: by, ok: true, seconds: 0, closedBy: by, ...(note ? { note } : {}) };
   save(m, "open");
-  move(m, "open", "done");
+  if (!move(m, "open", "done")) fail(`message ${m.id} could not be moved to done`);
   return m;
 }
 
 /** Answer an open message: a reply to its sender, threaded to it, then close it. */
 export function reply(ref: string, by: string, r: { kind: string; summary: string; body: string }): Message {
-  const orig = openMessage(ref);
-  if (!(REPLY_KINDS as readonly string[]).includes(r.kind)) usage(`--kind must be one of ${REPLY_KINDS.join(", ")}`);
-  const answer = send({ project: orig.project, task: orig.task, kind: r.kind, from: by, to: orig.from, summary: r.summary, body: r.body, files: [], replyTo: orig.id, access: "read-only" });
-  close(orig.id, by, `replied with ${answer.id}`);
-  return answer;
+  return claimGuard(() => {
+    const orig = openMessage(ref);
+    if (!(REPLY_KINDS as readonly string[]).includes(r.kind)) usage(`--kind must be one of ${REPLY_KINDS.join(", ")}`);
+    const answer = send({ project: orig.project, task: orig.task, kind: r.kind, from: by, to: orig.from, summary: r.summary, body: r.body, files: [], replyTo: orig.id, access: "read-only" });
+    closeOpen(orig, by, `replied with ${answer.id}`);
+    return answer;
+  });
 }
 
 /** Send a copy of an open message to another recipient and close the original. */
 export function forward(ref: string, by: string, to: string, routed = false): Message {
-  const o = openMessage(ref);
-  const keep = o.profile && getProfile(o.profile).engine === to ? o.profile : undefined;
-  const t = resolveTarget(to, { write: o.access === "write", ...(keep ? { profile: keep } : {}) });
-  const copy = send({ project: o.project, task: o.task, kind: o.kind, from: o.from, to, summary: o.summary, body: o.body, files: o.files, access: t.access, ...(t.profile ? { profile: t.profile } : {}), ...(o.lane ? { lane: o.lane } : {}), ...(o.verification ? { verification: o.verification } : {}), ...(o.check ? { check: o.check } : {}), ...(o.verify ? { verify: o.verify } : {}), forwardedFrom: o.id, ...(routed ? { routed: true } : {}) });
-  close(o.id, by, `forwarded to ${to} as ${copy.id}`);
-  return copy;
+  return claimGuard(() => {
+    const o = openMessage(ref);
+    const keep = o.profile && getProfile(o.profile).engine === to ? o.profile : undefined;
+    const t = resolveTarget(to, { write: o.access === "write", ...(keep ? { profile: keep } : {}) });
+    const copy = send({ project: o.project, task: o.task, kind: o.kind, from: o.from, to, summary: o.summary, body: o.body, files: o.files, access: t.access, ...(t.profile ? { profile: t.profile } : {}), ...(o.lane ? { lane: o.lane } : {}), ...(o.verification ? { verification: o.verification } : {}), ...(o.check ? { check: o.check } : {}), ...(o.verify ? { verify: o.verify } : {}), forwardedFrom: o.id, ...(routed ? { routed: true } : {}) });
+    closeOpen(o, by, `forwarded to ${to} as ${copy.id}`);
+    return copy;
+  });
 }
 
 /** The message and everything it replies to, oldest first. */
@@ -445,31 +453,33 @@ export function triage(o: { all?: boolean; project?: string; to?: string } = {},
  *  recipient, write access, profile and timeout. Refuses without a note, for a message still open or claimed, and for a third retry of
  *  one original (retries of its retries count): never automatic, and bounded here, in code. */
 export function retry(ref: string, o: { note: string; to?: string; write?: boolean; profile?: string; timeoutSec?: number }): Message {
-  const note = o.note.trim();
-  if (!note) usage("task retry requires --note saying what was fixed");
-  const hit = find(ref) ?? fail(`no message ${ref}`);
-  const orig = hit.m;
-  if (hit.state === "open" || hit.state === "claimed") fail(`message ${orig.id} is still ${hit.state}: retry a failed or closed message`);
-  const byId = new Map(all().map((x) => [x.m.id, x.m]));
-  const rootOf = (m: Message): Message => { let cur = m; while (cur.retryOf && byId.has(cur.retryOf)) cur = byId.get(cur.retryOf)!; return cur; };
-  const root = rootOf(orig);
-  const tries = [...byId.values()].filter((x) => x.retryOf && rootOf(x).id === root.id).length;
-  if (tries >= MAX_RETRIES) fail(`message ${root.id} was already retried ${tries} times (the limit is ${MAX_RETRIES}): decide what to do with it yourself, or send a new task`);
-  const to = o.to ?? orig.to;
-  const target = o.to === undefined && !o.write && o.profile === undefined
-    ? { access: orig.access, ...(orig.profile ? { profile: orig.profile } : {}) }
-    : resolveTarget(to, { write: o.write ?? (o.profile === undefined && orig.access === "write"), ...(o.profile !== undefined ? { profile: o.profile } : {}) });
-  const timeoutSec = o.timeoutSec ?? orig.timeoutSec;
-  const copy = send({
-    project: orig.project, task: orig.task, kind: orig.kind, from: orig.from, to, summary: orig.summary, body: orig.body, files: orig.files,
-    access: target.access, ...(target.profile ? { profile: target.profile } : {}), ...(orig.lane ? { lane: orig.lane } : {}),
-    ...(orig.verification ? { verification: orig.verification } : {}), ...(orig.check ? { check: orig.check } : {}), ...(orig.verify ? { verify: orig.verify } : {}),
-    ...(orig.estimateUsd !== undefined ? { estimateUsd: orig.estimateUsd } : {}), ...(timeoutSec !== undefined ? { timeoutSec } : {}),
-    replyTo: orig.id, retryOf: orig.id, retryNote: note,
+  return claimGuard(() => {
+    const note = o.note.trim();
+    if (!note) usage("task retry requires --note saying what was fixed");
+    const hit = find(ref) ?? fail(`no message ${ref}`);
+    const orig = hit.m;
+    if (hit.state === "open" || hit.state === "claimed") fail(`message ${orig.id} is still ${hit.state}: retry a failed or closed message`);
+    const byId = new Map(all().map((x) => [x.m.id, x.m]));
+    const rootOf = (m: Message): Message => { let cur = m; while (cur.retryOf && byId.has(cur.retryOf)) cur = byId.get(cur.retryOf)!; return cur; };
+    const root = rootOf(orig);
+    const tries = [...byId.values()].filter((x) => x.retryOf && rootOf(x).id === root.id).length;
+    if (tries >= MAX_RETRIES) fail(`message ${root.id} was already retried ${tries} times (the limit is ${MAX_RETRIES}): decide what to do with it yourself, or send a new task`);
+    const to = o.to ?? orig.to;
+    const target = o.to === undefined && !o.write && o.profile === undefined
+      ? { access: orig.access, ...(orig.profile ? { profile: orig.profile } : {}) }
+      : resolveTarget(to, { write: o.write ?? (o.profile === undefined && orig.access === "write"), ...(o.profile !== undefined ? { profile: o.profile } : {}) });
+    const timeoutSec = o.timeoutSec ?? orig.timeoutSec;
+    const copy = send({
+      project: orig.project, task: orig.task, kind: orig.kind, from: orig.from, to, summary: orig.summary, body: orig.body, files: orig.files,
+      access: target.access, ...(target.profile ? { profile: target.profile } : {}), ...(orig.lane ? { lane: orig.lane } : {}),
+      ...(orig.verification ? { verification: orig.verification } : {}), ...(orig.check ? { check: orig.check } : {}), ...(orig.verify ? { verify: orig.verify } : {}),
+      ...(orig.estimateUsd !== undefined ? { estimateUsd: orig.estimateUsd } : {}), ...(timeoutSec !== undefined ? { timeoutSec } : {}),
+      replyTo: orig.id, retryOf: orig.id, retryNote: note,
+    });
+    orig.retries = [...(orig.retries ?? []), { id: copy.id, note, at: nowIso() }];
+    save(orig, hit.state);
+    return copy;
   });
-  orig.retries = [...(orig.retries ?? []), { id: copy.id, note, at: nowIso() }];
-  save(orig, hit.state);
-  return copy;
 }
 
 // ---------------------------------------------------------------- the prompt one session gets
