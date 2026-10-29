@@ -256,11 +256,16 @@ test("two dispatchers never run the same message (claim is an atomic rename)", (
   govern(e, ["task", "dispatch", "--max", "0"]); // records the profile's self-test (helpers.ts seedChecks), so both dispatchers go straight to the claim
   const s = reply(e, "ok", answer);
   const { spawn } = require("node:child_process");
-  return Promise.all([0, 1].map(() => new Promise<string>((res) => {
-    let out = "";
+  return Promise.all([0, 1].map(() => new Promise<string>((res, reject) => {
+    let out = "", err = "";
     const p = spawn(process.execPath, ["--disable-warning=ExperimentalWarning", join(HERE, "..", "govern.ts"), "task", "dispatch"], { env: childEnv(e, { FAKE_CODEX_SCRIPTS: s }) });
     p.stdout.on("data", (d: Buffer) => (out += d));
-    p.on("close", () => res(out));
+    p.stderr.on("data", (d: Buffer) => (err += d));
+    p.on("error", reject);
+    p.on("close", (code: number | null, signal: string | null) => {
+      try { assert.equal(code, 0, `dispatcher exited ${code} (signal ${signal})\n${err}`); res(out); }
+      catch (error) { reject(error); }
+    });
   }))).then((outs) => {
     assert.equal(outs.join("").split("\n").filter((l) => /→ codex/.test(l)).length, 1);
     assert.equal(jsonl(join(e.root, "argv.log")).length, 1);

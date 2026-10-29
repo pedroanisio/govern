@@ -20,7 +20,7 @@ import { prepareGrokHome, syncBackAuth } from "./grokhome.ts";
 import { prepareCodexHome, syncBackCodexAuth } from "./codexhome.ts";
 import { parseEvents, execArgs, validate, type Usage } from "./codex.ts";
 import { type CheckDef, type ConfigChecks, configChecks, declared, verify, resolveNamed, checkNames, verifyDeclared, type Verification } from "./replycheck.ts";
-import { obj, arr, str, posInt, record, literal, parseFile, keyPath, type Shape } from "./shape.ts";
+import { obj, arr, str, bool, posInt, record, literal, parseFile, keyPath, reject, type Shape } from "./shape.ts";
 import { checkProfile } from "./capcheck.ts";
 import { registry, getProfile, writes, guardProblem, checkProblem, checkState, readCheck, checkFile, failing, profileHash, claudeArgs, codexSpec, grokArgs, LEGACY_PROFILES, type Profile, type Registry } from "./caps.ts";
 
@@ -123,8 +123,8 @@ export interface Message {
   verify?: string[];
   /** On a reply: its envelope did not parse and one repair call made it a valid reply (the details are in the task's result). */
   repaired?: true;
-  /** The process that took this message, regardless of which service claimed it. */
-  claim?: { by: string; pid: number; start: string; at: string };
+  /** The process that took this message, regardless of which service claimed it. A claim without `start` (or `at`) has an unknown holder. */
+  claim?: { by: string; pid: number; start?: string; at?: string };
   remote?: { peer: string; id: string };
   relay?: { attempts: number; lastError: string; nextAt: string };
   /** failure: where a dispatched run went wrong, the runner itself ("runner") or the reply it gave ("reply": empty, not JSON, off schema). */
@@ -134,6 +134,26 @@ export interface Message {
 }
 /** The one envelope-repair call of a run: what it used. */
 export interface Repair { engine: string; model?: string; seconds: number; usage?: Usage & { costUsd?: number }; turns?: number }
+
+/** Finite stored measurements, including zero costs, token counts and durations. */
+const number: Shape<number> = (v, p) => typeof v === "number" && Number.isFinite(v) ? v : reject(p, "must be a finite number");
+const yes: Shape<true> = (v, p) => v === true ? true : reject(p, "must be true");
+const USAGE: Shape<Usage & { costUsd?: number }> = obj({ input: number, cached: number, cacheWrite: number, output: number, reasoning: number }, { costUsd: number });
+const REPAIR: Shape<Repair> = obj({ engine: str, seconds: number }, { model: str, usage: USAGE, turns: number });
+const VERIFICATION: Shape<Verification> = obj({ state: literal("checked", "unverified", "shape only") }, {
+  reason: str, label: str, argv: arr(str), exit: number, seconds: number, log: str, source: str,
+});
+/** Every field govern writes to a message; unknown keys are refused at every nesting level. */
+const MESSAGE: Shape<Message> = obj({
+  id: str, project: str, task: str, kind: literal(...KINDS), from: str, to: str, summary: str, body: str, files: arr(str), created: str, access: literal("read-only", "write"),
+}, {
+  replyTo: str, profile: str, readOnlyConfirmed: bool, lane: str, estimateUsd: number, routed: bool, forwardedFrom: str, timeoutSec: posInt,
+  retryOf: str, retryNote: str, retries: arr(obj({ id: str, note: str, at: str })), verification: VERIFICATION, check: arr(str), verify: arr(str), repaired: yes,
+  claim: obj({ by: str, pid: posInt }, { start: str, at: str }), remote: obj({ peer: str, id: str }), relay: obj({ attempts: number, lastError: str, nextAt: str }),
+  result: obj({ agent: str, ok: bool, seconds: number }, {
+    profile: str, profileHash: str, closedBy: str, note: str, usage: USAGE, turns: number, reply: str, error: str, failure: literal("runner", "reply"), repaired: yes, repair: REPAIR,
+  }),
+});
 
 const dir = (s: State) => join(QUEUE(), s);
 const NAME = /^[a-z0-9][a-z0-9.-]*$/;
@@ -202,8 +222,13 @@ export function all(): { state: State; m: Message }[] {
   const out: { state: State; m: Message }[] = [];
   for (const s of STATES) {
     if (!existsSync(dir(s))) continue;
-    for (const f of readdirSync(dir(s)).filter((x) => x.endsWith(".json")).sort())
-      out.push({ state: s, m: JSON.parse(readFileSync(join(dir(s), f), "utf8")) });
+    for (const f of readdirSync(dir(s)).filter((x) => x.endsWith(".json")).sort()) {
+      const file = join(dir(s), f);
+      let text: string;
+      try { text = readFileSync(file, "utf8"); }
+      catch (e) { if ((e as NodeJS.ErrnoException).code === "ENOENT") continue; throw e; }
+      out.push({ state: s, m: parseFile(file, text, MESSAGE) });
+    }
   }
   return out.sort((a, b) => a.m.created.localeCompare(b.m.created) || a.m.id.localeCompare(b.m.id)); // ids carry whole seconds only
 }
@@ -226,30 +251,38 @@ function openMessage(ref: string): Message {
 
 /** Close an open message by hand (no model ran): open → done, with who closed it. */
 export function close(ref: string, by: string, note?: string): Message {
-  const m = openMessage(ref);
+  return claimGuard(() => closeOpen(openMessage(ref), by, note));
+}
+
+/** Close a freshly resolved open message while holding the claim guard. */
+function closeOpen(m: Message, by: string, note?: string): Message {
   m.result = { agent: by, ok: true, seconds: 0, closedBy: by, ...(note ? { note } : {}) };
   save(m, "open");
-  move(m, "open", "done");
+  if (!move(m, "open", "done")) fail(`message ${m.id} could not be moved to done`);
   return m;
 }
 
 /** Answer an open message: a reply to its sender, threaded to it, then close it. */
 export function reply(ref: string, by: string, r: { kind: string; summary: string; body: string }): Message {
-  const orig = openMessage(ref);
-  if (!(REPLY_KINDS as readonly string[]).includes(r.kind)) usage(`--kind must be one of ${REPLY_KINDS.join(", ")}`);
-  const answer = send({ project: orig.project, task: orig.task, kind: r.kind, from: by, to: orig.from, summary: r.summary, body: r.body, files: [], replyTo: orig.id, access: "read-only" });
-  close(orig.id, by, `replied with ${answer.id}`);
-  return answer;
+  return claimGuard(() => {
+    const orig = openMessage(ref);
+    if (!(REPLY_KINDS as readonly string[]).includes(r.kind)) usage(`--kind must be one of ${REPLY_KINDS.join(", ")}`);
+    const answer = send({ project: orig.project, task: orig.task, kind: r.kind, from: by, to: orig.from, summary: r.summary, body: r.body, files: [], replyTo: orig.id, access: "read-only" });
+    closeOpen(orig, by, `replied with ${answer.id}`);
+    return answer;
+  });
 }
 
 /** Send a copy of an open message to another recipient and close the original. */
 export function forward(ref: string, by: string, to: string, routed = false): Message {
-  const o = openMessage(ref);
-  const keep = o.profile && getProfile(o.profile).engine === to ? o.profile : undefined;
-  const t = resolveTarget(to, { write: o.access === "write", ...(keep ? { profile: keep } : {}) });
-  const copy = send({ project: o.project, task: o.task, kind: o.kind, from: o.from, to, summary: o.summary, body: o.body, files: o.files, access: t.access, ...(t.profile ? { profile: t.profile } : {}), ...(o.lane ? { lane: o.lane } : {}), ...(o.verification ? { verification: o.verification } : {}), ...(o.check ? { check: o.check } : {}), ...(o.verify ? { verify: o.verify } : {}), forwardedFrom: o.id, ...(routed ? { routed: true } : {}) });
-  close(o.id, by, `forwarded to ${to} as ${copy.id}`);
-  return copy;
+  return claimGuard(() => {
+    const o = openMessage(ref);
+    const keep = o.profile && getProfile(o.profile).engine === to ? o.profile : undefined;
+    const t = resolveTarget(to, { write: o.access === "write", ...(keep ? { profile: keep } : {}) });
+    const copy = send({ project: o.project, task: o.task, kind: o.kind, from: o.from, to, summary: o.summary, body: o.body, files: o.files, access: t.access, ...(t.profile ? { profile: t.profile } : {}), ...(o.lane ? { lane: o.lane } : {}), ...(o.verification ? { verification: o.verification } : {}), ...(o.check ? { check: o.check } : {}), ...(o.verify ? { verify: o.verify } : {}), forwardedFrom: o.id, ...(routed ? { routed: true } : {}) });
+    closeOpen(o, by, `forwarded to ${to} as ${copy.id}`);
+    return copy;
+  });
 }
 
 /** The message and everything it replies to, oldest first. */
@@ -445,30 +478,33 @@ export function triage(o: { all?: boolean; project?: string; to?: string } = {},
  *  recipient, write access, profile and timeout. Refuses without a note, for a message still open or claimed, and for a third retry of
  *  one original (retries of its retries count): never automatic, and bounded here, in code. */
 export function retry(ref: string, o: { note: string; to?: string; write?: boolean; profile?: string; timeoutSec?: number }): Message {
-  const note = o.note.trim();
-  if (!note) usage("task retry requires --note saying what was fixed");
-  const hit = find(ref) ?? fail(`no message ${ref}`);
-  const orig = hit.m;
-  if (hit.state === "open" || hit.state === "claimed") fail(`message ${orig.id} is still ${hit.state}: retry a failed or closed message`);
-  const byId = new Map(all().map((x) => [x.m.id, x.m]));
-  const rootOf = (m: Message): Message => { let cur = m; while (cur.retryOf && byId.has(cur.retryOf)) cur = byId.get(cur.retryOf)!; return cur; };
-  const root = rootOf(orig);
-  const tries = [...byId.values()].filter((x) => x.retryOf && rootOf(x).id === root.id).length;
-  if (tries >= MAX_RETRIES) fail(`message ${root.id} was already retried ${tries} times (the limit is ${MAX_RETRIES}): decide what to do with it yourself, or send a new task`);
-  const to = o.to ?? orig.to;
-  const target = o.to === undefined && !o.write && o.profile === undefined
-    ? { access: orig.access, ...(orig.profile ? { profile: orig.profile } : {}) }
-    : resolveTarget(to, { write: o.write ?? (o.profile === undefined && orig.access === "write"), ...(o.profile !== undefined ? { profile: o.profile } : {}) });
-  const timeoutSec = o.timeoutSec ?? orig.timeoutSec;
-  const copy = send({
-    project: orig.project, task: orig.task, kind: orig.kind, from: orig.from, to, summary: orig.summary, body: orig.body, files: orig.files,
-    access: target.access, ...(target.profile ? { profile: target.profile } : {}), ...(orig.lane ? { lane: orig.lane } : {}),
-    ...(orig.estimateUsd !== undefined ? { estimateUsd: orig.estimateUsd } : {}), ...(timeoutSec !== undefined ? { timeoutSec } : {}),
-    replyTo: orig.id, retryOf: orig.id, retryNote: note,
+  return claimGuard(() => {
+    const note = o.note.trim();
+    if (!note) usage("task retry requires --note saying what was fixed");
+    const hit = find(ref) ?? fail(`no message ${ref}`);
+    const orig = hit.m;
+    if (hit.state === "open" || hit.state === "claimed") fail(`message ${orig.id} is still ${hit.state}: retry a failed or closed message`);
+    const byId = new Map(all().map((x) => [x.m.id, x.m]));
+    const rootOf = (m: Message): Message => { let cur = m; while (cur.retryOf && byId.has(cur.retryOf)) cur = byId.get(cur.retryOf)!; return cur; };
+    const root = rootOf(orig);
+    const tries = [...byId.values()].filter((x) => x.retryOf && rootOf(x).id === root.id).length;
+    if (tries >= MAX_RETRIES) fail(`message ${root.id} was already retried ${tries} times (the limit is ${MAX_RETRIES}): decide what to do with it yourself, or send a new task`);
+    const to = o.to ?? orig.to;
+    const target = o.to === undefined && !o.write && o.profile === undefined
+      ? { access: orig.access, ...(orig.profile ? { profile: orig.profile } : {}) }
+      : resolveTarget(to, { write: o.write ?? (o.profile === undefined && orig.access === "write"), ...(o.profile !== undefined ? { profile: o.profile } : {}) });
+    const timeoutSec = o.timeoutSec ?? orig.timeoutSec;
+    const copy = send({
+      project: orig.project, task: orig.task, kind: orig.kind, from: orig.from, to, summary: orig.summary, body: orig.body, files: orig.files,
+      access: target.access, ...(target.profile ? { profile: target.profile } : {}), ...(orig.lane ? { lane: orig.lane } : {}),
+      ...(orig.verification ? { verification: orig.verification } : {}), ...(orig.check ? { check: orig.check } : {}), ...(orig.verify ? { verify: orig.verify } : {}),
+      ...(orig.estimateUsd !== undefined ? { estimateUsd: orig.estimateUsd } : {}), ...(timeoutSec !== undefined ? { timeoutSec } : {}),
+      replyTo: orig.id, retryOf: orig.id, retryNote: note,
+    });
+    orig.retries = [...(orig.retries ?? []), { id: copy.id, note, at: nowIso() }];
+    save(orig, hit.state);
+    return copy;
   });
-  orig.retries = [...(orig.retries ?? []), { id: copy.id, note, at: nowIso() }];
-  save(orig, hit.state);
-  return copy;
 }
 
 // ---------------------------------------------------------------- the prompt one session gets
