@@ -174,7 +174,7 @@ govern task send --to codex|claude|grok|<runner>|<profile>|auto|owner|<session> 
   2. Offload model work to Codex with `govern task send --to codex`, and wait on jobs in the background.
   3. Let auto-compaction shrink the rest. The dispatcher runs `govern tune` hourly, and it sets the compaction window.
 - One session covers one lane and one stage at a time. For another lane, run `govern done <slug>` and start a fresh session.
-- `govern work <slug> <stage> --open [--engine claude|codex|grok]`, from a terminal, starts a fresh interactive session for one lane; the child gets none of the other engines' markers, so the segment it registers records its own engine.
+- `govern work <slug> <stage> --open [--engine claude|codex|grok]`, from a terminal, starts a fresh interactive session for one lane; the child gets none of the other engines' markers, so the segment it registers records its own engine. It returns the child's exit status, 1 on a spawn error, or 128 plus the signal number when killed by a signal. Spawn errors and signals name the binary on stderr; the closing `done` ledger entry records `exitCode` and any `error` or `signal`.
 
 ## Measure
 

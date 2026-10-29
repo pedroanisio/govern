@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync, writeFileSync, readdirSync } from "node:fs";
+import { readFileSync, writeFileSync, readdirSync, chmodSync } from "node:fs";
 import { join } from "node:path";
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
@@ -56,6 +56,54 @@ test("work sets the stage, records a segment with the Claude session id, and pri
   assert.equal(w.engine, "claude");
   assert.equal(w.session, "sess-1");
   assert.equal(govern(e, ["work", slug, "editing"]).code, 4);
+});
+
+for (const engine of ["codex", "claude"]) test(`work --open: missing ${engine} binary exits 1 and records the spawn error`, { timeout: 15000 }, () => {
+  const { e, slug } = video();
+  const bin = join(e.root, `missing-${engine}`);
+  const r = govern(e, ["work", slug, "script", "--engine", engine, "--open"], { [`GOVERN_${engine.toUpperCase()}_BIN`]: bin });
+  assert.equal(r.code, 1, r.err);
+  const entries = ledger(e, slug).slice(-2);
+  assert.deepEqual(entries.map((x) => x.kind), ["work", "done"]);
+  assert.equal(entries[1].engine, engine);
+  assert.equal(entries[1].session, entries[0].session);
+  assert.equal(entries[1].exitCode, 1);
+  assert.match(entries[1].error, /ENOENT/);
+  assert.equal(entries[1].signal, undefined);
+  assert.ok(r.err.includes(bin), r.err);
+  assert.match(r.err, /ENOENT/);
+});
+
+test("work --open: a signalled engine exits 143 and records SIGTERM", { timeout: 15000 }, () => {
+  const { e, slug } = video();
+  const bin = write(join(e.root, "signalled-codex"), '#!/bin/sh\nkill -TERM "$$"\n');
+  chmodSync(bin, 0o755);
+  const r = govern(e, ["work", slug, "script", "--engine", "codex", "--open"], { GOVERN_CODEX_BIN: bin });
+  assert.equal(r.code, 143, r.err);
+  const entries = ledger(e, slug).slice(-2);
+  assert.deepEqual(entries.map((x) => x.kind), ["work", "done"]);
+  assert.equal(entries[1].engine, "codex");
+  assert.equal(entries[1].exitCode, 143);
+  assert.equal(entries[1].signal, "SIGTERM");
+  assert.equal(entries[1].error, undefined);
+  assert.ok(r.err.includes(bin), r.err);
+  assert.match(r.err, /SIGTERM/);
+});
+
+test("work --open: normal engine exits retain their status in the ledger", { timeout: 15000 }, () => {
+  const { e, slug } = video();
+  const bin = join(e.root, "exit-codex");
+  for (const code of [0, 7]) {
+    write(bin, `#!/bin/sh\nexit ${code}\n`);
+    chmodSync(bin, 0o755);
+    const r = govern(e, ["work", slug, "script", "--engine", "codex", "--open"], { GOVERN_CODEX_BIN: bin });
+    assert.equal(r.code, code, r.err);
+    const closing = ledger(e, slug).at(-1);
+    assert.equal(closing.kind, "done");
+    assert.equal(closing.exitCode, code);
+    assert.equal(closing.error, undefined);
+    assert.equal(closing.signal, undefined);
+  }
 });
 
 test("notes are kept and the brief shows the latest ones", () => {
