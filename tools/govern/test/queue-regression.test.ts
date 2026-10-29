@@ -1,8 +1,9 @@
 import { test } from "node:test";
+import { spawnSync } from "node:child_process";
 import assert from "node:assert/strict";
-import { existsSync, readFileSync, readdirSync, unlinkSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, unlinkSync, openSync, closeSync } from "node:fs";
 import { join } from "node:path";
-import { makeEnv, govern, write, setConfig, jsonl, present, type Env } from "./helpers.ts";
+import { makeEnv, govern, write, setConfig, jsonl, present, type Env, childEnv, GOVERN } from "./helpers.ts";
 import { claudeResult, usdOf, type Message } from "../lib/queue.ts";
 import { parseEvents } from "../lib/codex.ts";
 
@@ -274,4 +275,31 @@ test("Codex stream without usage charges its reservation", () => {
   assert.equal(messages(e, "done").length, 1, "the runner must complete successfully");
   assert.equal(jsonl(join(e.root, "state/allowances/budget/spent.jsonl"))[0].actual, 5);
   assert.equal(messages(e, "done")[0]?.result?.usage, undefined);
+});
+
+test("a queue runner that ignores SIGTERM returns a timeout error", { timeout: 20_000 }, () => {
+  const e = setup(), pidFile = join(e.root, "runner.pid"), logFile = join(e.root, "dispatch.log");
+  const runner = write(join(e.root, "ignore-term.cjs"), `
+process.on("SIGTERM", () => {});
+require("node:fs").writeFileSync(${JSON.stringify(pidFile)}, String(process.pid));
+setInterval(() => {}, 1000);
+`);
+  write(join(e.root, "queue/config.json"), JSON.stringify({ runners: { stubborn: { argv: [process.execPath, runner] } } }));
+  send(e, "stubborn", ["--timeout", "2"]);
+  // File stdio lets the watchdog return even if an unfixed dispatcher leaves its child holding inherited pipes.
+  const fd = openSync(logFile, "w");
+  try {
+    const r = spawnSync(process.execPath, ["--disable-warning=ExperimentalWarning", GOVERN, "task", "dispatch"], {
+      env: childEnv(e), stdio: ["ignore", fd, fd], timeout: 12_000, killSignal: "SIGKILL",
+    });
+    assert.ok(existsSync(pidFile), "the fixture installed its SIGTERM handler");
+    assert.equal(r.error, undefined, "dispatch must return before the outer watchdog kills it");
+    const failed = present(messages(e, "failed").find((m) => m.to === "stubborn"), "timed out task");
+    assert.equal(failed.result?.ok, false);
+    assert.equal(failed.result?.failure, "runner");
+    assert.match(failed.result?.error ?? "", /ETIMEDOUT|timed out/i);
+  } finally {
+    closeSync(fd);
+    if (existsSync(pidFile)) { try { process.kill(Number(readFileSync(pidFile, "utf8")), "SIGKILL"); } catch { /* already gone */ } }
+  }
 });

@@ -10,7 +10,7 @@ import { tmpdir, homedir } from "node:os";
 import { existsSync, statSync, mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync, appendFileSync } from "node:fs";
 import { join, resolve, dirname, relative } from "node:path";
 import { fileURLToPath } from "node:url";
-import { fail, usage, stamp, nowIso, clip, charLimit, writeJson } from "./util.ts";
+import { MODEL_TIMEOUT_SIGNAL, fail, usage, stamp, nowIso, clip, charLimit, writeJson } from "./util.ts";
 import { repo, projectsDir, queueDir, config as workspaceConfig, expandPlaceholders } from "./workspace.ts";
 import * as allowances from "./allowances.ts";
 import * as jobs from "./jobs.ts";
@@ -670,7 +670,7 @@ export interface SealedOpts { model?: string; lastMessage: string; schema?: stri
 export function runSealed(reg: Registry, prof: Profile, cwd: string, p: string, timeoutSec: number, o: SealedOpts): RunOut {
   if (prof.engine === "claude") {
     const args = claudeArgs(reg, prof, o.model ?? prof.model ?? process.env.GOVERN_QUEUE_CLAUDE_MODEL ?? "sonnet", o.maxBudgetUsd, o.schema ? readFileSync(o.schema, "utf8") : undefined);
-    const r = spawnSync(process.env.GOVERN_CLAUDE_BIN ?? "claude", args, { cwd, input: p, encoding: "utf8", timeout: timeoutSec * 1000, maxBuffer: 64 << 20, env: childEnv() });
+    const r = spawnSync(process.env.GOVERN_CLAUDE_BIN ?? "claude", args, { cwd, input: p, encoding: "utf8", killSignal: MODEL_TIMEOUT_SIGNAL, timeout: timeoutSec * 1000, maxBuffer: 64 << 20, env: childEnv() });
     const res = claudeResult(r.stdout, r.status, r.stderr, r.error, o.schema !== undefined);
     return res.error ? { ...res, error: `claude: ${res.error}` } : res;
   }
@@ -678,7 +678,7 @@ export function runSealed(reg: Registry, prof: Profile, cwd: string, p: string, 
   const spec = codexSpec(reg, prof);
   const model = o.model ?? prof.model;
   const args = execArgs({ cwd, lastMessage: o.lastMessage, effort: o.effort ?? process.env.GOVERN_QUEUE_CODEX_EFFORT ?? "medium", sandbox: spec.sandbox, config: spec.config, addDirs: spec.addDirs, ...(o.schema ? { schema: o.schema } : {}), ...(model ? { model } : {}) });
-  const r = spawnSync(process.env.GOVERN_CODEX_BIN ?? "codex", args, { input: p, encoding: "utf8", timeout: timeoutSec * 1000, maxBuffer: 64 << 20, env: codexEnv(prepareCodexHome()) });
+  const r = spawnSync(process.env.GOVERN_CODEX_BIN ?? "codex", args, { input: p, encoding: "utf8", killSignal: MODEL_TIMEOUT_SIGNAL, timeout: timeoutSec * 1000, maxBuffer: 64 << 20, env: codexEnv(prepareCodexHome()) });
   try { syncBackCodexAuth(); } catch { /* the login stays where codex left it */ }
   const ev = parseEvents(r.stdout ?? "");
   const text = existsSync(o.lastMessage) ? readFileSync(o.lastMessage, "utf8") : ev.message;
@@ -737,7 +737,7 @@ function runGrok(reg: Registry, prof: Profile, cwd: string, p: string, timeoutSe
     // Read probes: no schema 6/6, schema 4/6, strict schema 3/6; task variants both 6/6.
     // --json-schema can skip tools. The prompt schema and parseReply remain the verification layer.
     const args = ["--prompt-file", promptFile, "--output-format", "streaming-messages-json", ...(model ? ["--model", model] : []), ...grokArgs(reg, prof), "--max-turns", grokMaxTurns(), "--cwd", cwd];
-    const r = spawnSync(process.env.GOVERN_GROK_BIN ?? "grok", args, { cwd, encoding: "utf8", timeout: timeoutSec * 1000, maxBuffer: 64 << 20, env: grokEnv(home, ghome) });
+    const r = spawnSync(process.env.GOVERN_GROK_BIN ?? "grok", args, { cwd, encoding: "utf8", killSignal: MODEL_TIMEOUT_SIGNAL, timeout: timeoutSec * 1000, maxBuffer: 64 << 20, env: grokEnv(home, ghome) });
     try { syncBackAuth(); } catch { /* the login stays where grok left it */ }
     const res = grokResult(r.stdout, r.status, r.stderr, r.error, timeoutSec);
     return res.error ? { ...res, error: `grok: ${res.error}` } : res;
@@ -828,7 +828,7 @@ function runConfigured(def: RunnerDef, m: Message, p: string, timeoutSec: number
   const argv = def.argv.map((x) => expandPlaceholders(x, cwd));
   const [bin, ...args] = argv;
   if (bin === undefined) return { error: `runner ${m.to} has an empty argv in ${join(QUEUE(), "config.json")}` };
-  const r = spawnSync(bin, args, { cwd, input: p, encoding: "utf8", timeout: timeoutSec * 1000, maxBuffer: 64 << 20, env: childEnv() });
+  const r = spawnSync(bin, args, { cwd, input: p, encoding: "utf8", killSignal: MODEL_TIMEOUT_SIGNAL, timeout: timeoutSec * 1000, maxBuffer: 64 << 20, env: childEnv() });
   // A process that started may have spent money even when it returns no usable usage (timeout, signal or bad JSON).
   // Only a spawn failure, with no child PID, establishes that execution cost nothing.
   const result: RunOut = def.format === "json-result" ? claudeResult(r.stdout, r.status, r.stderr) : { text: r.stdout };

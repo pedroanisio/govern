@@ -6,7 +6,7 @@
 import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync, mkdirSync, writeFileSync, globSync } from "node:fs";
 import { join, dirname, resolve, relative } from "node:path";
-import { fail, stamp, sha256, GovernError, charLimit } from "./util.ts";
+import { MODEL_TIMEOUT_SIGNAL, fail, stamp, sha256, GovernError, charLimit } from "./util.ts";
 import { emptyRecord } from "./shape.ts";
 import { type Project, projectDir, governDir, appendLedger, brief } from "./project.ts";
 import { repo, promptsDir, pathEntry, configFile } from "./workspace.ts";
@@ -299,7 +299,7 @@ export function ask(p: Project, name: string, o: { files?: string[]; vars?: Reco
     const last = join(outDir, `${id}.${attempt}.txt`);
     const args = execArgs({ cwd: projectDir(p.slug), schema: schemaPath, lastMessage: last, model, effort, images: o.images });
     callShas.push(sha256(input));
-    const r = spawnSync(codexBin(), args, { input, encoding: "utf8", timeout: (o.timeoutSec ?? 600) * 1000, maxBuffer: 64 * 1024 * 1024 });
+    const r = spawnSync(codexBin(), args, { input, encoding: "utf8", killSignal: MODEL_TIMEOUT_SIGNAL, timeout: (o.timeoutSec ?? 600) * 1000, maxBuffer: 64 * 1024 * 1024 });
     calls++;
     const ev = parseEvents(r.stdout ?? "");
     turns += ev.turns;
