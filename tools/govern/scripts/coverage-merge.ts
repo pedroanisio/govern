@@ -8,19 +8,23 @@ export interface CoverageProfile { result: { url: string; functions: FunctionCov
 export interface Metric { covered: number; total: number; percent: number | null }
 export interface FileCoverage { file: string; observed: boolean; lines: Metric; branches: Metric; uncoveredBranchLines: number[] }
 
-/** Read sorted V8 JSON profiles, returning unreadable filenames for failed reads or invalid JSON (including interrupted writes). */
-export function readCoverageProfiles(directory: string): { profiles: CoverageProfile[]; unreadable: string[] } {
+/** Read sorted V8 JSON profiles. An empty file is a process killed before it wrote anything, the same as one that left no
+ *  file, and is listed in `empty`; a failed read or invalid JSON (a torn write) is listed in `unreadable`. */
+export function readCoverageProfiles(directory: string): { profiles: CoverageProfile[]; empty: string[]; unreadable: string[] } {
   const profiles: CoverageProfile[] = [];
+  const empty: string[] = [];
   const unreadable: string[] = [];
   for (const name of readdirSync(directory).sort()) {
     if (!name.endsWith(".json")) continue;
     try {
-      profiles.push(JSON.parse(readFileSync(join(directory, name), "utf8")) as CoverageProfile);
+      const text = readFileSync(join(directory, name), "utf8");
+      if (text === "") empty.push(name);
+      else profiles.push(JSON.parse(text) as CoverageProfile);
     } catch {
       unreadable.push(name);
     }
   }
-  return { profiles, unreadable };
+  return { profiles, empty, unreadable };
 }
 
 const key = (r: CoverageRange) => `${r.startOffset}:${r.endOffset}`;

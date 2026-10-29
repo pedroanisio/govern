@@ -85,7 +85,8 @@ deduplicated). Aggregate branch counts enforce an 80% library floor (`lib/`,
 `ext/`, `checks/`) and a 60% CLI floor (`govern.ts`, `scripts/`). The console and
 JSON `gate` report include class totals and floors. The command exits nonzero
 if the suite fails, either floor is missed, profiles are unreadable, or sources
-are unobserved and measurement is incomplete.
+are unobserved and measurement is incomplete. An empty profile, left by a process
+killed before it wrote one, is listed and skipped, like a process that left none.
 
 Branches are distinct non-root V8 block ranges within each function with
 `isBlockCoverage=true`; function-entry ranges contribute to lines only. A block

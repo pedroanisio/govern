@@ -65,7 +65,8 @@ test("missing nested blocks inherit a zero enclosing block rather than the root"
   assert.deepEqual(row.uncoveredBranchLines, [2]);
 });
 
-test("coverage reader reports empty and truncated profiles while retaining valid profiles", (t) => {
+// A process SIGKILLed while exiting leaves an empty profile; killed a moment earlier it leaves none. Neither is a torn measurement.
+test("coverage reader skips empty profiles, reports truncated ones as unreadable and retains valid profiles", (t) => {
   const directory = mkdtempSync(join(tmpdir(), "govern-coverage-"));
   t.after(() => rmSync(directory, { recursive: true, force: true }));
   const valid = profile(fn([root, left]));
@@ -73,6 +74,6 @@ test("coverage reader reports empty and truncated profiles while retaining valid
   writeFileSync(join(directory, "truncated.json"), '{"result":[');
   writeFileSync(join(directory, "valid.json"), JSON.stringify(valid));
   assert.deepEqual(readCoverageProfiles(directory), {
-    profiles: [valid], unreadable: ["empty.json", "truncated.json"],
+    profiles: [valid], empty: ["empty.json"], unreadable: ["truncated.json"],
   });
 });

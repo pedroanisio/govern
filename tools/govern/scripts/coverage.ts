@@ -40,7 +40,8 @@ collect(join(root, "lib"));
 collect(join(root, "ext"));
 collect(join(root, "checks"));
 collect(join(root, "scripts"));
-const { profiles, unreadable } = readCoverageProfiles(directory);
+const { profiles, empty, unreadable } = readCoverageProfiles(directory);
+console.log(`empty V8 profiles (process killed before writing): ${empty.length} (${empty.join(", ")})`);
 console.log(`unreadable V8 profiles: ${unreadable.length} (${unreadable.join(", ")})`);
 for (const profile of profiles) {
   profile.result = profile.result.flatMap((script) => {
@@ -59,7 +60,7 @@ for (const [kind, total] of Object.entries(gate.totals)) console.log(`${kind} br
 for (const error of gate.errors) console.error(error);
 const output = resolve(args[1] ?? join(generated, "coverage.json"));
 mkdirSync(dirname(output), { recursive: true, mode: 0o700 });
-writeFileSync(output, JSON.stringify({ profiles: profiles.length, unreadableProfiles: unreadable, suite: { status: result.status, signal: result.signal, error: result.error?.message }, files, gate }, null, 2) + "\n", { mode: 0o600 });
+writeFileSync(output, JSON.stringify({ profiles: profiles.length, emptyProfiles: empty, unreadableProfiles: unreadable, suite: { status: result.status, signal: result.signal, error: result.error?.message }, files, gate }, null, 2) + "\n", { mode: 0o600 });
 chmodSync(output, 0o600);
 console.log(`JSON: ${output}\nV8 profiles: ${directory}`);
 process.exitCode = result.error || result.signal ? 1 : ((result.status ?? 1) || gate.exitCode);
