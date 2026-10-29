@@ -13,6 +13,8 @@ disclaimer:
 Part of [super-tools](../../README.md); the tool is [govern](README.md). The command belongs to the `slack` extension: a
 workspace enables it with `govern ext enable slack` (see [REFERENCE.md](REFERENCE.md#extensions)).
 
+To set up a real Slack app step by step, follow [SLACK-TUTORIAL.md](SLACK-TUTORIAL.md).
+
 People decide from Slack: a button approves or rejects a gate, or completes a human task. govern records the decision as the
 person's own only when Slack's signature proves the request, the Slack user is mapped to a process person, and the case has
 not changed since the button was made.
@@ -42,7 +44,7 @@ not changed since the button was made.
 
 ## The button
 
-A decision is a Slack button with `action_id` `govern.decide`. Its `value` is the JSON govern makes with `decisionValue()` in
+A decision is a Slack button with `action_id` `govern.decide`, or `govern.decide.` and a suffix (Slack wants ids unique within a block). Its `value` is the JSON govern makes with `decisionValue()` in
 [ext/slack/slack.ts](ext/slack/slack.ts):
 
 ```json
@@ -51,11 +53,28 @@ A decision is a Slack button with `action_id` `govern.decide`. Its `value` is th
 ```
 
 - A gate takes `approve` or `reject`; a task takes `complete`. Unknown fields, a second target, or another version are refused.
+- An approval may carry `set` (case fields). It is accepted only when it equals one of the gate's `options` filled from the
+  case as it stands; the fields are set, then the vote is recorded.
 - The button's label is the person's words: it is recorded as the decision's quote, so write it as the decision ("Approve the
   reply", "Send back for changes"). It must have 2 to 2000 characters.
 - `digest` is the SHA-256 of the case data and the loop counters when the button was made. A button made before the data
   changed, or before a loop repeated, is refused. Evidence that lives outside the case data (a draft in Jira, say) is bound
   the same way: record its hash in a case field, so a new draft invalidates the buttons made for the old one.
+
+## Posting decisions: `govern slack notify`
+
+Set `slack.channel` (the channel id) in the config and put `SLACK_BOT_TOKEN` (scope `chat:write`, the bot invited to the
+channel) in the environment or the `slack.envFile`. `govern slack notify` (or `--loop --interval 30`) posts:
+
+- each active human task and each gate that can be decided now, once, mentioning the people who may decide it, with one
+  button per decision (a gate's options are one approve button each, the values they set shown above them);
+- each open timer alert, and each stage `govern drive` left to the operator, once, as text.
+
+When the decision is made, or the case changes under a message, the message is updated without its buttons; a changed
+case gets a new message. What was posted is kept under the state folder's `slack/`. A failed Slack call is reported (exit
+1) and tried again on the next run. `--dry-run` sends and records nothing. Run one notifier per workspace.
+
+Button labels come from `slack.labels` (`complete`, `approve`, `reject`; default Done, Approve, Send back).
 
 ## What a request must prove
 
@@ -93,5 +112,4 @@ signature against the recorded body and timestamp again.
   can forge a request. Keep it readable only by the account that runs `govern slack serve`, and out of reach of agent
   sessions.
 - Slack authenticates the user. govern trusts that identity and the `people.<id>.slack` mapping the process owner wrote.
-- govern posts nothing to Slack. Making the buttons and posting them is an adapter's job: it calls `decisionValue()` for the
-  lane as it is at that moment.
+- A clicked message is updated by the next `govern slack notify` run, not at once; the clicker gets no reply in Slack.

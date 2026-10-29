@@ -102,6 +102,23 @@ export interface Human {
   role?: string;
 }
 export const HUMAN = obj({}, { assignee: name, role: name });
+/** A stage an agent does (ext/business/drive.ts): its task goes through the queue to `to` (a runner or profile); the
+ *  reply's body is the JSON of the stage's `outputs` (case fields). summary and body may use {lane}, {stage}, {title} and
+ *  {data.FIELD}. `attempts` (default 1) bounds the tries before the stage is left to the operator. */
+export interface AgentDef { to: string; task: string; summary: string; body: string; outputs?: string[]; write?: boolean; profile?: string;
+  files?: string[]; check?: string[]; verify?: string[]; timeout?: number; attempts?: number }
+export const AGENT = obj({ to: name, task: name, summary: str, body: str },
+  { outputs: arr(name), write: bool, profile: name, files: arr(str), check: arr(name, { nonEmpty: true }), verify: arr(str, { nonEmpty: true }), timeout: posInt, attempts: posInt });
+/** A stage a command does (ext/business/drive.ts): the lane command `command`, which writes the JSON of the stage's
+ *  `outputs` to the file $GOVERN_OUTPUTS names. */
+export interface ServiceDef { command: string; outputs?: string[]; attempts?: number }
+export const SERVICE = obj({ command: name }, { outputs: arr(name), attempts: posInt });
+/** One approve choice of a gate (ext/slack): its button label and the case fields the choice sets; a string value may
+ *  use {data.FIELD}, filled when the choice is offered. */
+export interface GateOption { label: string; set: Record<string, Scalar> }
+export const GATE_OPTION = obj({ label: str, set: record(scalar) });
+/** The placeholders an agent's text may use. */
+const AGENT_VARS = ["lane", "stage", "title"];
 export interface Policy {
   people?: string[];
   role?: string;
@@ -184,11 +201,16 @@ interface BusinessProcess {
     next?: Route[];
     join?: Join;
     human?: Human;
+    agent?: AgentDef;
+    service?: ServiceDef;
+    event?: unknown;
+    call?: unknown;
+    foreach?: unknown;
     requiredFields?: string[];
     onError?: { to?: string };
     timer?: { escalate?: { to?: string } };
   }[];
-  gates: { name: string; policy?: Policy }[];
+  gates: { name: string; stage?: string; policy?: Policy; options?: GateOption[] }[];
 }
 /** Check the cross-references of a process's business layer and reject (ShapeError) the first problem: field
  *  declarations, people and roles, route conditions, graph next/join/branch/loop rules, an acyclic graph with every
@@ -308,6 +330,24 @@ export function validateBusinessProcess(p: BusinessProcess): void {
         reject(at + ".human.assignee", "unknown person");
       if (s.human.role && !roles.has(s.human.role)) reject(at + ".human.role", "unknown role");
     }
+    const doer = s.agent ? "agent" : s.service ? "service" : undefined;
+    if (doer) {
+      if (s.agent && s.service) reject(at, "declare an agent or a service, not both");
+      const other = (["human", "event", "call", "foreach"] as const).find((k) => s[k] !== undefined);
+      if (other) reject(`${at}.${doer}`, `a stage with an ${doer} cannot also be a ${other} stage`);
+      for (const f of (s.agent ?? s.service)!.outputs ?? []) hasField(f, `${at}.${doer}.outputs`);
+      const gate = p.gates.find((g) => g.stage === s.name);
+      if (gate && ((s.agent ?? s.service)!.outputs ?? []).length)
+        reject(`${at}.${doer}.outputs`, `the ${gate.name} gate holds this stage: writing outputs would clear its approval (put the gate on a decision stage before it)`);
+    }
+    if (s.agent)
+      for (const k of ["summary", "body"] as const)
+        for (const m of s.agent[k].matchAll(/\{([A-Za-z][\w.-]*)\}/g)) {
+          const w = m[1]!, field = /^data\.(.+)$/.exec(w)?.[1];
+          if (AGENT_VARS.includes(w)) continue;
+          if (field === undefined) reject(`${at}.agent.${k}`, `unknown placeholder {${w}} (an agent's text has {lane}, {stage}, {title} and {data.FIELD})`);
+          if (!Object.hasOwn(fields, field!)) reject(`${at}.agent.${k}`, `{data.${field}} names no declared field`);
+        }
     if (s.join) {
       if (new Set(s.join.stages).size !== s.join.stages.length) reject(at + ".join", "duplicate join predecessors");
       for (const prev of s.join.stages) {
@@ -390,6 +430,17 @@ export function validateBusinessProcess(p: BusinessProcess): void {
     if (p.stages[0]!.join) reject("$.stages[0].join", "entry stage cannot be a join");
   }
   p.gates.forEach((g, i) => {
+    (g.options ?? []).forEach((o, j) => {
+      const at = `$.gates[${i}].options[${j}]`;
+      if (o.label.trim().length < 2) reject(at + ".label", "must be the decision's words (2 characters or more)");
+      for (const [f, v] of Object.entries(o.set)) {
+        hasField(f, `${at}.set`);
+        if (typeof v === "string" && /\{data\.([^{}]+)\}/.test(v)) {
+          if (fields[f]!.type !== "string") reject(`${at}.set.${f}`, "a {data.FIELD} value needs a string field");
+          for (const m of v.matchAll(/\{data\.([^{}]+)\}/g)) hasField(m[1]!, `${at}.set.${f}`);
+        } else fieldValue(fields[f]!, v, `${at}.set.${f}`);
+      }
+    });
     if (!g.policy) return;
     const q = g.policy,
       at = `$.gates[${i}].policy`;

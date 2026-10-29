@@ -17,13 +17,17 @@ import { withLaneLock } from "../../lib/lane-lock.ts";
 import { BadRequest, Forbidden, NotFound, TooLarge } from "../../lib/http-errors.ts";
 import { GovernError, fail, nowIso } from "../../lib/util.ts";
 import type { Source } from "../../lib/approval.ts";
+import { setData } from "../../lib/business.ts";
+import type { Scalar } from "../../lib/business-schema.ts";
+import type { GateOption } from "../../lib/business-schema.ts";
 
 /** How far a request's timestamp may be from the server's clock (Slack's own recommendation), in seconds. */
 export const SKEW_SECONDS = 300;
 /** How long a received signature is remembered: longer than the clock window, so a replay is refused either way. */
 const SEEN_SECONDS = 2 * SKEW_SECONDS;
 export const MAX_BODY = 65536;
-/** The action_id of every button govern makes; other buttons in the same app are not decisions. */
+/** The action_id of every button govern makes (or it followed by `.` and a suffix, which keeps ids unique within a
+ *  Slack block); other buttons in the same app are not decisions. */
 export const ACTION_ID = "govern.decide";
 
 /** A request whose signature, timestamp or freshness does not prove it came from Slack (401). */
@@ -33,7 +37,9 @@ export class Unauthorized extends GovernError {}
 export type Target = { gate: string } | { task: string };
 export type Decision = "approve" | "reject" | "complete";
 /** One verified button click: who clicked it, in which team, the button's typed value and its label (the person's words). */
-export interface SlackAction { team: string; user: string; lane: string; target: Target; decision: Decision; digest: string; quote: string }
+export interface SlackAction { team: string; user: string; lane: string; target: Target; decision: Decision; digest: string; quote: string;
+  /** An approval that also sets case fields: it must be one of the gate's options, rendered from the case as it stands. */
+  set?: Record<string, Scalar> }
 
 /** Fails (Unauthorized) unless `signature` is Slack's v0 HMAC-SHA256 of `v0:<timestamp>:<body>` under `secret` and
  *  `timestamp` (seconds) is within SKEW_SECONDS of `now`. */
@@ -52,7 +58,7 @@ function bad(msg: string): never { throw new BadRequest(msg); }
 const stageName = (v: unknown, what: string): string => {
   try { return nameShape(v, what); } catch (e) { return bad((e as Error).message); }
 };
-const VALUE_KEYS = new Set(["v", "lane", "gate", "task", "decision", "digest"]);
+const VALUE_KEYS = new Set(["v", "lane", "gate", "task", "decision", "digest", "set"]);
 
 /** The decision in a Slack interactivity request body (`payload=<JSON>`): a block_actions payload with exactly one
  *  govern.decide button, whose value is the typed decision govern made it with. Every refusal is a BadRequest. */
@@ -66,7 +72,8 @@ export function parseAction(body: Buffer): SlackAction {
   const user = text(record(p.user) ? p.user.id : undefined, "user.id");
   if (!Array.isArray(p.actions) || p.actions.length !== 1) return bad("a decision is exactly one action");
   const action = p.actions[0];
-  if (!record(action) || action.action_id !== ACTION_ID) return bad(`the action is not a ${ACTION_ID} button`);
+  if (!record(action) || typeof action.action_id !== "string" || !(action.action_id === ACTION_ID || action.action_id.startsWith(`${ACTION_ID}.`)))
+    return bad(`the action is not a ${ACTION_ID} button`);
   let v: unknown;
   try { v = JSON.parse(text(action.value, "the button value")); } catch (e) { return e instanceof BadRequest ? bad(e.message) : bad("the button value is not JSON"); }
   if (!record(v)) return bad("the button value is not a JSON object");
@@ -79,9 +86,15 @@ export function parseAction(body: Buffer): SlackAction {
   if ("gate" in target ? decision !== "approve" && decision !== "reject" : decision !== "complete")
     bad("gate" in target ? "a gate decision is approve or reject" : "a task decision is complete");
   const digest = typeof v.digest === "string" && /^[0-9a-f]{64}$/.test(v.digest) ? v.digest : bad("the button value's digest must be a SHA-256 hex digest");
+  let set: Record<string, Scalar> | undefined;
+  if (v.set !== undefined) {
+    if (!("gate" in target) || decision !== "approve") bad("only a gate approval can set case data");
+    if (!record(v.set) || Object.values(v.set).some((x) => !["string", "number", "boolean"].includes(typeof x))) bad("the button value's set must map fields to scalars");
+    set = v.set as Record<string, Scalar>;
+  }
   const label = record(action.text) && typeof action.text.text === "string" ? action.text.text.trim() : "";
   if (label.length < 2 || label.length > 2000) bad("the button's label must be the person's words (2..2000 characters)");
-  return { team, user, lane, target, decision: decision as Decision, digest, quote: label };
+  return { team, user, lane, target, decision: decision as Decision, digest, quote: label, ...(set ? { set } : {}) };
 }
 
 /** The version of `p` a decision is made for: its case data and its loop counters, as a SHA-256 hex digest. A change to
@@ -92,9 +105,16 @@ export function caseDigest(p: Pick<Project, "data" | "workflow">): string {
   return createHash("sha256").update(JSON.stringify({ data, loops })).digest("hex");
 }
 
-/** The value of a govern.decide button deciding `target` of lane `p` with `decision`, bound to the case as it is now. */
-export function decisionValue(p: Project, target: Target, decision: Decision): string {
-  return JSON.stringify({ v: 1, lane: p.slug, ...target, decision, digest: caseDigest(p) });
+/** The value of a govern.decide button deciding `target` of lane `p` with `decision` (an approval may also `set` case
+ *  fields: one of the gate's options), bound to the case as it is now. */
+export function decisionValue(p: Project, target: Target, decision: Decision, set?: Record<string, Scalar>): string {
+  return JSON.stringify({ v: 1, lane: p.slug, ...target, decision, digest: caseDigest(p), ...(set ? { set } : {}) });
+}
+
+/** A gate option's case data as it stands on `p`: {data.FIELD} in a string value filled from the case ("" when absent). */
+export function optionSet(o: GateOption, p: Pick<Project, "data">): Record<string, Scalar> {
+  return Object.fromEntries(Object.entries(o.set).map(([k, v]) => [k, typeof v === "string"
+    ? v.replace(/\{data\.([^{}]+)\}/g, (_m, f: string) => { const x = p.data?.[f]; return x === undefined ? "" : String(x); }) : v]));
 }
 
 const seenDir = () => join(stateDir(), "slack");
@@ -148,20 +168,27 @@ export function perform(a: SlackAction, source: Extract<Source, { kind: "slack" 
     }
     const gates = processOf(p).gates, name = a.target.gate;
     const g = gates.find((x) => x.name === name) ?? fail(`gate must be one of ${gates.map((x) => x.name).join(", ") || "(none: this process has no gates)"}`);
+    if (a.set) {
+      const want = JSON.stringify(Object.entries(a.set).sort(([x], [y]) => (x < y ? -1 : 1)));
+      if (!(g.options ?? []).some((o) => JSON.stringify(Object.entries(optionSet(o, p)).sort(([x], [y]) => (x < y ? -1 : 1))) === want))
+        fail(`the button's data is not one of ${g.name}'s options as the case stands`);
+      setData(p, a.set);
+    }
+    const set = a.set ? { set: a.set } : {};
     if (g.policy) {
       const decision = a.decision === "reject" ? "reject" : "approve";
       const vote = policyVote(p, g, person, decision, a.quote);
       if (decision === "reject") rejectRoute(p, g);
       p.notes.push({ at: vote.at, stage: p.stage, text: `${person} ${decision} ${g.name}: "${a.quote}"` });
       save(p);
-      appendLedger(slug, { kind: decision, gate: g.name, ...vote, source });
+      appendLedger(slug, { kind: decision, gate: g.name, ...vote, ...set, source });
       return `${slug}: ${g.name} ${decision} by ${person} · ${gateApproved(p, g) ? "approved" : "not approved"}`;
     }
     if (a.decision !== "approve") fail(`${g.name} has no approval policy: it can only be approved`);
     ownerApproval(p, g, person, a.quote, () => source);
     save(p);
     const { by } = p.approvals[g.name]!;
-    appendLedger(slug, { kind: "approve", gate: g.name, quote: a.quote, by, source });
+    appendLedger(slug, { kind: "approve", gate: g.name, quote: a.quote, by, ...set, source });
     return `${slug}: ${g.name} approved by ${by}`;
   });
 }

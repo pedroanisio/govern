@@ -1,0 +1,744 @@
+{
+  "version": 1,
+  "revision": 1,
+  "name": "suporte",
+  "description": "Customer support (BPMN SUP/GES/DEV/QA): agents analyse and draft, commands do the Slack, Jira and Zendesk work, people decide in Slack",
+  "fields": {
+    "ticketId": {
+      "type": "string",
+      "min": 1,
+      "required": true
+    },
+    "canal": {
+      "type": "string",
+      "enum": [
+        "email",
+        "zendesk"
+      ],
+      "required": true
+    },
+    "cliente": {
+      "type": "string",
+      "min": 1,
+      "required": true
+    },
+    "assunto": {
+      "type": "string"
+    },
+    "descricao": {
+      "type": "string"
+    },
+    "slackTs": {
+      "type": "string",
+      "min": 3
+    },
+    "jiraKey": {
+      "type": "string",
+      "min": 3
+    },
+    "primeiraRespostaAuto": {
+      "type": "boolean",
+      "default": true
+    },
+    "primeiraResposta": {
+      "type": "string",
+      "min": 1
+    },
+    "analise": {
+      "type": "string",
+      "min": 1
+    },
+    "outrosCards": {
+      "type": "boolean",
+      "default": false
+    },
+    "novosCards": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "min": 1
+      },
+      "max": 10
+    },
+    "cards": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "min": 1
+      },
+      "max": 20
+    },
+    "cardsOrigem": {
+      "type": "string"
+    },
+    "cardsEmProd": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "validacaoSempre": {
+      "type": "boolean",
+      "default": true
+    },
+    "rascunho": {
+      "type": "string",
+      "min": 1
+    },
+    "confianca": {
+      "type": "number",
+      "min": 0,
+      "max": 1
+    },
+    "sugestao1": {
+      "type": "string",
+      "min": 1
+    },
+    "sugestao2": {
+      "type": "string",
+      "min": 1
+    },
+    "sugestao3": {
+      "type": "string",
+      "min": 1
+    },
+    "respostaFinal": {
+      "type": "string",
+      "min": 1
+    },
+    "ultimoRetorno": {
+      "type": "string"
+    },
+    "resolvido": {
+      "type": "boolean"
+    },
+    "incluirKb": {
+      "type": "boolean",
+      "default": false
+    },
+    "kbRascunho": {
+      "type": "string",
+      "min": 1
+    },
+    "kbUrl": {
+      "type": "string"
+    }
+  },
+  "people": {
+    "operador1": {
+      "user": "operador1",
+      "roles": [
+        "suporte"
+      ],
+      "slack": "U0OPERADOR1"
+    },
+    "gestor1": {
+      "user": "gestor1",
+      "roles": [
+        "gestor"
+      ],
+      "slack": "U0GESTOR1"
+    }
+  },
+  "calendars": {
+    "comercial": {
+      "timezone": "America/Sao_Paulo",
+      "weekdays": [
+        1,
+        2,
+        3,
+        4,
+        5
+      ],
+      "start": "09:00",
+      "end": "18:00",
+      "holidays": []
+    }
+  },
+  "setup": [
+    {
+      "commands": {
+        "anunciar": [
+          "node",
+          "--disable-warning=ExperimentalWarning",
+          "{paths.suporte}/act.ts",
+          "slack-announce",
+          "{dir}"
+        ],
+        "criar-card": [
+          "node",
+          "--disable-warning=ExperimentalWarning",
+          "{paths.suporte}/act.ts",
+          "jira-create",
+          "{dir}"
+        ],
+        "enviar-primeira": [
+          "node",
+          "--disable-warning=ExperimentalWarning",
+          "{paths.suporte}/act.ts",
+          "zendesk-reply",
+          "{dir}",
+          "primeiraResposta"
+        ],
+        "criar-cards": [
+          "node",
+          "--disable-warning=ExperimentalWarning",
+          "{paths.suporte}/act.ts",
+          "jira-create-cards",
+          "{dir}"
+        ],
+        "enviar-resposta": [
+          "node",
+          "--disable-warning=ExperimentalWarning",
+          "{paths.suporte}/act.ts",
+          "zendesk-reply",
+          "{dir}",
+          "respostaFinal"
+        ],
+        "encerrar": [
+          "node",
+          "--disable-warning=ExperimentalWarning",
+          "{paths.suporte}/act.ts",
+          "close",
+          "{dir}"
+        ],
+        "publicar-kb": [
+          "node",
+          "--disable-warning=ExperimentalWarning",
+          "{paths.suporte}/act.ts",
+          "kb-article",
+          "{dir}"
+        ],
+        "card-existe": [
+          "node",
+          "--disable-warning=ExperimentalWarning",
+          "{paths.suporte}/checks.ts",
+          "jira-issue",
+          "@jiraKey",
+          "--lane",
+          "{dir}"
+        ],
+        "ticket-resolvido": [
+          "node",
+          "--disable-warning=ExperimentalWarning",
+          "{paths.suporte}/checks.ts",
+          "zendesk-ticket",
+          "@ticketId",
+          "--solved",
+          "--lane",
+          "{dir}"
+        ]
+      }
+    }
+  ],
+  "stages": [
+    {
+      "name": "anunciar",
+      "exit": "SUP-02: the ticket is announced in the support channel",
+      "service": {
+        "command": "anunciar",
+        "outputs": [
+          "slackTs"
+        ],
+        "attempts": 3
+      },
+      "next": [
+        {
+          "to": [
+            "criar-card"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "criar-card",
+      "exit": "SUP-03: the ticket has its Jira card",
+      "service": {
+        "command": "criar-card",
+        "outputs": [
+          "jiraKey"
+        ],
+        "attempts": 3
+      },
+      "check": "card-existe",
+      "requires": "check",
+      "next": [
+        {
+          "to": [
+            "redigir-primeira"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "redigir-primeira",
+      "exit": "SUP-04: a first response is drafted",
+      "agent": {
+        "to": "codex",
+        "task": "redigir-primeira",
+        "summary": "First response for ticket {data.ticketId}",
+        "body": "Ticket {data.ticketId} from {data.cliente} ({data.canal}): {data.assunto}\nDescription: {data.descricao}\nWrite a short, polite first response to the client acknowledging the ticket and saying it is being analysed. Promise no fix or deadline. Reply with a HANDOFF whose body is only the JSON object {\"primeiraResposta\": string}, nothing else.",
+        "outputs": [
+          "primeiraResposta"
+        ],
+        "attempts": 2
+      },
+      "next": [
+        {
+          "to": [
+            "enviar-primeira-auto"
+          ],
+          "when": {
+            "field": "primeiraRespostaAuto",
+            "op": "eq",
+            "value": true
+          }
+        },
+        {
+          "to": [
+            "aprovar-primeira"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "enviar-primeira-auto",
+      "exit": "SUP-04: the first response is sent (automatic acknowledgement)",
+      "service": {
+        "command": "enviar-primeira",
+        "attempts": 3
+      },
+      "next": [
+        {
+          "to": [
+            "analisar"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "aprovar-primeira",
+      "exit": "SUP-04: the operator approves the first response",
+      "timer": {
+        "afterSeconds": 14400,
+        "calendar": "comercial",
+        "reminders": [
+          7200
+        ]
+      },
+      "next": [
+        {
+          "to": [
+            "enviar-primeira"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "enviar-primeira",
+      "exit": "SUP-04: the first response is sent",
+      "service": {
+        "command": "enviar-primeira",
+        "attempts": 3
+      },
+      "next": [
+        {
+          "to": [
+            "analisar"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "analisar",
+      "exit": "SUP-05: the ticket is analysed",
+      "agent": {
+        "to": "codex",
+        "task": "analisar",
+        "summary": "Analyse ticket {data.ticketId}",
+        "body": "Ticket {data.ticketId} from {data.cliente} ({data.canal}): {data.assunto}\nDescription: {data.descricao}\nJira: {data.jiraKey}. Last client message: {data.ultimoRetorno}. Previous analysis: {data.analise}.\nAnalyse the problem. Decide whether development work is needed (outrosCards) and, if so, name each card to create (novosCards: short titles, none when outrosCards is false). Decide whether the solution deserves a help-center article (incluirKb). Reply with a HANDOFF whose body is only the JSON object {\"analise\": string, \"outrosCards\": boolean, \"novosCards\": [string], \"incluirKb\": boolean}, nothing else.",
+        "outputs": [
+          "analise",
+          "outrosCards",
+          "novosCards",
+          "incluirKb"
+        ],
+        "attempts": 2
+      },
+      "next": [
+        {
+          "to": [
+            "redigir"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "redigir",
+      "exit": "SUP-06: a response is drafted, with the agent's confidence",
+      "agent": {
+        "to": "codex",
+        "task": "redigir",
+        "summary": "Draft the response for ticket {data.ticketId}",
+        "body": "Ticket {data.ticketId} from {data.cliente} ({data.canal}): {data.assunto}\nDescription: {data.descricao}\nAnalysis: {data.analise}\nDraft the response to the client. Rate your confidence that it solves the problem from 0 to 1. Reply with a HANDOFF whose body is only the JSON object {\"rascunho\": string, \"confianca\": number}, nothing else.",
+        "outputs": [
+          "rascunho",
+          "confianca"
+        ],
+        "attempts": 2
+      },
+      "next": [
+        {
+          "to": [
+            "validar"
+          ],
+          "when": {
+            "any": [
+              {
+                "field": "validacaoSempre",
+                "op": "eq",
+                "value": true
+              },
+              {
+                "field": "confianca",
+                "op": "lt",
+                "value": 0.8
+              }
+            ]
+          }
+        },
+        {
+          "to": [
+            "triagem-cards"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "validar",
+      "exit": "GES-02/GES-04: a manager validates the draft",
+      "timer": {
+        "afterSeconds": 14400,
+        "calendar": "comercial",
+        "reminders": [
+          7200
+        ]
+      },
+      "next": [
+        {
+          "to": [
+            "triagem-cards"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "triagem-cards",
+      "exit": "SUP-07: other cards?",
+      "next": [
+        {
+          "to": [
+            "criar-cards"
+          ],
+          "when": {
+            "field": "outrosCards",
+            "op": "eq",
+            "value": true
+          }
+        },
+        {
+          "to": [
+            "sugerir"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "criar-cards",
+      "exit": "SUP-08: the other cards are created in Jira",
+      "service": {
+        "command": "criar-cards",
+        "outputs": [
+          "cards",
+          "cardsOrigem"
+        ],
+        "attempts": 3
+      },
+      "next": [
+        {
+          "to": [
+            "desenvolver"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "desenvolver",
+      "exit": "DEV/QA: every card is in production",
+      "foreach": {
+        "process": "suporte-card",
+        "collection": "cards",
+        "itemField": "card",
+        "maxItems": 20,
+        "concurrency": 4,
+        "inputs": {
+          "ticketId": "ticketId"
+        },
+        "outputs": {
+          "cardsEmProd": "card"
+        }
+      },
+      "next": [
+        {
+          "to": [
+            "sugerir"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "sugerir",
+      "exit": "SUP-09a: the agent suggests three responses",
+      "agent": {
+        "to": "codex",
+        "task": "sugerir",
+        "summary": "Suggest responses for ticket {data.ticketId}",
+        "body": "Ticket {data.ticketId} from {data.cliente} ({data.canal}): {data.assunto}\nDescription: {data.descricao}\nAnalysis: {data.analise}\nValidated draft: {data.rascunho}\nCards now in production: {data.cardsEmProd}\nWrite three different complete responses to the client, the best first. Reply with a HANDOFF whose body is only the JSON object {\"sugestao1\": string, \"sugestao2\": string, \"sugestao3\": string}, nothing else.",
+        "outputs": [
+          "sugestao1",
+          "sugestao2",
+          "sugestao3"
+        ],
+        "attempts": 2
+      },
+      "next": [
+        {
+          "to": [
+            "responder"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "responder",
+      "exit": "SUP-09b: the operator chooses the response (nothing reaches the client before)",
+      "timer": {
+        "afterSeconds": 28800,
+        "calendar": "comercial",
+        "reminders": [
+          14400
+        ]
+      },
+      "next": [
+        {
+          "to": [
+            "enviar-resposta"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "enviar-resposta",
+      "exit": "SUP-09b: the chosen response is sent",
+      "service": {
+        "command": "enviar-resposta",
+        "attempts": 3
+      },
+      "next": [
+        {
+          "to": [
+            "retorno"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "retorno",
+      "exit": "SUP-13: the client answers",
+      "event": {
+        "name": "cliente.retorno",
+        "correlationField": "ticketId",
+        "outputs": {
+          "ultimoRetorno": "comentario"
+        }
+      },
+      "next": [
+        {
+          "to": [
+            "avaliar-retorno"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "avaliar-retorno",
+      "exit": "SUP-14: is it resolved?",
+      "agent": {
+        "to": "codex",
+        "task": "avaliar-retorno",
+        "summary": "Is ticket {data.ticketId} resolved?",
+        "body": "Ticket {data.ticketId} from {data.cliente} ({data.canal}): {data.assunto}\nDescription: {data.descricao}\nResponse sent: {data.respostaFinal}\nClient's answer: {data.ultimoRetorno}\nDecide whether the client confirms the problem is solved. Reply with a HANDOFF whose body is only the JSON object {\"resolvido\": boolean}, nothing else.",
+        "outputs": [
+          "resolvido"
+        ],
+        "attempts": 2
+      },
+      "next": [
+        {
+          "to": [
+            "analisar"
+          ],
+          "when": {
+            "field": "resolvido",
+            "op": "eq",
+            "value": false
+          },
+          "loop": {
+            "maxIterations": 5,
+            "stages": [
+              "analisar",
+              "redigir",
+              "validar",
+              "triagem-cards",
+              "criar-cards",
+              "desenvolver",
+              "sugerir",
+              "responder",
+              "enviar-resposta",
+              "retorno",
+              "avaliar-retorno"
+            ]
+          }
+        },
+        {
+          "to": [
+            "encerrar"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "encerrar",
+      "exit": "SUP-10: the ticket is solved in Zendesk and its card done in Jira",
+      "service": {
+        "command": "encerrar",
+        "attempts": 3
+      },
+      "check": "ticket-resolvido",
+      "requires": "check",
+      "next": [
+        {
+          "to": [
+            "redigir-kb"
+          ],
+          "when": {
+            "field": "incluirKb",
+            "op": "eq",
+            "value": true
+          }
+        },
+        {
+          "to": [
+            "encerrado"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "redigir-kb",
+      "exit": "SUP-11: a help-center article is drafted",
+      "agent": {
+        "to": "codex",
+        "task": "redigir-kb",
+        "summary": "Help-center article for ticket {data.ticketId}",
+        "body": "Ticket {data.ticketId} from {data.cliente} ({data.canal}): {data.assunto}\nDescription: {data.descricao}\nAnalysis: {data.analise}\nResponse that solved it: {data.respostaFinal}\nWrite a help-center article (Markdown) on the problem and its solution, with no client data. Reply with a HANDOFF whose body is only the JSON object {\"kbRascunho\": string}, nothing else.",
+        "outputs": [
+          "kbRascunho"
+        ],
+        "attempts": 2
+      },
+      "next": [
+        {
+          "to": [
+            "publicar-kb"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "publicar-kb",
+      "exit": "SUP-11: the article is filed as a draft",
+      "service": {
+        "command": "publicar-kb",
+        "outputs": [
+          "kbUrl"
+        ],
+        "attempts": 3
+      },
+      "next": [
+        {
+          "to": [
+            "encerrado"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "encerrado",
+      "exit": "SUP-15: the ticket is closed",
+      "next": []
+    }
+  ],
+  "gates": [
+    {
+      "name": "primeira",
+      "stage": "aprovar-primeira",
+      "message": "Send this first response to the client?",
+      "policy": {
+        "role": "suporte",
+        "quorum": 1,
+        "rejectTo": "redigir-primeira"
+      }
+    },
+    {
+      "name": "validacao",
+      "stage": "validar",
+      "message": "GES-04: is the draft right? Sending it back asks for a new draft.",
+      "policy": {
+        "role": "gestor",
+        "quorum": 1,
+        "rejectTo": "redigir"
+      }
+    },
+    {
+      "name": "envio",
+      "stage": "responder",
+      "message": "Choose the response to send to the client, or send the ticket back to the analysis.",
+      "policy": {
+        "role": "suporte",
+        "quorum": 1,
+        "rejectTo": "analisar"
+      },
+      "options": [
+        {
+          "label": "Send suggestion 1",
+          "set": {
+            "respostaFinal": "{data.sugestao1}"
+          }
+        },
+        {
+          "label": "Send suggestion 2",
+          "set": {
+            "respostaFinal": "{data.sugestao2}"
+          }
+        },
+        {
+          "label": "Send suggestion 3",
+          "set": {
+            "respostaFinal": "{data.sugestao3}"
+          }
+        }
+      ]
+    }
+  ]
+}

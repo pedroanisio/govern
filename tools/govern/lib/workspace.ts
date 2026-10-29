@@ -40,8 +40,9 @@ export interface WorkspaceConfig {
   conversationAdapters?: Record<string, { argv: string[] }>;
   /** Jev decisions (ext/decide/decide.ts): shadow asks about every TASK sent; envFile is a dotenv file holding TYPESAFE_API_KEY. */
   decide?: { shadow?: boolean; envFile?: string };
-  /** Slack decisions (ext/slack/slack.ts): the Slack team whose signed requests count; envFile is a dotenv file holding SLACK_SIGNING_SECRET. */
-  slack?: { team: string; envFile?: string };
+  /** Slack (ext/slack): the team whose signed requests count; envFile is a dotenv file holding SLACK_SIGNING_SECRET and
+   *  SLACK_BOT_TOKEN; channel is where `govern slack notify` posts; labels name the decision buttons. */
+  slack?: { team: string; envFile?: string; channel?: string; labels?: { complete?: string; approve?: string; reject?: string } };
 }
 /** A file path, or the list shape lib/resources.ts checks (kept as written: resources() builds the registry). */
 const resourcesShape: Shape<unknown> = (v, p) => (typeof v === "string" ? v : (RESOURCES(v, p), v));
@@ -61,7 +62,7 @@ const CONFIG = obj({}, {
   projects: str, queue: str, processes: str, workflow: str, tuningLog: str, packages: str, prompts: str, paths: record(str),
   baseline: obj({ mainMedianCtx: posInt, subagentMedianCtx: posInt, source: str }),
   capabilities: str, resources: resourcesShape, allowances: (v: unknown) => v, state: str, decide: obj({}, { shadow: bool, envFile: str }),
-  slack: obj({ team: str }, { envFile: str }),
+  slack: obj({ team: str }, { envFile: str, channel: str, labels: obj({}, { complete: str, approve: str, reject: str }) }),
   conversationAdapters: record(obj({argv: arr(str, {nonEmpty: true})})),
 });
 
@@ -150,9 +151,9 @@ export const promptsDir = (): string | undefined => optional("prompts", "GOVERN_
 /** The config's chat baseline for `govern usage`, or undefined when it gives none. */
 export const baseline = (): Baseline | undefined => config().baseline;
 /** The config's slack settings, envFile absolute; undefined when the workspace has none. */
-export const slackConfig = (): { team: string; envFile?: string } | undefined => {
+export const slackConfig = (): NonNullable<WorkspaceConfig["slack"]> | undefined => {
   const c = findRepo() ? config().slack : undefined;
-  return c && { team: c.team, ...(c.envFile ? { envFile: resolve(base(), c.envFile) } : {}) };
+  return c && { ...c, ...(c.envFile ? { envFile: resolve(base(), c.envFile) } : {}) };
 };
 /** The config's decide settings, envFile absolute. */
 export const decideConfig = (): { shadow: boolean; envFile?: string } => {
