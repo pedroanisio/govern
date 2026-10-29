@@ -31,6 +31,8 @@ const counters = {
   total_tokens: number,
   server_tool_use: obj({}, { web_search_requests: count, web_fetch_requests: count }),
   service_tier: nullable(text), iterations: opaque,
+  // Claude Code 2.1.x usage metadata (2.1.219 sends the first three; 2.1.312 adds the rest).
+  cache_creation: opaque, inference_geo: opaque, speed: opaque, output_tokens_details: opaque, fallback_credit: opaque,
 };
 export const transportUsage = obj({}, counters);
 export type TransportUsage = ReturnType<typeof transportUsage>;
@@ -49,6 +51,10 @@ const resultShape = (policy: UsagePolicy) => obj({}, {
   stop_reason: nullable(text), usage_is_incomplete: bool, cost_is_partial: bool,
   duration_ms: number, duration_api_ms: number, modelUsage: opaque, permission_denials: opaque,
   sessionId: text, requestId: text, cwd: text, total_cost_usd_ticks: count,
+  // Claude Code 2.1.x run metadata (2.1.219 sends the first seven; 2.1.312 adds the rest).
+  terminal_reason: opaque, api_error_status: opaque, fast_mode_state: opaque, fast_mode_disabled_reason: opaque,
+  time_to_request_ms: opaque, ttft_ms: opaque, ttft_stream_ms: opaque, first_content_frame_ms: opaque, queued_turn_count: opaque,
+  result_index: opaque, safety_stops: opaque, subagent_stats: opaque, model_usage_since_last_result: opaque,
   ...metadata,
 });
 const RESULT = { refuse: resultShape("refuse"), unknown: resultShape("unknown") };
@@ -71,7 +77,7 @@ const toolItem = obj({ type: text, id: nonempty }, {
 const content: Shape<Content> = (raw, p) => {
   const t = eventType(raw, p);
   if (t === "text") return obj({ type: literal("text"), text }, { citations: opaque })(raw, p);
-  if (t === "tool_use") return obj({ type: literal("tool_use"), id: nonempty, name: nonempty }, { input: opaque })(raw, p);
+  if (t === "tool_use") return obj({ type: literal("tool_use"), id: nonempty, name: nonempty }, { input: opaque, caller: opaque })(raw, p);
   if (t === "tool_result") return obj({ type: literal("tool_result"), tool_use_id: nonempty }, { is_error: bool, content: opaque })(raw, p);
   // Unconsumed content types (thinking, images, etc.) carry no normalized output.
   return { type: t };
@@ -113,7 +119,8 @@ export function transportEvent(engine: "codex" | "claude" | "grok", raw: unknown
     if (type === "error") return obj({ type: text }, { message: nullable(text) })(raw, "$");
     if (type === "assistant" || type === "user") return obj({ type: text, message: obj({ content: arr(content) }, {
       id: text, type: text, role: text, model: text, stop_reason: nullable(text), stop_sequence: nullable(text), usage: usageShape(policy),
-    }) }, metadata)(raw, "$");
+      container: opaque, context_management: opaque, diagnostics: opaque, stop_details: opaque, input_transformations: opaque,
+    }) }, { ...metadata, request_id: opaque, timestamp: opaque, tool_use_result: opaque, tool_result_meta: opaque, wire_tool_inputs: opaque })(raw, "$");
     if (type === "stream_event") {
       const delta: Shape<{ type: string; text?: string }> = (v, p) => {
         const t = eventType(v, p);

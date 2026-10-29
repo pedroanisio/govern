@@ -1,10 +1,11 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { parseEvents } from "../lib/codex.ts";
 import { claudeResult, grokResult } from "../lib/queue.ts";
 import { build } from "../ext/conversation/conversation-adapters.ts";
-import { makeEnv, childEnv, write } from "./helpers.ts";
+import { makeEnv, childEnv, write, HERE } from "./helpers.ts";
 
 const oversized = "x".repeat(4 * 1024 * 1024 + 1);
 const bad = [
@@ -106,3 +107,27 @@ test("terminal measurements preserve explicit zero and unknown spend", () => {
     }
   }
 });
+
+// Captured `claude -p --output-format stream-json --verbose` runs (system events dropped, paths and signatures scrubbed).
+for (const version of ["2.1.219", "2.1.312"]) {
+  test(`Claude Code ${version} stream and result decode`, { timeout: 10000 }, () => {
+    const lines = readFileSync(join(HERE, `fixtures/claude-code-${version}.jsonl`), "utf8").trim().split("\n");
+    const e = makeEnv("transport-claude-" + version), saved = process.env;
+    process.env = childEnv(e);
+    let a: ReturnType<typeof build> | undefined;
+    try {
+      a = build({ id: "chat", cwd: e.root, adapter: { kind: "profile", name: "claude-read" } } as Parameters<typeof build>[0], { id: "run", messageId: "message" } as Parameters<typeof build>[1], []);
+      const events = lines.flatMap((line) => a!.parse(JSON.parse(line)));
+      assert.deepEqual(events.filter((x) => x.type === "error"), []);
+      assert.deepEqual(events.map((x) => x.type), ["tool.started", "tool.finished", "assistant.delta", "done"]);
+      const done = events.at(-1)!;
+      assert.equal(done.text, "ok");
+      assert.ok(done.usage, "the result usage is a measurement");
+    } finally { a?.finish(); process.env = saved; }
+    const out = claudeResult(lines.at(-1)!, 0, "");
+    assert.equal(out.error, undefined);
+    assert.equal(out.text, "ok");
+    assert.ok(out.usage);
+    assert.equal(out.spendUnknown, undefined);
+  });
+}

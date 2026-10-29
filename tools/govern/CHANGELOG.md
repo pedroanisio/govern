@@ -62,6 +62,7 @@ All notable changes to govern are documented here, following Keep a Changelog.
 - `task send` writes a new message through a temporary file renamed into place, so a parallel dispatcher never reads a half-written message (it crashed on `JSON.parse` of an empty file).
 - A finished lane prints `finished` in `govern status` and `govern desk`, never `finished  active <stage>`.
 - The negative probe of a self-test asks for a capability the profile really lacks: a profile holding `wt-edit` no longer fails with `not-edit leaked`; with none to ask for the record says `negative: none applicable`.
+- Claude runs and chats accept the output of Claude Code 2.1.219 and 2.1.312: the transport decoder names their new run, usage, message and tool-call metadata as opaque fields instead of failing every turn with `unknown key "terminal_reason"` (or `"timestamp"`).
 
 ## [0.1.0] - 2026-10-15
 
