@@ -4,6 +4,7 @@ import { chmodSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathS
 import { dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { mergeCoverage, readCoverageProfiles } from "./coverage-merge.ts";
+import { coverageGate, measuredSource } from "./coverage-gate.ts";
 
 const root = realpathSync(resolve(dirname(fileURLToPath(import.meta.url)), ".."));
 const generated = resolve(process.env.ST_VAR || join(root, "..", "..", "var"), "out", "govern", "coverage");
@@ -28,13 +29,19 @@ const collect = (path: string) => {
   for (const entry of readdirSync(path, { withFileTypes: true })) {
     const full = join(path, entry.name);
     if (entry.isDirectory()) collect(full);
-    else if (entry.name.endsWith(".ts")) sources[relative(root, full).split(sep).join("/")] = readFileSync(full, "utf8");
+    else {
+      const path = relative(root, full).split(sep).join("/");
+      if (measuredSource(path)) sources[path] = readFileSync(full, "utf8");
+    }
   }
 };
 sources["govern.ts"] = readFileSync(join(root, "govern.ts"), "utf8");
 collect(join(root, "lib"));
 collect(join(root, "ext"));
-const { profiles, unreadable } = readCoverageProfiles(directory);
+collect(join(root, "checks"));
+collect(join(root, "scripts"));
+const { profiles, empty, unreadable } = readCoverageProfiles(directory);
+console.log(`empty V8 profiles (process killed before writing): ${empty.length} (${empty.join(", ")})`);
 console.log(`unreadable V8 profiles: ${unreadable.length} (${unreadable.join(", ")})`);
 for (const profile of profiles) {
   profile.result = profile.result.flatMap((script) => {
@@ -45,12 +52,15 @@ for (const profile of profiles) {
 }
 if (!profiles.length && !unreadable.length) throw new Error(`No V8 coverage profiles written to ${directory}`);
 const files = mergeCoverage(sources, profiles);
+const gate = coverageGate(files, unreadable);
 const percent = (value: number | null) => value === null ? "unobserved" : `${value.toFixed(2)}%`;
 console.log("\nFile\tLine %\tBranch %\tUncovered branches (file:line)");
 for (const row of files) console.log(`${row.file}\t${percent(row.lines.percent)}\t${percent(row.branches.percent)}\t${row.uncoveredBranchLines.map((line) => `${row.file}:${line}`).join(", ")}`);
+for (const [kind, total] of Object.entries(gate.totals)) console.log(`${kind} branch coverage: ${percent(total.percent)} (${total.covered}/${total.total}; floor ${total.floor}%)`);
+for (const error of gate.errors) console.error(error);
 const output = resolve(args[1] ?? join(generated, "coverage.json"));
 mkdirSync(dirname(output), { recursive: true, mode: 0o700 });
-writeFileSync(output, JSON.stringify({ profiles: profiles.length, unreadableProfiles: unreadable, suite: { status: result.status, signal: result.signal, error: result.error?.message }, files }, null, 2) + "\n", { mode: 0o600 });
+writeFileSync(output, JSON.stringify({ profiles: profiles.length, emptyProfiles: empty, unreadableProfiles: unreadable, suite: { status: result.status, signal: result.signal, error: result.error?.message }, files, gate }, null, 2) + "\n", { mode: 0o600 });
 chmodSync(output, 0o600);
 console.log(`JSON: ${output}\nV8 profiles: ${directory}`);
-process.exitCode = result.error || result.signal ? 1 : (result.status ?? 1);
+process.exitCode = result.error || result.signal ? 1 : ((result.status ?? 1) || gate.exitCode);

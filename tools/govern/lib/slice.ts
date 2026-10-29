@@ -14,6 +14,7 @@ import { place } from "./resources.ts";
 import * as jobs from "./jobs.ts";
 import * as reaping from "./reap.ts";
 
+const KILL_GRACE_MS = 5000;
 const RUNNER = fileURLToPath(new URL("./sliceRunner.ts", import.meta.url));
 /** The job name a slice of recipe `recipe` runs under: slice-<recipe>. */
 export const jobName = (recipe: string) => `slice-${recipe}`;
@@ -71,13 +72,19 @@ export async function runSlice(slug: string, recipeName: string, machines: numbe
 
   let aborted = false, timedOut = false, signalled = false, inflight = 0;
   const active = new Set<ChildProcess>();
+  const hardStops = new Map<ChildProcess, ReturnType<typeof setTimeout>>();
   const waiters: (() => void)[] = [];
   const wake = () => { for (const w of waiters.splice(0)) w(); };
   /** Every command runs in a group of its own (detached), so a signal reaches what it started too. */
   const signalGroup = (c: ChildProcess, sig: NodeJS.Signals) => {
     try { process.kill(-c.pid!, sig); } catch { try { c.kill(sig); } catch { /* already gone */ } }
   };
-  const abort = () => { aborted = true; for (const c of active) signalGroup(c, "SIGTERM"); wake(); };
+  const stop = (c: ChildProcess) => {
+    if (hardStops.has(c)) return;
+    signalGroup(c, "SIGTERM");
+    hardStops.set(c, setTimeout(() => signalGroup(c, "SIGKILL"), KILL_GRACE_MS));
+  };
+  const abort = () => { aborted = true; for (const c of active) stop(c); wake(); };
   const onStop = () => { signalled = true; abort(); };
   for (const s of ["SIGTERM", "SIGINT", "SIGHUP"] as const) process.on(s, onStop);
   const timer = setTimeout(() => { timedOut = true; log(`timed out after ${deadline}s: stopping the pieces`); abort(); }, deadline * 1000);
@@ -99,11 +106,11 @@ export async function runSlice(slug: string, recipeName: string, machines: numbe
     let stdout = "";
     child.stdout?.on("data", (d: Buffer) => { stdout += d.toString(); });
     const limit = o.timeout ? setTimeout(() => signalGroup(child, "SIGKILL"), o.timeout * 1000) : undefined;
-    const end = (code: number | null) => { clearTimeout(limit); active.delete(child); done({ code, stdout }); };
+    const end = (code: number | null) => { clearTimeout(limit); clearTimeout(hardStops.get(child)); hardStops.delete(child); active.delete(child); done({ code, stdout }); };
     child.on("error", (e) => { log(`could not run ${cmd}: ${e.message}`); end(127); });
     child.on("close", end);
     // The slice was stopped between the check and the spawn: this one must not outlive it.
-    if (aborted) signalGroup(child, "SIGTERM");
+    if (aborted) stop(child);
   });
   const step = async (name: keyof Recipe & string, capture = false) => {
     if (aborted) throw new GovernError(`${name} not run: the slice was stopped`, 1);

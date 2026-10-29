@@ -1,9 +1,11 @@
 import { test } from "node:test";
+import { spawnSync } from "node:child_process";
 import assert from "node:assert/strict";
-import { existsSync, readFileSync, readdirSync, unlinkSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, unlinkSync, openSync, closeSync } from "node:fs";
 import { join } from "node:path";
-import { makeEnv, govern, write, setConfig, jsonl, present, type Env } from "./helpers.ts";
-import type { Message } from "../lib/queue.ts";
+import { makeEnv, govern, write, setConfig, jsonl, present, type Env, childEnv, GOVERN } from "./helpers.ts";
+import { claudeResult, usdOf, type Message } from "../lib/queue.ts";
+import { parseEvents } from "../lib/codex.ts";
 
 function setup() {
   const e = makeEnv("queue-regression");
@@ -189,7 +191,7 @@ test("configured JSON runners retain reported costs even on a nonzero exit", () 
   const e = setup();
   setConfig(e, { allowances: [{ name: "budget", consumer: "lane:film", unit: "model-usd", limit: 5, taskEstimate: 5 }] });
   ok(e, ["new", "film", "--process", "dev"]);
-  const runner = write(join(e.root, "priced.cjs"), 'console.log(JSON.stringify({result:JSON.stringify({kind:"ACK",summary:"finished",body:"finished"}),usage:{input_tokens:1},total_cost_usd:7}));process.exitCode=1;');
+  const runner = write(join(e.root, "priced.cjs"), 'console.log(JSON.stringify({result:JSON.stringify({kind:"ACK",summary:"finished",body:"finished"}),usage:{input_tokens:1,output_tokens:0},total_cost_usd:7}));process.exitCode=1;');
   write(join(e.root, "queue/config.json"), JSON.stringify({ runners: { paid: { argv: [process.execPath, runner], format: "json-result" } } }));
   send(e, "paid");
   ok(e, ["task", "dispatch"]);
@@ -216,4 +218,88 @@ test("a missing attachment fails its task, releases the reservation and lets the
   const spent = jsonl(join(e.root, "state/allowances/budget/spent.jsonl"));
   assert.deepEqual(spent.map((s) => s.actual), [0, 5], "preparation is free; the successful unpriced runner is charged");
   assert.equal(ok(e, ["task", "dispatch"]).trim(), "");
+});
+
+for (const [label, usage] of [
+  ["absent", undefined], ["null", null], ["empty", {}],
+  ["missing output", { input_tokens: 1 }], ["string", { input_tokens: "1", output_tokens: 0 }],
+  ["negative", { input_tokens: -1, output_tokens: 0 }],
+  ["negative cache", { input_tokens: 0, output_tokens: 0, cache_read_input_tokens: -1 }],
+  ["null cache", { input_tokens: 0, output_tokens: 0, cache_creation_input_tokens: null }],
+  ["non-finite", { input_tokens: 0, output_tokens: Infinity }],
+] as const) {
+  test(`claudeResult ${label} usage is unknown even with a reported zero cost`, () => {
+    const out = claudeResult(JSON.stringify({ result: "done", usage, total_cost_usd: 0 }), 0, "");
+    assert.equal(out.spendUnknown, true);
+    assert.equal(out.usage, undefined);
+    assert.deepEqual(usdOf(out, "claude-opus-5"), {});
+  });
+}
+
+test("measured zero and valid Claude and Codex usage retain token pricing", () => {
+  const zero = { input_tokens: 0, output_tokens: 0 };
+  assert.deepEqual(usdOf(claudeResult(JSON.stringify({ result: "done", usage: zero }), 0, ""), "claude-opus-5"), { usd: 0 });
+  const claude = claudeResult(JSON.stringify({ result: "done", usage: { input_tokens: 1000000, output_tokens: 1000000, cache_read_input_tokens: 1000000, cache_creation_input_tokens: 1000000 } }), 0, "");
+  assert.deepEqual(usdOf(claude, "claude-opus-5"), { usd: 29.4 });
+  for (const usage of [zero, { input_tokens: 3000000, output_tokens: 1000000, cached_input_tokens: 1000000, cache_write_input_tokens: 1000000 }]) {
+    const ev = parseEvents(JSON.stringify({ type: "turn.completed", usage }));
+    assert.deepEqual(usdOf(ev, "claude-opus-5"), { usd: usage.input_tokens === 0 ? 0 : 29.4 });
+  }
+  assert.deepEqual(usdOf(parseEvents('{"type":"thread.started"}'), "claude-opus-5"), {});
+});
+
+for (const usage of [undefined, { input_tokens: "1", output_tokens: 0 }, { input_tokens: -1, output_tokens: 0 }]) {
+  test(`configured JSON runner with ${JSON.stringify(usage) ?? "absent"} usage charges its reservation`, () => {
+    const e = setup();
+    setConfig(e, { allowances: [{ name: "budget", consumer: "lane:film", unit: "model-usd", limit: 5, taskEstimate: 5 }] });
+    ok(e, ["new", "film", "--process", "dev"]);
+    const result = { result: JSON.stringify({ kind: "ACK", summary: "finished", body: "finished" }), usage, total_cost_usd: 0 };
+    const runner = write(join(e.root, "paid.cjs"), `console.log(${JSON.stringify(JSON.stringify(result))});`);
+    write(join(e.root, "queue/config.json"), JSON.stringify({ runners: { paid: { argv: [process.execPath, runner], format: "json-result" } } }));
+    send(e, "paid");
+    ok(e, ["task", "dispatch"]);
+    assert.equal(messages(e, "done").length, 1, "the runner must complete successfully");
+    assert.equal(jsonl(join(e.root, "state/allowances/budget/spent.jsonl"))[0].actual, 5);
+  });
+}
+
+test("Codex stream without usage charges its reservation", () => {
+  const e = setup();
+  e.env.GOVERN_CAPABILITIES = join(e.root, "caps");
+  write(join(e.root, "caps/priced.json"), JSON.stringify({ version: 1, profiles: [{ name: "codex-read", engine: "codex", model: "claude-opus-5", capabilities: ["read"], selfTest: "optional" }] }));
+  setConfig(e, { allowances: [{ name: "budget", consumer: "lane:film", unit: "model-usd", limit: 5, taskEstimate: 5 }] });
+  ok(e, ["new", "film", "--process", "dev"]);
+  const script = write(join(e.root, "stream.jsonl"), JSON.stringify({ type: "item.completed", item: { type: "agent_message", text: JSON.stringify({ kind: "ACK", summary: "finished", body: "finished" }) } }));
+  send(e, "codex");
+  ok(e, ["task", "dispatch"], { FAKE_CODEX_SCRIPTS: script });
+  assert.equal(messages(e, "done").length, 1, "the runner must complete successfully");
+  assert.equal(jsonl(join(e.root, "state/allowances/budget/spent.jsonl"))[0].actual, 5);
+  assert.equal(messages(e, "done")[0]?.result?.usage, undefined);
+});
+
+test("a queue runner that ignores SIGTERM returns a timeout error", { timeout: 20_000 }, () => {
+  const e = setup(), pidFile = join(e.root, "runner.pid"), logFile = join(e.root, "dispatch.log");
+  const runner = write(join(e.root, "ignore-term.cjs"), `
+process.on("SIGTERM", () => {});
+require("node:fs").writeFileSync(${JSON.stringify(pidFile)}, String(process.pid));
+setInterval(() => {}, 1000);
+`);
+  write(join(e.root, "queue/config.json"), JSON.stringify({ runners: { stubborn: { argv: [process.execPath, runner] } } }));
+  send(e, "stubborn", ["--timeout", "2"]);
+  // File stdio lets the watchdog return even if an unfixed dispatcher leaves its child holding inherited pipes.
+  const fd = openSync(logFile, "w");
+  try {
+    const r = spawnSync(process.execPath, ["--disable-warning=ExperimentalWarning", GOVERN, "task", "dispatch"], {
+      env: childEnv(e), stdio: ["ignore", fd, fd], timeout: 12_000, killSignal: "SIGKILL",
+    });
+    assert.ok(existsSync(pidFile), "the fixture installed its SIGTERM handler");
+    assert.equal(r.error, undefined, "dispatch must return before the outer watchdog kills it");
+    const failed = present(messages(e, "failed").find((m) => m.to === "stubborn"), "timed out task");
+    assert.equal(failed.result?.ok, false);
+    assert.equal(failed.result?.failure, "runner");
+    assert.match(failed.result?.error ?? "", /ETIMEDOUT|timed out/i);
+  } finally {
+    closeSync(fd);
+    if (existsSync(pidFile)) { try { process.kill(Number(readFileSync(pidFile, "utf8")), "SIGKILL"); } catch { /* already gone */ } }
+  }
 });

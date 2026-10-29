@@ -1,10 +1,12 @@
+import { transportEvent, commandEvent, OUTPUT_LIMIT, type TransportEvent, type TransportUsage } from "../../lib/model-transport.ts";
 import { join } from "node:path";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { registry, getProfile, claudeArgs, codexSpec, grokArgs } from "../../lib/caps.ts";
-import { execArgs } from "../../lib/codex.ts";
+import { execArgs, validUsage } from "../../lib/codex.ts";
 import { prepareGrokHome, syncBackAuth } from "../../lib/grokhome.ts";
-import { grokEnv } from "../../lib/queue.ts";
+import { prepareCodexHome, syncBackCodexAuth } from "../../lib/codexhome.ts";
+import { codexEnv, grokEnv } from "../../lib/queue.ts";
 import { cost } from "../../lib/usage.ts";
 import { fail } from "../../lib/util.ts";
 import type { Conversation, Run, Usage } from "../../lib/conversation.ts";
@@ -24,7 +26,7 @@ export interface Adapter {
   parse: (o: unknown) => Normalized[];
   finish: () => void;
 }
-const usage = (u: any, costUsd?: number): Usage => {
+const usage = (u: TransportUsage, costUsd?: number): Usage => {
   const finite = (v: unknown) => {
     if (v === undefined) return 0;
     if (typeof v !== "number" || !Number.isFinite(v) || v < 0) fail("invalid runtime usage", 1);
@@ -39,38 +41,23 @@ const usage = (u: any, costUsd?: number): Usage => {
     ...(costUsd !== undefined ? { costUsd: finite(costUsd) } : {})
   };
 };
-function custom(o: any): Normalized[] {
-  if (!o || typeof o !== "object" || Array.isArray(o)) fail("adapter event must be an object", 1);
-  const type = o.type;
-  if (type === "assistant.delta") {
-    if (typeof o.text !== "string") fail("delta requires text", 1);
-    return [{ type, text: o.text }];
-  }
-  if (type === "tool.started" || type === "tool.finished") {
-    if (
-      typeof o.id !== "string" ||
-      !o.id ||
-      typeof o.name !== "string" ||
-      !o.name ||
-      (type === "tool.finished" && typeof o.ok !== "boolean")
-    )
-      fail("invalid tool event", 1);
-    return [{ type, id: o.id, name: o.name, ...(type === "tool.finished" ? { ok: o.ok } : {}) }];
-  }
-  if (type === "done") {
-    if (typeof o.text !== "string" || !o.text.trim()) fail("done requires a nonempty reply", 1);
-    if (o.usage !== undefined) {
-      if (
-        !o.usage ||
-        typeof o.usage !== "object" ||
-        Object.values(o.usage).some((x) => typeof x !== "number" || !Number.isFinite(x) || x < 0)
-      )
-        fail("invalid adapter usage", 1);
-    }
-    return [{ type, text: o.text, ...(o.usage ? { usage: usage(o.usage, o.usage.costUsd) } : {}) }];
-  }
-  if (type === "error" && typeof o.text === "string") return [{ type, text: o.text }];
-  fail("unknown adapter event type", 1);
+/** Parsing failures are normalized so a provider cannot escape the runtime's failure branch. */
+function checked(engine: "command" | "codex" | "claude" | "grok", parse?: (o: TransportEvent) => Normalized[]): (raw: unknown) => Normalized[] {
+  return (raw) => {
+    try {
+      const events = engine === "command" ? custom(raw) : parse!(transportEvent(engine, raw));
+      for (const e of events) {
+        if (e.text !== undefined && e.text.length > OUTPUT_LIMIT) fail("adapter text exceeds output limit", 1);
+        if (e.usage && !validUsage(e.usage)) fail("invalid runtime usage: cache partitions exceed input or counters overflow", 1);
+      }
+      return events;
+    } catch (e) { return [{ type: "error", text: `invalid ${engine} adapter event: ${(e as Error).message}` }]; }
+  };
+}
+function custom(raw: unknown): Normalized[] {
+  const o = commandEvent(raw);
+  if (o.type === "done") return [{ type: o.type, text: o.text, ...(o.usage ? { usage: usage(o.usage, o.usage.costUsd) } : {}) }];
+  return [o];
 }
 /**
  * ARCHITECTURAL REQUIREMENT: LLMs will always produce some form of error.
@@ -110,7 +97,7 @@ export function build(
       args: s.adapter.argv.slice(1),
       env,
       input: JSON.stringify(request) + "\n",
-      parse: custom,
+      parse: checked("command"),
       finish: () => {}
     };
   const reg = registry(),
@@ -128,15 +115,20 @@ export function build(
     return {
       bin: process.env.GOVERN_CODEX_BIN ?? "codex",
       args,
-      env,
+      env: codexEnv(prepareCodexHome(), env),
       input: prompt,
-      finish,
-      parse: (o: any) => {
-        if (!o || typeof o !== "object") fail("invalid codex event", 1);
+      finish: () => {
+        try {
+          syncBackCodexAuth();
+        } finally {
+          finish();
+        }
+      },
+      parse: checked("codex", (o) => {
         if (o.type === "turn.failed" || o.type === "error")
-          return [{ type: "error", text: o.error?.message ?? o.message ?? "codex failed" }];
+          return [{ type: "error", text: o.error?.message ?? (typeof o.message === "string" ? o.message : "codex failed") }];
         if (o.type === "turn.completed") {
-          if (!o.usage) return [{ type: "done", text: final }];
+          if (!o.usage || o.usage.input_tokens === undefined || o.usage.output_tokens === undefined) return [{ type: "done", text: final }];
           const u = usage(o.usage),
             usd = p.model
               ? cost({
@@ -171,7 +163,7 @@ export function build(
             ];
         }
         return [];
-      }
+      })
     };
   }
   if (p.engine === "claude") {
@@ -185,8 +177,7 @@ export function build(
       env,
       input: prompt,
       finish,
-      parse: (o: any) => {
-        if (!o || typeof o !== "object") fail("invalid claude event", 1);
+      parse: checked("claude", (o) => {
         if (
           o.type === "stream_event" &&
           o.event?.type === "content_block_delta" &&
@@ -199,7 +190,7 @@ export function build(
         }
         if (o.type === "assistant") {
           const events: Normalized[] = [];
-          for (const c of o.message?.content ?? []) {
+          for (const c of (typeof o.message === "object" ? o.message?.content : undefined) ?? []) {
             if (c.type === "tool_use") events.push({ type: "tool.started", id: String(c.id), name: String(c.name) });
             if (c.type === "text" && typeof c.text === "string") {
               if (!streamed.includes(c.text)) {
@@ -211,9 +202,9 @@ export function build(
           return events;
         }
         if (o.type === "user") {
-          return (o.message?.content ?? [])
-            .filter((c: any) => c.type === "tool_result")
-            .map((c: any) => ({
+          return ((typeof o.message === "object" ? o.message?.content : undefined) ?? [])
+            .filter((c) => c.type === "tool_result")
+            .map((c) => ({
               type: "tool.finished" as const,
               id: String(c.tool_use_id),
               name: "tool",
@@ -223,14 +214,14 @@ export function build(
         if (o.type === "result") {
           if (o.is_error || o.subtype !== "success")
             return [{ type: "error", text: "claude did not finish successfully" }];
-          const u = o.usage ? usage(o.usage, o.total_cost_usd) : undefined;
+          const u = o.usage?.input_tokens !== undefined && o.usage.output_tokens !== undefined ? usage(o.usage, o.total_cost_usd) : undefined;
           if (u) u.input += u.cached + u.cacheWrite;
           return [
             { type: "done", text: typeof o.result === "string" ? o.result : streamed, ...(u ? { usage: u } : {}) }
           ];
         }
         return [];
-      }
+      })
     };
   }
   mkdirSync(join(temp, "home"));
@@ -270,29 +261,27 @@ export function build(
      * Absence of output verification is a design defect, not a runtime bug.
      * All LLM output must be treated as untrusted and validated explicitly.
      */
-    parse: (o: any) => {
-      if (!o || typeof o !== "object" || Array.isArray(o))
-        return [{ type: "error", text: "invalid grok event" }];
+    parse: checked("grok", (o) => {
       if (o.type === "error") return [{ type: "error", text: typeof o.message === "string" && o.message.trim() ? o.message : "grok failed" }];
       if (o.type === "assistant") {
         const events: Normalized[] = [];
-        for (const c of o.message?.content ?? []) {
+        for (const c of (typeof o.message === "object" ? o.message?.content : undefined) ?? []) {
           if (c.type === "tool_use") events.push({ type: "tool.started", id: String(c.id), name: String(c.name) });
           if (c.type === "text" && typeof c.text === "string") events.push({ type: "assistant.delta", text: c.text });
         }
         return events;
       }
-      if (o.type === "user") return (o.message?.content ?? [])
-        .filter((c: any) => c.type === "tool_result")
-        .map((c: any) => ({ type: "tool.finished" as const, id: String(c.tool_use_id), name: "tool", ok: !c.is_error }));
+      if (o.type === "user") return ((typeof o.message === "object" ? o.message?.content : undefined) ?? [])
+        .filter((c) => c.type === "tool_result")
+        .map((c) => ({ type: "tool.finished" as const, id: String(c.tool_use_id), name: "tool", ok: !c.is_error }));
       if (o.type !== "result") return [];
       if (o.is_error === true || o.subtype !== "success")
         return [{ type: "error", text: typeof o.errors?.[0] === "string" && o.errors[0].trim() ? o.errors[0] : `grok failed: subtype ${JSON.stringify(o.subtype ?? null)}${o.is_error === true ? ", is_error" : ""}` }];
       if (o.stop_reason !== "end_turn") return [{ type: "error", text: `stopped with ${o.stop_reason}` }];
       if (typeof o.result !== "string") return [{ type: "error", text: "result must be a string" }];
-      const u = o.usage && !o.usage_is_incomplete && !o.cost_is_partial ? usage(o.usage, o.total_cost_usd) : undefined;
+      const u = o.usage?.input_tokens !== undefined && o.usage.output_tokens !== undefined && !o.usage_is_incomplete && !o.cost_is_partial ? usage(o.usage, o.total_cost_usd) : undefined;
       if (u) u.input += u.cached + u.cacheWrite;
       return [{ type: "done", text: o.result, ...(u ? { usage: u } : {}) }];
-    }
+    })
   };
 }

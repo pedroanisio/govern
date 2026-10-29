@@ -33,7 +33,8 @@ jobs:
           cache-dependency-path: tools/govern/package-lock.json
       - run: npm ci
       - run: npm run -s typecheck
-      - run: node --disable-warning=ExperimentalWarning --test 'test/*.test.ts'
+      # Runs the suite once under V8 coverage and fails on a missed branch floor.
+      - run: npm run -s coverage
       - run: npm run -s package
       # GitHub's first-party artifact action; no third-party actions are used.
       - uses: actions/upload-artifact@v7

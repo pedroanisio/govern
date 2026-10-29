@@ -463,10 +463,10 @@ test("grokResult preserves captured bad-model and max-turns errors and spend", (
 test("grokResult rejects missing results and malformed lines without extraction", () => {
   for (const raw of [undefined, "", "null\n42\n[]\n", '{"type":"system"}\n']) {
     const out = grokResult(raw, 1, "diagnostic", undefined, 30);
-    assert.match(out.error!, /no result line \(exit 1\): diagnostic/);
+    assert.match(out.error!, raw?.startsWith("null") ? /invalid JSON on line 1: \$: event must be an object/ : /no result line \(exit 1\): diagnostic/);
     assert.equal(out.spendUnknown, true);
   }
-  for (const raw of ['{}\ngarbage\n' + streamResult(), streamResult() + '\nprose {"x":1}']) {
+  for (const raw of ['{"type":"system"}\ngarbage\n' + streamResult(), streamResult() + '\nprose {"x":1}']) {
     const out = grokResult(raw, 0, "", undefined, 30);
     assert.match(out.error!, /invalid JSON on line 2/);
     assert.equal(out.spendUnknown, true);

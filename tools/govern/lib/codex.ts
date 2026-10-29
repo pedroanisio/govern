@@ -4,9 +4,10 @@
 //
 // One-shot Codex steps: prompt template → `codex exec --json --output-schema` → verified JSON.
 import { spawnSync } from "node:child_process";
-import { existsSync, readFileSync, mkdirSync, writeFileSync, globSync } from "node:fs";
-import { join, dirname, resolve, relative } from "node:path";
-import { fail, stamp, sha256, GovernError, charLimit } from "./util.ts";
+import { existsSync, readFileSync, mkdirSync, mkdtempSync, writeFileSync, globSync } from "node:fs";
+import { join, dirname, basename, resolve, relative } from "node:path";
+import { MODEL_TIMEOUT_SIGNAL, fail, stamp, sha256, GovernError, charLimit } from "./util.ts";
+import { transportEvent, STREAM_LIMIT } from "./model-transport.ts";
 import { emptyRecord } from "./shape.ts";
 import { type Project, projectDir, governDir, appendLedger, brief } from "./project.ts";
 import { repo, promptsDir, pathEntry, configFile } from "./workspace.ts";
@@ -16,26 +17,40 @@ import { loadRules, applyRules } from "./rules.ts";
 const codexBin = () => process.env.GOVERN_CODEX_BIN ?? "codex";
 
 export interface Usage { input: number; cached: number; cacheWrite: number; output: number; reasoning: number }
-export interface Events { thread?: string; usage: Usage; turns: number; message?: string; errors: string[] }
+export interface Events { thread?: string; usage: Usage; spendUnknown?: boolean; turns: number; message?: string; invalid?: string; errors: string[] }
+
+/** Token counters are measurements only when finite, non-negative and the cache partitions fit inside input. */
+export function validUsage(u: { [K in keyof Usage]: number | undefined }): u is Usage {
+  return Object.values(u).every((n) => typeof n === "number" && Number.isFinite(n) && n >= 0) && typeof u.cached === "number" && typeof u.cacheWrite === "number" && typeof u.input === "number" && u.cached + u.cacheWrite <= u.input;
+}
 
 /** Sum a `codex exec --json` event stream: thread id, token usage and turn count over completed turns, the last agent
- *  message, and the error messages of failed turns; lines that are not JSON are skipped. */
+ *  message, and the error messages of failed turns; invalid transport fails closed. */
 export function parseEvents(jsonl: string): Events {
   const ev: Events = { usage: { input: 0, cached: 0, cacheWrite: 0, output: 0, reasoning: 0 }, turns: 0, errors: [] };
+  const invalid = (e: unknown): Events => {
+    const message = `invalid codex transport: ${(e as Error).message}`;
+    return { ...ev, message: undefined, invalid: message, spendUnknown: true, errors: [...ev.errors, message] };
+  };
+  if (Buffer.byteLength(jsonl, "utf8") > STREAM_LIMIT) return invalid(new Error("stream exceeds 64 MiB limit"));
   for (const line of jsonl.split("\n")) {
     if (!line.trim()) continue;
-    let o: any;
-    try { o = JSON.parse(line); } catch { continue; }
-    if (o.type === "thread.started") ev.thread = o.thread_id;
-    else if (o.type === "turn.completed" && o.usage) {
+    let o;
+    try { o = transportEvent("codex", JSON.parse(line), "unknown"); } catch (e) { return invalid(e); }
+    if (o?.type === "thread.started") ev.thread = o.thread_id;
+    else if (o?.type === "turn.completed") {
       ev.turns++;
       const u = o.usage;
-      ev.usage.input += u.input_tokens ?? 0; ev.usage.cached += u.cached_input_tokens ?? 0;
-      ev.usage.cacheWrite += u.cache_write_input_tokens ?? 0; ev.usage.output += u.output_tokens ?? 0;
-      ev.usage.reasoning += u.reasoning_output_tokens ?? 0;
-    } else if (o.type === "item.completed" && o.item?.type === "agent_message") ev.message = o.item.text;
-    else if (o.type === "turn.failed" || o.type === "error") ev.errors.push(o.error?.message ?? o.message ?? JSON.stringify(o));
+      const usage = { input: u?.input_tokens, cached: u?.cached_input_tokens === undefined ? 0 : u.cached_input_tokens,
+        cacheWrite: u?.cache_write_input_tokens === undefined ? 0 : u.cache_write_input_tokens, output: u?.output_tokens,
+        reasoning: u?.reasoning_output_tokens === undefined ? 0 : u.reasoning_output_tokens };
+      if (!validUsage(usage)) { ev.spendUnknown = true; continue; }
+      ev.usage.input += usage.input; ev.usage.cached += usage.cached;
+      ev.usage.cacheWrite += usage.cacheWrite; ev.usage.output += usage.output; ev.usage.reasoning += usage.reasoning;
+    } else if (o?.type === "item.completed" && o.item?.type === "agent_message") ev.message = o.item.text;
+    else if (o?.type === "turn.failed" || o?.type === "error") ev.errors.push(o.error?.message ?? (typeof o.message === "string" ? o.message : JSON.stringify(o)));
   }
+  if (!ev.turns || !validUsage(ev.usage)) ev.spendUnknown = true;
   return ev;
 }
 
@@ -76,10 +91,12 @@ export function promptFiles(processName?: string): { name: string; file: string 
 }
 /** The front matter keys a prompt may set; govern.ts and ask() read each of them. */
 export const PROMPT_KEYS = ["description", "effort", "model", "repairs", "rules", "schema"] as const;
+/** The most repair calls a prompt may request after the initial model call. */
+export const MAX_REPAIRS = 5;
 /** Read prompt `name` from the first of `dirs` that has `<name>.md`, splitting its `---` front matter (LF or CRLF) into
  *  meta; fails on a bad name, a missing prompt, a front matter block with no closing `---`, a front matter line that is
  *  not `key: value` or names a key outside PROMPT_KEYS (a misspelt `schema:` would otherwise drop the check silently),
- *  no `schema:` declaration, or a `repairs` value that is not a whole number. */
+ *  no `schema:` declaration, or a `repairs` value outside the whole numbers 0 through MAX_REPAIRS. */
 export function readPrompt(name: string, dirs: string[]): PromptFile {
   if (!/^[a-z0-9-]+$/.test(name)) fail(`bad prompt name: ${name}`);
   const dir = dirs.find((d) => existsSync(join(d, `${name}.md`)));
@@ -101,6 +118,7 @@ export function readPrompt(name: string, dirs: string[]): PromptFile {
   // ask() loops 1 + repairs times and an ask with no call has no errors: a repairs value that is not a whole number 0 or
   // more would make zero calls and pass as verified, so it is refused here.
   if (meta.repairs !== undefined && !/^\d+$/.test(meta.repairs)) fail(`${f}: repairs must be a whole number, 0 or more (got ${JSON.stringify(meta.repairs)})`);
+  if (meta.repairs !== undefined && (!Number.isSafeInteger(Number(meta.repairs)) || Number(meta.repairs) > MAX_REPAIRS)) fail(`${f}: repairs must be a whole number from 0 to ${MAX_REPAIRS} (got ${JSON.stringify(meta.repairs)})`);
   if (!meta.schema) fail(`${f}: schema is required`);
   return { name, meta, body: m ? text.slice(m[0].length) : text, dir: dir! };
 }
@@ -262,8 +280,8 @@ function conform(schema: any, v: any, path: string): string[] {
  */
 export interface AskResult { ok: boolean; value?: any; errors: string[]; usage: Usage; turns: number; calls: number; out: string; seconds: number }
 /** Run prompt `name` for `p` through `codex exec`: the reply is JSON-parsed and checked against the prompt's schema and
- *  house rules, with at most `repairs` (default 1) repair calls given the errors; a reply that still fails comes back
- *  with ok=false. Writes each call's events, last message and the result under govern/ask and appends an "ask" ledger
+ *  house rules, with at most `repairs` (default 1, maximum MAX_REPAIRS) repair calls given the errors; a reply that still fails comes back
+ *  with ok=false. Writes each call's events, last message and the result in a unique directory under govern/ask and appends an "ask" ledger
  *  entry; fails before any call on a missing prompt, schema or rules file, or an unfilled placeholder. */
 export function ask(p: Project, name: string, o: { files?: string[]; vars?: Record<string, string>; images?: string[]; effort?: string; model?: string; timeoutSec?: number }): AskResult {
   const pf = readPrompt(name, promptDirs(processName(p)));
@@ -278,7 +296,8 @@ export function ask(p: Project, name: string, o: { files?: string[]; vars?: Reco
   checkSchema(schema); // before any model call: a schema validate() cannot enforce must not cost one
   const outDir = join(governDir(p.slug), "ask");
   mkdirSync(outDir, { recursive: true });
-  const id = `${stamp()}-${name}`;
+  const callDir = mkdtempSync(join(outDir, `${stamp()}-${name}-`));
+  const id = basename(callDir);
   const total: Usage = { input: 0, cached: 0, cacheWrite: 0, output: 0, reasoning: 0 };
   let turns = 0, calls = 0, errors: string[] = [], value: any;
   const callShas: string[] = []; // the sha256 of each call's stdin, in order: what the model was actually given
@@ -287,16 +306,17 @@ export function ask(p: Project, name: string, o: { files?: string[]; vars?: Reco
   const maxRepairs = Number(pf.meta.repairs ?? 1);
   let input = prompt;
   for (let attempt = 0; attempt <= maxRepairs; attempt++) {
-    const last = join(outDir, `${id}.${attempt}.txt`);
+    const last = join(callDir, `${attempt}.txt`);
     const args = execArgs({ cwd: projectDir(p.slug), schema: schemaPath, lastMessage: last, model, effort, images: o.images });
     callShas.push(sha256(input));
-    const r = spawnSync(codexBin(), args, { input, encoding: "utf8", timeout: (o.timeoutSec ?? 600) * 1000, maxBuffer: 64 * 1024 * 1024 });
+    const r = spawnSync(codexBin(), args, { input, encoding: "utf8", killSignal: MODEL_TIMEOUT_SIGNAL, timeout: (o.timeoutSec ?? 600) * 1000, maxBuffer: 64 * 1024 * 1024 });
     calls++;
     const ev = parseEvents(r.stdout ?? "");
     turns += ev.turns;
     for (const k of Object.keys(total) as (keyof Usage)[]) total[k] += ev.usage[k];
-    writeFileSync(join(outDir, `${id}.${attempt}.events.jsonl`), r.stdout ?? "");
+    writeFileSync(join(callDir, `${attempt}.events.jsonl`), r.stdout ?? "");
     errors = [];
+    if (ev.invalid) errors.push(ev.invalid);
     if (r.error) errors.push(`codex: ${r.error.message}`);
     else if (r.status !== 0) errors.push(`codex exit ${r.status}: ${(ev.errors[0] ?? r.stderr ?? "").slice(0, 300)}`);
     const text = existsSync(last) ? readFileSync(last, "utf8") : ev.message;
@@ -310,7 +330,7 @@ export function ask(p: Project, name: string, o: { files?: string[]; vars?: Reco
     input = `${prompt}\n\nYour previous reply:\n${text}\n\nIt failed these checks; reply again with the whole corrected JSON and change only what the checks require:\n- ${errors.join("\n- ")}\n`;
   }
   const ok = errors.length === 0;
-  const out = join(outDir, `${id}.json`);
+  const out = join(callDir, "result.json");
   writeFileSync(out, JSON.stringify(ok ? value : { errors, last: value }, null, 2) + "\n");
   const seconds = Math.round((Date.now() - t0) / 1000);
   // Provenance: promptSha is the rendered prompt (the first call's stdin, byte for byte), callShas every call's stdin

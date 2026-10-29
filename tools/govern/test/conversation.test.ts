@@ -587,18 +587,18 @@ test("Grok stream adapter emits tool events and covers every parse failure", asy
     for (const extra of [{ subtype: "" }, { subtype: undefined }, { is_error: true, errors: [] }]) {
       const [ev] = adapter.parse({ type: "result", subtype: "success", stop_reason: "end_turn", result: "final", ...extra });
       assert.equal(ev?.type, "error");
-      assert.match((ev as { text: string }).text, /^grok failed: subtype /);
+      assert.match((ev as { text: string }).text, /^(grok failed: subtype |invalid grok adapter event:)/);
     }
     for (const message of ["early", null]) assert.equal(adapter.parse({ type: "error", message })[0]?.type, "error");
     for (const message of ["", "  ", null]) assert.equal((adapter.parse({ type: "error", message })[0] as { text: string }).text, "grok failed");
     for (const type of ["assistant", "user"]) {
-      assert.deepEqual(adapter.parse({ type }), []);
-      assert.throws(() => adapter!.parse({ type, message: { content: {} } }));
+      assert.equal(adapter.parse({ type })[0]?.type, "error");
+      assert.equal(adapter.parse({ type, message: { content: {} } })[0]?.type, "error");
     }
     for (const extra of [{}, { usage: {}, usage_is_incomplete: true }, { usage: {}, cost_is_partial: true }]) {
       assert.deepEqual(adapter.parse({ type: "result", subtype: "success", stop_reason: "end_turn", result: "final", ...extra }), [{ type: "done", text: "final" }]);
     }
-    assert.throws(() => adapter!.parse({ type: "result", subtype: "success", stop_reason: "end_turn", result: "final", usage: { input_tokens: -1 } }), /invalid runtime usage/);
+    assert.match(adapter.parse({ type: "result", subtype: "success", stop_reason: "end_turn", result: "final", usage: { input_tokens: -1 } })[0]?.text ?? "", /invalid runtime usage/);
   } finally { adapter?.finish(); process.env = saved; }
 });
 

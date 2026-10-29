@@ -47,7 +47,7 @@ import { installSkill, skillDrift, sha256File, approxTokens, BYTES_PER_TOKEN } f
 import { HELP_RULES, TOPICS } from "./lib/helprules.ts";
 import { writeFileSync, existsSync, unlinkSync, statSync } from "node:fs";
 import { basename } from "node:path";
-import { homedir, tmpdir, userInfo } from "node:os";
+import { constants, homedir, tmpdir, userInfo } from "node:os";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const SKILL = resolve(HERE, "SKILL.md");
@@ -135,8 +135,12 @@ function cmdWork(a: Args): void {
     const args = engine === "codex" ? ["-C", repo(), first] : ["--session-id", session!, first];
     const bin = process.env[`GOVERN_${engine.toUpperCase()}_BIN`] ?? engine;
     const r = spawnSync(bin, args, { cwd: repo(), stdio: "inherit", env: openEnv(engine) });
-    appendLedger(p.slug, { kind: "done", engine, session });
-    process.exitCode = r.status ?? 0;
+    const exitCode = r.error ? 1 : r.signal ? 128 + constants.signals[r.signal] : r.status ?? 1;
+    const error = r.error?.message, signal = r.signal ?? undefined;
+    appendLedger(p.slug, { kind: "done", engine, session, exitCode, error, signal });
+    if (error) process.stderr.write(`govern: could not run ${bin}: ${error}\n`);
+    else if (signal) process.stderr.write(`govern: ${bin} terminated by ${signal}\n`);
+    process.exitCode = exitCode;
     return;
   }
   appendLedger(p.slug, { kind: "work", stage, engine, session: sessionOf(engine), skillSha: sha256File(SKILL), referenceSha: sha256File(REFERENCE) });

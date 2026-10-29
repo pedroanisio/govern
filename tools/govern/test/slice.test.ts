@@ -1,7 +1,7 @@
 import { spawnSync } from "node:child_process";
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, readFileSync, readdirSync, chmodSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, chmodSync, writeFileSync, openSync, closeSync } from "node:fs";
 import { join } from "node:path";
 import { makeEnv, govern, jsonl, write, present, setConfig, type Env, childEnv } from "./helpers.ts";
 import { sleepSync, readJson } from "../lib/util.ts";
@@ -475,4 +475,42 @@ test("sliceRunner: a standalone runner completes and cleans up its machines", ()
   assert.deepEqual(cloudLines(r), []);
   assert.equal(JSON.parse(readFileSync(join(jobDir, "slice.json"), "utf8")).phase, "ended");
   assert.deepEqual(readFileSync(join(jobDir, "out", "joined"), "utf8").trim().split("\n"), ["p1", "p2", "p3", "p4", "p5"]);
+});
+
+test("a slice deadline kills a piece that ignores SIGTERM and still runs down", { timeout: 20_000 }, () => {
+  const r = rig({ recipe: { machines: 1 } });
+  const pidFile = join(r.e.root, "stubborn.pid"), logFile = join(r.e.root, "deadline.log");
+  // Both the shell and its sleeper ignore SIGTERM; only a group SIGKILL releases the piece.
+  const piece = write(join(r.e.root, "ignore-term.sh"), `#!/bin/sh
+trap '' TERM
+echo $$ > "$STUBBORN_PID"
+sleep 60 &
+wait
+`);
+  const processFile = join(r.e.root, "PALS-Notes", "processes", "batch.json");
+  const proc = JSON.parse(readFileSync(processFile, "utf8"));
+  proc.recipes.batch.piece = ["sh", piece];
+  writeFileSync(processFile, JSON.stringify(proc));
+  const jobDir = join(r.e.root, "deadline-job");
+  write(join(jobDir, ".keep"), "");
+  const fd = openSync(logFile, "w");
+  try {
+    const result = spawnSync(process.execPath,
+      ["--disable-warning=ExperimentalWarning", new URL("../lib/sliceRunner.ts", import.meta.url).pathname, "lane", "batch", "1", "2"],
+      { env: childEnv(r.e, { ...r.env, GOVERN_JOB_DIR: jobDir, STUBBORN_PID: pidFile, SPLIT_OUT: "p1" }),
+        stdio: ["ignore", fd, fd], timeout: 12_000, killSignal: "SIGKILL" });
+    assert.ok(existsSync(pidFile), "the piece installed its SIGTERM trap");
+    assert.equal(result.error, undefined, "slice must finish before the outer watchdog kills it");
+    assert.equal(result.status, 124, readFileSync(logFile, "utf8"));
+    assert.match(readFileSync(logFile, "utf8"), /timed out after 2s/);
+    assert.deepEqual(cloudLines(r), [], "down stopped every machine");
+    assert.ok(kinds(r).includes("stop"), "the provider stop command ran");
+    assert.ok(!kinds(r).includes("join") && !kinds(r).includes("verify"));
+    const progress = JSON.parse(readFileSync(join(jobDir, "slice.json"), "utf8"));
+    assert.equal(progress.phase, "ended");
+    assert.equal(progress.up, 0);
+  } finally {
+    closeSync(fd);
+    if (existsSync(pidFile)) { try { process.kill(-Number(readFileSync(pidFile, "utf8")), "SIGKILL"); } catch { /* already gone */ } }
+  }
 });

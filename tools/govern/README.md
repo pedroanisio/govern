@@ -76,11 +76,17 @@ Both need `npm ci --ignore-scripts --prefix tools/govern`, or `make ts-deps`.
 
 From this directory, `npm run coverage`
 runs the same suite with V8 coverage inherited by child Node processes. It prints
-`govern.ts` and every `lib/**/*.ts` file sorted by branch percentage, with line
+`govern.ts` and every TypeScript source under `lib/`, `ext/`, `checks/` and
+`scripts/` (excluding tests and the `scripts/coverage.ts` driver, which starts the
+measured run and so cannot be observed by it) sorted by branch percentage, with line
 percentages and uncovered branch locations (`file:line`). The JSON has per-file
 `lines` and `branches` counts/percentages and `uncoveredBranchLines` (1-based,
-deduplicated). Coverage is reported without a threshold; the command exits
-nonzero if the suite fails.
+deduplicated). Aggregate branch counts enforce an 80% library floor (`lib/`,
+`ext/`, `checks/`) and a 60% CLI floor (`govern.ts`, `scripts/`). The console and
+JSON `gate` report include class totals and floors. The command exits nonzero
+if the suite fails, either floor is missed, profiles are unreadable, or sources
+are unobserved and measurement is incomplete. An empty profile, left by a process
+killed before it wrote one, is listed and skipped, like a process that left none.
 
 Branches are distinct non-root V8 block ranges within each function with
 `isBlockCoverage=true`; function-entry ranges contribute to lines only. A block

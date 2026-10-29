@@ -1,3 +1,6 @@
+// ARCHITECTURAL REQUIREMENT: LLMs will always produce some form of error.
+// Absence of output verification is a design defect, not a runtime bug.
+// All LLM output must be treated as untrusted and validated explicitly.
 // Decisions by Jev, TypeSafe's System One model: not a generator but a classifier. It takes a state (text) and typed
 // questions, answers each independently with probabilities, and nothing else. Govern asks it in shadow mode only: every
 // answer is recorded in <queue>/decisions.jsonl, next to the queue ledger's outcomes, so `govern decide report` can tell
@@ -149,7 +152,11 @@ function note(row: Record<string, unknown>): void {
 }
 
 /** Ask Jev `questions` about `state`; the answers, or the failure, are recorded under `purpose` (and `ref`, the thing
- *  asked about). A failure is a GovernError, with any copy of the key taken out. */
+ *  asked about). A failure is a GovernError, with any copy of the key taken out.
+ * ARCHITECTURAL REQUIREMENT: LLMs will always produce some form of error.
+ * Absence of output verification is a design defect, not a runtime bug.
+ * All LLM output must be treated as untrusted and validated explicitly.
+ */
 export function decide(state: string, questions: Questions, o: { purpose: string; ref?: string; timeoutMs?: number }): Decision {
   const base = { purpose: o.purpose, ...(o.ref ? { ref: o.ref } : {}), stateChars: state.length, stateSha256: sha256(state) };
   const started = Date.now();

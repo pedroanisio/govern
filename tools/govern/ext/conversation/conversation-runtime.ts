@@ -1,3 +1,6 @@
+// ARCHITECTURAL REQUIREMENT: LLMs will always produce some form of error.
+// Absence of output verification is a design defect, not a runtime bug.
+// All LLM output must be treated as untrusted and validated explicitly.
 import { spawn, type ChildProcess } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { join } from "node:path";
@@ -39,6 +42,11 @@ export async function run(id: string, emit?: (e: sessions.Event) => void, once =
     if (once || result.halt) return ok;
   }
 }
+/** Execute one turn under the runtime output, time, tool-state and reply checks.
+ * ARCHITECTURAL REQUIREMENT: LLMs will always produce some form of error.
+ * Absence of output verification is a design defect, not a runtime bug.
+ * All LLM output must be treated as untrusted and validated explicitly.
+ */
 async function execute(
   s: sessions.Conversation,
   r: sessions.Run,

@@ -1,6 +1,7 @@
 // The Claude Code session registry (~/.claude/sessions/<pid>.json): who is alive, and who the caller is.
 // Only pid, name, cwd, kind, status and procStart are read. The directory also holds *.key files: never opened, never printed.
 import { readdirSync, readFileSync } from "node:fs";
+import { LEGACY_PROFILES } from "./caps.ts";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { config, findRepo } from "./workspace.ts";
@@ -70,6 +71,10 @@ export function checkRecipient(to: string, runners: readonly string[]): { sessio
   if ([...runners, "auto", "owner", ...mailboxes].includes(to)) return { session: false };
   const live = liveSessions();
   if (live.some((s) => s.name === to)) return { session: true };
+  if ((LEGACY_PROFILES as readonly string[]).includes(to)) {
+    const engine = to.slice(0, to.lastIndexOf("-"));
+    return fail(`--to ${to}: ${to} is a profile, not a --to target; use --to ${engine}${to.endsWith("-write") ? " --write" : ""} (or --to ${engine} --profile ${to})`);
+  }
   const names = [...new Set(live.map((s) => s.name))].sort();
   return fail(`--to ${to}: no live session "${to}" (valid: ${[...runners, "auto", "owner", ...mailboxes, ...names].join(", ")})`);
 }
