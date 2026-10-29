@@ -152,6 +152,21 @@ test("parseEvents reads a real codex recording", () => {
   assert.equal(ev.message, "ok");
 });
 
+test("parseEvents distinguishes absent or invalid usage from measured zero", () => {
+  const turn = (usage?: unknown) => JSON.stringify({ type: "turn.completed", usage });
+  for (const raw of ["", "not JSON", '{"type":"thread.started"}', turn(), turn({}),
+    turn({ input_tokens: "1", output_tokens: 0 }), turn({ input_tokens: -1, output_tokens: 0 }),
+    turn({ input_tokens: 1, output_tokens: 0, cached_input_tokens: 2 }),
+    turn({ input_tokens: 1, output_tokens: 0, cache_write_input_tokens: 2 }),
+    turn({ input_tokens: 1, output_tokens: 0, cached_input_tokens: 1, cache_write_input_tokens: 1 }),
+    turn({ input_tokens: 0, output_tokens: 0 }) + "\n" + turn()]) {
+    assert.equal(parseEvents(raw).spendUnknown, true, raw || "empty stream");
+  }
+  const zero = parseEvents(turn({ input_tokens: 0, output_tokens: 0 }));
+  assert.equal(zero.spendUnknown, undefined);
+  assert.deepEqual(zero.usage, { input: 0, cached: 0, cacheWrite: 0, output: 0, reasoning: 0 });
+});
+
 test("validate covers the schema subset", () => {
   const s = JSON.parse(readFileSync(new URL("../processes/video/prompts/schemas/hooks.json", import.meta.url), "utf8"));
   assert.deepEqual(validate(s, { hooks: [{ text: "abc", approach: "", on_screen: "", risk: "" }, { text: "abd", approach: "", on_screen: "", risk: "" }, { text: "abe", approach: "", on_screen: "", risk: "" }], chosen: 0, reason: "r" }), []);

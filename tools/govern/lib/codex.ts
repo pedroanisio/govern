@@ -16,7 +16,12 @@ import { loadRules, applyRules } from "./rules.ts";
 const codexBin = () => process.env.GOVERN_CODEX_BIN ?? "codex";
 
 export interface Usage { input: number; cached: number; cacheWrite: number; output: number; reasoning: number }
-export interface Events { thread?: string; usage: Usage; turns: number; message?: string; errors: string[] }
+export interface Events { thread?: string; usage: Usage; spendUnknown?: boolean; turns: number; message?: string; errors: string[] }
+
+/** Token counters are measurements only when finite, non-negative and the cache partitions fit inside input. */
+export function validUsage(u: Usage): boolean {
+  return Object.values(u).every((n) => typeof n === "number" && Number.isFinite(n) && n >= 0) && u.cached + u.cacheWrite <= u.input;
+}
 
 /** Sum a `codex exec --json` event stream: thread id, token usage and turn count over completed turns, the last agent
  *  message, and the error messages of failed turns; lines that are not JSON are skipped. */
@@ -26,16 +31,20 @@ export function parseEvents(jsonl: string): Events {
     if (!line.trim()) continue;
     let o: any;
     try { o = JSON.parse(line); } catch { continue; }
-    if (o.type === "thread.started") ev.thread = o.thread_id;
-    else if (o.type === "turn.completed" && o.usage) {
+    if (o?.type === "thread.started") ev.thread = o.thread_id;
+    else if (o?.type === "turn.completed") {
       ev.turns++;
       const u = o.usage;
-      ev.usage.input += u.input_tokens ?? 0; ev.usage.cached += u.cached_input_tokens ?? 0;
-      ev.usage.cacheWrite += u.cache_write_input_tokens ?? 0; ev.usage.output += u.output_tokens ?? 0;
-      ev.usage.reasoning += u.reasoning_output_tokens ?? 0;
-    } else if (o.type === "item.completed" && o.item?.type === "agent_message") ev.message = o.item.text;
-    else if (o.type === "turn.failed" || o.type === "error") ev.errors.push(o.error?.message ?? o.message ?? JSON.stringify(o));
+      const usage = { input: u?.input_tokens, cached: u?.cached_input_tokens === undefined ? 0 : u.cached_input_tokens,
+        cacheWrite: u?.cache_write_input_tokens === undefined ? 0 : u.cache_write_input_tokens, output: u?.output_tokens,
+        reasoning: u?.reasoning_output_tokens === undefined ? 0 : u.reasoning_output_tokens };
+      if (!validUsage(usage)) { ev.spendUnknown = true; continue; }
+      ev.usage.input += usage.input; ev.usage.cached += usage.cached;
+      ev.usage.cacheWrite += usage.cacheWrite; ev.usage.output += usage.output; ev.usage.reasoning += usage.reasoning;
+    } else if (o?.type === "item.completed" && o.item?.type === "agent_message") ev.message = o.item.text;
+    else if (o?.type === "turn.failed" || o?.type === "error") ev.errors.push(o.error?.message ?? o.message ?? JSON.stringify(o));
   }
+  if (!ev.turns || !validUsage(ev.usage)) ev.spendUnknown = true;
   return ev;
 }
 

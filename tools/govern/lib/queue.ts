@@ -18,7 +18,7 @@ import { cost } from "./usage.ts";
 import { identity, live, withMutex } from "./locks.ts";
 import { prepareGrokHome, syncBackAuth } from "./grokhome.ts";
 import { prepareCodexHome, syncBackCodexAuth } from "./codexhome.ts";
-import { parseEvents, execArgs, validate, type Usage } from "./codex.ts";
+import { parseEvents, execArgs, validate, validUsage, type Usage } from "./codex.ts";
 import { type CheckDef, type ConfigChecks, configChecks, declared, verify, resolveNamed, checkNames, verifyDeclared, type Verification } from "./replycheck.ts";
 import { obj, arr, str, bool, posInt, record, literal, parseFile, keyPath, reject, type Shape } from "./shape.ts";
 import { checkProfile } from "./capcheck.ts";
@@ -682,7 +682,7 @@ export function runSealed(reg: Registry, prof: Profile, cwd: string, p: string, 
   try { syncBackCodexAuth(); } catch { /* the login stays where codex left it */ }
   const ev = parseEvents(r.stdout ?? "");
   const text = existsSync(o.lastMessage) ? readFileSync(o.lastMessage, "utf8") : ev.message;
-  return { text, usage: ev.usage, turns: ev.turns, error: r.error ? r.error.message : r.status !== 0 ? `codex exit ${r.status}: ${clip(ev.errors[0] ?? r.stderr ?? "", 300)}` : undefined };
+  return { text, ...(ev.spendUnknown ? (r.pid > 0 ? { spendUnknown: true } : {}) : { usage: ev.usage }), turns: ev.turns, error: r.error ? r.error.message : r.status !== 0 ? `codex exit ${r.status}: ${clip(ev.errors[0] ?? r.stderr ?? "", 300)}` : undefined };
 }
 
 /** The environment half of a codex seal: CODEX_HOME is govern's own (lib/codexhome.ts: the login and a minimal config, nothing else), so the
@@ -804,13 +804,20 @@ export function grokResult(stdout: string | undefined, status: number | null, st
 export function claudeResult(stdout: string | undefined, status: number | null, stderr: string | undefined, error?: Error, structured = false): RunOut {
   let o: any;
   try { o = JSON.parse(stdout ?? ""); } catch { return { error: `no JSON result (exit ${status}): ${clip(stderr ?? stdout ?? "", 300)}` }; }
-  const u = o.usage ?? {};
+  const u = o.usage;
+  const input = u?.input_tokens, output = u?.output_tokens;
+  const cached = u?.cache_read_input_tokens === undefined ? 0 : u.cache_read_input_tokens;
+  const cacheWrite = u?.cache_creation_input_tokens === undefined ? 0 : u.cache_creation_input_tokens;
+  const counters = { input, cached, cacheWrite, output, reasoning: 0 };
+  const usage = Object.values(counters).every((n) => typeof n === "number" && Number.isFinite(n) && n >= 0)
+    ? { ...counters, input: input + cached + cacheWrite } : undefined;
+  const known = usage && validUsage(usage);
   // a run that exited nonzero is a failure even when it printed a result
   const exit = error || o.is_error || status == null || status === 0 ? undefined : `exit ${status}: ${clip(stderr ?? "", 300)}`;
   return {
     text: structured ? (o.structured_output === undefined ? undefined : JSON.stringify(o.structured_output)) : o.result, turns: o.num_turns,
     ...(structured && o.structured_output === undefined && typeof o.result === "string" && o.result.trim() ? { prose: o.result } : {}),
-    usage: { input: (u.input_tokens ?? 0) + (u.cache_read_input_tokens ?? 0) + (u.cache_creation_input_tokens ?? 0), cached: u.cache_read_input_tokens ?? 0, cacheWrite: u.cache_creation_input_tokens ?? 0, output: u.output_tokens ?? 0, reasoning: 0, costUsd: o.total_cost_usd },
+    ...(known ? { usage: { ...usage, costUsd: o.total_cost_usd } } : { spendUnknown: true }),
     error: o.is_error ? `${clip(String(o.result ?? o.subtype), 300)}` : error ? error.message : exit,
   };
 }
