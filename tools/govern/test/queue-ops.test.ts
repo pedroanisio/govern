@@ -241,6 +241,35 @@ test("task retry files a new open message from a failed one: same fields, chaine
   assert.match(claimed.err, /claimed/);
 });
 
+test("a retried task keeps its named checks and verification command", (t) => {
+  const e = env();
+  inProcess(e, t);
+  const verify = [process.execPath, "-e", "process.exit(1)"];
+  const orig = queue.send({ project: "film", task: "check", kind: "TASK", from: "owner", to: "codex", summary: "check", body: "BODY", files: [], access: "read-only", check: ["file-refs"], verify });
+  queue.close(orig.id, "owner", "retry with the same verification contract");
+  const retried = queue.retry(orig.id, { note: "try again" });
+  assert.deepEqual(retried.check, ["file-refs"]);
+  assert.deepEqual(retried.verify, verify);
+  assert.deepEqual(stored(e, "open", retried.id).check, ["file-refs"]);
+  assert.deepEqual(stored(e, "open", retried.id).verify, verify);
+});
+
+test("a retried unverified reply is refused before its rejected body reaches a runner", (t) => {
+  const e = env();
+  inProcess(e, t);
+  const verification = { state: "unverified" as const, reason: "missing.ts:7 does not exist" };
+  const orig = queue.send({ project: "film", task: "check", kind: "REVIEW", from: "owner", to: "codex", summary: "rejected review", body: "UNTRUSTED-BODY at missing.ts:7", files: [], access: "read-only", verification });
+  queue.close(orig.id, "owner", "inspect before retry");
+  const retried = queue.retry(orig.id, { note: "try again" });
+  process.env.FAKE_CODEX_SCRIPTS = reply(e, "ok", answer);
+  const lines = queue.dispatch({ only: "codex" });
+  assert.match(lines.join("\n"), /refused: unverified reply: missing\.ts:7 does not exist/);
+  assert.equal(existsSync(join(e.root, "stdin.log")), false, "rejected content must never launch the runner");
+  assert.deepEqual(queue.find(retried.id)!.m.verification, verification);
+  assert.equal(queue.find(retried.id)!.state, "failed");
+  assert.doesNotMatch(queue.prompt(queue.find(retried.id)!.m), /UNTRUSTED-BODY/);
+});
+
 test("a retry of a retry counts against the original's two", (t) => {
   const e = env();
   const mk = lib(e, t);

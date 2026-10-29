@@ -463,6 +463,7 @@ export function retry(ref: string, o: { note: string; to?: string; write?: boole
   const copy = send({
     project: orig.project, task: orig.task, kind: orig.kind, from: orig.from, to, summary: orig.summary, body: orig.body, files: orig.files,
     access: target.access, ...(target.profile ? { profile: target.profile } : {}), ...(orig.lane ? { lane: orig.lane } : {}),
+    ...(orig.verification ? { verification: orig.verification } : {}), ...(orig.check ? { check: orig.check } : {}), ...(orig.verify ? { verify: orig.verify } : {}),
     ...(orig.estimateUsd !== undefined ? { estimateUsd: orig.estimateUsd } : {}), ...(timeoutSec !== undefined ? { timeoutSec } : {}),
     replyTo: orig.id, retryOf: orig.id, retryNote: note,
   });
