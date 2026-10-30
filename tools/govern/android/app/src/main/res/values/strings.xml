@@ -58,6 +58,9 @@
     <string name="finished_at">Finished %1$s</string>
     <string name="exit_when">Exit when: %1$s</string>
     <string name="check_command">Check: %1$s</string>
+    <string name="frozen_badge">Frozen since %1$s: "%2$s"</string>
+    <string name="frozen_continued_as">Continued as %1$s</string>
+    <string name="imported_from">Imported from %1$s (exported %2$s)</string>
     <string name="stages">Stages</string>
     <string name="gates">Gates</string>
     <string name="approved_at">Approved %1$s</string>

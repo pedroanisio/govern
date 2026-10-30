@@ -156,7 +156,10 @@ private fun DecisionCard(decision: PendingDecision, state: HostState, model: App
                 }
             }
             ChecksSummary(decision.lane.checkSummary)
-            Button(open, modifier = Modifier.fillMaxWidth(), colors = ButtonDefaults.buttonColors(containerColor = DecisionLime, contentColor = DecisionGreen)) { Text(stringResource(R.string.review_decision)) }
+            decision.lane.frozen?.let { FrozenBadge(it) }
+            decision.lane.importedFrom?.let { Text(stringResource(R.string.imported_from, it.slug, it.exportedAt), style = MaterialTheme.typography.bodySmall, color = Color.White) }
+            if (decision.lane.frozen == null)
+                Button(open, modifier = Modifier.fillMaxWidth(), colors = ButtonDefaults.buttonColors(containerColor = DecisionLime, contentColor = DecisionGreen)) { Text(stringResource(R.string.review_decision)) }
         }
     }
 }
@@ -286,6 +289,7 @@ fun DecisionScreen(lane: LaneDetail, gateName: String, state: HostState, model: 
             TextButton({ model.closeDecision(); if (model.session.value == null) model.closeLane() }) { Text(stringResource(R.string.back)) }
             Text(stringResource(R.string.decision_gate, gateName), style = MaterialTheme.typography.headlineMedium)
             Text(stringResource(R.string.decision_location, state.host.name, lane.slug), style = FieldCode)
+            lane.frozen?.let { FrozenBadge(it) }
             Text(stringResource(R.string.approve_version), style = MaterialTheme.typography.titleLarge)
             Text(stringResource(if (artifact != null) R.string.applies_artifact else R.string.no_artifact))
         }

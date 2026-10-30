@@ -41,7 +41,7 @@ fun evidenceRows(lane: LaneDetail): List<EvidenceRow> = lane.checks.map { Eviden
 fun latestArtifact(artifacts: List<ArtifactView>): ArtifactView? = artifacts.maxByOrNull { Instant.parse(it.modifiedAt) }
 fun canDecide(lane: LaneDetail, gateName: String, person: String, scope: List<String>?, live: Boolean, busy: Boolean, quote: String): Boolean {
     val gate = lane.gates.firstOrNull { it.name == gateName } ?: return false
-    return live && !busy && canControl(scope, lane.slug) && validQuote(quote) &&
+    return live && !busy && lane.frozen == null && canControl(scope, lane.slug) && validQuote(quote) &&
         awaitsDecision(gate, lane.stage, lane.state, person) &&
         gate.needs.all { need -> lane.gates.any { it.name == need && it.approved } }
 }

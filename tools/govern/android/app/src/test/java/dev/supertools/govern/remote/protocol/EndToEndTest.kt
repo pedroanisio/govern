@@ -114,6 +114,32 @@ class EndToEndTest {
     }
 
     @Test
+    fun frozenLaneRefusesApproval() {
+        // `govern freeze` from this test's own environment: `env()` strips every GOVERN_/CLAUDE_CODE_/CODEX_/GROK_
+        // variable, so this runs as a plain terminal, exactly as `verifyQuote` requires for the owner's own words.
+        govern("freeze", "r1", "--quote", "pausing the release for review")
+        val printed = govern("remote", "pair", "--url", "http://127.0.0.1:$port")
+        val link = PairingLinks.parse(Regex("govern-remote://\\S+").find(printed)!!.value)
+        serve()
+        val kp = keyPair()
+        val pairing = GovernClient(Endpoint(link.url, null, link.pin)).pair(link.code, "jvm test", Base64.getEncoder().encodeToString(kp.public.encoded))
+        val client = GovernClient(Endpoint(link.url, pairing.token, link.pin))
+
+        val desk = client.desk()
+        val lane = desk.lanes.single()
+        assertEquals("pausing the release for review", lane.frozen?.quote)
+        assertFalse(lane.gates.single().approved)
+
+        val approval = signed(kp, Actions.approve("r1", "final", "approve it anyway"))
+        val refusal = assertThrows(ServerException::class.java) { client.act(approval) }
+        assertEquals(409, refusal.status)
+        assertTrue(refusal.message!!, refusal.message!!.contains("r1 is frozen since"))
+        assertTrue(refusal.message!!, refusal.message!!.contains("pausing the release for review"))
+        assertTrue(refusal.message!!, refusal.message!!.contains("govern unfreeze r1 --quote"))
+        assertFalse(client.lane("r1").gates.single().approved)
+    }
+
+    @Test
     fun sessionJobAndArtifactReads() {
         val fake = File(governTs.parentFile, "test/fake-conversation.ts")
         val config = File(root, "govern.config.json")

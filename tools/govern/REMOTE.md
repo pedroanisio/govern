@@ -177,7 +177,11 @@ authenticated by OS account mapping, which a phone does not have; they stay at t
 ## Wire reference
 
 Every response is JSON with `Cache-Control: no-store`, except the stream and raw artifact downloads. Field sets are closed except for the additive ledger display fields described below; clients must accept
-those optional fields. Other field additions require a new protocol version. The types are in
+those optional fields. Other field additions require a new protocol version — which is why `govern-remote/1` closed
+when this document's session, job and artifact reads first shipped, as `govern-remote/2`. Lane freezing and import
+(PLAN, Freeze and Import) add `frozen`, `importedFrom` and `importedApprovals` to that same `/2`, not a further `/3`,
+because the server, the app and this document change together in one commit: no client is ever left holding the
+narrower `/2` field set while a server already sends the wider one. The types are in
 [ext/remote/remote-view.ts](ext/remote/remote-view.ts) on the server and
 [Model.kt](android/app/src/main/java/dev/supertools/govern/remote/protocol/Model.kt) in the app, and both are tested
 against the same fixtures in [android/app/src/test/resources/fixtures/](android/app/src/test/resources/fixtures/).
@@ -190,7 +194,7 @@ against the same fixtures in [android/app/src/test/resources/fixtures/](android/
 | `GET /v1/pair/request?id=ID` | `Govern-Pair-Secret` | — | `{protocol, state, expires, person: string|null, deviceId: string|null, token: string|null, lanes: string[]|null, host}` |
 | `POST /v1/pair/cancel` | request secret | `{id, secret}` | `{protocol, state: "cancelled"}` |
 | `GET /v1/desk` | bearer | — | `Desk`: `{protocol, at, lanes: LaneSummary[], unreadable: {slug, error}[], telemetry, sessions, unreadableSessions: {id, error}[], engines, viewer, host}` |
-| `GET /v1/lane?slug=S` | bearer | — | `LaneDetail`: a summary plus stages, exit, check, data, human tasks, alerts, last 20 notes, last 30 ledger lines, checks, last 10 jobs, artifacts, sessions and decisions |
+| `GET /v1/lane?slug=S` | bearer | — | `LaneDetail`: a summary plus stages, exit, check, data, human tasks, alerts, last 20 notes, last 30 ledger lines, checks, last 10 jobs, artifacts, sessions, decisions and importedApprovals |
 | `GET /v1/session?id=ID&messages=N` | bearer | `messages` defaults to 20, range 1..100 | `{protocol, session: SessionSummary, messages: MessageView[], runs: RunView[]}`; last N messages and last 5 runs |
 | `GET /v1/job?lane=S&id=J&lines=N` | bearer | `lines` defaults to 100, range 1..1000 | `{protocol, lane, job: JobView, argv: string[], log: string[]}`; log tail |
 | `GET /v1/artifact?lane=S&name=N` | bearer | plain artifact name | raw bytes, streamed; maximum 32 MiB |
@@ -275,6 +279,18 @@ All nullable fields below are present as JSON null when absent. Arrays are prese
 `LaneSummary.checkSummary` is `{passed, failed, total}`: total counts stages with checks, while passed and failed
 count the latest ledger check per such stage. Stages without a result contribute only to total.
 `GateView` also carries `approvedBy: string|null`, `quote: string|null` and `artifact: ArtifactRef|null`.
+
+A frozen or imported lane must be visible on the phone without letting it act on either: `LaneSummary` (and so
+`LaneDetail`, which extends it) carries `frozen: FrozenView|null` and `importedFrom: ImportedFromView|null`.
+`FrozenView` is `{at, quote, continuedAs: string|null}` — the owner's freeze, without `by` (always `owner`) or the
+freeze's `source`, which the phone has no use for. `ImportedFromView` is `{slug, exportedAt, mode: full|template}` —
+where the lane came from, without the source workspace's hash, the ledger offset or the bundle's hash, which would
+leak detail the phone cannot act on. `LaneDetail` also carries `importedApprovals: ImportedApprovalView[]`, each
+`{gate, at, by: string|null, quote}` — the source lane's approvals, carried as history only (PLAN, Import): they are
+never live gates, and the app must never treat one as a reason a gate is already decided. The app shows a frozen
+badge and the import origin on a frozen or imported lane, and hides Approve, Changes and Ack there: `save()` and
+`appendLedger()` already refuse the write (PLAN, Freeze), so a signed action against a frozen lane gets 409 naming
+the freeze, and hiding the control locally only saves the owner a round trip.
 
 The desk's `sessions` are readable conversations, newest updated first. A session whose lane cannot be loaded with a GovernError keeps its lane name and has `needsDecision: false`. Unreadable conversations are skipped and listed in `unreadableSessions: {id: string, error: string}[]`, always present; a scoped device receives it empty, since an unreadable conversation's lane is unknown. `engines` is the sorted list of capability profile
 names whose engines are claude, codex or grok, plus workspace `conversationAdapters` names (deduplicated). `host` is the server hostname. `viewer` is

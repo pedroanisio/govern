@@ -35,6 +35,14 @@ export interface SessionSummary { id: string; title: string; lane: string | null
 export interface RunView { id: string; state: conversations.RunState; createdAt: string; startedAt: string | null; endedAt: string | null; verification: MessageView["verification"]; error: string | null }
 export interface SessionDetail { protocol: string; session: SessionSummary; messages: MessageView[]; runs: RunView[] }
 export interface JobDetail { protocol: string; lane: string; job: JobView; argv: string[]; log: string[] }
+/** A lane's freeze, as the phone needs it: the owner's words and the pointer, without `by` (always "owner") or `source`
+ *  (a terminal/session detail the phone has no use for). */
+export interface FrozenView { at: string; quote: string; continuedAs: string | null }
+/** Where an imported lane came from, as the phone needs it: not the bundle's hash or the source workspace's, which the
+ *  phone cannot act on and should not learn. */
+export interface ImportedFromView { slug: string; exportedAt: string; mode: "full" | "template" }
+/** One of the source lane's approvals, carried as history only (PLAN, Import): never a live gate. */
+export interface ImportedApprovalView { gate: string; at: string; by: string | null; quote: string }
 export interface LaneSummary {
   checkSummary: CheckSummary;
   slug: string; title: string; process: string; kind: string;
@@ -44,6 +52,8 @@ export interface LaneSummary {
   working: { engine: string; since: string } | null;
   lastNote: { at: string; text: string } | null;
   lastJob: { name: string; status: string; at: string } | null;
+  frozen: FrozenView | null;
+  importedFrom: ImportedFromView | null;
 }
 export interface LaneError { slug: string; error: string }
 export interface AlertView { id: string; stage: string; kind: string; at: string; message: string; acknowledgedAt: string | null }
@@ -53,6 +63,7 @@ export interface LaneDetail extends LaneSummary {
   stages: string[]; exit: string | null; check: string | null; finished: string | null;
   data: Record<string, unknown>; humanTasks: { stage: string; assignee: string | null; completedBy: string | null }[];
   alerts: AlertView[]; notes: { at: string; stage: string; text: string }[]; ledger: LedgerView[];
+  importedApprovals: ImportedApprovalView[];
 }
 export interface Telemetry {
   day: string;
@@ -91,6 +102,8 @@ export function laneSummary(p: Project): LaneSummary {
     working: lastWork?.kind === "work" ? { engine: String(lastWork.engine ?? "?"), since: String(lastWork.t) } : null,
     lastNote: note ? { at: note.at, text: clip(note.text, 240) } : null,
     lastJob: lastJob ? { name: String(lastJob.name), status: String(lastJob.status), at: String(lastJob.t) } : null,
+    frozen: p.frozen ? { at: p.frozen.at, quote: p.frozen.quote, continuedAs: p.frozen.continuedAs ?? null } : null,
+    importedFrom: p.importedFrom ? { slug: p.importedFrom.slug, exportedAt: p.importedFrom.exportedAt, mode: p.importedFrom.mode } : null,
   };
 }
 
@@ -189,6 +202,7 @@ export function laneDetail(p: Project, o: { notes?: number; ledger?: number } = 
     alerts: (p.alerts ?? []).map((a) => ({ id: a.id, stage: a.stage, kind: a.kind, at: a.at, message: a.message, acknowledgedAt: a.acknowledgedAt ?? null })),
     notes: p.notes.slice(-(o.notes ?? 20)),
     ledger: readJsonl(ledgerFile(p.slug)).slice(-(o.ledger ?? 30)).map(ledgerView),
+    importedApprovals: (p.importedApprovals ?? []).map((a) => ({ gate: a.gate, at: a.at, by: a.by ?? null, quote: a.quote })),
   };
 }
 

@@ -455,6 +455,12 @@ test("the server's desk and lane match the app's contract fixtures (android/app/
   await serving(e, async (base) => {
     const phone = await pairPhone(base);
     assert.equal((await act(base, phone, action(phone, { action: "approve", lane: "r1", gate: "final", quote: "looks right" }))).status, 200);
+    // frozen and imported provenance, added after the approval above so it still succeeds against an unfrozen lane
+    const p = stateOf(e);
+    p.frozen = { at: "2026-10-20T09:00:00.000Z", by: "owner", quote: "pausing for the contract fixture", source: { kind: "terminal", user: "owner" } };
+    p.importedFrom = { slug: "source-lane", workspace: "w".repeat(64), exportedAt: "2026-10-19T09:00:00.000Z", ledgerOffset: 3, bundleSha256: "b".repeat(64), mode: "full" };
+    p.importedApprovals = [{ gate: "final", at: "2026-10-18T09:00:00.000Z", by: "owner", quote: "approved before the move", source: { kind: "terminal", user: "owner" } }];
+    write(join(e.projects, "r1", "govern.json"), JSON.stringify(p));
     const desk = await (await fetch(`${base}/v1/desk`, { headers: auth(phone) })).json();
     assert.deepEqual(shapeDiff(desk, JSON.parse(readFileSync(join(dir, "desk.json"), "utf8"))), []);
     const lane = await (await fetch(`${base}/v1/lane?slug=r1`, { headers: auth(phone) })).json();
@@ -469,7 +475,70 @@ test("the server's desk and lane match the app's contract fixtures (android/app/
     // the comparison saw every part of the desk: none of these came back empty or null
     const d = desk as any;
     for (const [what, v] of Object.entries({ working: d.lanes[0].working, lastNote: d.lanes[0].lastNote, lastJob: d.lanes[0].lastJob, unreadable: d.unreadable[0],
-      tokens: d.telemetry.tokens[0], dispatcher: d.telemetry.dispatcher, inbox: d.telemetry.inbox[0], gates: d.lanes[0].gates[0] })) assert.ok(v, `${what} is empty`);
+      tokens: d.telemetry.tokens[0], dispatcher: d.telemetry.dispatcher, inbox: d.telemetry.inbox[0], gates: d.lanes[0].gates[0],
+      frozen: d.lanes[0].frozen, importedFrom: d.lanes[0].importedFrom })) assert.ok(v, `${what} is empty`);
+    assert.deepEqual(d.lanes[0].frozen, { at: "2026-10-20T09:00:00.000Z", quote: "pausing for the contract fixture", continuedAs: null });
+    assert.deepEqual(d.lanes[0].importedFrom, { slug: "source-lane", exportedAt: "2026-10-19T09:00:00.000Z", mode: "full" });
+    const l = lane as any;
+    assert.ok(l.importedApprovals[0], "importedApprovals is empty");
+    assert.deepEqual(l.importedApprovals[0], { gate: "final", at: "2026-10-18T09:00:00.000Z", by: "owner", quote: "approved before the move" });
+  });
+});
+
+test("the desk shows frozen lanes and imported provenance", async () => {
+  const e = makeEnv("frozen-provenance"), previous = process.env.GOVERN_REPO;
+  process.env.GOVERN_REPO = e.root;
+  try {
+    const { create, save } = await import("../lib/project.ts");
+    const views = await import("../ext/remote/remote-view.ts");
+    write(join(e.root, "PALS-Notes/processes/release.json"), JSON.stringify(PROCESS));
+    const p = create("r1", { process: "release", title: "Release one" });
+    assert.equal(views.laneSummary(p).frozen, null);
+    assert.equal(views.laneSummary(p).importedFrom, null);
+    assert.deepEqual(views.laneDetail(p).importedApprovals, []);
+
+    p.frozen = { at: "2026-10-20T09:00:00.000Z", by: "owner", quote: "pausing for maintenance",
+      source: { kind: "terminal", user: "owner" }, continuedAs: "workspace-b:ops/new-r1" };
+    p.importedFrom = { slug: "source-lane", workspace: "w".repeat(64), exportedAt: "2026-10-19T09:00:00.000Z", ledgerOffset: 7, bundleSha256: "b".repeat(64), mode: "full" };
+    p.importedApprovals = [
+      { gate: "final", at: "2026-10-18T09:00:00.000Z", by: "owner", quote: "approved before the move", source: { kind: "terminal", user: "owner" } },
+      { gate: "legal", at: "2026-10-17T09:00:00.000Z", quote: "cleared before the move" }, // an approval recorded before `by`/`source` existed
+    ];
+    save(p, { allowFrozen: true });
+
+    const summary = views.laneSummary(p);
+    assert.deepEqual(summary.frozen, { at: "2026-10-20T09:00:00.000Z", quote: "pausing for maintenance", continuedAs: "workspace-b:ops/new-r1" });
+    assert.deepEqual(summary.importedFrom, { slug: "source-lane", exportedAt: "2026-10-19T09:00:00.000Z", mode: "full" });
+
+    const detail = views.laneDetail(p);
+    assert.deepEqual(detail.importedApprovals, [
+      { gate: "final", at: "2026-10-18T09:00:00.000Z", by: "owner", quote: "approved before the move" },
+      { gate: "legal", at: "2026-10-17T09:00:00.000Z", by: null, quote: "cleared before the move" },
+    ]);
+
+    const desk = views.deskView();
+    const lane = desk.lanes.find((l) => l.slug === "r1")!;
+    assert.deepEqual(lane.frozen, summary.frozen);
+    assert.deepEqual(lane.importedFrom, summary.importedFrom);
+  } finally { if (previous === undefined) delete process.env.GOVERN_REPO; else process.env.GOVERN_REPO = previous; }
+});
+
+test("a signed approval on a frozen lane is refused", async () => {
+  const e = setup();
+  const frozen = govern(e, ["freeze", "r1", "--quote", "pausing the release for review"]);
+  assert.equal(frozen.code, 0, frozen.out + frozen.err);
+  await serving(e, async (base) => {
+    const phone = await pairPhone(base);
+    const desk = await (await fetch(`${base}/v1/desk`, { headers: auth(phone) })).json() as any;
+    assert.ok(desk.lanes[0].frozen, "the desk must show the freeze");
+    assert.equal(desk.lanes[0].frozen.quote, "pausing the release for review");
+    const r = await act(base, phone, action(phone, { action: "approve", lane: "r1", gate: "final", quote: "approve anyway" }));
+    assert.equal(r.status, 409, await r.clone().text());
+    const body = await r.json() as any;
+    assert.match(body.error, /r1 is frozen since/);
+    assert.match(body.error, /pausing the release for review/);
+    assert.match(body.error, /govern unfreeze r1 --quote/);
+    assert.equal(stateOf(e).approvals.final, undefined, "the frozen lane's approvals must not change");
   });
 });
 
