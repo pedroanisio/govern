@@ -33,6 +33,11 @@ export interface Note { at: string; stage: string; text: string }
 export interface Frozen { at: string; by: string; quote: string; source: Source; continuedAs?: string }
 /** Another lane this one waits on: met when that lane is finished, or (with `stage`) has moved past that stage. */
 export interface After { lane: string; stage?: string }
+/** Where an imported lane came from: the source's identity and the bundle that carried it (lib/importlane.ts; PLAN,
+ *  Import). New state on every imported lane; absent on a lane never imported. */
+export interface ImportedFrom { slug: string; workspace: string; exportedAt: string; ledgerOffset: number; bundleSha256: string; mode: "full" | "template" }
+/** One of the source lane's approvals, carried as history only: a clone must never be a way around a gate. */
+export interface ImportedApproval extends Approval { gate: string }
 export interface Project {
   version: 1;
   slug: string;
@@ -66,6 +71,8 @@ export interface Project {
   approvals: Record<string, Approval>;
   notes: Note[];
   frozen?: Frozen;
+  importedFrom?: ImportedFrom;
+  importedApprovals?: ImportedApproval[];
 }
 
 /** Lane `slug`'s folder under the lanes folder. */
@@ -108,11 +115,16 @@ const SOURCE: Shape<Source> = (v, at) => {
     : reject(at, `must be {kind: "terminal", user}, {kind: "session", sessionId, message, messageAt}, {kind: "device", device, signedBody, signature} or {kind: "slack", team, user, timestamp, signedBody, signature}`);
 };
 const FROZEN: Shape<Frozen> = obj({ at: iso, by: name, quote: str, source: SOURCE }, { continuedAs: str });
+/** A whole number, 0 or more: ledgerOffset carries no sign and may be 0 (nothing exported yet). */
+const nat: Shape<number> = (v, p) => (Number.isInteger(v) && (v as number) >= 0 ? (v as number) : reject(p, "must be a whole number, 0 or more"));
+const IMPORTED_FROM: Shape<ImportedFrom> = obj({ slug: name, workspace: str, exportedAt: iso, ledgerOffset: nat, bundleSha256: str, mode: literal("full", "template") });
+const IMPORTED_APPROVAL: Shape<ImportedApproval> = obj({ gate: name, at: iso, quote: str }, { by: name, source: SOURCE });
 const PROJECT = obj(
   { version: literal(1), slug: name, title: str, kind: name, lang: name, stage: name, created: iso,
     commands: record(COMMAND), files: record(str), approvals: record(obj({ at: iso, quote: str }, { by: name, source: SOURCE })),
     notes: arr(obj({ at: iso, stage: name, text: str })) },
-  {processSnapshot:SNAPSHOT, runtime:RUNTIME, events:EVENTS, alerts:ALERTS, invocation:INVOCATION, data: record(value), workflow: WORKFLOW, humanTasks: HUMAN_TASKS, votes: VOTES, process: name, parent: str, finished: iso, checks: record(name), after: arr(obj({ lane: name }, { stage: name })), frozen: FROZEN },
+  {processSnapshot:SNAPSHOT, runtime:RUNTIME, events:EVENTS, alerts:ALERTS, invocation:INVOCATION, data: record(value), workflow: WORKFLOW, humanTasks: HUMAN_TASKS, votes: VOTES, process: name, parent: str, finished: iso, checks: record(name), after: arr(obj({ lane: name }, { stage: name })), frozen: FROZEN,
+   importedFrom: IMPORTED_FROM, importedApprovals: arr(IMPORTED_APPROVAL) },
 );
 
 /** Parse the text of lane `slug`'s govern.json (`file`): typed, unknown keys refused, then checked against what the types
@@ -377,6 +389,12 @@ function fromFirstSwap(xs: Entry[]): Entry[] {
   const i = xs.findIndex((e) => e.from != null);
   return i < 0 ? [] : xs.slice(i);
 }
+/** The ledger index of `stage`'s last check-accept entry, or -1 when it was never accepted. */
+function lastAccepted(led: Entry[], stage: string): number {
+  let accepted = -1;
+  led.forEach((e, i) => { if (e.kind === "check-accept" && e.stage === stage) accepted = i; });
+  return accepted;
+}
 /** The check changes that wait on the owner, per stage of the lane's process, in process order.
  *  Rule: a change is a swap when what it replaces existed — a check-set whose `from` (the stage's effective check before
  *  it: the lane's own, else the process's) is not null, or a cmd-set / cmd-rm of a command that existed and was then the
@@ -384,20 +402,34 @@ function fromFirstSwap(xs: Entry[]): Entry[] {
  *  accepts it: a `check-accept` entry for a stage clears every change for that stage ledgered before it. Nothing else
  *  clears it: not a passing check (a gamed check is what produces that pass), not moving back and forth, not leaving the
  *  stage. Setup — a stage with no check getting one, a command defined for the first time — is ledgered but is no swap;
- *  after a pending swap it still shows in the chain, which runs from the first swap on. */
+ *  after a pending swap it still shows in the chain, which runs from the first swap on.
+ *  An `import` entry (lib/importlane.ts; PLAN, Import) is different: every check and command the import wrote is
+ *  untrusted regardless of whether it replaced anything in this (new) lane, so once one sits in the window the usual
+ *  "first swap" filter is skipped and every check-set / cmd-set since it is flagged, `from: null` included. */
 export function pendingCheckChanges(p: Project, led: Entry[]): PendingChanges[] {
   if (p.finished) return [];
   const res: PendingChanges[] = [];
   for (const stage of stagesOf(p)) {
-    let accepted = -1;
-    led.forEach((e, i) => { if (e.kind === "check-accept" && e.stage === stage) accepted = i; });
-    const since = led.slice(accepted + 1).filter((e) => stagesOfChange(e).includes(stage));
-    const sets = fromFirstSwap(since.filter((e) => e.kind === "check-set"));
+    const accepted = lastAccepted(led, stage);
+    const sinceAll = led.slice(accepted + 1);
+    const imported = sinceAll.some((e) => e.kind === "import");
+    const since = sinceAll.filter((e) => stagesOfChange(e).includes(stage));
+    const sets = imported ? since.filter((e) => e.kind === "check-set") : fromFirstSwap(since.filter((e) => e.kind === "check-set"));
     const names = [...new Set(since.filter((e) => e.kind !== "check-set").map((e) => String(e.name)))];
-    const cmds = names.map((name) => ({ name, changes: fromFirstSwap(since.filter((e) => e.kind !== "check-set" && e.name === name)) })).filter((x) => x.changes.length);
+    const cmds = names
+      .map((name) => ({ name, changes: imported ? since.filter((e) => e.kind !== "check-set" && e.name === name) : fromFirstSwap(since.filter((e) => e.kind !== "check-set" && e.name === name)) }))
+      .filter((x) => x.changes.length);
     if (sets.length || cmds.length) res.push({ stage, sets, cmds });
   }
   return res;
+}
+/** Whether `stage`'s effective check still carries an unaccepted import: an `import` ledger entry sits since the
+ *  stage's last accept, and pendingCheckChanges still has something to accept for it. An imported check must not pass
+ *  a stage until the owner accepts it (PLAN, Import: "no stage can pass on one until the owner accepts it"). */
+export function importUnaccepted(p: Project, led: Entry[], stage = p.stage): boolean {
+  const accepted = lastAccepted(led, stage);
+  if (!led.slice(accepted + 1).some((e) => e.kind === "import")) return false;
+  return pendingCheckChanges(p, led).some((x) => x.stage === stage);
 }
 const shownCommand = (c: unknown) => (c == null ? "none" : commandLine(c as string[] | Command));
 
