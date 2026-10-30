@@ -164,8 +164,8 @@ govern task send --to codex|claude|grok|<runner>|<profile>|auto|owner|<session> 
 ## Freezing, exporting, importing and cloning a lane
 
 See [PORTABILITY.md](PORTABILITY.md) for the full picture (the bundle format, what a copy does not inherit, and why).
-This section is the command-level detail; two of these are the owner's alone, never an agent's: freezing a lane and
-accepting an imported lane's checks.
+This section is the command-level detail; three of these are the owner's alone, never an agent's: freezing a lane,
+accepting an imported lane's checks, and accepting an import itself.
 
 - **Freeze and unfreeze.** `govern freeze <slug> --quote "<the owner's own words>" [--continued-as TEXT]` stops the
   lane's work and makes it read-only; `govern unfreeze <slug> --quote "<the owner's own words>"` lifts it. Both verify
@@ -192,12 +192,20 @@ accepting an imported lane's checks.
   workspace lacks instead of refusing), and verifies every device approval's signature — only then does it write the
   new lane, through a temporary folder renamed into place. Every check the import brings along needs
   `govern check <slug> <stage> --accept --quote "<the owner's own words>"` before that stage can pass: **this
-  acceptance is the owner's, like an approval — never run it for an imported check yourself.**
+  acceptance is the owner's, like an approval — never run it for an imported check yourself.** Beyond checks, the
+  whole lane is quarantined: `jobs.start` refuses every command (`run`, `slice`, `check`, `advance`, a stage's
+  `onError.compensate`) of a lane whose ledger holds an `import` entry with no later `import-accept` one, naming
+  `govern check <slug> --accept-import --quote "<the owner's own words>"` — **this, too, is the owner's alone, and
+  it also counts as accepting every stage's flagged check changes.** `govern brief <slug>` lists what there is to
+  review while quarantined: every command with its full argv, the pinned process's name and hash, and every command
+  the process names outside a stage check.
 - **Clone.** `govern clone <slug> --as NEW [--template] [--exclude GLOB]...` exports the lane to a bundle under the
   workspace's own state folder, imports it as `NEW`, then deletes the file; the source's `govern.json` stays
   byte-identical and its ledger gains only the `export` entry. Without `--template`, `NEW` continues at the source's
   stage with its history, gates closed and checks flagged as any import's are; `--template` starts `NEW` at the
-  process's first stage with no history. `--exclude` works as it does for `export`.
+  process's first stage with no history. `--exclude` works as it does for `export`. `NEW` is not quarantined: its
+  `import` ledger entry carries `via: "clone"`, which the quarantine rule ignores, since the bundle it carries is one
+  this workspace wrote to itself — its commands run at once.
 
 ## Never, in production work
 

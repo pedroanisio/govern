@@ -201,7 +201,7 @@ const stagesChecking = (p: Project, name: string): string[] => stagesOf(p).filte
 
 /** Write the verified, rewritten lane into a temporary folder under the lanes folder and rename it into place: one
  *  rename, so a failed write leaves nothing behind. The target slug is re-checked free here, inside the lane's lock. */
-function writeLane(bundle: Bundle, parsed: Project, slug: string, now: string): ImportResult {
+function writeLane(bundle: Bundle, parsed: Project, slug: string, now: string, via?: "clone"): ImportResult {
   if (existsSync(stateFile(slug))) fail(`import refuses ${slug}: a lane already exists there`);
   mkdirSync(projectsDir(), { recursive: true });
   const tmp = mkdtempSync(join(projectsDir(), ".import-"));
@@ -212,6 +212,7 @@ function writeLane(bundle: Bundle, parsed: Project, slug: string, now: string): 
     const ledgerLines = [stamped({
       kind: "import", from: bundle.body.source.slug, workspace: bundle.body.source.workspace,
       bundleSha256: bundle.sha256, mode: bundle.body.mode, ledgerOffset: bundle.body.source.ledgerOffset,
+      ...(via ? { via } : {}),
     })];
     for (const [name, cmd] of Object.entries(parsed.commands)) ledgerLines.push(stamped({ kind: "cmd-set", name, from: null, to: cmd, stages: stagesChecking(parsed, name) }));
     writeFileSync(join(tmp, "govern", "ledger.jsonl"), ledgerLines.map((l) => l + "\n").join(""));
@@ -238,7 +239,7 @@ function writeLane(bundle: Bundle, parsed: Project, slug: string, now: string): 
 /** `govern import <bundle> [--as SLUG] [--drop-deps]`: verify everything (bundle shape and format, hashes, paths, the
  *  rewritten lane against its own PROJECT shape and pinned process snapshot, the target slug, dependencies, device
  *  approval signatures), then write the new lane atomically. */
-export function importBundle(bundlePath: string, o: { as?: string; dropDeps: boolean }): ImportResult {
+export function importBundle(bundlePath: string, o: { as?: string; dropDeps: boolean; via?: "clone" }): ImportResult {
   const bundle = readBundle(bundlePath);
   checkFilePaths(bundle.body.files);
   checkIds(bundle.body);
@@ -247,5 +248,5 @@ export function importBundle(bundlePath: string, o: { as?: string; dropDeps: boo
   const draft = rewriteLane(bundle, slug, now, o.dropDeps);
   const parsed = parseProject(stateFile(slug), JSON.stringify(draft), slug);
   verifyDeviceApprovals(parsed.importedApprovals ?? [], bundle.body.devices);
-  return transaction(slug, () => writeLane(bundle, parsed, slug, now));
+  return transaction(slug, () => writeLane(bundle, parsed, slug, now, o.via));
 }

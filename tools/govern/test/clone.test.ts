@@ -68,6 +68,21 @@ test("clone --template starts at the first stage with no history", () => {
   assert.deepEqual(importedLedger(e, "p2"), [], "a template clone must carry no ledger history");
 });
 
+test("a clone's commands run with no acceptance: clone is exempt from the import quarantine", () => {
+  const e = makeEnv("clone-quarantine-exempt");
+  ok(e, ["new", "p", "--kind", "ops"]);
+  const marker = join(e.root, "clone-marker");
+  ok(e, ["cmd", "p", "touch", "--", "node", "-e", 'require("node:fs").writeFileSync(process.argv[1], "ran")', marker]);
+
+  ok(e, ["clone", "p", "--as", "p2"]);
+  assert.equal(ledger(e, "p2")[0].kind, "import");
+  assert.equal(ledger(e, "p2")[0].via, "clone");
+
+  const r = govern(e, ["run", "p2", "touch"]);
+  assert.equal(r.code, 0, r.out + r.err);
+  assert.ok(existsSync(marker), "a cloned lane's command must run with no --accept-import");
+});
+
 test("clone leaves the source lane unchanged", () => {
   const e = makeEnv("clone-source-unchanged");
   ok(e, ["new", "p", "--kind", "ops"]);

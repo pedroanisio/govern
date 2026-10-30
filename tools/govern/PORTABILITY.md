@@ -17,9 +17,10 @@ this workspace or another one. A copy always gets a new identity: two workspaces
 moving a lane to another workspace is freeze, export, import. Copying a lane never copies through a gate — every
 approval the source had becomes history, not a live grant.
 
-Freezing a lane and accepting an imported lane's checks are both the owner's decisions. **An agent never runs
-`govern freeze`, `govern unfreeze`, or `govern check <slug> <stage> --accept`.** Those three change what govern will
-let the lane do next, on the owner's say-so alone, the same as `govern approve` and `govern allow`.
+Freezing a lane, accepting an imported lane's checks, and accepting an import itself are all the owner's decisions.
+**An agent never runs `govern freeze`, `govern unfreeze`, `govern check <slug> <stage> --accept`, or
+`govern check <slug> --accept-import`.** Those four change what govern will let the lane do next, on the owner's
+say-so alone, the same as `govern approve` and `govern allow`.
 
 ## Freeze and unfreeze
 
@@ -158,6 +159,33 @@ An imported check cannot run before the owner accepts it, either: `govern check`
 all refuse to start an imported, unaccepted check's job (the same `importUnaccepted` rule, enforced once, in
 `runCheck` itself, so no caller can reach the job by a different path) — see "Checks" below.
 
+### Quarantine: every command needs `govern check <slug> --accept-import`
+
+A per-stage check acceptance is not the whole of it. Every command of a freshly imported lane is refused, not just
+its checks: `govern run`, `govern slice`, `govern check` (even a plain run of a stage's check), `govern advance` and a
+stage's `onError.compensate` job all reach a command the same way, through `jobs.start` (lib/jobs.ts) — so that one
+function, next to its frozen refusal, refuses every command of a lane whose ledger holds an `import` entry with no
+later `import-accept` entry:
+
+```
+<slug>: imported lane, not accepted: review it with govern brief <slug>, then govern check <slug> --accept-import --quote "…"
+```
+
+`govern brief <slug>` (and `govern import`'s own printed output) lists what there is to review while a lane sits in
+this state: every command the lane carries with its full argv, the pinned process's name and snapshot hash, and
+every command the process names outside a stage check — today, a stage's `onError.compensate` — each marked by the
+stage and the role it is used in.
+
+`govern check <slug> --accept-import --quote "<the owner's own words>"` lifts the quarantine: the quote is verified
+exactly as `govern approve` and `govern check <slug> <stage> --accept` verify one, and this one decision also counts
+as the owner's acceptance of every stage's flagged check changes — a per-stage `--accept` is still there for an
+ordinary local swap, but an import needs no more than this one call to run again. It is refused on a lane with
+nothing to accept, and, like every other write, on a frozen lane.
+
+`govern clone` is exempt: a clone's bundle is one this workspace writes to itself, to an exclusively-created
+temporary file, and imports back in the same call — its commands already run here. Its `import` ledger entry carries
+`via: "clone"`, which the quarantine rule ignores, so a cloned lane's commands run with no acceptance.
+
 **If the workspace does not have the process the bundle's lane names** (and the bundle carries no pinned process
 snapshot of its own), step 5 refuses the import: the same `no process "<name>" (have: ...)` error a hand-edited
 `govern.json` naming an unknown process would get from the strict parser. Bring the process file to this workspace
@@ -177,7 +205,7 @@ starts closed, and every check it brought along is flagged until the owner looks
 |---|---|
 | **Identity** | A new `slug` and `created` timestamp. `importedFrom: { slug, workspace, exportedAt, ledgerOffset, bundleSha256, mode }` is added, naming exactly where it came from. |
 | **Gates** | `approvals` and `votes` (where the process has them) start **empty** — every gate is closed, whatever was approved at the source. The source's approvals move to `importedApprovals: [{ gate, at, by, quote, source }]`: history to read, never a live grant. |
-| **Checks** | The ledger opens with an `import` entry, then one `cmd-set` entry (`from: null`) per command the lane carries. This means `pendingCheckChanges` flags **every** imported check from the first moment, and none of them even **runs** — not from `govern check`, not from `govern advance`, not from the Stop hook — until the owner runs `govern check <slug> <stage> --accept --quote "<their own words>"` for that stage: exactly the acceptance a locally redefined check needs, applied to the whole imported set. |
+| **Checks** | The ledger opens with an `import` entry, then one `cmd-set` entry (`from: null`) per command the lane carries. This means `pendingCheckChanges` flags **every** imported check from the first moment, and none of them even **runs** — not from `govern check`, not from `govern advance`, not from the Stop hook, not from `govern run` or `govern slice` naming it by hand — until the owner runs `govern check <slug> <stage> --accept --quote "<their own words>"` for that stage: exactly the acceptance a locally redefined check needs, applied to the whole imported set. Nothing else the lane carries runs either (see Quarantine, above) until `govern check <slug> --accept-import --quote "…"`, whatever stage-level accepts have already been done. |
 | **Live state** | `frozen`, `alerts`, `events` and the runtime's own deadlines are dropped. Active stages re-enter their runtime at the moment of import, so timers (deadlines, escalations) start counting from here, not from wherever they stood at the source. Human tasks keep their recorded assignees but lose their recorded completions — the new lane's owner decides what is actually done here. |
 | **History** | The source's whole ledger is written to `govern/imported-ledger.jsonl`, its conversations to `govern/imported-conversations/<id>.json`, and the device keys it carried to `govern/imported-devices.json`. None of these is live state: they are a record to read, and new conversations on the imported lane start fresh. |
 | **Template mode** | A template-mode bundle starts the new lane at its process's first stage, with that process's default setup data — there is no source history to carry in the first place. |
@@ -205,6 +233,10 @@ conversations) carried as an import would carry them — gates closed, checks fl
 all.
 
 `--exclude GLOB` (repeatable) skips matching paths exactly as it does for `govern export`.
+
+Unlike any other import, `NEW` is not quarantined (see Quarantine, above): clone's `import` ledger entry carries
+`via: "clone"`, which the rule ignores, because the bundle it was written from is one this workspace made for itself
+in the same call. Its commands run immediately; its checks still need the usual per-stage `--accept`.
 
 To copy a lane to **another** workspace, there is no single command: export it in the source workspace, move the
 bundle file there yourself, then `govern import` it in the destination. Clone only ever makes a new lane in the same

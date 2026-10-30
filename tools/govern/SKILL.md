@@ -58,7 +58,7 @@ govern task send --to codex --project <slug> --task <name> --kind TASK --summary
 - The owner sees complete drafts, not intermediate passes.
 - `govern publish <slug>` only after the owner's go in this session; run the commands it prints unchanged.
 - Setup that grants access (pairing a phone, `peer`, `mesh`, `remote`) is the owner's alone: never run it, never ask for a code.
-- `govern freeze`, `unfreeze` and accepting an imported lane's flagged checks are the owner's, like a gate; `govern export` without `--freeze` is read-only.
+- `govern freeze`, `unfreeze` and accepting an import or its flagged checks are the owner's, like a gate; `govern export` without `--freeze` is read-only.
 
 ## Never, in production work
 

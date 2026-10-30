@@ -14,7 +14,7 @@ import { join, dirname, resolve, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import { randomUUID, createHash } from "node:crypto";
 import { GovernError, EXIT_STATE, fail, usage, parseArgs, opt, flag, many, flagNames, secondsOpt, nowIso, readJsonl, kTok, clip, type Args, type FlagSpec } from "./lib/util.ts";
-import { stagesOf, load, save, create, stageOf, brief, appendLedger, resolveFile, ledgerFile, projectDir, checkSlug, checkOf, pendingCheckChanges, importUnaccepted, blockedBy, laneState, driftWarning, laneSlugs, laneRows, stateFile, argvOf, commandLine, frozenMessage, type Project, type Command } from "./lib/project.ts";
+import { stagesOf, load, save, create, stageOf, brief, appendLedger, resolveFile, ledgerFile, projectDir, checkSlug, checkOf, pendingCheckChanges, importUnaccepted, importQuarantined, quarantineDetail, blockedBy, laneState, driftWarning, laneSlugs, laneRows, stateFile, argvOf, commandLine, frozenMessage, type Project, type Command } from "./lib/project.ts";
 import { importBundle } from "./lib/importlane.ts";
 import * as conversation from "./lib/conversation.ts";
 import { processes, getProcess, processOf, listLine, show, manualOf } from "./lib/process.ts";
@@ -294,6 +294,7 @@ function cmdImport(a: Args): void {
   const bundlePath = resolve(a._[1] ?? usage("govern import <bundle> [--as SLUG] [--drop-deps]"));
   const r = importBundle(bundlePath, { as: opt(a, "as"), dropDeps: flag(a, "drop-deps") });
   out(`${r.slug}: imported ${r.mode} bundle from ${bundlePath} (sha256 ${r.bundleSha256}) — every imported check needs the owner's acceptance before it can pass a stage`);
+  out(quarantineDetail(load(r.slug)).join("\n"));
 }
 
 /** `govern clone <slug> --as NEW [--template] [--exclude GLOB]…`: export the lane to a bundle file under the
@@ -311,7 +312,9 @@ function cmdClone(a: Args): void {
   writeFileSync(tmp, JSON.stringify(bundle), { mode: 0o600, flag: "wx" });
   appendLedger(slug, { kind: "export", mode: bundle.body.mode, bundleSha256: bundle.sha256, out: tmp, ledgerOffset: bundle.body.source.ledgerOffset });
   try {
-    const r = importBundle(tmp, { as, dropDeps: false });
+    // A clone's bundle is one this workspace wrote to itself (above, exclusively), so its commands already run
+    // here: `via: "clone"` exempts it from the quarantine every other import sits in (lib/project.ts, importQuarantined).
+    const r = importBundle(tmp, { as, dropDeps: false, via: "clone" });
     out(`${slug}: cloned as ${r.slug} (${r.mode} bundle, sha256 ${r.bundleSha256})`);
   } finally {
     unlinkSync(tmp);
@@ -347,6 +350,16 @@ function runCheck(p: Project, name: string, stage = p.stage): { ok: boolean; exi
  *  check changes (lib/project.ts, pendingCheckChanges). A set's `from` is the stage's effective check before it. */
 function cmdCheck(a: Args): void {
   const p = load(a._[1]);
+  if (flag(a, "accept-import")) {
+    const quote = opt(a, "quote");
+    if (!quote || quote.trim().length < 2) usage(`--quote is required: the owner's own words accepting the import of ${p.slug} (only the owner accepts)`);
+    if (!importQuarantined(readJsonl(ledgerFile(p.slug)))) fail(`${p.slug}: nothing to accept — it is not a quarantined import`);
+    const source = verifyQuote(quote!);
+    p.notes.push({ at: nowIso(), stage: p.stage, text: `owner accepted the import of ${p.slug}: "${quote}"` });
+    save(p);
+    appendLedger(p.slug, { kind: "import-accept", quote, by: "owner", source });
+    return out(`${p.slug}: the owner accepted the import`);
+  }
   if (flag(a, "accept")) {
     const stage = stageOf(a._[2], p);
     const quote = opt(a, "quote");
@@ -1084,9 +1097,11 @@ export const COMMANDS: readonly Cmd[] = [
   { name: "bpmn", section: 1, flags: { value: ["svg", "scene", "png", "width", "height"], bool: ["static"] },
     lines: [["<process|lane> [--svg FILE] [--scene FILE] [--png FILE] [--width N --height N] [--static]", "the BPMN diagram of a process, with the live state of the lanes on it, or of one lane with its own progress (SVG to stdout by default; --scene writes a scene-render scene, --png renders it with $SCENE_RENDER or scene-render on PATH; --static omits the live state)"]],
     run: cmdBpmn },
-  { name: "check", section: 1, flags: { value: ["set", "stage", "quote"], bool: ["accept"] },
+  { name: "check", section: 1, flags: { value: ["set", "stage", "quote"], bool: ["accept", "accept-import"] },
     lines: [["<slug> [--set <command> --stage <stage>]", "run the stage's exit check (or set the lane's own: ledgered; a swap is flagged)"],
-      ["<slug> <stage> --accept --quote \"<the owner's words>\"", "the owner accepts that stage's flagged check changes"]], run: cmdCheck },
+      ["<slug> <stage> --accept --quote \"<the owner's words>\"", "the owner accepts that stage's flagged check changes"],
+      ["<slug> --accept-import --quote \"<the owner's words>\"", "the owner accepts an imported lane: lifts the quarantine jobs.start holds it under (every command refused until\nthen) and counts as accepting every stage's flagged check changes too; refused on a lane with nothing to accept"]],
+    run: cmdCheck },
   { name: "advance", section: 1, flags: { value: ["note", "stage"] },
     lines: [["<slug> [--stage STAGE] [--note \"<evidence>\"]", "next stage: needs the check to pass (or --note when none and none is required) and the gate"]], run: cmdAdvance },
   { name: "dep", section: 1, flags: { value: ["after", "rm"] },

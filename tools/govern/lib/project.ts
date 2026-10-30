@@ -389,10 +389,11 @@ function fromFirstSwap(xs: Entry[]): Entry[] {
   const i = xs.findIndex((e) => e.from != null);
   return i < 0 ? [] : xs.slice(i);
 }
-/** The ledger index of `stage`'s last check-accept entry, or -1 when it was never accepted. */
+/** The ledger index of `stage`'s last check-accept entry, or of a later lane-wide `import-accept` (govern check
+ *  --accept-import clears every stage's imported check changes in one decision), or -1 when neither ever happened. */
 function lastAccepted(led: Entry[], stage: string): number {
   let accepted = -1;
-  led.forEach((e, i) => { if (e.kind === "check-accept" && e.stage === stage) accepted = i; });
+  led.forEach((e, i) => { if ((e.kind === "check-accept" && e.stage === stage) || e.kind === "import-accept") accepted = i; });
   return accepted;
 }
 /** The check changes that wait on the owner, per stage of the lane's process, in process order.
@@ -431,7 +432,33 @@ export function importUnaccepted(p: Project, led: Entry[], stage = p.stage): boo
   if (!led.slice(accepted + 1).some((e) => e.kind === "import")) return false;
   return pendingCheckChanges(p, led).some((x) => x.stage === stage);
 }
+
+/** Whether the lane is quarantined: its ledger holds an `import` entry (not a clone's — a clone's bundle is one this
+ *  workspace wrote to itself and ran here already, ledgered `via: "clone"`) with no later `import-accept` entry.
+ *  `jobs.start` refuses every command of a quarantined lane: check, advance, run, slice, compensate and anything
+ *  else, until the owner accepts the import (govern check <slug> --accept-import --quote "…"). */
+export function importQuarantined(led: Entry[]): boolean {
+  const imported = led.findLastIndex((e) => e.kind === "import" && e.via !== "clone");
+  if (imported < 0) return false;
+  return !led.slice(imported + 1).some((e) => e.kind === "import-accept");
+}
+
 const shownCommand = (c: unknown) => (c == null ? "none" : commandLine(c as string[] | Command));
+/** While a lane sits quarantined (importQuarantined): what the owner reviews before `--accept-import` — every
+ *  command it carries with its full argv, the pinned process's name and snapshot hash, and every command the
+ *  process names outside a stage check (today, a stage's `onError.compensate`), each marked by where it is used. */
+export function quarantineDetail(p: Project): string[] {
+  const pr = processOf(p);
+  const L: string[] = [`⚠ imported lane, not accepted: govern check ${p.slug} --accept-import --quote "<the owner's own words>"`];
+  L.push(`process: ${pr.name}${p.processSnapshot ? ` (pinned ${p.processSnapshot.hash.slice(0, 12)})` : ""}`);
+  const cmds = Object.entries(p.commands);
+  L.push(`commands: ${cmds.length ? cmds.map(([n, c]) => `${n} = ${commandLine(c)}`).join(" · ") : "(none)"}`);
+  for (const s of pr.stages) {
+    if (s.check) L.push(`  stage ${s.name} check: "${s.check}"`);
+    if (s.onError?.compensate) L.push(`  stage ${s.name} onError.compensate: "${s.onError.compensate}"`);
+  }
+  return L;
+}
 
 /** The compact context an AI session starts from instead of exploring the repo. */
 export function brief(p: Project, o: { notes?: number } = {}): string {
@@ -447,6 +474,7 @@ export function brief(p: Project, o: { notes?: number } = {}): string {
   L.push(`${label}${kinded ? ` · lang ${p.lang}` : ""}${p.parent ? ` · from ${p.parent}` : ""} · stage ${n}/${list.length} ${p.stage}${p.finished ? " (finished)" : ""} · folder ${rel(dir)}`);
   if (p.frozen) L.push(`⚠ ${frozenNote(p.frozen)}`);
   const led = readJsonl(ledgerFile(p.slug));
+  if (importQuarantined(led)) L.push(...quarantineDetail(p));
   const drift = driftWarning(p, led);
   if (drift) L.push(drift);
   if (manualOf(pr)) L.push(`manual: govern manual ${pr.name}`);

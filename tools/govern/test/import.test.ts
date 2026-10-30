@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { readFileSync, existsSync, readdirSync } from "node:fs";
 import { userInfo } from "node:os";
 import { createHash, createPublicKey, generateKeyPairSync, sign as cryptoSign, verify as cryptoVerify } from "node:crypto";
-import { makeEnv, govern, write, jsonl, type Env } from "./helpers.ts";
+import { makeEnv, govern, write, jsonl, setConfig, type Env } from "./helpers.ts";
 import { FORMAT, MAX_FILES, MAX_FILE_BYTES } from "../lib/bundle.ts";
 
 function ok(e: Env, args: string[]): string {
@@ -255,7 +255,14 @@ test("imported checks must be accepted by the owner before they can pass a stage
   assert.notEqual(r1.code, 0, r1.out);
   assert.match(r1.err, /imported.*not accepted/);
 
+  // Accepting the stage's own flagged check is not the whole of it: the lane is still quarantined (jobs.start
+  // refuses every command, the check included) until the owner also accepts the import itself.
   ok(e, ["check", "p2", "plan", "--accept", "--quote", "reviewed the imported check"]);
+  const r1b = govern(e, ["advance", "p2"]);
+  assert.notEqual(r1b.code, 0, r1b.out);
+  assert.match(r1b.err, /imported lane, not accepted/);
+
+  ok(e, ["check", "p2", "--accept-import", "--quote", "reviewed the import"]);
   const r2 = govern(e, ["advance", "p2"]);
   assert.equal(r2.code, 0, r2.out + r2.err);
 });
@@ -277,10 +284,18 @@ test("a plain `govern check` refuses to run an imported, unaccepted check", () =
   assert.match(r1.err, /govern check p2 plan --accept --quote/);
   assert.ok(!existsSync(marker), "the imported, unaccepted check must not run");
 
+  // The stage's own flagged check is accepted, but the lane as a whole is still quarantined (jobs.start): the check
+  // still must not run until the owner also accepts the import itself.
   ok(e, ["check", "p2", "plan", "--accept", "--quote", "reviewed the imported check"]);
+  const r1b = govern(e, ["check", "p2"]);
+  assert.notEqual(r1b.code, 0, r1b.out);
+  assert.match(r1b.err, /imported lane, not accepted/);
+  assert.ok(!existsSync(marker), "accepting the stage's check alone must not lift the import quarantine");
+
+  ok(e, ["check", "p2", "--accept-import", "--quote", "reviewed the import"]);
   const r2 = govern(e, ["check", "p2"]);
   assert.equal(r2.code, 0, r2.out + r2.err);
-  assert.ok(existsSync(marker), "after the owner accepts it, the check runs");
+  assert.ok(existsSync(marker), "after the owner accepts the import, the check runs");
 });
 
 test("the Stop hook does not run an imported, unaccepted check, and does not block the stop on it", () => {
@@ -302,6 +317,123 @@ test("the Stop hook does not run an imported, unaccepted check, and does not blo
   assert.equal(s.code, 0, s.err);
   assert.equal(s.out.trim(), "", "the hook must not block the stop on an unaccepted imported check");
   assert.ok(!existsSync(marker), "the Stop hook must not run the imported, unaccepted check");
+});
+
+test("govern run refuses an imported, unaccepted lane's command; --accept-import lets it run", () => {
+  const e = makeEnv("import-quarantine-run");
+  ok(e, ["new", "p", "--kind", "ops"]);
+  const marker = join(e.root, "run-marker");
+  ok(e, ["cmd", "p", "touch", "--", "node", "-e", 'require("node:fs").writeFileSync(process.argv[1], "ran")', marker]);
+
+  const out = join(e.root, "bundle.json");
+  ok(e, ["export", "p", "--out", out]);
+  ok(e, ["import", out, "--as", "p2"]);
+
+  const r1 = govern(e, ["run", "p2", "touch"]);
+  assert.notEqual(r1.code, 0, r1.out);
+  assert.match(r1.err, /imported lane, not accepted/);
+  assert.match(r1.err, /govern check p2 --accept-import --quote/);
+  assert.ok(!existsSync(marker), "an imported, unaccepted lane's command must not run");
+  assert.ok(!existsSync(join(e.projects, "p2", "govern", "jobs")), "no job folder: the command must be refused before anything starts");
+
+  ok(e, ["check", "p2", "--accept-import", "--quote", "reviewed the import"]);
+  const r2 = govern(e, ["run", "p2", "touch"]);
+  assert.equal(r2.code, 0, r2.out + r2.err);
+  assert.ok(existsSync(marker), "after the owner accepts the import, the command runs");
+});
+
+test("--accept-import is refused without a quote, and on a lane with nothing to accept", () => {
+  const e = makeEnv("import-quarantine-refuse-accept");
+  ok(e, ["new", "p", "--kind", "ops"]);
+  const r1 = govern(e, ["check", "p", "--accept-import", "--quote", "nothing was imported here"]);
+  assert.notEqual(r1.code, 0, r1.out);
+  assert.match(r1.err, /nothing to accept/);
+
+  const out = join(e.root, "bundle.json");
+  ok(e, ["export", "p", "--out", out]);
+  ok(e, ["import", out, "--as", "p2"]);
+  const r2 = govern(e, ["check", "p2", "--accept-import"]);
+  assert.notEqual(r2.code, 0, r2.out);
+  assert.match(r2.err, /--quote is required/);
+});
+
+test("govern slice refuses an imported, unaccepted lane before any machine starts", () => {
+  const e = makeEnv("import-quarantine-slice");
+  write(join(e.root, "PALS-Notes/processes/sliceproc.json"), JSON.stringify({
+    version: 1, name: "sliceproc", description: "a recipe for the quarantine test",
+    people: { owner: { user: userInfo().username, roles: ["reviewer"] } },
+    stages: [{ name: "work" }], gates: [],
+    recipes: { r1: { resource: "farm", machines: 1, split: ["true"], piece: ["true"], join: ["true"], verify: ["true"] } },
+  }));
+  setConfig(e, { resources: [{ name: "farm", kind: "vm", sharing: "shared", commands: { start: ["true"], stop: ["true"] } }] });
+  ok(e, ["new", "p", "--process", "sliceproc"]);
+
+  const out = join(e.root, "bundle.json");
+  ok(e, ["export", "p", "--out", out]);
+  ok(e, ["import", out, "--as", "p2"]);
+
+  const r = govern(e, ["slice", "p2", "r1"]);
+  assert.notEqual(r.code, 0, r.out);
+  assert.match(r.err, /imported lane, not accepted/);
+  assert.ok(!existsSync(join(e.projects, "p2", "govern", "jobs")), "no job folder: the slice must be refused before any machine starts");
+});
+
+test("accepting a stage's own flagged check does not lift the import quarantine, so advance never reaches onError.compensate", () => {
+  const e = makeEnv("import-quarantine-compensate");
+  write(join(e.root, "PALS-Notes/processes/compproc.json"), JSON.stringify({
+    version: 1, name: "compproc", description: "a failing check with a declared compensation, for the quarantine test",
+    people: { owner: { user: userInfo().username, roles: ["reviewer"] } },
+    stages: [{ name: "work", check: "chk", onError: { compensate: "comp" } }, { name: "done" }],
+    gates: [],
+  }));
+  ok(e, ["new", "p", "--process", "compproc"]);
+  ok(e, ["cmd", "p", "chk", "--", "false"]);
+  const marker = join(e.root, "compensate-marker");
+  ok(e, ["cmd", "p", "comp", "--", "node", "-e", 'require("node:fs").writeFileSync(process.argv[1], "ran")', marker]);
+
+  const out = join(e.root, "bundle.json");
+  ok(e, ["export", "p", "--out", out]);
+  ok(e, ["import", out, "--as", "p2"]);
+
+  ok(e, ["check", "p2", "work", "--accept", "--quote", "reviewed the imported check"]);
+  const r = govern(e, ["advance", "p2"]);
+  assert.notEqual(r.code, 0, r.out);
+  assert.match(r.err, /imported lane, not accepted/);
+  assert.ok(!existsSync(marker), "onError.compensate must not run while the lane is quarantined, even after the stage's own check is accepted");
+
+  ok(e, ["check", "p2", "--accept-import", "--quote", "reviewed the import"]);
+});
+
+test("brief lists every command a quarantined lane carries, including a stage's onError.compensate", () => {
+  const e = makeEnv("import-quarantine-brief");
+  write(join(e.root, "PALS-Notes/processes/compproc.json"), JSON.stringify({
+    version: 1, name: "compproc", description: "a failing check with a declared compensation, for the quarantine test",
+    people: { owner: { user: userInfo().username, roles: ["reviewer"] } },
+    stages: [{ name: "work", check: "chk", onError: { compensate: "comp" } }, { name: "done" }],
+    gates: [],
+  }));
+  ok(e, ["new", "p", "--process", "compproc"]);
+  ok(e, ["cmd", "p", "chk", "--", "false"]);
+  ok(e, ["cmd", "p", "comp", "--", "true"]);
+
+  const out = join(e.root, "bundle.json");
+  ok(e, ["export", "p", "--out", out]);
+  ok(e, ["import", out, "--as", "p2"]);
+
+  const b = ok(e, ["brief", "p2"]);
+  assert.match(b, /imported lane, not accepted/);
+  assert.match(b, /govern check p2 --accept-import --quote/);
+  assert.match(b, /chk = false/);
+  assert.match(b, /comp = true/);
+  assert.match(b, /stage work check: "chk"/);
+  assert.match(b, /stage work onError\.compensate: "comp"/);
+
+  const imp = ok(e, ["import", out, "--as", "p3"]);
+  assert.match(imp, /stage work onError\.compensate: "comp"/, "govern import's own output lists the same detail");
+
+  ok(e, ["check", "p2", "--accept-import", "--quote", "reviewed the import"]);
+  const b2 = ok(e, ["brief", "p2"]);
+  assert.doesNotMatch(b2, /imported lane, not accepted/);
 });
 
 test("import refuses dependencies on lanes the workspace does not have unless --drop-deps", () => {
