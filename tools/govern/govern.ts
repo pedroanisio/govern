@@ -14,7 +14,8 @@ import { join, dirname, resolve, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import { randomUUID, createHash } from "node:crypto";
 import { GovernError, EXIT_STATE, fail, usage, parseArgs, opt, flag, many, flagNames, secondsOpt, nowIso, readJsonl, kTok, clip, type Args, type FlagSpec } from "./lib/util.ts";
-import { stagesOf, load, save, create, stageOf, brief, appendLedger, resolveFile, ledgerFile, projectDir, checkSlug, checkOf, pendingCheckChanges, blockedBy, laneState, driftWarning, laneSlugs, laneRows, stateFile, argvOf, commandLine, type Project, type Command } from "./lib/project.ts";
+import { stagesOf, load, save, create, stageOf, brief, appendLedger, resolveFile, ledgerFile, projectDir, checkSlug, checkOf, pendingCheckChanges, blockedBy, laneState, driftWarning, laneSlugs, laneRows, stateFile, argvOf, commandLine, frozenMessage, type Project, type Command } from "./lib/project.ts";
+import * as conversation from "./lib/conversation.ts";
 import { processes, getProcess, processOf, listLine, show, manualOf } from "./lib/process.ts";
 import { repo, findRepo, projectsDir, packagesDir, initWorkspace, stateDir, decideConfig } from "./lib/workspace.ts";
 import { emptyRecord, PROTO } from "./lib/shape.ts";
@@ -215,6 +216,54 @@ function cmdAllow(a: Args): void {
   const source = verifyQuote(quote!);
   allowances.grant(al, extra, quote!, source, owner);
   out(`${al.name}: +${extra} ${allowances.unitName(al)} approved by ${owner} · limit ${Math.round((al.limit + allowances.status(al).extra) * 1e6) / 1e6}`);
+}
+
+/** What of the lane's work is in flight: a running job, a running turn of a conversation bound to it, or a claimed queue
+ *  task for it, each named. Empty when nothing is. */
+function laneInFlight(slug: string): string[] {
+  const found: string[] = [];
+  for (const id of jobs.list(slug)) if (jobs.state(slug, id).status === "running") found.push(`running job ${id}`);
+  for (const c of conversation.list()) if (c.lane === slug && c.runs.some((r) => r.state === "running")) found.push(`running conversation ${c.id}`);
+  for (const { state, m } of queue.all()) if (state === "claimed" && (m.lane === slug || m.project === slug)) found.push(`claimed queue task ${m.id}`);
+  return found;
+}
+
+/** `govern freeze <slug> --quote Q [--continued-as TEXT]`: stop the lane's work and make it read-only, in the owner's
+ *  own words (verified exactly as govern approve verifies one). Refused while any of the lane's work is in flight.
+ *  Freezing an already-frozen lane only records where the work continued, with --continued-as; it changes nothing else. */
+function cmdFreeze(a: Args): void {
+  const p = load(a._[1]);
+  const quote = opt(a, "quote");
+  if (!quote || quote.trim().length < 2) usage("--quote is required: the owner's own words freezing the lane");
+  const continuedAs = opt(a, "continued-as");
+  const source = verifyQuote(quote!);
+  if (p.frozen) {
+    if (!continuedAs) return out(`${p.slug}: ${frozenMessage(p.slug, p.frozen)}`);
+    p.frozen = { ...p.frozen, continuedAs };
+    save(p, { allowFrozen: true });
+    appendLedger(p.slug, { kind: "freeze", continuedAs });
+    return out(`${p.slug}: continued as ${continuedAs}`);
+  }
+  const inFlight = laneInFlight(p.slug);
+  if (inFlight.length) fail(`${p.slug}: cannot freeze while work is in flight: ${inFlight.join(", ")}`);
+  const at = nowIso();
+  p.frozen = { at, by: "owner", quote, source, ...(continuedAs ? { continuedAs } : {}) };
+  save(p, { allowFrozen: true });
+  appendLedger(p.slug, { kind: "freeze", at, quote, by: "owner", source, ...(continuedAs ? { continuedAs } : {}) });
+  out(`${p.slug}: frozen`);
+}
+
+/** `govern unfreeze <slug> --quote Q`: lift a freeze, in the owner's own words. */
+function cmdUnfreeze(a: Args): void {
+  const p = load(a._[1]);
+  if (!p.frozen) return out(`${p.slug}: not frozen — nothing changed`);
+  const quote = opt(a, "quote");
+  if (!quote || quote.trim().length < 2) usage("--quote is required: the owner's own words lifting the freeze");
+  const source = verifyQuote(quote!);
+  delete p.frozen;
+  save(p, { allowFrozen: true });
+  appendLedger(p.slug, { kind: "unfreeze", quote, by: "owner", source });
+  out(`${p.slug}: unfrozen`);
 }
 
 /** Run the stage's exit check as a foreground job; records it in the ledger, prints nothing. */
@@ -935,6 +984,10 @@ export const COMMANDS: readonly Cmd[] = [
     lines: [["<slug> <gate> --quote \"<the owner's words>\" [--by NAME]", "(gates come from the lane's process; --by: the gate's decision owner,\nrequired when the process names one other than owner. In a Claude session the quote\nmust be in a message the person typed; a Codex or Grok session is refused)"]], run: cmdApprove },
   { name: "allow", section: 0, flags: { value: ["extra", "quote", "by"] },
     lines: [["<allowance> --extra N --quote \"<the decision owner's words>\" [--by NAME]", "raise an allowance's limit by N for its current period (govern.config.json: allowances; govern usage\nlists them). --by: the allowance's decision owner, required when it names one other than owner. The quote must\ncontain N as a number (10 matches 10 and 10.0, not 100) and grants once per allowance and period. In a\nClaude session the quote must be in a message the person typed; a Codex or Grok session is refused)"]], run: cmdAllow },
+  { name: "freeze", section: 0, flags: { value: ["quote", "continued-as"] },
+    lines: [["<slug> --quote \"<the owner's words>\" [--continued-as TEXT]", "stop the lane's work and make it read-only (refused while a job, a conversation turn or a queue task of the lane\nis in flight). On an already-frozen lane, --continued-as only records where the work continued. In a Claude session\nthe quote must be in a message the person typed; a Codex or Grok session is refused"]], run: cmdFreeze },
+  { name: "unfreeze", section: 0, flags: { value: ["quote"] },
+    lines: [["<slug> --quote \"<the owner's words>\"", "lift a freeze"]], run: cmdUnfreeze },
   { name: "done", section: 0, flags: { value: ["engine"] }, lines: [["<slug> [--engine claude|codex|grok]", "end the current work segment"]],
     run: (a) => { const p = load(a._[1]); appendLedger(p.slug, { kind: "done", engine: engineOf(a), session: sessionOf(engineOf(a)) }); out(`${p.slug}: segment closed`); } },
   { name: "cmd", section: 0, flags: { value: ["timeout", "rm", "resource"] },
@@ -1235,7 +1288,7 @@ async function main(argv: string[]): Promise<void> {
   const a = parseArgs(rest, withHelp(entry.flags), label, FLAG_WORDS);
   if (flag(a, "help")) return void out(await helpFor(c.name, sub));
   a._.unshift(...lead);
-  const mutations = new Set(['new','note','approve','reject','data','human','advance','cmd','file','dep','check','event','alerts','subprocess','recover']);
+  const mutations = new Set(['new','note','approve','reject','data','human','advance','cmd','file','dep','check','event','alerts','subprocess','recover','freeze','unfreeze']);
   if (mutations.has(name)) withLaneLock(laneLockDir(a._[1]), () => entry.run!(a));
   else await entry.run!(a);
   if (c.footer !== false) ctxFooter();

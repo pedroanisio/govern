@@ -9,7 +9,7 @@ import { join, dirname, basename, resolve, relative } from "node:path";
 import { MODEL_TIMEOUT_SIGNAL, fail, stamp, sha256, GovernError, charLimit } from "./util.ts";
 import { transportEvent, STREAM_LIMIT } from "./model-transport.ts";
 import { emptyRecord } from "./shape.ts";
-import { type Project, projectDir, governDir, appendLedger, brief } from "./project.ts";
+import { type Project, projectDir, governDir, appendLedger, brief, frozenMessage } from "./project.ts";
 import { repo, promptsDir, pathEntry, configFile } from "./workspace.ts";
 import { getProcess, processName } from "./process.ts";
 import { loadRules, applyRules } from "./rules.ts";
@@ -284,6 +284,7 @@ export interface AskResult { ok: boolean; value?: any; errors: string[]; usage: 
  *  with ok=false. Writes each call's events, last message and the result in a unique directory under govern/ask and appends an "ask" ledger
  *  entry; fails before any call on a missing prompt, schema or rules file, or an unfilled placeholder. */
 export function ask(p: Project, name: string, o: { files?: string[]; vars?: Record<string, string>; images?: string[]; effort?: string; model?: string; timeoutSec?: number }): AskResult {
+  if (p.frozen) fail(frozenMessage(p.slug, p.frozen));
   const pf = readPrompt(name, promptDirs(processName(p)));
   const prompt = render(pf, p, o.files ?? [], o.vars ?? {});
   const schemaPath = resolve(pf.dir, pf.meta.schema!);

@@ -17,6 +17,7 @@ import { join, resolve, dirname, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import { MODEL_TIMEOUT_SIGNAL, fail, usage, stamp, nowIso, clip, charLimit, writeJson } from "./util.ts";
 import { repo, projectsDir, queueDir, config as workspaceConfig, expandPlaceholders } from "./workspace.ts";
+import { frozenOf, frozenMessage } from "./project.ts";
 import * as allowances from "./allowances.ts";
 import * as jobs from "./jobs.ts";
 import { cost } from "./usage.ts";
@@ -1036,6 +1037,13 @@ export function runClaimedBy(id: string, o: DispatchOpts = {}): string[] {
  *  filing. Returns the lines of what happened (one for a run, a refusal or a hold). */
 function runClaimed(m: Message, pass: Pass, o: DispatchOpts): string[] {
   const { cfg, fromConfig, maxInline, maxRuns, limits } = pass;
+  const lane = laneOf(m), frozen = lane ? frozenOf(lane) : undefined;
+  if (frozen) {
+    delete m.claim;
+    save(m, "claimed");
+    move(m, "claimed", "open");
+    return [`${m.id} → ${m.to}: held: lane frozen (${frozenMessage(lane!, frozen)})`];
+  }
   const used = threadRuns(m);
   if (used >= maxRuns) {
     const stop = send({ project: m.project, task: m.task, kind: "BLOCKED", from: "dispatcher", to: "owner", summary: `thread reached maxRuns ${maxRuns}`, body: `${m.id} (${m.kind} from ${m.from} to ${m.to}) was not run: its thread already used ${used} dispatched run(s), the limit in ${join(QUEUE(), "config.json")} (maxRuns, default 4). Decide whether it goes on: send it again yourself, or close it.`, files: [], replyTo: m.id, access: "read-only" });

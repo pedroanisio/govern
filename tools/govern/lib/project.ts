@@ -28,6 +28,9 @@ export const commandLine = (c: string[] | Command): string => {
 /** `by`: whose words (the gate's decision owner); `source`: where they were found (lib/approval.ts). Both absent on approvals recorded before they existed. */
 export interface Approval { at: string; quote: string; by?: string; source?: Source }
 export interface Note { at: string; stage: string; text: string }
+/** A lane's freeze: when, who (always "owner": freezing is the owner's decision), their words and where they came from
+ *  (lib/approval.ts), and, once named, a free-text pointer to where the work continued. */
+export interface Frozen { at: string; by: string; quote: string; source: Source; continuedAs?: string }
 /** Another lane this one waits on: met when that lane is finished, or (with `stage`) has moved past that stage. */
 export interface After { lane: string; stage?: string }
 export interface Project {
@@ -62,6 +65,7 @@ export interface Project {
   votes?: Record<string, Vote[]>;
   approvals: Record<string, Approval>;
   notes: Note[];
+  frozen?: Frozen;
 }
 
 /** Lane `slug`'s folder under the lanes folder. */
@@ -103,11 +107,12 @@ const SOURCE: Shape<Source> = (v, at) => {
     : k === "slack" ? obj({ kind: literal("slack"), team: str, user: str, timestamp: str, signedBody: str, signature: str })(v, at)
     : reject(at, `must be {kind: "terminal", user}, {kind: "session", sessionId, message, messageAt}, {kind: "device", device, signedBody, signature} or {kind: "slack", team, user, timestamp, signedBody, signature}`);
 };
+const FROZEN: Shape<Frozen> = obj({ at: iso, by: name, quote: str, source: SOURCE }, { continuedAs: str });
 const PROJECT = obj(
   { version: literal(1), slug: name, title: str, kind: name, lang: name, stage: name, created: iso,
     commands: record(COMMAND), files: record(str), approvals: record(obj({ at: iso, quote: str }, { by: name, source: SOURCE })),
     notes: arr(obj({ at: iso, stage: name, text: str })) },
-  {processSnapshot:SNAPSHOT, runtime:RUNTIME, events:EVENTS, alerts:ALERTS, invocation:INVOCATION, data: record(value), workflow: WORKFLOW, humanTasks: HUMAN_TASKS, votes: VOTES, process: name, parent: str, finished: iso, checks: record(name), after: arr(obj({ lane: name }, { stage: name })) },
+  {processSnapshot:SNAPSHOT, runtime:RUNTIME, events:EVENTS, alerts:ALERTS, invocation:INVOCATION, data: record(value), workflow: WORKFLOW, humanTasks: HUMAN_TASKS, votes: VOTES, process: name, parent: str, finished: iso, checks: record(name), after: arr(obj({ lane: name }, { stage: name })), frozen: FROZEN },
 );
 
 /** Parse the text of lane `slug`'s govern.json (`file`): typed, unknown keys refused, then checked against what the types
@@ -146,10 +151,16 @@ export function load(given: string | undefined): Project {
   if (!existsSync(f)) fail(`${slug}: no govern.json — start it with: govern new ${slug} --process NAME (or --kind long|short|ops) --title "…"`);
   return parseProject(f, readFileSync(f, "utf8"), slug);
 }
+/** The message every freeze refusal gives, naming the freeze and how to lift it. */
+export const frozenMessage = (slug: string, f: Frozen): string =>
+  `${slug} is frozen since ${f.at} ("${f.quote}")${f.continuedAs ? `; continued as ${f.continuedAs}` : ""}: govern unfreeze ${slug} --quote "…" to change it`;
+
 /** Write lane `p`'s govern.json, only after the same parse load() runs (shape and the semantic checks) passes over the
  *  exact text: govern never writes a file it would then refuse to read. A failure is that GovernError, and nothing is
- *  written. What is written is that parse's result, so the slugs in it are the folders' (no `.` segments). */
-export function save(p: Project): void {
+ *  written. What is written is that parse's result, so the slugs in it are the folders' (no `.` segments).
+ *  Refuses to write a lane whose state (the one being written) is frozen, unless `allowFrozen`: only the freeze command
+ *  itself (setting or lifting the freeze) passes that, so every other command is refused in this one place. */
+export function save(p: Project, o: { allowFrozen?: boolean } = {}): void {
   const slug = checkSlug(p.slug);
   const f = stateFile(slug);
   let q: Project;
@@ -158,6 +169,7 @@ export function save(p: Project): void {
     if (e instanceof GovernError) fail(`${e.message} (not saved: govern writes no govern.json it would refuse to read)`, e.code);
     throw e;
   }
+  if (q.frozen && !o.allowFrozen) fail(frozenMessage(slug, q.frozen));
   writeJson(f, q);
 }
 
@@ -261,8 +273,13 @@ export function afterMet(a: After): { label: string; met: boolean } {
 }
 /** The labels of the lanes this one still waits on. */
 export const blockedBy = (p: Project): string[] => (p.after ?? []).map(afterMet).filter((x) => !x.met).map((x) => x.label);
-/** "finished", "ready" / "blocked by …" for a lane with dependencies, else "". */
+/** How a frozen lane shows in brief, status and desk: the time, and the pointer once one is named. */
+export const frozenNote = (f: Frozen): string => `frozen since ${f.at}${f.continuedAs ? ` · continued as ${f.continuedAs}` : ""}`;
+
+/** "frozen since …", "finished", "ready" / "blocked by …" for a lane with dependencies, else "". A frozen lane shows that
+ *  before anything else: it is read-only regardless of what its stage or dependencies say. */
 export function laneState(p: Project): string {
+  if (p.frozen) return frozenNote(p.frozen);
   if (p.finished) return "finished";
   if (!p.after?.length) return "";
   const b = blockedBy(p);
@@ -299,8 +316,23 @@ export function driftWarning(p: Project, led: Record<string, any>[], now = Date.
   return `⚠ stage may be behind: ${what} since ${d.since === "advance" ? "the last advance" : "the lane was created"} ${d.hours} h ago`;
 }
 
-/** Append `entry` to the lane's ledger as one JSON line, stamped with the time and slug; creates `govern/` when missing. */
+/** Ledger kinds recorded for a frozen lane: freezing it, lifting the freeze, and exporting it (lib/project.ts plan, Freeze). */
+const FROZEN_LEDGER_KINDS = new Set(["freeze", "unfreeze", "export"]);
+/** The lane's stored `frozen` field, read directly off its govern.json (no full parse): what a caller with only the
+ *  slug checks (appendLedger here; queue dispatch and a bound conversation's send elsewhere). Undefined when the lane
+ *  has none, is unfrozen, or its file cannot be read or parsed as JSON. */
+export function frozenOf(slug: string): Frozen | undefined {
+  try { return (JSON.parse(readFileSync(stateFile(slug), "utf8")) as { frozen?: Frozen }).frozen; }
+  catch { return undefined; }
+}
+
+/** Append `entry` to the lane's ledger as one JSON line, stamped with the time and slug; creates `govern/` when missing.
+ *  Refuses any entry but freeze, unfreeze or export for a frozen lane. */
 export function appendLedger(slug: string, entry: Record<string, unknown>): void {
+  if (!FROZEN_LEDGER_KINDS.has(String(entry.kind))) {
+    const frozen = frozenOf(slug);
+    if (frozen) fail(frozenMessage(slug, frozen));
+  }
   mkdirSync(governDir(slug), { recursive: true });
   appendFileSync(ledgerFile(slug), JSON.stringify({ t: nowIso(), slug, ...entry }) + "\n");
 }
@@ -381,6 +413,7 @@ export function brief(p: Project, o: { notes?: number } = {}): string {
   L.push(`# ${p.slug} — ${p.title}`);
   const label = kinded || pr.name === "ops" ? `kind ${p.kind}` : `process ${pr.name}`;
   L.push(`${label}${kinded ? ` · lang ${p.lang}` : ""}${p.parent ? ` · from ${p.parent}` : ""} · stage ${n}/${list.length} ${p.stage}${p.finished ? " (finished)" : ""} · folder ${rel(dir)}`);
+  if (p.frozen) L.push(`⚠ ${frozenNote(p.frozen)}`);
   const led = readJsonl(ledgerFile(p.slug));
   const drift = driftWarning(p, led);
   if (drift) L.push(drift);
