@@ -8,20 +8,25 @@ export const MANPAGE = `SYNOPSIS
     govern event SLUG NAME --id ID --correlation JSON [--data JSON] [--generation N]
     govern event-listen [--port 5001]  |  tick [SLUG] [--advance] [--loop --interval S]
     govern alerts SLUG [--ack ID]  |  subprocess SLUG STAGE  |  recover SLUG --action retry|compensated --quote Q
+    govern drive [--lane S]... [--loop --interval 30]
 DESCRIPTION
     The commands for the typed business processes (BUSINESS.md) and their lifecycle (LIFECYCLE.md). data reads or merges typed
     case fields; human lists, claims, delegates or completes human tasks, and human-inbox shows the active tasks of this OS
     account; reject rejects a policy gate. event delivers a deduplicated event to one matching active stage and event-listen
-    is its loopback POST /events listener. tick emits due reminders and escalations and, with --advance, advances the ready
+    is its loopback POST /events listener, whose POST /cases opens a case (process, slug, title, data) from a webhook. tick emits due reminders and escalations and, with --advance, advances the ready
     event, child and retry stages through the normal checks and gates. alerts lists timer alerts or acknowledges one;
     subprocess starts the declared child and syncs its outputs once it finishes; recover is the human decision after an
-    exhausted retry or an uncertain result. Mutations by a person need that person's own quoted words.
+    exhausted retry or an uncertain result. drive runs the stages a process gives to an agent (a queued task; the reply's
+    body is the JSON of the stage's typed outputs) or to a command (a service that writes its outputs to $GOVERN_OUTPUTS),
+    advances them through their checks, and advances stages that have nothing to do but their gates and routes. Mutations
+    by a person need that person's own quoted words.
 OPTIONS
     --data JSON             event: payload fields
     --id ID                 event: stable delivery id used for deduplication
     --correlation JSON      event: typed value matching the waiting stage
     --generation N          event: activation generation, required when the event contract declares it
     --port N                event-listen: loopback webhook port (default 5001)
+    --lane S                drive: only this lane (repeatable)
     --advance               tick: progress ready event, subprocess and retry stages through normal gates
     --ack ID                alerts: acknowledge an alert without approving a business decision
     --action NAME           recover: retry an investigated failure or confirm compensation with compensated

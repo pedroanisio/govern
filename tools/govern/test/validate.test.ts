@@ -295,7 +295,7 @@ test("a workspace process with an unknown key stops every command that reads pro
   const e = makeEnv();
   assert.equal(govern(e, ["new", "lane", "--process", "dev"]).code, 0);
   const f = write(join(e.root, "PALS-Notes", "processes", "typo.json"), proc({ stages: [{ name: "a", chek: "lint" }] }));
-  const problem = `${f}: $.stages[0].chek: unknown key "chek" (known: name, exit, check, requires, next, join, human, requiredFields, timer, event, onError, call, foreach)`;
+  const problem = `${f}: $.stages[0].chek: unknown key "chek" (known: name, exit, check, requires, next, join, human, requiredFields, timer, event, onError, call, foreach, agent, service)`;
   const r = govern(e, ["process", "list"]);
   assert.equal(r.code, 4);
   assert.ok(r.err.includes(problem), r.err);

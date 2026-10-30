@@ -121,6 +121,8 @@ Documentation:
 - [LIFECYCLE.md](LIFECYCLE.md) covers deadlines, external events, retries and subprocesses.
 - [ITERATION.md](ITERATION.md) covers bounded loops, conditional branches and per-item subprocesses.
 - [CONVERSATIONS.md](CONVERSATIONS.md) covers persistent sessions, adapters, context checkpoints and recovery.
+- [SLACK-TUTORIAL.md](SLACK-TUTORIAL.md) sets up a real Slack app and runs a case's decisions through it;
+  [examples/suporte](examples/suporte/README.md) is a complete autonomous support process.
 - [SLACK.md](SLACK.md) covers `govern slack`: decisions people make with buttons in Slack, verified by Slack's request
   signature and recorded as the mapped person's own.
 - [REMOTE.md](REMOTE.md) specifies `govern remote`, the protocol that lets a paired phone follow the lanes and their

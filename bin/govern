@@ -216,9 +216,9 @@
 #     --parallel N            task dispatch, task install-service: run up to N messages at once in this dispatcher (default 1);
 #                             a runner still never exceeds its QUEUE/config.json concurrency (default 1) across all dispatchers
 #     --run-claimed ID        task dispatch: run the message a --parallel dispatcher claimed (what its workers run; not for use by hand)
-#     --loop                  task dispatch: keep dispatching every --interval seconds
+#     --loop                  task dispatch, drive, tick, slack notify: run again every --interval seconds
 #     --system                task install-service: preview /etc/systemd/system/govern-dispatch.service with current User=
-#     --interval S            task dispatch, task install-service: seconds between rounds (default 30)
+#     --interval S            task dispatch, task install-service, drive, tick, slack notify: seconds between rounds (default 30)
 #     --reap-every S          task dispatch, task install-service: list each resource's tagged instances every S seconds
 #                             into state for the desk (off by default; never stops a machine)
 #     --svg FILE              bpmn: write the SVG diagram there (with no --svg, --scene or --png it goes to stdout)
@@ -265,6 +265,7 @@
 #     Set for what govern runs: GOVERN_JOB_ID, GOVERN_JOB_DIR (every job; slice and up read GOVERN_JOB_DIR to find the
 #     job they run in) · GOVERN_TAG, GOVERN_LANE, GOVERN_RESOURCE, GOVERN_COUNT, GOVERN_ID (a resource's up, down and
 #     list commands) · GOVERN_PIECES, GOVERN_OUT, GOVERN_TAG, GOVERN_PIECE, GOVERN_ID (a slice recipe's steps)
+#     · GOVERN_OUTPUTS (a service stage's command under govern drive: the file it writes its outputs to)
 #     · GOVERN_REPLY_FILE (a reply check) · GOVERN_TASK_FILES (a reply check: the task's attached files, a JSON array of paths). task install-service writes PATH, GOVERN_REPO and GOVERN_QUEUE into
 #     the unit, and GOVERN_STATE and GOVERN_PROJECTS when they are set; a queued run drops CLAUDECODE and the other
 #     CLAUDE_CODE_ variables. A sealed grok run (a queued one, or a conversation worker on grok) gets HOME (a private

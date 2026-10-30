@@ -1,0 +1,106 @@
+{
+  "version": 1,
+  "revision": 1,
+  "name": "suporte-card",
+  "description": "One support card through DEV and QA: triage, HML, QA approval, production",
+  "fields": {
+    "card": {
+      "type": "string",
+      "min": 1,
+      "required": true
+    },
+    "ticketId": {
+      "type": "string",
+      "min": 1,
+      "required": true
+    }
+  },
+  "people": {
+    "dev1": {
+      "user": "dev1",
+      "roles": [
+        "dev"
+      ],
+      "slack": "U0DEV1"
+    },
+    "qa1": {
+      "user": "qa1",
+      "roles": [
+        "qa"
+      ],
+      "slack": "U0QA1"
+    }
+  },
+  "stages": [
+    {
+      "name": "triar",
+      "exit": "DEV-01: the card is triaged and estimated",
+      "human": {
+        "role": "dev"
+      },
+      "next": [
+        {
+          "to": [
+            "desenvolver-hml"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "desenvolver-hml",
+      "exit": "DEV-02: developed and published in HML",
+      "human": {
+        "role": "dev"
+      },
+      "next": [
+        {
+          "to": [
+            "testar-hml"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "testar-hml",
+      "exit": "QA-01/QA-02: tested in HML and approved",
+      "next": [
+        {
+          "to": [
+            "deploy-prod"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "deploy-prod",
+      "exit": "DEV-03: deployed in production",
+      "human": {
+        "role": "dev"
+      },
+      "next": [
+        {
+          "to": [
+            "pronto"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "pronto",
+      "exit": "the card is in production",
+      "next": []
+    }
+  ],
+  "gates": [
+    {
+      "name": "aprovacao-qa",
+      "stage": "testar-hml",
+      "message": "QA-02: approved in HML? Rejecting sends it back to development.",
+      "policy": {
+        "role": "qa",
+        "quorum": 1,
+        "rejectTo": "desenvolver-hml"
+      }
+    }
+  ]
+}

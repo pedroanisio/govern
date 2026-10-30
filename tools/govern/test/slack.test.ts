@@ -145,6 +145,12 @@ test("an action is parsed strictly: one govern button, a typed value, the person
   const other = payload("U0GIL", value);
   (other.actions as { action_id: string }[])[0]!.action_id = "something.else";
   bad(other, /govern\.decide/);
+  const lookalike = payload("U0GIL", value);
+  (lookalike.actions as { action_id: string }[])[0]!.action_id = "govern.decider";
+  bad(lookalike, /govern\.decide/);
+  const suffixed = payload("U0GIL", value);
+  (suffixed.actions as { action_id: string }[])[0]!.action_id = "govern.decide.approve";
+  assert.equal(parseAction(Buffer.from(formBody(suffixed))).decision, "approve", "a suffix keeps action_ids unique within a block");
   const noUser = payload("U0GIL", value);
   delete noUser.user;
   bad(noUser, /user/);
@@ -331,4 +337,49 @@ test("the signing secret can come from the dotenv file the config names", () => 
   assert.notEqual(r.code, 0);
   assert.doesNotMatch(r.err, /SLACK_SIGNING_SECRET/);
   assert.match(r.err, /port/);
+});
+
+// ---------------------------------------------------------------- options: an approval that also sets case data
+
+const OPTIONS_PROCESS = {
+  ...PROCESS,
+  fields: { draftSha: { type: "string" }, sugestao1: { type: "string" }, sugestao2: { type: "string" }, respostaFinal: { type: "string" } },
+  stages: [{ name: "responder", next: [{ to: ["send"] }] }, { name: "send", next: [] }],
+  gates: [{ name: "envio", stage: "responder", policy: { role: "gestor", quorum: 1 },
+    options: [{ label: "Enviar sugestão 1", set: { respostaFinal: "{data.sugestao1}" } }, { label: "Enviar sugestão 2", set: { respostaFinal: "{data.sugestao2}" } }] }],
+};
+function optionsSetup(): Env {
+  const e = setup([]);
+  write(join(e.root, "PALS-Notes/processes/support.json"), JSON.stringify(OPTIONS_PROCESS));
+  assert.equal(govern(e, ["new", "t1", "--process", "support", "--title", "Ticket t1"]).code, 0);
+  assert.equal(govern(e, ["data", "t1", "--set", JSON.stringify({ sugestao1: "Restart it.", sugestao2: "Reinstall the driver." })]).code, 0);
+  return e;
+}
+
+test("an approval with an option sets the option's case data, then records the vote", async () => {
+  const e = optionsSetup();
+  await serving(e, async (url) => {
+    const v = inWorkspace(e, () => decisionValue(load("t1"), { gate: "envio" }, "approve", { respostaFinal: "Reinstall the driver." }));
+    const r = await send(url, formBody(payload("U0GIL", v, "Enviar sugestão 2")));
+    assert.equal(r.status, 200, await r.clone().text());
+  });
+  const p = stateOf(e);
+  assert.equal(p.data?.["respostaFinal"], "Reinstall the driver.");
+  assert.equal(p.votes?.["envio"]?.[0]?.decision, "approve");
+  const entry = ledgerOf(e).find((x) => x.kind === "approve" && x.gate === "envio");
+  assert.deepEqual(entry?.set, { respostaFinal: "Reinstall the driver." });
+});
+
+test("a set that is not one of the gate's options as the case stands is refused", async () => {
+  const e = optionsSetup();
+  await serving(e, async (url) => {
+    const forged = inWorkspace(e, () => decisionValue(load("t1"), { gate: "envio" }, "approve", { respostaFinal: "Anything I like." }));
+    const r = await send(url, formBody(payload("U0GIL", forged, "Enviar")));
+    assert.equal(r.status, 409);
+    assert.match(((await r.json()) as { error: string }).error, /not one of envio's options/);
+    const onReject = inWorkspace(e, () => decisionValue(load("t1"), { gate: "envio" }, "reject", { respostaFinal: "Restart it." }));
+    assert.equal((await send(url, formBody(payload("U0GIL", onReject, "Não")))).status, 400);
+  });
+  assert.equal(stateOf(e).data?.["respostaFinal"], undefined);
+  assert.equal(stateOf(e).votes?.["envio"], undefined);
 });

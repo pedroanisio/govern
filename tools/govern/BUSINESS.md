@@ -146,6 +146,42 @@ An unexpired rejection vetoes the gate. Without `rejectTo`, the same person must
 
 Quorum may not exceed the declared approver pool; exclusions can reduce the eligible pool for a particular case further. Model a sufficient pool to avoid an impossible approval.
 
+## Agent and service stages
+
+A stage can be done by an agent or by a command instead of a person. `govern drive` (or `govern drive --loop`) runs them;
+the queue's dispatcher runs the agents' tasks.
+
+```json
+{ "name": "analisar", "agent": { "to": "codex", "task": "analisar", "summary": "Analyze ticket {data.ticketId}",
+    "body": "…{data.descricao}… Reply HANDOFF whose body is JSON {\"analise\": string, \"outrosCards\": boolean}.",
+    "outputs": ["analise", "outrosCards"], "attempts": 2 }, "next": [{ "to": ["redigir"] }] }
+{ "name": "anunciar", "service": { "command": "announce", "outputs": ["slackTs"], "attempts": 3 }, "next": [{ "to": ["criar-card"] }] }
+```
+
+- **Agent:** when the stage is active, its task is sent to `to` (a runner or profile; `profile`, `write`, `files`, `check`,
+  `verify` and `timeout` as for `govern task send`). `summary` and `body` may use `{lane}`, `{stage}`, `{title}` and
+  `{data.FIELD}`. The reply must finish the stage (HANDOFF, ACK, REVIEW or DECISION), pass its content checks, and carry
+  as body the JSON object of the stage's `outputs`: every key a declared output, every value valid for its field.
+- **Service:** the lane command `command` runs through `govern run`; it writes the JSON of its `outputs` to the file
+  `$GOVERN_OUTPUTS` names, and must exit 0.
+- The outputs are applied as case data, the stage's check runs, and the stage advances. A blocked or unverified reply, a
+  refused output, a failed command or a failed check is retried, the reason added to the next task, up to `attempts`
+  (default 1). Then the stage is left to the operator: `govern drive` exits 1 and names it, and `govern slack notify`
+  posts it.
+- A stage entered again (a loop, a rejection) gets a new task. A stage held by a gate waits until the gate is approved,
+  and cannot declare outputs, because writing case data would clear that approval: put the gate on a decision stage
+  before it.
+- A stage with nothing to do but its gates and routes (no human task, agent, service, event, call, foreach or check) is
+  advanced by `govern drive` once its gates are approved.
+
+A gate's `options` are named approvals that also set case fields; a string value may use `{data.FIELD}`. From Slack, each
+option is its own approve button ([SLACK.md](SLACK.md)):
+
+```json
+{ "name": "envio", "stage": "responder", "policy": { "role": "suporte", "quorum": 1, "rejectTo": "analisar" },
+  "options": [{ "label": "Send suggestion 1", "set": { "respostaFinal": "{data.sugestao1}" } }] }
+```
+
 ## Persistence and validation
 
 Lane state stores `data`, `workflow` (active/completed/waiting/cancelled stages), `humanTasks`, and policy `votes` alongside existing fields. Loading validates these fields against the process. CLI state mutations are serialized per lane using a crash-recoverable lock in the workspace runtime-state directory. Taking a lock never creates a lane folder before its state has been validated. A live lock does not expire while an exit check is running; a contending command waits up to 30 seconds, then asks for a retry. Exit checks should not recursively mutate the same lane.
