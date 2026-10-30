@@ -151,10 +151,10 @@
 #                             a Claude session, from a message the person typed; a Codex or Grok session is refused); allow: it must contain N
 #     --continued-as TEXT     freeze: a free-text pointer to where the work continued (e.g. workspace-b:ops/new-slug); on
 #                             an already-frozen lane this is the only thing a further freeze call records
-#     --template              export: carry the lane's configuration only (no files, data, notes, approvals, ledger or conversations)
+#     --template              export, clone: carry the lane's configuration only (no files, data, notes, approvals, ledger or conversations)
 #     --freeze                export: freeze the lane first, inside the same lock, exactly as govern freeze does
 #     --out FILE              export: where to write the bundle (default: a name derived from the slug)
-#     --exclude GLOB          export: skip matching paths (repeatable), needed for a directory holding .git
+#     --exclude GLOB          export, clone: skip matching paths (repeatable), needed for a directory holding .git
 #     --drop-deps             import: drop a dependency (--after) on a lane this workspace does not have, instead of refusing
 #     --by NAME               approve, allow: the decision owner, required when the gate or allowance names one other
 #                             than owner; on a policy gate, the process person this OS account is mapped to
@@ -214,8 +214,8 @@
 #     --estimate-usd N        task send: what the run is expected to cost, reserved against a matching allowance
 #     --state S               task list: only messages in state open, claimed, done or failed
 #     --json                  version, task triage: print the version, or the triage rows as an array, as JSON
-#     --as NAME               import, task inbox, task close, task reclaim, task forward, task reply: import: the new lane's slug (default: the
-#                             source's own); task: who you are; default GOVERN_AS, else this session
+#     --as NAME               import, clone, task inbox, task close, task reclaim, task forward, task reply: import: the new lane's slug (default: the
+#                             source's own); clone: the new lane's slug (required); task: who you are; default GOVERN_AS, else this session
 #     --all                   task triage, task inbox, caps: task triage: also replies marked unverified in done/; task inbox: messages in every state, not only open ones;
 #                             caps --check: every profile without a current passing check
 #     --hook                  task inbox: the UserPromptSubmit hook form, silent when empty

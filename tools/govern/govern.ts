@@ -296,6 +296,28 @@ function cmdImport(a: Args): void {
   out(`${r.slug}: imported ${r.mode} bundle from ${bundlePath} (sha256 ${r.bundleSha256}) — every imported check needs the owner's acceptance before it can pass a stage`);
 }
 
+/** `govern clone <slug> --as NEW [--template] [--exclude GLOB]…`: export the lane to a bundle file under the
+ *  workspace's state folder, import it as NEW, then delete the file. The source's govern.json stays byte-identical;
+ *  its ledger gains only the export entry (lib/bundle.ts, lib/importlane.ts; PLAN, Clone). */
+function cmdClone(a: Args): void {
+  const slug = checkSlug(a._[1]);
+  const as = opt(a, "as") ?? usage("govern clone <slug> --as NEW [--template] [--exclude GLOB]…");
+  const template = flag(a, "template");
+  const excludes = many(a, "exclude");
+  const bundle = lifecycle.transaction(slug, () => buildBundle(slug, { template, excludes }));
+  // A per-call name: the default name has one-second precision, so two clones of one lane in a second would share it.
+  const tmp = join(stateDir(), `clone-${randomUUID()}-${defaultBundleName(slug)}`);
+  mkdirSync(dirname(tmp), { recursive: true });
+  writeFileSync(tmp, JSON.stringify(bundle), { mode: 0o600, flag: "wx" });
+  appendLedger(slug, { kind: "export", mode: bundle.body.mode, bundleSha256: bundle.sha256, out: tmp, ledgerOffset: bundle.body.source.ledgerOffset });
+  try {
+    const r = importBundle(tmp, { as, dropDeps: false });
+    out(`${slug}: cloned as ${r.slug} (${r.mode} bundle, sha256 ${r.bundleSha256})`);
+  } finally {
+    unlinkSync(tmp);
+  }
+}
+
 /** `govern unfreeze <slug> --quote Q`: lift a freeze, in the owner's own words. */
 function cmdUnfreeze(a: Args): void {
   const p = load(a._[1]);
@@ -1038,6 +1060,9 @@ export const COMMANDS: readonly Cmd[] = [
   { name: "import", section: 0, flags: { value: ["as"], bool: ["drop-deps"] },
     lines: [["<bundle> [--as SLUG] [--drop-deps]",
       "verify a lane bundle end to end (untrusted input) and write it as a new lane, with a new identity: approvals move\nto history (importedApprovals) and every gate starts closed, every check needs the owner's acceptance\n(govern check <slug> <stage> --accept --quote \"…\") before it can pass a stage, and active stages re-enter their\nruntime so timers restart here. --as names the new slug (default: the bundle's source slug); --drop-deps drops\nafter: references to lanes this workspace does not have, instead of refusing"]], run: cmdImport },
+  { name: "clone", section: 0, flags: { bool: ["template"], value: ["as"], multi: ["exclude"] },
+    lines: [["<slug> --as NEW [--template] [--exclude GLOB]…",
+      "export the lane to a bundle under the workspace's state folder, import it as NEW, then delete the file: the\nsource's govern.json stays byte-identical and its ledger gains only the export entry. Omitting --template\ncontinues NEW at the source's stage with its history and every gate closed; --template starts NEW at the process's\nfirst stage with no history. --exclude (repeatable) skips matching paths, as in govern export"]], run: cmdClone },
   { name: "done", section: 0, flags: { value: ["engine"] }, lines: [["<slug> [--engine claude|codex|grok]", "end the current work segment"]],
     run: (a) => { const p = load(a._[1]); appendLedger(p.slug, { kind: "done", engine: engineOf(a), session: sessionOf(engineOf(a)) }); out(`${p.slug}: segment closed`); } },
   { name: "cmd", section: 0, flags: { value: ["timeout", "rm", "resource"] },
