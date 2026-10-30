@@ -147,10 +147,14 @@
 #     --engine E              work, done: claude, codex or grok (default: claude inside a Claude Code session, grok inside a
 #                             grok session, else codex)
 #     --open                  work: launch a fresh interactive claude, codex or grok session for this lane
-#     --quote Q               approve, allow, process migrate, check, freeze, unfreeze: the decision owner's own words (in
+#     --quote Q               approve, allow, process migrate, check, freeze, unfreeze, export: the decision owner's own words (in
 #                             a Claude session, from a message the person typed; a Codex or Grok session is refused); allow: it must contain N
 #     --continued-as TEXT     freeze: a free-text pointer to where the work continued (e.g. workspace-b:ops/new-slug); on
 #                             an already-frozen lane this is the only thing a further freeze call records
+#     --template              export: carry the lane's configuration only (no files, data, notes, approvals, ledger or conversations)
+#     --freeze                export: freeze the lane first, inside the same lock, exactly as govern freeze does
+#     --out FILE              export: where to write the bundle (default: a name derived from the slug)
+#     --exclude GLOB          export: skip matching paths (repeatable), needed for a directory holding .git
 #     --by NAME               approve, allow: the decision owner, required when the gate or allowance names one other
 #                             than owner; on a policy gate, the process person this OS account is mapped to
 #     --extra N               allow: raise the allowance's limit by N for its current period

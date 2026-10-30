@@ -35,6 +35,7 @@ import { asksForChanges, WRITE_RULE } from "./lib/writeask.ts";
 import { checkProfile } from "./lib/capcheck.ts";
 import { tune, chooseRunner } from "./lib/tune.ts";
 import { verifyQuote, GROK_MARKERS } from "./lib/approval.ts";
+import { buildBundle, defaultBundleName } from "./lib/bundle.ts";
 import { parseAddress } from "./lib/peer-id.ts";
 import { EXTENSIONS, EXTENSION_FLAGS } from "./lib/ext-registry.ts";
 import * as extensions from "./lib/ext.ts";
@@ -228,21 +229,18 @@ function laneInFlight(slug: string): string[] {
   return found;
 }
 
-/** `govern freeze <slug> --quote Q [--continued-as TEXT]`: stop the lane's work and make it read-only, in the owner's
- *  own words (verified exactly as govern approve verifies one). Refused while any of the lane's work is in flight.
- *  Freezing an already-frozen lane only records where the work continued, with --continued-as; it changes nothing else. */
-function cmdFreeze(a: Args): void {
-  const p = load(a._[1]);
-  const quote = opt(a, "quote");
-  if (!quote || quote.trim().length < 2) usage("--quote is required: the owner's own words freezing the lane");
-  const continuedAs = opt(a, "continued-as");
-  const source = verifyQuote(quote!);
+/** Freeze lane `p` now, in the owner's own `quote` (verified exactly as govern approve verifies one), optionally
+ *  naming where the work continued. On an already-frozen lane, only a given `continuedAs` changes anything (it is
+ *  recorded; nothing else is). Refused while any of the lane's work is in flight. Shared by `govern freeze` and
+ *  `govern export --freeze`, which freezes inside the same transaction lock it then reads the lane under. */
+function freezeLane(p: Project, quote: string, continuedAs?: string): void {
+  const source = verifyQuote(quote);
   if (p.frozen) {
-    if (!continuedAs) return out(`${p.slug}: ${frozenMessage(p.slug, p.frozen)}`);
+    if (!continuedAs) return;
     p.frozen = { ...p.frozen, continuedAs };
     save(p, { allowFrozen: true });
     appendLedger(p.slug, { kind: "freeze", continuedAs });
-    return out(`${p.slug}: continued as ${continuedAs}`);
+    return;
   }
   const inFlight = laneInFlight(p.slug);
   if (inFlight.length) fail(`${p.slug}: cannot freeze while work is in flight: ${inFlight.join(", ")}`);
@@ -250,7 +248,40 @@ function cmdFreeze(a: Args): void {
   p.frozen = { at, by: "owner", quote, source, ...(continuedAs ? { continuedAs } : {}) };
   save(p, { allowFrozen: true });
   appendLedger(p.slug, { kind: "freeze", at, quote, by: "owner", source, ...(continuedAs ? { continuedAs } : {}) });
+}
+
+/** `govern freeze <slug> --quote Q [--continued-as TEXT]`: stop the lane's work and make it read-only. */
+function cmdFreeze(a: Args): void {
+  const p = load(a._[1]);
+  const quote = opt(a, "quote");
+  if (!quote || quote.trim().length < 2) usage("--quote is required: the owner's own words freezing the lane");
+  const continuedAs = opt(a, "continued-as");
+  const wasFrozen = !!p.frozen;
+  freezeLane(p, quote, continuedAs);
+  if (wasFrozen) return out(continuedAs ? `${p.slug}: continued as ${continuedAs}` : `${p.slug}: ${frozenMessage(p.slug, p.frozen!)}`);
   out(`${p.slug}: frozen`);
+}
+
+/** `govern export <slug> [--template] [--out FILE] [--exclude GLOB]… [--freeze --quote Q]`: read the lane under its
+ *  transaction lock (optionally freezing it first, inside that same lock) and write one bundle file, mode 600. The
+ *  export's own ledger entry is appended once the file is written, outside the lock (lib/bundle.ts; PLAN, Export). */
+function cmdExport(a: Args): void {
+  const slug = checkSlug(a._[1]);
+  const template = flag(a, "template");
+  const excludes = many(a, "exclude");
+  const doFreeze = flag(a, "freeze");
+  const quote = opt(a, "quote");
+  if (doFreeze && (!quote || quote.trim().length < 2)) usage("--quote is required with --freeze: the owner's own words freezing the lane");
+  if (!doFreeze && quote !== undefined) usage("--quote is only used together with --freeze");
+  const bundle = lifecycle.transaction(slug, () => {
+    if (doFreeze) freezeLane(load(slug), quote!);
+    return buildBundle(slug, { template, excludes });
+  });
+  const target = resolve(opt(a, "out") ?? defaultBundleName(slug));
+  mkdirSync(dirname(target), { recursive: true });
+  writeFileSync(target, JSON.stringify(bundle), { mode: 0o600 });
+  appendLedger(slug, { kind: "export", mode: bundle.body.mode, bundleSha256: bundle.sha256, out: target, ledgerOffset: bundle.body.source.ledgerOffset });
+  out(`${slug}: exported ${bundle.body.mode} bundle to ${target} (sha256 ${bundle.sha256})`);
 }
 
 /** `govern unfreeze <slug> --quote Q`: lift a freeze, in the owner's own words. */
@@ -988,6 +1019,9 @@ export const COMMANDS: readonly Cmd[] = [
     lines: [["<slug> --quote \"<the owner's words>\" [--continued-as TEXT]", "stop the lane's work and make it read-only (refused while a job, a conversation turn or a queue task of the lane\nis in flight). On an already-frozen lane, --continued-as only records where the work continued. In a Claude session\nthe quote must be in a message the person typed; a Codex or Grok session is refused"]], run: cmdFreeze },
   { name: "unfreeze", section: 0, flags: { value: ["quote"] },
     lines: [["<slug> --quote \"<the owner's words>\"", "lift a freeze"]], run: cmdUnfreeze },
+  { name: "export", section: 0, flags: { bool: ["template", "freeze"], value: ["out", "quote"], multi: ["exclude"] },
+    lines: [["<slug> [--template] [--out FILE] [--exclude GLOB]… [--freeze --quote \"<the owner's words>\"]",
+      "write the lane to one bundle file (mode 600): reads it under its transaction lock, recording the ledger's line\ncount as ledgerOffset. --template carries configuration only (no files, data, notes, approvals, ledger or\nconversations); --exclude (repeatable) skips matching paths, needed for a directory holding .git; --freeze freezes\nthe lane first, inside the same lock, exactly as govern freeze does"]], run: cmdExport },
   { name: "done", section: 0, flags: { value: ["engine"] }, lines: [["<slug> [--engine claude|codex|grok]", "end the current work segment"]],
     run: (a) => { const p = load(a._[1]); appendLedger(p.slug, { kind: "done", engine: engineOf(a), session: sessionOf(engineOf(a)) }); out(`${p.slug}: segment closed`); } },
   { name: "cmd", section: 0, flags: { value: ["timeout", "rm", "resource"] },
