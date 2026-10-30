@@ -18,7 +18,7 @@ You are building one stage of govern's lane-portability feature.
 The check requires these existing tests to pass, and `make conform`:
 
 - "drift: every command and subcommand is in SKILL.md and HELP; SKILL.md names no command that does not exist"
-- "drift: the bin/govern MANPAGE names every command"
+- "drift: the bin/govern MANPAGE names every core command, and each extension's manpage its own"
 - "drift: MANPAGE OPTIONS has one entry per flag the command table declares, naming the commands that take it"
 - "drift: MANPAGE SEE ALSO names files and tools that exist and are current, and every manual govern serves"
 
