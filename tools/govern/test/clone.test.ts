@@ -83,6 +83,29 @@ test("a clone's commands run with no acceptance: clone is exempt from the import
   assert.ok(existsSync(marker), "a cloned lane's command must run with no --accept-import");
 });
 
+test("a clone of an imported lane not yet accepted stays quarantined", () => {
+  const e = makeEnv("clone-of-quarantined");
+  ok(e, ["new", "p", "--kind", "ops"]);
+  const marker = join(e.root, "laundered-marker");
+  ok(e, ["cmd", "p", "touch", "--", "node", "-e", 'require("node:fs").writeFileSync(process.argv[1], "ran")', marker]);
+  const bundle = join(e.root, "p.govern-lane.json");
+  ok(e, ["export", "p", "--out", bundle]);
+  ok(e, ["import", bundle, "--as", "a"]);
+
+  ok(e, ["clone", "a", "--as", "b"]);
+  assert.notEqual(ledger(e, "b")[0].via, "clone", "a clone of a quarantined lane is an ordinary import");
+  const r = govern(e, ["run", "b", "touch"]);
+  assert.notEqual(r.code, 0, "the clone must not run the commands its source was never accepted for");
+  assert.match(r.err, /imported lane, not accepted/);
+  assert.ok(!existsSync(marker), "cloning must not launder an unaccepted import's commands");
+
+  ok(e, ["check", "a", "--accept-import", "--quote", "reviewed the import"]);
+  ok(e, ["clone", "a", "--as", "c"]);
+  assert.equal(ledger(e, "c")[0].via, "clone", "once the owner accepted the source, its clone is trusted like any other");
+  ok(e, ["run", "c", "touch"]);
+  assert.ok(existsSync(marker));
+});
+
 test("clone leaves the source lane unchanged", () => {
   const e = makeEnv("clone-source-unchanged");
   ok(e, ["new", "p", "--kind", "ops"]);

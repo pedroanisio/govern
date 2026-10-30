@@ -314,7 +314,10 @@ function cmdClone(a: Args): void {
   try {
     // A clone's bundle is one this workspace wrote to itself (above, exclusively), so its commands already run
     // here: `via: "clone"` exempts it from the quarantine every other import sits in (lib/project.ts, importQuarantined).
-    const r = importBundle(tmp, { as, dropDeps: false, via: "clone" });
+    // Not when the source is itself a quarantined import: its commands have never run here, and the copy stays
+    // quarantined until the owner accepts it, as the source does.
+    const trusted = !importQuarantined(readJsonl(ledgerFile(slug)));
+    const r = importBundle(tmp, { as, dropDeps: false, ...(trusted ? { via: "clone" as const } : {}) });
     out(`${slug}: cloned as ${r.slug} (${r.mode} bundle, sha256 ${r.bundleSha256})`);
   } finally {
     unlinkSync(tmp);

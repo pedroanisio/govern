@@ -101,7 +101,8 @@ not need a fresh quote check beyond the one `govern freeze` always requires, and
 - **Limits.** At most 10,000 files, 64 MiB per file, and 256 MiB of file content in total. A symlink in the lane's
   folder is refused, named. A directory holding `.git` is refused, named, unless it is excluded with `--exclude` — this
   is what stops `govern export` from trying to carry a nested worktree, such as this lane's own `src/`.
-- **Never carried, in either mode.** `govern/jobs/` (job logs and exit files), locks, allowance reservations, resource
+- **Never carried, in either mode.** Anything under `govern/` but the ledger (job logs and exit files, an imported
+  lane's `imported-*` history), locks, allowance reservations, resource
   slots and queue messages. Those are live state of the *source* workspace: a job log from a machine the importing
   workspace cannot reach is not useful there, and a lock or a queue message imported as data would not mean what it
   means where it was taken.
@@ -184,7 +185,9 @@ nothing to accept, and, like every other write, on a frozen lane.
 
 `govern clone` is exempt: a clone's bundle is one this workspace writes to itself, to an exclusively-created
 temporary file, and imports back in the same call — its commands already run here. Its `import` ledger entry carries
-`via: "clone"`, which the quarantine rule ignores, so a cloned lane's commands run with no acceptance.
+`via: "clone"`, which the quarantine rule ignores, so a cloned lane's commands run with no acceptance. The exception
+is a clone of a lane that is itself still quarantined: its commands have never run here, so the copy is an ordinary,
+quarantined import until the owner accepts it.
 
 **If the workspace does not have the process the bundle's lane names** (and the bundle carries no pinned process
 snapshot of its own), step 5 refuses the import: the same `no process "<name>" (have: ...)` error a hand-edited
@@ -236,7 +239,8 @@ all.
 
 Unlike any other import, `NEW` is not quarantined (see Quarantine, above): clone's `import` ledger entry carries
 `via: "clone"`, which the rule ignores, because the bundle it was written from is one this workspace made for itself
-in the same call. Its commands run immediately; its checks still need the usual per-stage `--accept`.
+in the same call — unless the source is itself still quarantined, when `NEW` is too. Its commands run immediately;
+its checks still need the usual per-stage `--accept`.
 
 To copy a lane to **another** workspace, there is no single command: export it in the source workspace, move the
 bundle file there yourself, then `govern import` it in the destination. Clone only ever makes a new lane in the same

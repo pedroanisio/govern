@@ -71,10 +71,11 @@ function laneBody(slug: string, template: boolean): Record<string, unknown> {
 }
 
 /** Paths relative to the lane's folder that a full-mode walk never carries as a plain file: `govern.json` and the
- *  ledger are carried as their own fields, and `govern/jobs` (job logs and exit files) is never carried at all. Locks,
- *  allowance reservations, resource slots and queue messages live outside the lane's folder, so a walk never reaches
- *  them in the first place. */
-const neverCarried = (rel: string): boolean => rel === "govern.json" || rel === "govern/ledger.jsonl" || rel === "govern/jobs";
+ *  ledger are carried as their own fields, and nothing else under `govern/` (job logs and exit files, an imported
+ *  lane's imported-* history) is carried at all — import refuses that folder (lib/importlane.ts, checkFilePaths), so
+ *  carrying it would make an imported lane impossible to export or clone. Locks, allowance reservations, resource slots
+ *  and queue messages live outside the lane's folder, so a walk never reaches them in the first place. */
+const neverCarried = (rel: string): boolean => rel === "govern.json" || rel === "govern" || rel.startsWith("govern/");
 
 /** The lane folder's files for a full-mode bundle: every file under `dir` but the ones `neverCarried` names, skipping
  *  anything `excludes` (glob patterns, matched from `dir`) selects. Refuses a symlink, named, and a directory holding
