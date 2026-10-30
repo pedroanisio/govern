@@ -8,6 +8,9 @@
 #     govern new SLUG (--process NAME | --kind long|short|ops) [--title T] [--lang L] [--parent SLUG] [--pin]
 #     govern work SLUG STAGE [--engine claude|codex|grok] [--open]  |  brief SLUG  |  status [SLUG]
 #     govern note SLUG TEXT  |  approve SLUG GATE --quote "owner's words"  |  done SLUG [--engine E]
+#     govern freeze SLUG --quote "owner's words" [--continued-as TEXT]  |  unfreeze SLUG --quote "owner's words"
+#     govern export SLUG [--template] [--out FILE] [--exclude GLOB]... [--freeze --quote "owner's words"]
+#     govern import BUNDLE [--as SLUG] [--drop-deps]  |  clone SLUG --as NEW [--template] [--exclude GLOB]...
 #     govern cmd SLUG [NAME [--timeout S] [--resource R] -- ARGV...] | --rm NAME  |  file SLUG [NAME PATH-OR-GLOB]
 #     govern bpmn PROCESS|SLUG [--svg FILE] [--scene FILE] [--png FILE] [--width N --height N] [--static]
 #     govern process list|show NAME  |  process pin SLUG  |  process migrate SLUG --map JSON --quote Q  |  check SLUG [--set CMD --stage S]  |  check SLUG STAGE --accept --quote Q
@@ -318,6 +321,7 @@
 # SEE ALSO
 #     st-man - tools/govern/SKILL.md (govern manual) - tools/govern/REFERENCE.md (govern manual --full) - tools/govern/processes/video/MANUAL.md (govern manual video)
 #     - tools/govern/processes/infographic/MANUAL.md (govern manual infographic) - tools/govern/PURPOSE.md
+#     - tools/govern/PORTABILITY.md
 # MANPAGE <<<
 set -eu
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)

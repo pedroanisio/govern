@@ -8,6 +8,7 @@ export const TOPICS: readonly Topic[] = [
   { file: "SKILL.md", about: "the core manual: the loop, the queue, the owner's gates, the never-list (govern manual)" },
   { file: "REFERENCE.md", about: "the detailed operating rules by section: workspace, checks, resources, allowances, runners, capabilities, environment (govern manual --full)" },
   { file: "ITERATION.md", about: "bounded repeats, conditional fan-out, typed collections, per-item subprocess joins" },
+  { file: "PORTABILITY.md", about: "freeze, export, import and clone: stopping a lane, the bundle format, what a copy does not inherit" },
 ];
 
 export const HELP_RULES: Readonly<Record<string, string>> = {

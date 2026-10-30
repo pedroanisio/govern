@@ -127,6 +127,9 @@ Documentation:
   signature and recorded as the mapped person's own.
 - [REMOTE.md](REMOTE.md) specifies `govern remote`, the protocol that lets a paired phone follow the lanes and their
   telemetry and approve gates with a signed confirmation. The Android app is in [android/](android/README.md).
+- [PORTABILITY.md](PORTABILITY.md) covers `govern freeze`, `export`, `import` and `clone`: stopping a lane and making
+  it read-only, writing it to one bundle file, and bringing a bundle back as a new lane — the bundle format and what a
+  copy does not inherit.
 - [processes/video/MANUAL.md](processes/video/MANUAL.md) is the manual of the built-in `video` process (`govern manual video`).
 - [OPENCLAW-GAP.md](OPENCLAW-GAP.md) and [OPENCLAW-PARITY.md](OPENCLAW-PARITY.md) are research snapshots, not
   maintained: how OpenClaw could run on top of govern, and what govern would need to offer an OpenClaw-like
