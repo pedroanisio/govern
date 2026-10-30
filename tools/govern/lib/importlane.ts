@@ -1,14 +1,18 @@
 // `govern import <bundle>`: a bundle is untrusted input (another machine's commands, as argv, that will run here).
-// Verify everything before any write: the bundle's shape and format, its hashes, every file path, the rewritten lane
-// state (against the lane's own PROJECT shape, including its pinned process snapshot's checksum), the target slug,
-// its dependencies and every device approval's signature. Only then write the lane into a temporary folder under the
-// lanes folder and rename it into place, so a failed import leaves nothing behind. plans/lane-portability/PLAN.md, Import.
+// Verify everything before any write: the bundle's shape and format, its hashes and size limits, every file path and
+// every conversation and device id, the rewritten lane state (against the lane's own PROJECT shape, including its
+// pinned process snapshot's checksum), the target slug, its dependencies and every device approval's signature. Only
+// then write the lane into a temporary folder under the lanes folder and rename it into place, so a failed import
+// leaves nothing behind. plans/lane-portability/PLAN.md, Import.
 import { existsSync, statSync, readFileSync, mkdtempSync, mkdirSync, writeFileSync, renameSync, rmSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { createPublicKey, verify as verifySignature, type KeyObject } from "node:crypto";
 import { fail, sha256, nowIso } from "./util.ts";
 import { check, emptyRecord } from "./shape.ts";
-import { BUNDLE, type Bundle, type BundleFile, type BundleDevice } from "./bundle.ts";
+import {
+  BUNDLE, MAX_FILES, MAX_FILE_BYTES, MAX_TOTAL_BYTES, MAX_LEDGER_ENTRIES, MAX_CONVERSATIONS,
+  type Bundle, type BundleBody, type BundleFile, type BundleDevice,
+} from "./bundle.ts";
 import {
   projectDir, stateFile, checkSlug, parseProject, stagesOf, checkOf,
   type Project, type ImportedApproval,
@@ -25,8 +29,30 @@ const MAX_BUNDLE_READ_BYTES = 300 * 1024 * 1024;
 
 export interface ImportResult { slug: string; bundleSha256: string; mode: "full" | "template" }
 
+/** The decoded size a base64 string implies, before any byte of it is decoded: at most floor(length * 3 / 4) — padding
+ *  only shrinks that — so an oversized claim is refused at the cost of a length check, not a real decode. */
+const base64Bound = (s: string): number => Math.floor(s.length * 3 / 4);
+
+/** The bundle's size limits (lib/bundle.ts: MAX_FILES, MAX_FILE_BYTES, MAX_TOTAL_BYTES, MAX_LEDGER_ENTRIES,
+ *  MAX_CONVERSATIONS), checked from array lengths and base64 string lengths alone — before any file is decoded,
+ *  hashed or written. Export enforces the file limits on its own side (bundle.ts, walkLaneFiles); import must enforce
+ *  them again because a bundle is untrusted input export never built. */
+function checkLimits(body: BundleBody): void {
+  if (body.files.length > MAX_FILES) fail(`import refuses the bundle: ${body.files.length} files over the ${MAX_FILES}-file limit`);
+  let total = 0;
+  for (const f of body.files) {
+    const bound = base64Bound(f.content);
+    if (bound > MAX_FILE_BYTES) fail(`import refuses the bundle: file ${f.path} is over the ${MAX_FILE_BYTES}-byte limit`);
+    total += bound;
+    if (total > MAX_TOTAL_BYTES) fail(`import refuses the bundle: over the ${MAX_TOTAL_BYTES}-byte total content limit`);
+  }
+  if (body.ledger.length > MAX_LEDGER_ENTRIES) fail(`import refuses the bundle: ${body.ledger.length} ledger entries over the ${MAX_LEDGER_ENTRIES}-entry limit`);
+  if (body.conversations.length > MAX_CONVERSATIONS) fail(`import refuses the bundle: ${body.conversations.length} conversations over the ${MAX_CONVERSATIONS}-conversation limit`);
+}
+
 /** Read `bundlePath`, parse it against the bundle's typed shape (unknown keys and any format but `govern-lane-bundle/1`
- *  refused), then recompute `sha256` over the body and every file's hash and size after base64 decoding. */
+ *  refused), check its size limits, then recompute `sha256` over the body and every file's hash and size after base64
+ *  decoding. Limits are checked first so an oversized bundle is refused before that decode spends the memory. */
 function readBundle(bundlePath: string): Bundle {
   let size: number;
   try { size = statSync(bundlePath).size; } catch (e) { return fail(`import refuses ${bundlePath}: cannot read it (${(e as Error).message})`); }
@@ -35,6 +61,7 @@ function readBundle(bundlePath: string): Bundle {
   let raw: unknown;
   try { raw = JSON.parse(text); } catch (e) { return fail(`import refuses ${bundlePath}: not JSON (${(e as Error).message})`); }
   const bundle = check(bundlePath, raw, BUNDLE);
+  checkLimits(bundle.body);
   if (sha256(JSON.stringify(bundle.body)) !== bundle.sha256) fail(`import refuses ${bundlePath}: the manifest's sha256 does not match its body`);
   for (const f of bundle.body.files) {
     const bytes = Buffer.from(f.content, "base64");
@@ -58,6 +85,23 @@ function checkFilePaths(files: readonly BundleFile[]): void {
     if (seen.has(p)) fail(`import refuses the bundle: path "${p}" is listed twice`);
     seen.add(p);
   }
+}
+
+/** A conversation or device id, as `writeLane` uses a conversation's id directly as a file name: no `/`, no backslash,
+ *  no NUL byte, not empty, not starting with `.` (which also catches a bare `..`) — the same rule as a slug segment
+ *  (lib/project.ts, checkSlug), checked before any write because an id reaching the write loop unchecked is a path. */
+function checkId(kind: string, id: string): void {
+  if (!id.length) fail(`import refuses the bundle: a ${kind} id is empty`);
+  if (id.includes("/")) fail(`import refuses the bundle: ${kind} id "${id}" contains "/"`);
+  if (id.includes("\\")) fail(`import refuses the bundle: ${kind} id "${id}" contains a backslash`);
+  if (id.includes("\0")) fail(`import refuses the bundle: ${kind} id "${id}" contains a NUL byte`);
+  if (id.startsWith(".")) fail(`import refuses the bundle: ${kind} id "${id}" starts with "."`);
+}
+
+/** Every conversation id and device id in the bundle (see checkId). */
+function checkIds(body: BundleBody): void {
+  for (const c of body.conversations) checkId("conversation", c.id);
+  for (const d of body.devices) checkId("device", d.id);
 }
 
 /** A template-mode lane's base object: a fresh lane's shape (version, identity, first stage, empty approvals and
@@ -197,6 +241,7 @@ function writeLane(bundle: Bundle, parsed: Project, slug: string, now: string): 
 export function importBundle(bundlePath: string, o: { as?: string; dropDeps: boolean }): ImportResult {
   const bundle = readBundle(bundlePath);
   checkFilePaths(bundle.body.files);
+  checkIds(bundle.body);
   const slug = checkSlug(o.as ?? bundle.body.source.slug);
   const now = nowIso();
   const draft = rewriteLane(bundle, slug, now, o.dropDeps);

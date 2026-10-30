@@ -331,8 +331,12 @@ function cmdUnfreeze(a: Args): void {
   out(`${p.slug}: unfrozen`);
 }
 
-/** Run the stage's exit check as a foreground job; records it in the ledger, prints nothing. */
+/** Run the stage's exit check as a foreground job; records it in the ledger, prints nothing. Refuses, before starting
+ *  the job, when the check is an imported one the owner has not accepted (lib/project.ts, importUnaccepted): every
+ *  caller — a plain `check`, `advance`, the Stop hook — goes through here, so the owner's acceptance is the only way
+ *  an imported check ever runs. */
 function runCheck(p: Project, name: string, stage = p.stage): { ok: boolean; exit: number | null | undefined; why: string; text: string } {
+  if (importUnaccepted(p, readJsonl(ledgerFile(p.slug)), stage)) fail(`${p.slug}: stage ${stage}'s check "${name}" was imported and the owner has not accepted it: govern check ${p.slug} ${stage} --accept --quote "…"`);
   const st = jobs.start(p, name, [], false);
   const ok = st.exit === 0;
   appendLedger(p.slug, { kind: "check", stage, name, ok, exit: st.exit, job: st.id });

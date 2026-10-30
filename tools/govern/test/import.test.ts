@@ -5,7 +5,7 @@ import { readFileSync, existsSync, readdirSync } from "node:fs";
 import { userInfo } from "node:os";
 import { createHash, createPublicKey, generateKeyPairSync, sign as cryptoSign, verify as cryptoVerify } from "node:crypto";
 import { makeEnv, govern, write, jsonl, type Env } from "./helpers.ts";
-import { FORMAT } from "../lib/bundle.ts";
+import { FORMAT, MAX_FILES, MAX_FILE_BYTES } from "../lib/bundle.ts";
 
 function ok(e: Env, args: string[]): string {
   const r = govern(e, args);
@@ -70,6 +70,31 @@ test("import refuses a bundle whose manifest or any file hash does not match", (
   assert.ok(!existsSync(join(e.projects, "p3")));
 });
 
+test("import refuses a bundle over the file count or per-file size limit", () => {
+  const e = makeEnv("import-limits");
+  const fileEntry = (path: string) => ({ path, size: 0, mode: 420, sha256: EMPTY_SHA, content: "" });
+
+  // (a) more files than MAX_FILES: refused by count alone, no file content need be decoded.
+  const tooManyFiles = Array.from({ length: MAX_FILES + 1 }, (_, i) => fileEntry(`f${i}`));
+  const filesPath = join(e.root, "too-many-files.json");
+  write(filesPath, sealedText(skeletonBody({ files: tooManyFiles })));
+  const r1 = govern(e, ["import", filesPath, "--as", "p"]);
+  assert.notEqual(r1.code, 0, r1.out);
+  assert.match(r1.err, new RegExp(`${MAX_FILES}-file limit`));
+  assert.ok(!existsSync(join(e.projects, "p")));
+
+  // (b) one file whose base64 content implies more than MAX_FILE_BYTES decoded, caught from its length alone, before
+  // any Buffer.from decodes it (the content need not even be valid base64 for this check to refuse it).
+  const oversizedLength = Math.ceil((MAX_FILE_BYTES + 1) * 4 / 3);
+  const big = { path: "big.bin", size: 0, mode: 420, sha256: EMPTY_SHA, content: "A".repeat(oversizedLength) };
+  const bigPath = join(e.root, "too-big-file.json");
+  write(bigPath, sealedText(skeletonBody({ files: [big] })));
+  const r2 = govern(e, ["import", bigPath, "--as", "p"]);
+  assert.notEqual(r2.code, 0, r2.out);
+  assert.match(r2.err, new RegExp(`${MAX_FILE_BYTES}-byte limit`));
+  assert.ok(!existsSync(join(e.projects, "p")));
+});
+
 test("import refuses paths that escape the lane folder", () => {
   const e = makeEnv("import-paths");
   const fileEntry = (path: string) => ({ path, size: 0, mode: 420, sha256: EMPTY_SHA, content: "" });
@@ -95,6 +120,35 @@ test("import refuses paths that escape the lane folder", () => {
   assert.notEqual(r.code, 0, r.out);
   assert.match(r.err, /listed twice/);
   assert.ok(!existsSync(join(e.projects, "p")));
+});
+
+test("import refuses a conversation id or device id that escapes the lane folder", () => {
+  const e = makeEnv("import-id-escape");
+  ok(e, ["new", "other", "--kind", "ops"]);
+  const otherBefore = readFileSync(statePath(e, "other"), "utf8");
+  const before = readdirSync(e.projects).sort();
+
+  // writeLane joins the id onto `govern/imported-conversations/<id>.json`: three ".." segments climb out of that
+  // folder, out of the new lane's own temp folder, back to the lanes folder, landing on another lane's govern.json.
+  const evilId = "../../../other/govern";
+  const bad = join(e.root, "bad-conv-id.json");
+  write(bad, sealedText(skeletonBody({ conversations: [{ id: evilId, messages: [] }] })));
+  const r = govern(e, ["import", bad, "--as", "victim"]);
+
+  assert.notEqual(r.code, 0, r.out);
+  assert.match(r.err, /conversation id/);
+  assert.ok(r.err.includes(evilId), r.err);
+  assert.ok(!existsSync(join(e.projects, "victim")), "no lane folder for the new slug");
+  assert.deepEqual(readdirSync(e.projects).sort(), before, "no stray file or folder under the lanes folder");
+  assert.equal(readFileSync(statePath(e, "other"), "utf8"), otherBefore, "the other lane's govern.json must be unchanged byte for byte");
+
+  // A device id is checked the same way, even though nothing writes one as a file name today.
+  const badDevice = join(e.root, "bad-device-id.json");
+  write(badDevice, sealedText(skeletonBody({ devices: [{ id: "../x", publicKey: "" }] })));
+  const r2 = govern(e, ["import", badDevice, "--as", "victim2"]);
+  assert.notEqual(r2.code, 0, r2.out);
+  assert.match(r2.err, /device id/);
+  assert.ok(!existsSync(join(e.projects, "victim2")));
 });
 
 test("import refuses unknown fields and unknown bundle versions", () => {
@@ -204,6 +258,50 @@ test("imported checks must be accepted by the owner before they can pass a stage
   ok(e, ["check", "p2", "plan", "--accept", "--quote", "reviewed the imported check"]);
   const r2 = govern(e, ["advance", "p2"]);
   assert.equal(r2.code, 0, r2.out + r2.err);
+});
+
+test("a plain `govern check` refuses to run an imported, unaccepted check", () => {
+  const e = makeEnv("import-checks-plain");
+  ok(e, ["new", "p", "--kind", "ops"]);
+  const marker = join(e.root, "marker");
+  ok(e, ["cmd", "p", "built", "--", "node", "-e", 'require("node:fs").writeFileSync(process.argv[1], "ran")', marker]);
+  ok(e, ["check", "p", "--set", "built", "--stage", "plan"]);
+
+  const out = join(e.root, "bundle.json");
+  ok(e, ["export", "p", "--out", out]);
+  ok(e, ["import", out, "--as", "p2"]);
+
+  const r1 = govern(e, ["check", "p2"]);
+  assert.notEqual(r1.code, 0, r1.out);
+  assert.match(r1.err, /imported.*not accepted/);
+  assert.match(r1.err, /govern check p2 plan --accept --quote/);
+  assert.ok(!existsSync(marker), "the imported, unaccepted check must not run");
+
+  ok(e, ["check", "p2", "plan", "--accept", "--quote", "reviewed the imported check"]);
+  const r2 = govern(e, ["check", "p2"]);
+  assert.equal(r2.code, 0, r2.out + r2.err);
+  assert.ok(existsSync(marker), "after the owner accepts it, the check runs");
+});
+
+test("the Stop hook does not run an imported, unaccepted check, and does not block the stop on it", () => {
+  const e = makeEnv("import-checks-hook");
+  ok(e, ["new", "p", "--kind", "ops"]);
+  const marker = join(e.root, "hook-marker");
+  ok(e, ["cmd", "p", "built", "--", "node", "-e", 'require("node:fs").writeFileSync(process.argv[1], "ran")', marker]);
+  ok(e, ["check", "p", "--set", "built", "--stage", "plan"]);
+
+  const out = join(e.root, "bundle.json");
+  ok(e, ["export", "p", "--out", out]);
+  ok(e, ["import", out, "--as", "p2"]);
+
+  const hookIn = (sid: string, cwd: string) => JSON.stringify({ session_id: sid, cwd, hook_event_name: "SessionStart", source: "startup" });
+  const startRes = govern(e, ["hook", "session-start"], {}, hookIn("S1", join(e.projects, "p2")));
+  assert.equal(startRes.code, 0, startRes.err);
+
+  const s = govern(e, ["hook", "stop"], {}, JSON.stringify({ session_id: "S1", stop_hook_active: false, hook_event_name: "Stop" }));
+  assert.equal(s.code, 0, s.err);
+  assert.equal(s.out.trim(), "", "the hook must not block the stop on an unaccepted imported check");
+  assert.ok(!existsSync(marker), "the Stop hook must not run the imported, unaccepted check");
 });
 
 test("import refuses dependencies on lanes the workspace does not have unless --drop-deps", () => {

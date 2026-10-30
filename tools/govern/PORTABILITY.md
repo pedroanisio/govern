@@ -133,22 +133,33 @@ that are argv lists govern will run here. Import verifies everything before it w
 
 1. Reads at most 300 MiB of the file, then parses it. A typed shape refuses any key the format does not declare, at
    every level, and refuses any `format` other than `govern-lane-bundle/1`.
-2. Recomputes `sha256` over the body, and recomputes every file's own hash and size after base64-decoding it — the
+2. Checks the bundle's size limits — at most `MAX_FILES` files, each at most `MAX_FILE_BYTES` (computed from the
+   file's base64 length, before it is decoded), at most `MAX_TOTAL_BYTES` of file content in total, and at most
+   `MAX_LEDGER_ENTRIES` ledger entries and `MAX_CONVERSATIONS` conversations (lib/bundle.ts) — before decoding a
+   single file's content, so an oversized bundle is refused before that decode spends the memory.
+3. Recomputes `sha256` over the body, and recomputes every file's own hash and size after base64-decoding it — the
    manifest's numbers are never trusted on their own.
-3. Checks every file path: it must be relative, use POSIX separators only, have no `..` segment, no leading `/`, no
+4. Checks every file path: it must be relative, use POSIX separators only, have no `..` segment, no leading `/`, no
    backslash, no NUL byte, must not fall under the reserved `govern/` folder, and must not repeat a path already seen.
-4. Rewrites the lane state (see below), then parses the result with the lane's own `PROJECT` shape — the same strict
+   Checks every conversation id and device id the same way a slug segment is checked: no `/`, no backslash, no NUL
+   byte, not empty, not starting with `.` (which also catches a bare `..`) — a conversation's id becomes a file name
+   (`govern/imported-conversations/<id>.json`), so an unchecked id is a path.
+5. Rewrites the lane state (see below), then parses the result with the lane's own `PROJECT` shape — the same strict
    parser a live `govern.json` is read with — and, if the lane carries a pinned process snapshot, verifies that
    snapshot's own checksum.
-5. Checks the target slug (`--as`, else the bundle's own source slug) is a valid slug and is not already taken in this
+6. Checks the target slug (`--as`, else the bundle's own source slug) is a valid slug and is not already taken in this
    workspace.
-6. Checks that every lane the imported lane depends on (`after:`) exists here. A missing one refuses the import by
+7. Checks that every lane the imported lane depends on (`after:`) exists here. A missing one refuses the import by
    name, unless `--drop-deps`, which drops only the missing references instead of failing.
-7. Verifies every device approval recorded in the bundle's history against the device public key the bundle itself
+8. Verifies every device approval recorded in the bundle's history against the device public key the bundle itself
    carries, so an approval cannot be replayed with a different signer silently swapped in.
 
+An imported check cannot run before the owner accepts it, either: `govern check`, `govern advance` and the Stop hook
+all refuse to start an imported, unaccepted check's job (the same `importUnaccepted` rule, enforced once, in
+`runCheck` itself, so no caller can reach the job by a different path) — see "Checks" below.
+
 **If the workspace does not have the process the bundle's lane names** (and the bundle carries no pinned process
-snapshot of its own), step 4 refuses the import: the same `no process "<name>" (have: ...)` error a hand-edited
+snapshot of its own), step 5 refuses the import: the same `no process "<name>" (have: ...)` error a hand-edited
 `govern.json` naming an unknown process would get from the strict parser. Bring the process file to this workspace
 first, or export with a pinned snapshot (`govern process pin`, or a process that already declares a revision), which
 carries the process definition inside the bundle.
@@ -166,7 +177,7 @@ starts closed, and every check it brought along is flagged until the owner looks
 |---|---|
 | **Identity** | A new `slug` and `created` timestamp. `importedFrom: { slug, workspace, exportedAt, ledgerOffset, bundleSha256, mode }` is added, naming exactly where it came from. |
 | **Gates** | `approvals` and `votes` (where the process has them) start **empty** — every gate is closed, whatever was approved at the source. The source's approvals move to `importedApprovals: [{ gate, at, by, quote, source }]`: history to read, never a live grant. |
-| **Checks** | The ledger opens with an `import` entry, then one `cmd-set` entry (`from: null`) per command the lane carries. This means `pendingCheckChanges` flags **every** imported check from the first moment, and no stage can pass on one until the owner runs `govern check <slug> <stage> --accept --quote "<their own words>"` for that stage — exactly the acceptance a locally redefined check needs, applied to the whole imported set. |
+| **Checks** | The ledger opens with an `import` entry, then one `cmd-set` entry (`from: null`) per command the lane carries. This means `pendingCheckChanges` flags **every** imported check from the first moment, and none of them even **runs** — not from `govern check`, not from `govern advance`, not from the Stop hook — until the owner runs `govern check <slug> <stage> --accept --quote "<their own words>"` for that stage: exactly the acceptance a locally redefined check needs, applied to the whole imported set. |
 | **Live state** | `frozen`, `alerts`, `events` and the runtime's own deadlines are dropped. Active stages re-enter their runtime at the moment of import, so timers (deadlines, escalations) start counting from here, not from wherever they stood at the source. Human tasks keep their recorded assignees but lose their recorded completions — the new lane's owner decides what is actually done here. |
 | **History** | The source's whole ledger is written to `govern/imported-ledger.jsonl`, its conversations to `govern/imported-conversations/<id>.json`, and the device keys it carried to `govern/imported-devices.json`. None of these is live state: they are a record to read, and new conversations on the imported lane start fresh. |
 | **Template mode** | A template-mode bundle starts the new lane at its process's first stage, with that process's default setup data — there is no source history to carry in the first place. |

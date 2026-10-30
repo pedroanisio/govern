@@ -15,6 +15,10 @@ export const FORMAT = "govern-lane-bundle/1";
 export const MAX_FILES = 10_000;
 export const MAX_FILE_BYTES = 64 * 1024 * 1024;
 export const MAX_TOTAL_BYTES = 256 * 1024 * 1024;
+/** A bundle's ledger and conversation counts, past which import refuses it: untrusted input is never walked without a
+ *  bound, same as the file limits above (lib/importlane.ts, checkLimits). */
+export const MAX_LEDGER_ENTRIES = 200_000;
+export const MAX_CONVERSATIONS = 10_000;
 
 export interface BundleFile { path: string; size: number; mode: number; sha256: string; content: string }
 export interface BundleSource { workspace: string; slug: string; exportedAt: string; ledgerOffset: number; frozen: boolean }
