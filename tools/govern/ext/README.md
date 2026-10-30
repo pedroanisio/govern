@@ -23,6 +23,7 @@ its text, or when `govern desk` asks for its lines.
 | [remote](remote/README.md) | `remote` | [REMOTE.md](../REMOTE.md) |
 | [decide](decide/README.md) | `decide` | none: its manpage text is in `decide/manpage.ts` |
 | [conversation](conversation/README.md) | `conversation` | [CONVERSATIONS.md](../CONVERSATIONS.md) |
+| [slack](slack/README.md) | `slack` | [SLACK.md](../SLACK.md) |
 | [business](business/README.md) | `event`, `event-listen`, `tick`, `alerts`, `subprocess`, `recover`, `human`, `human-inbox`, `data`, `reject` | [BUSINESS.md](../BUSINESS.md), [LIFECYCLE.md](../LIFECYCLE.md) |
 
 ## Enabling

@@ -15,6 +15,8 @@ import type { Cmd } from "../lib/cli.ts";
 const TOOL = resolve(HERE, "..");
 const ALL = EXTENSION_NAMES.join(",");
 
+/** The commands added after the split, each with its owner: the core, or the extension that brought it. */
+const ADDED: Record<string, string> = { ext: "core", slack: "slack" };
 /** The command table before the extensions existed: no name may be lost to the split. */
 const OLD_TABLE = ["version", "conversation", "init", "new", "work", "brief", "status", "note", "approve", "reject", "data", "human-inbox", "human", "allow", "done",
   "cmd", "file", "process", "bpmn", "check", "advance", "event", "event-listen", "tick", "alerts", "subprocess", "recover", "dep", "hook", "run", "slice", "wait",
@@ -67,11 +69,11 @@ test("the registry says what each extension's index.ts exports: commands, docume
 
 test("the core and the extensions' commands together are the old table: no command is lost, none is in two places", async () => {
   const all = (await fullTable()).map((c) => c.name);
-  assert.deepEqual(all.filter((n) => n !== "ext").sort(), [...OLD_TABLE].sort(), "the old table, plus ext");
-  assert.ok(CORE.some((c) => c.name === "ext"), "ext, the one new command, is the core's");
+  assert.deepEqual(all.filter((n) => !Object.hasOwn(ADDED, n)).sort(), [...OLD_TABLE].sort(), "the old table, plus the commands added since");
+  for (const [n, owner] of Object.entries(ADDED)) assert.equal(owner === "core" ? (CORE.some((c) => c.name === n) ? "core" : undefined) : extensionOf(n)?.name, owner, `${n} belongs to ${owner}`);
   assert.equal(new Set(all).size, all.length);
   for (const c of CORE) assert.equal(extensionOf(c.name), undefined, `${c.name} is in the core table and in an extension's`);
-  for (const e of EXTENSIONS) for (const c of e.commands) assert.ok(OLD_TABLE.includes(c), c);
+  for (const e of EXTENSIONS) for (const c of e.commands) assert.ok(OLD_TABLE.includes(c) || ADDED[c] === e.name, c);
 });
 
 test("a disabled extension's command prints the one refusal line and exits 4; the name is still recognised", () => {
@@ -157,7 +159,7 @@ test("ext enable and disable write extensions in .govern/config.json, keep its o
   assert.match(w.run(["ext", "disable", "peer"]).out, /^peer is already disabled in /m);
   assert.equal(w.run(["peer", "list"]).code, 4);
   assert.equal(w.run(["ext", "enable", "nope"]).code, 2);
-  assert.match(w.run(["ext", "enable", "nope"]).err, /unknown extension "nope" \(extensions: peer, center, remote, decide, conversation, business\)/);
+  assert.match(w.run(["ext", "enable", "nope"]).err, /unknown extension "nope" \(extensions: peer, center, remote, decide, conversation, business, slack\)/);
   assert.equal(w.run(["ext", "enable"]).code, 2, "a name is required");
   assert.match(w.run(["ext", "enable", "business"], { GOVERN_EXTENSIONS: "decide" }).out, /note: GOVERN_EXTENSIONS is set and overrides /);
 });
@@ -182,7 +184,7 @@ test("a bad extensions value is refused naming the file and the JSON path; GOVER
   with_(["peer", "nope"]);
   let r = govern(e, ["ext", "list"], off);
   assert.equal(r.code, 4);
-  assert.match(r.err, new RegExp(`${cfg.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}: \\$\\.extensions\\[1\\]: unknown extension "nope" \\(known: peer, center, remote, decide, conversation, business\\)`));
+  assert.match(r.err, new RegExp(`${cfg.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}: \\$\\.extensions\\[1\\]: unknown extension "nope" \\(known: peer, center, remote, decide, conversation, business, slack\\)`));
   with_(["peer", "remote", "peer"]);
   r = govern(e, ["help"], off);
   assert.equal(r.code, 4);
@@ -208,9 +210,9 @@ test("govern help lists the core commands only, then one line naming each extens
   assert.equal(off.code, 0, off.err);
   for (const c of CORE) assert.match(off.out, new RegExp(`govern ${c.name}\\b`), `core: ${c.name}`);
   for (const info of EXTENSIONS) for (const cmd of info.commands) assert.doesNotMatch(off.out, new RegExp(`govern ${cmd}\\b`), `${cmd} is an extension's`);
-  assert.match(off.out, /\nextensions: peer, center, remote, decide, conversation, business \(govern ext list\)\n?$/);
+  assert.match(off.out, /\nextensions: peer, center, remote, decide, conversation, business, slack \(govern ext list\)\n?$/);
   const some = govern(e, ["help"], { GOVERN_EXTENSIONS: "remote,peer" });
-  assert.match(some.out, /\nextensions: peer \(enabled\), center, remote \(enabled\), decide, conversation, business \(govern ext list\)\n?$/);
+  assert.match(some.out, /\nextensions: peer \(enabled\), center, remote \(enabled\), decide, conversation, business, slack \(govern ext list\)\n?$/);
   assert.equal(govern(e, ["help"], { GOVERN_EXTENSIONS: ALL }).out.split("\n").filter((l) => l.startsWith("extensions:")).length, 1);
   assert.equal(govern(e, ["--help"], { GOVERN_EXTENSIONS: "" }).out, off.out, "the first-word --help is the same text");
   // help <ext command>: the command's lines and rules, then the extension's own manpage text, only while it is enabled
@@ -226,7 +228,7 @@ test("govern help lists the core commands only, then one line naming each extens
 
 test("govern help --topics lists an extension's documents only while it is enabled, each marked with the extension", () => {
   const e = makeEnv("ext-topics");
-  const docs = ["BUSINESS.md", "LIFECYCLE.md", "CONVERSATIONS.md", "REMOTE.md", "PEERS.md"];
+  const docs = ["BUSINESS.md", "LIFECYCLE.md", "CONVERSATIONS.md", "REMOTE.md", "PEERS.md", "SLACK.md"];
   const off = govern(e, ["help", "--topics"], { GOVERN_EXTENSIONS: "" });
   assert.equal(off.code, 0, off.err);
   for (const d of docs) assert.doesNotMatch(off.out, new RegExp(d), `${d} is hidden while its extension is off`);
@@ -253,7 +255,7 @@ test("manual --size prints a third line: what the enabled extensions' documents 
   assert.match(lines[2]!, /^extensions\s+0 bytes\s+≈ 0 tokens \(bytes \/ 3\.6, none enabled\)$/);
   const remote = govern(e, ["manual", "--size"], { GOVERN_EXTENSIONS: "remote" }).out.trimEnd().split("\n");
   assert.match(remote[2]!, new RegExp(`^extensions\\s+${bytes("REMOTE.md")} bytes\\s+≈ ${Math.round(bytes("REMOTE.md") / 3.6)} tokens \\(bytes / 3\\.6, REMOTE\\.md\\)$`));
-  const all = bytes("REMOTE.md", "PEERS.md", "BUSINESS.md", "LIFECYCLE.md", "CONVERSATIONS.md");
+  const all = bytes("REMOTE.md", "PEERS.md", "BUSINESS.md", "LIFECYCLE.md", "CONVERSATIONS.md", "SLACK.md");
   assert.match(govern(e, ["manual", "--size"], { GOVERN_EXTENSIONS: ALL }).out, new RegExp(`\\nextensions\\s+${all} bytes\\s+≈ ${Math.round(all / 3.6)} tokens`), "PEERS.md counts once for peer and center");
 });
 

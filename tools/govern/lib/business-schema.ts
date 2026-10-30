@@ -91,8 +91,12 @@ export const JOIN = obj({ mode: literal("all", "any"), stages: arr(name, { nonEm
 export interface Person {
   user: string;
   roles?: string[];
+  /** The person's Slack user id (ext/slack): a decision from Slack counts as theirs only through this mapping. */
+  slack?: string;
 }
-export const PEOPLE = record(obj({ user: name }, { roles: arr(name) }));
+/** A Slack user id as Slack's payloads carry it: U or W, then upper-case letters and digits. */
+const slackUser: Shape<string> = (v, at) => (typeof v === "string" && /^[UW][A-Z0-9]{2,20}$/.test(v) ? v : reject(at, "must be a Slack user id (U or W, then A-Z 0-9)"));
+export const PEOPLE = record(obj({ user: name }, { roles: arr(name), slack: slackUser }));
 export interface Human {
   assignee?: string;
   role?: string;
@@ -217,10 +221,13 @@ export function validateBusinessProcess(p: BusinessProcess): void {
     for (const v of f.enum ?? []) fieldValue({ ...f, enum: undefined }, v, at + ".enum");
     if (f.default !== undefined) fieldValue(f, f.default, at + ".default");
   }
-  const users = new Set<string>();
+  const users = new Set<string>(), slackUsers = new Set<string>();
   for (const [id, person] of Object.entries(people)) {
     if (users.has(person.user)) reject(`$.people.${id}.user`, "each OS account must map to exactly one person");
     users.add(person.user);
+    if (person.slack === undefined) continue;
+    if (slackUsers.has(person.slack)) reject(`$.people.${id}.slack`, "each Slack user must map to exactly one person");
+    slackUsers.add(person.slack);
   }
   const roles = new Set(Object.values(people).flatMap((x) => x.roles ?? []));
   function condition(c: Condition, at: string): void {

@@ -67,7 +67,7 @@ govern help advance                            # one command's usage and flags
 `--json` for a JSON object with `name` and `version`.
 
 The CLI is TypeScript ([govern.ts](govern.ts), [lib/](lib/), and [ext/](ext/README.md) for the
-extensions a workspace enables: peer, center, remote, decide, conversation, business). It runs directly
+extensions a workspace enables: peer, center, remote, decide, conversation, business, slack). It runs directly
 under Node through type stripping, from the [bin/govern](../../bin/govern)
 launcher. `tsc` is a dev dependency used only for type checking.
 
@@ -121,6 +121,8 @@ Documentation:
 - [LIFECYCLE.md](LIFECYCLE.md) covers deadlines, external events, retries and subprocesses.
 - [ITERATION.md](ITERATION.md) covers bounded loops, conditional branches and per-item subprocesses.
 - [CONVERSATIONS.md](CONVERSATIONS.md) covers persistent sessions, adapters, context checkpoints and recovery.
+- [SLACK.md](SLACK.md) covers `govern slack`: decisions people make with buttons in Slack, verified by Slack's request
+  signature and recorded as the mapped person's own.
 - [REMOTE.md](REMOTE.md) specifies `govern remote`, the protocol that lets a paired phone follow the lanes and their
   telemetry and approve gates with a signed confirmation. The Android app is in [android/](android/README.md).
 - [processes/video/MANUAL.md](processes/video/MANUAL.md) is the manual of the built-in `video` process (`govern manual video`).

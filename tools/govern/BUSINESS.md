@@ -113,6 +113,8 @@ Mutations require `--quote` and use govern's existing human-source verification:
 
 This is local OS-account authentication. Process/state files and the ledger remain writable by whoever has filesystem access; this is not an SSO service, tamper-proof audit, or protection against a user editing those files directly. Configure filesystem permissions and separate OS accounts for real role separation. Agents can prepare case data, but cannot use the human-decision commands to manufacture approvals in a Codex session.
 
+With the `slack` extension, people can also decide from Slack buttons: a person with `slack` (their Slack user id) in the `people` map votes on a policy gate, approves a gate they own, or completes a human task, and the decision records the request Slack signed as its source. See [SLACK.md](SLACK.md).
+
 ## Approval policies
 
 Gates without `policy` keep their legacy single-owner behavior. Policy gates use either an explicit `people` list or a `role`, plus a positive `quorum`:

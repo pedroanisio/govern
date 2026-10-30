@@ -300,10 +300,11 @@
 # KEYWORDS
 #     lanes process workflow video codex claude grok tokens usage orchestration pals-notes youtube
 # EXTENSIONS
-#     Peer, mesh, agents, center, remote, decide, conversation and the business event commands are extensions: a workspace enables each
+#     Peer, mesh, agents, center, remote, decide, conversation, slack and the business event commands are extensions: a workspace enables each
 #     with `govern ext enable NAME` ("extensions" in .govern/config.json, or GOVERN_EXTENSIONS), and `govern help COMMAND` prints an enabled
 #     extension's own manpage text. A command of a disabled extension is refused (exit 4). `govern ext list` shows the state of each.
 #     tools/govern/PEERS.md (extensions peer and center) - tools/govern/REMOTE.md (extension remote) - tools/govern/CONVERSATIONS.md (extension conversation)
+#     - tools/govern/SLACK.md (extension slack)
 #     - tools/govern/BUSINESS.md (extension business) - tools/govern/LIFECYCLE.md (extension business)
 # SEE ALSO
 #     st-man - tools/govern/SKILL.md (govern manual) - tools/govern/REFERENCE.md (govern manual --full) - tools/govern/processes/video/MANUAL.md (govern manual video)
