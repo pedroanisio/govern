@@ -38,6 +38,7 @@ nothing, and every later response goes out only after the operator picks it.
 
 1. In a govern workspace (`govern init`), enable the extensions and copy the files:
 
+   <!-- readme-example: skip: needs a govern workspace and $GOVERN set to the govern tool folder -->
    ```sh
    govern ext enable business && govern ext enable slack
    mkdir -p .govern/processes/suporte
@@ -67,6 +68,7 @@ nothing, and every later response goes out only after the operator picks it.
 
 Six long-running commands, each as a service:
 
+<!-- readme-example: skip: long-running services that need a configured workspace, Slack, Jira and Zendesk -->
 ```sh
 govern task dispatch --loop          # runs the agents' tasks (govern task install-service writes its unit)
 govern drive --loop --interval 30    # agent and command stages, decisions, sub-cases

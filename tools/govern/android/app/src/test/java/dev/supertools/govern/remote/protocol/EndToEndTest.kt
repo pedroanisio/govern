@@ -53,7 +53,8 @@ class EndToEndTest {
         assertTrue("no govern.ts at $governTs", governTs.isFile)
         root = Files.createTempDirectory("govern-remote-e2e").toFile()
         File(root, "home").mkdirs()
-        File(root, "govern.config.json").writeText("""{"projects":"projects","queue":"queue","processes":"processes","packages":"packages","tuningLog":"tuning.jsonl"}""")
+        // remote and conversation are extensions a workspace enables; govern.config.json is the owner's file, so it names them.
+        File(root, "govern.config.json").writeText("""{"projects":"projects","queue":"queue","processes":"processes","packages":"packages","tuningLog":"tuning.jsonl","extensions":["remote","conversation"]}""")
         File(root, "processes").mkdirs()
         File(root, "processes/release.json").writeText(
             """{"version":1,"name":"release","stages":[{"name":"draft"},{"name":"ship"}],"gates":[{"name":"final","stage":"draft"}]}""")
