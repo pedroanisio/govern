@@ -241,6 +241,37 @@ test("CLI handlers use custom dotenv token, record and answer commands, read fil
 });
 
 
+test("notify and listen share token selection, dotenv fallback and redacted failures", async t => {
+  const back = process.env, exitCode = process.exitCode;
+  const output: string[] = []; let expected = "", calls = 0;
+  t.mock.method(process.stdout, "write", (s: string) => { output.push(s); return true; });
+  t.mock.method(globalThis, "fetch", async (_url: unknown, options: RequestInit) => {
+    calls++;
+    assert.equal((options.headers as Record<string, string>).Authorization, `Bearer ${expected}`);
+    return Response.json({ ok: false, error: expected });
+  });
+  try {
+    for (const command of ["notify", "listen"]) for (const custom of [false, true]) for (const fromEnv of [false, true]) {
+      const e = makeEnv("slack-token-selection"), variable = custom ? "BOT_TOKEN" : "SLACK_BOT_TOKEN";
+      setConfig(e, { slack: { ...cfg, team: "T1", inbox: "generated/slack", envFile: "slack.env",
+        ...(custom ? { botTokenVar: variable } : {}), alerts: { listenStaleSec: 300, unansweredSec: 600 } } });
+      write(join(e.root, "slack.env"), `${variable}=private-dotenv-token\n`);
+      process.env = { ...childEnv(e), SLACK_BOT_TOKEN: "wrong-default-token", [variable]: fromEnv ? "private-env-token" : "" };
+      expected = fromEnv ? "private-env-token" : "private-dotenv-token";
+      const sub = commands[0]!.subs![command]!, before = calls;
+      const run = async () => sub.run!(parseArgs([], sub.flags!, `slack ${command}`));
+      if (command === "listen") await assert.rejects(run, error => error instanceof Error && !error.message.includes(expected));
+      else { await run(); assert.equal(process.exitCode, 1); }
+      assert.equal(calls, before + 1);
+      assert.ok(!output.join("").includes(expected));
+      // A selected custom name must never fall back to SLACK_BOT_TOKEN.
+      write(join(e.root, "slack.env"), ""); process.env[variable] = "";
+      await assert.rejects(run, new RegExp(`${variable} is not set`));
+      assert.equal(calls, before + 1);
+    }
+  } finally { process.env = back; process.exitCode = exitCode; }
+});
+
 test("a rate-limited read is one call per run; failed inbox append never advances position", async () => {
   let reads = 0;
   await assert.rejects(slackCall("http://fake", "secret", async () => { reads++; return new Response("", { status: 429 }); })("conversations.history", {}), /HTTP 429/);

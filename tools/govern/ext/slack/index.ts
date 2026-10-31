@@ -28,6 +28,13 @@ function secret(name: string, fromEnv: string | undefined, envFile: string | und
   return undefined;
 }
 
+/** Both notification and channel commands use the configured variable, then the same dotenv fallback. */
+function botToken(cfg: NonNullable<ReturnType<typeof slackConfig>>): string {
+  const variable = cfg.botTokenVar ?? "SLACK_BOT_TOKEN";
+  return secret(variable, cfg.botTokenVar ? process.env[variable] : process.env.SLACK_BOT_TOKEN, cfg.envFile)
+    ?? fail(`${variable} is not set: export it, or put it in the dotenv file slack.envFile names in ${configFile()}`);
+}
+
 /** `govern slack serve`: the interactivity server on loopback, once the team and the signing secret are configured. */
 function cmdServe(a: Args): void {
   const cfg = slackConfig() ?? fail(`${configFile()} names no slack.team: the Slack team whose requests count`);
@@ -48,8 +55,7 @@ const summary = (r: NotifyReport): string =>
 async function cmdNotify(a: Args): Promise<void> {
   const cfg = slackConfig() ?? fail(`${configFile()} names no slack.team: the Slack team whose requests count`);
   const channel = cfg.channel ?? fail(`${configFile()} names no slack.channel: the channel notify posts to (C…)`);
-  const token = secret(cfg.botTokenVar ?? "SLACK_BOT_TOKEN", (cfg.botTokenVar ? process.env[cfg.botTokenVar] : process.env.SLACK_BOT_TOKEN), cfg.envFile)
-    ?? fail(`${cfg.botTokenVar ?? "SLACK_BOT_TOKEN"} is not set: export it, or put it in the dotenv file slack.envFile names in ${configFile()}`);
+  const token = botToken(cfg);
   const lanes = many(a, "lane"), interval = Number(opt(a, "interval") ?? 30);
   if (!Number.isInteger(interval) || interval < 5) usage("--interval must be a whole number of seconds, 5 or more");
   const once = async () => {
@@ -70,8 +76,7 @@ function channelSettings() {
   const cfg = slackConfig() ?? fail(`${configFile()} names no slack configuration`);
   const channel = cfg.channel || fail(`${configFile()} names no slack.channel`);
   const inbox = cfg.inbox || fail(`${configFile()} names no slack.inbox`);
-  const variable = cfg.botTokenVar ?? "SLACK_BOT_TOKEN";
-  const token = secret(variable, (cfg.botTokenVar ? process.env[variable] : process.env.SLACK_BOT_TOKEN), cfg.envFile) ?? fail(`${variable} is not set: export it, or put it in slack.envFile`);
+  const token = botToken(cfg);
   return { cfg: { ...cfg, channel }, inbox, call: slackCall(process.env.GOVERN_SLACK_API ?? SLACK_API, token) };
 }
 

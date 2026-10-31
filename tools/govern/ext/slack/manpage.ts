@@ -52,7 +52,9 @@ OPTIONS
 ENVIRONMENT
     XDG_CONFIG_HOME (default ~/.config): slack install-service writes systemd/user units here.
     Slack (slack): SLACK_SIGNING_SECRET (the Slack app's signing secret, at least 16 characters) and SLACK_BOT_TOKEN
-    (xoxb-, scopes chat:write and files:write for upload; slack.botTokenVar overrides the variable name), else the config's slack.envFile · GOVERN_SLACK_API (https://slack.com/api).
+    (xoxb-, scopes chat:write and files:write for upload). slack.botTokenVar names a user-selected environment variable
+    instead of SLACK_BOT_TOKEN for notify, listen, post, upload and digest. Read that variable from the environment
+    first, then the config's slack.envFile; token values never appear in errors. GOVERN_SLACK_API (https://slack.com/api).
 EXAMPLES
     govern slack serve --port 5003   # behind an HTTPS proxy whose /slack/actions is the Slack app's interactivity URL
 `;
