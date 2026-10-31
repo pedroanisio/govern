@@ -86,6 +86,12 @@ All notable changes to govern are documented here, following Keep a Changelog.
 - The negative probe of a self-test asks for a capability the profile really lacks: a profile holding `wt-edit` no longer fails with `not-edit leaked`; with none to ask for the record says `negative: none applicable`.
 - Claude runs and chats accept the output of Claude Code 2.1.219 and 2.1.312: the transport decoder names their new run, usage, message and tool-call metadata as opaque fields instead of failing every turn with `unknown key "terminal_reason"` (or `"timestamp"`).
 
+## [0.1.2] - 2026-10-31
+
+### Fixed
+
+- Slack service units write an unquoted absolute `WorkingDirectory` with literal `%` escaped as `%%`. Slack and task units share path validation that refuses line breaks, NUL and relative paths with a typed error; command and environment values remain quoted.
+
 ## [0.1.1] - 2026-10-31
 
 ### Fixed

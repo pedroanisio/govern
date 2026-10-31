@@ -5,6 +5,7 @@ import { readFileSync, readdirSync, utimesSync, chmodSync, statSync } from "node
 import { join } from "node:path";
 import * as cli from "../govern.ts";
 import { userInfo } from "node:os";
+import { GovernError } from "../lib/util.ts";
 import { claudeArgs, registry, getProfile } from "../lib/caps.ts";
 import * as queue from "../lib/queue.ts";
 import * as agents from "../lib/agents.ts";
@@ -185,6 +186,27 @@ test("system service rendering preserves paths, User and Environment quoting wit
   assert.ok(unit.includes(`Environment="GOVERN_REPO=${e.root} space"`));
   assert.ok(unit.includes(`Environment="GOVERN_QUEUE=${e.root}/q ueue"`));
   assert.match(unit, /WantedBy=multi-user.target/);
+});
+
+test("task user and system units escape WorkingDirectory percent specifiers without quotes", () => {
+  const e = setup();
+  process.env.GOVERN_REPO = e.root + " space/%repo";
+  process.env.GOVERN_QUEUE = join(e.root, "queue");
+  for (const system of [false, true]) {
+    const unit = cli.serviceUnit("/bin/true", "30", undefined, system);
+    assert.equal(unit.split("\n").find(line => line.startsWith("WorkingDirectory=")),
+      `WorkingDirectory=${e.root} space/%%repo`);
+  }
+});
+
+test("task units refuse line breaks in WorkingDirectory with a typed error", () => {
+  const e = setup();
+  process.env.GOVERN_QUEUE = join(e.root, "queue");
+  for (const suffix of ["\nInjected=yes", "\rInjected=yes", "\0repo"]) {
+    process.env.GOVERN_REPO = e.root + suffix;
+    assert.throws(() => cli.serviceUnit("/bin/true", "30", undefined),
+      (error: unknown) => error instanceof GovernError && /WorkingDirectory/.test(error.message));
+  }
 });
 
 

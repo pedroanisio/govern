@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { repo, slackConfig } from "../../lib/workspace.ts";
 import { GovernError } from "../../lib/util.ts";
+import { workingDirectory } from "../../lib/systemd.ts";
 
 function word(value: string, command = false): string {
   if (/[\r\n\0]/.test(value)) throw new GovernError("cannot write a line break or NUL into a service unit", 1);
@@ -14,10 +15,11 @@ function word(value: string, command = false): string {
 
 /** Render the same fixed workspace and PATH into independent listener, notifier and daily digest user units. */
 export function serviceUnits(bin: string, workspace: string, path: string): Record<string, string> {
+  const directory = workingDirectory(workspace);
   const units: Record<string, string> = {};
   for (const [command, args] of [["listen", " --loop --interval 60"], ["notify", " --loop --interval 30"], ["digest", ""]]) {
     units[`govern-slack-${command}.service`] = ["[Unit]", `Description=govern Slack ${command}`, "", "[Service]",
-      `Type=${command === "digest" ? "oneshot" : "simple"}`, `WorkingDirectory=${word(workspace)}`,
+      `Type=${command === "digest" ? "oneshot" : "simple"}`, `WorkingDirectory=${directory}`,
       `ExecStart=${word(bin, true)} slack ${command}${args}`,
       `Environment=${word(`PATH=${path}`)}`, `Environment=${word(`GOVERN_REPO=${workspace}`)}`,
       ...(command === "digest" ? [] : ["Restart=on-failure", "RestartSec=30"]), "UMask=0077", "",
