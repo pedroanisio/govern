@@ -312,7 +312,7 @@
 #     govern advance --help                # advance's usage and flags
 #     govern advance ops/govern            # runs the test check; moves to review only when it passes
 # KEYWORDS
-#     lanes process workflow video codex claude grok tokens usage orchestration pals-notes youtube
+#     lanes process workflow video codex claude grok tokens usage orchestration checks approvals
 # EXTENSIONS
 #     Peer, mesh, agents, center, remote, decide, conversation, slack and the business event commands are extensions: a workspace enables each
 #     with `govern ext enable NAME` ("extensions" in .govern/config.json, or GOVERN_EXTENSIONS), and `govern help COMMAND` prints an enabled

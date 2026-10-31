@@ -4,7 +4,7 @@
 // Grant self-test: one probe per capability of a profile, each in a sealed session with the profile's own grant, answered in a
 // fixed JSON shape and verified by govern, never trusted. The result is recorded with the profile's hash (see caps.ts).
 /**
- * ⚠ ARCHITECTURAL CONTRACT (PALS's LAW) — LLM OUTPUT IS UNVERIFIED BY DEFAULT
+ * ⚠ ARCHITECTURAL CONTRACT (LLM output verification) — LLM OUTPUT IS UNVERIFIED BY DEFAULT
  *
  * LLMs statistically produce errors: omissions, hallucinations,
  * partial completions, schema violations, and silent failures.
