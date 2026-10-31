@@ -326,12 +326,30 @@
 #     - tools/govern/PORTABILITY.md
 # MANPAGE <<<
 set -eu
+# Help stays shell-only; other commands check before loading TypeScript.
+require_node() {
+  NODE_VERSION=$(node --version 2>/dev/null) || NODE_VERSION='no node'
+  NODE_MAJOR=${NODE_VERSION#v}
+  NODE_MAJOR=${NODE_MAJOR%%.*}
+  case "$NODE_MAJOR" in
+    ''|*[!0-9]*) NODE_MAJOR=0 ;;
+  esac
+  if [ "$NODE_MAJOR" -lt 24 ]; then
+    echo "govern needs Node 24 or later, found $NODE_VERSION" >&2
+    exit 1
+  fi
+}
+case "${1-}" in
+  -h|--help) ;;
+  *) require_node ;;
+esac
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 # Only a leading -h/--help is the manpage: after the command, --help is that command's help (govern.ts), and a
 # --help inside a value or after `--` belongs to the argv it is in.
 case "${1-}" in
   -h|--help)
     if [ -x "$ROOT/bin/st-man" ]; then exec "$ROOT/bin/st-man" govern; fi
+    require_node
     exec node --disable-warning=ExperimentalWarning "$ROOT/tools/govern/govern.ts" help
     ;;
 esac
