@@ -44,12 +44,13 @@ To ask another agent, send a message; the dispatcher starts one fresh headless s
 govern task send --to codex --project <slug> --task <name> --kind TASK --summary "…" --body "…" --file <repo-relative path>
 ```
 
-- `--to` is a runner (`codex`, `claude`, `grok`), a profile, `auto`, `owner`, a live session name or `NAME@PEER` on another host. Prefer `codex` for checks. `--write` lets the runner change files in the project folder; the default is read-only. For `NAME@PEER` pass none of `--write`, `--profile`, `--lane`, `--estimate-usd`, `--file`.
+- `--to` is a runner (`codex`, `claude`, `grok`), a profile, `auto`, `owner`, a live session name or `NAME@PEER` on another host. Prefer `codex` for checks. `--write` lets the runner change files in the project folder; the default is read-only.
 - Your mail: `govern task inbox`. Answer with `govern task reply <id> --kind ACK|REVIEW|HANDOFF|BLOCKED|… --summary … --body …`; `govern task close <id> --note …` when nothing needs saying. Read replies once, when the owner asks or the work needs them, never in a loop. Do not send as `owner`; the owner has no inbox.
 - Every reply carries one of three marks: `[checked: …]` (a content check passed), `[unverified]` (the check failed or could not run: read the reply yourself before acting on it) and `[shape only]` (no check exists for the kind: it proves the form only).
 - Ask for checks: `--check commit-refs|claims-cited|file-refs` and `--verify -- <test command>` make govern verify the reply (every HANDOFF's commits are checked anyway); a reply that does not parse gets one repair call before it fails (`[repaired]`).
-- `--timeout S` sets one run's limit; `govern task triage` lists failed tasks with the cause, and `govern task retry <id> --note "<what was fixed>"` resends one (never automatic). One dispatcher runs up to `--parallel N` at once, never more than a runner's `concurrency`.
+- `--timeout S` sets one run's limit; `govern task triage` lists failed tasks with the cause, and `govern task retry <id> --note "<what was fixed>"` resends one (never automatic).
 - No profile runs unchecked: the dispatcher self-tests a profile once per definition before its first run (`govern caps --check`). A message that asks for file changes is refused for a read profile: add `--write`, or `--read-only` to confirm it needs no edits.
+- The `claude-write` and `grok-write` profiles have no shell: run the suite yourself and check each new test fails without the fix. A thread stops after `maxRuns` (4) runs, `--reply-to` included: send the next review as a new task.
 - **Never message other sessions and never start subagents** (no Agent tool, no Workflow). Sessions are not woken by the queue.
 
 ## The owner's gates
@@ -73,14 +74,14 @@ govern task send --to codex --project <slug> --task <name> --kind TASK --summary
 - Every command warns past 150k tokens per call; `govern ctx` shows the number. Never ask the owner to `/clear`.
 - When it warns: record what is open with `govern note`, offload model work with `govern task send --to codex`, wait on jobs in the background, let auto-compaction do the rest.
 - One session covers one lane and one stage. For another lane run `govern done <slug>` and start a fresh session.
-- `govern usage [<slug>]` shows what the tokens went to, calls outside a segment included (attributed by `GOVERN_LANE`, the session's folder or the queue run, as `unsegmented` rows); with no slug it ends with what belongs to no lane. Report it when asked or when a lane is delivered.
+- `govern usage [<slug>]` shows what the tokens went to, calls outside a segment included. Report it when asked or when a lane is delivered.
 
 ## Where the rest is
 
-- `govern install-skill [<skills dir>]` links `<skills dir>/govern` to this folder (a symlink, never a copy; `--replace` removes a real directory first; `--check` verifies).
+- `govern install-skill [<skills dir>]` links `<skills dir>/govern` to this folder (a symlink, never a copy).
 - `govern help <command>`: flags and rules of one command. `govern help --topics`: the documents below with their paths.
 - `govern manual --full`: this manual plus [REFERENCE.md](REFERENCE.md), the detailed rules (workspace, checks, resources, allowances, runners, capabilities, environment variables). `govern manual --size` prints the sizes.
-- Extensions (peer, center, remote, decide, conversation, business, slack) load only where the workspace enables them (`GOVERN_EXTENSIONS` or `extensions` in `.govern/config.json`): `govern ext list` shows each one's state, `govern ext enable <name>` and `govern ext disable <name>` change it, and a command of a disabled one is refused (exit 4). The documents below that belong to one are listed by `govern help --topics` only while it is enabled.
+- Extensions (peer, center, remote, decide, conversation, business, slack) load only where the workspace enables them: `govern ext list` shows each one's state, `govern ext enable <name>` and `govern ext disable <name>` change it; a disabled one's commands are refused (exit 4) and its documents are not in `govern help --topics`.
 - [BUSINESS.md](BUSINESS.md): typed case data, routes, human tasks, quorum. [LIFECYCLE.md](LIFECYCLE.md): timers, events, recovery, subprocesses. [ITERATION.md](ITERATION.md): loops and branching. [CONVERSATIONS.md](CONVERSATIONS.md): persistent conversations. [REMOTE.md](REMOTE.md): phone and devices. [SLACK.md](SLACK.md): decisions from Slack buttons. [PEERS.md](PEERS.md): other hosts and mesh. [PORTABILITY.md](PORTABILITY.md): freeze, export, import, clone.
 
 - Slack: `govern slack listen` records posts; `govern slack post` journals sends; `govern slack upload` uploads media; `govern slack resolve` settles an uncertain send; `govern slack digest` sends daily summaries; `govern slack install-service` writes user units.

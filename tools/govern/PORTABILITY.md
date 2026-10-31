@@ -175,7 +175,9 @@ later `import-accept` entry:
 `govern brief <slug>` (and `govern import`'s own printed output) lists what there is to review while a lane sits in
 this state: every command the lane carries with its full argv, the pinned process's name and snapshot hash, and
 every command the process names outside a stage check — today, a stage's `onError.compensate` — each marked by the
-stage and the role it is used in.
+stage and the role it is used in. Every `{paths.NAME}` those commands use is listed as this workspace resolves it
+(`paths.tools = /abs/path`), or as `(not in govern.config.json)`: an argv that looked harmless where it was exported
+runs whatever that path holds here, so review the resolved paths, not only the argv.
 
 `govern check <slug> --accept-import --quote "<the owner's own words>"` lifts the quarantine: the quote is verified
 exactly as `govern approve` and `govern check <slug> <stage> --accept` verify one, and this one decision also counts

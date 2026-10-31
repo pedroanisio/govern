@@ -1,11 +1,11 @@
 // A lane: its folder, its govern.json (state, commands, process) and its brief. A lane follows a process (lib/process.ts).
 import { existsSync, readFileSync, appendFileSync, mkdirSync, readdirSync } from "node:fs";
-import { join, dirname, resolve, relative } from "node:path";
+import { join, dirname, resolve, relative, basename } from "node:path";
 import { WORKFLOW, HUMAN_TASKS, VOTES, value, type Value, type Workflow, type HumanTask, type Vote } from './business-schema.ts';
 import { initializeBusiness, validateCase, gateApproved, setData } from './business.ts';
 import { GovernError, fail, usage, readJson, writeJson, nowIso, latest, plain, clip, readJsonl } from "./util.ts";
 import type { Source } from "./approval.ts";
-import { repo, projectsDir, workflowFile, config, configFile } from "./workspace.ts";
+import { repo, projectsDir, workflowFile, config, configFile, pathEntry } from "./workspace.ts";
 import { getProcess, processOf, processes, processName, manualOf, freezeProcess, snapshotProcess } from "./process.ts";
 import { RUNTIME, EVENTS, ALERTS, SNAPSHOT, INVOCATION, type StageRuntime, type EventReceipt, type Alert, type Snapshot, type Invocation } from './lifecycle-schema.ts';
 import { validateRuntime } from './lifecycle-runtime.ts';
@@ -491,7 +491,8 @@ export function importQuarantined(led: Entry[]): boolean {
 const shownCommand = (c: unknown) => (c == null ? "none" : commandLine(c as string[] | Command));
 /** While a lane sits quarantined (importQuarantined): what the owner reviews before `--accept-import` — every
  *  command it carries with its full argv, the pinned process's name and snapshot hash, and every command the
- *  process names outside a stage check (today, a stage's `onError.compensate`), each marked by where it is used. */
+ *  process names outside a stage check (today, a stage's `onError.compensate`), each marked by where it is used,
+ *  and each {paths.NAME} those commands use as this workspace resolves it: the same argv can run elsewhere here. */
 export function quarantineDetail(p: Project): string[] {
   const pr = processOf(p);
   const L: string[] = [`⚠ imported lane, not accepted: govern check ${p.slug} --accept-import --quote "<the owner's own words>"`];
@@ -502,6 +503,8 @@ export function quarantineDetail(p: Project): string[] {
     if (s.check) L.push(`  stage ${s.name} check: "${s.check}"`);
     if (s.onError?.compensate) L.push(`  stage ${s.name} onError.compensate: "${s.onError.compensate}"`);
   }
+  const names = new Set(cmds.flatMap(([, c]) => argvOf(c)).flatMap((a) => [...a.matchAll(/\{paths\.([^{}]+)\}/g)].map((m) => m[1]!)));
+  for (const n of names) L.push(`  paths.${n} = ${pathEntry(n) ?? `(not in ${basename(configFile())})`}`);
   return L;
 }
 
