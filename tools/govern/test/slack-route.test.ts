@@ -249,3 +249,32 @@ test("activation excludes reference-format old inbox rows, admits same-run arriv
   assert.equal(readFileSync(join(d, "start-line.json"), "utf8"), boundary);
   assert.deepEqual(restarted.channelAlerts({ ...cfg, alerts: undefined }, NOW + 3600001), []);
 }));
+
+test("listen activation captures the old inbox before polling and routes a same-run arrival", async t => workspace(async d => {
+  rmSync(join(d, "start-line.json"));
+  inbox(d, [post("10.000001")]);
+  write(join(d, "state.json"), '{"top":"10.000001","threads":{},"edits":{}}');
+  process.env.SLACK_BOT_TOKEN = "test-secret";
+  const sends: Record<string, unknown>[] = [];
+  t.mock.method(globalThis, "fetch", async (url: unknown, init: RequestInit) => {
+    if (String(url).endsWith("history")) return Response.json({ ok: true, messages: [raw("11.000001")] });
+    sends.push(JSON.parse(String(init.body))); return Response.json({ ok: true, ts: "99.000001" });
+  });
+  t.mock.method(process.stdout, "write", () => true);
+  const { commands } = await import("../ext/slack/index.ts"), { parseArgs } = await import("../lib/util.ts");
+  const sub = commands[0]!.subs!.listen!;
+  await sub.run!(parseArgs(["--once"], sub.flags!, "slack listen"));
+  assert.equal(JSON.parse(readFileSync(join(d, "start-line.json"), "utf8")).ts, "10.000001");
+  assert.equal(queue.all().length, 1); assert.equal(sends.length, 1); assert.equal(sends[0]!.thread_ts, "11.000001");
+}));
+
+test("activation is off without configuration and corrupt start lines fail closed", async () => workspace(async d => {
+  rmSync(join(d, "start-line.json"));
+  assert.equal(startLine(d, { team: "T1" }), "0"); assert.equal(existsSync(join(d, "start-line.json")), false);
+  assert.equal(startLine(d, base), "0");
+  for (const value of ['{"ts":"tomorrow"}', '{"ts":"0","extra":true}', 'null', 'not json']) {
+    write(join(d, "start-line.json"), value);
+    await assert.rejects(routePending(api().call, d, base, NOW), /start-line.json/);
+  }
+  assert.equal(queue.all().length, 0);
+}));

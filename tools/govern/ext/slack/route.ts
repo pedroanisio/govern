@@ -5,9 +5,9 @@
 // semantic/content verification, typed refusal and BLOCKED recovery, one repair and bounded run/timeout limits.
 // Mandatory file-refs checks assert referential validity for every reply kind; failures are marked unverified for owner review.
 // Replies go to owner, never to Slack. No model chooses recipients, profiles, limits, timestamps or follow-up sends.
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync, linkSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import type { WorkspaceConfig } from "../../lib/workspace.ts";
 import { obj, str, record, parseFile, bool } from "../../lib/shape.ts";
 import { GovernError } from "../../lib/util.ts";
@@ -56,15 +56,21 @@ export function startLine(d: string, cfg: SlackConfig): string {
   if (!cfg.route && !cfg.alerts) return "0";
   const shape = obj({ ts: (v: unknown, p: string) => {
     const ts = str(v, p);
-    if (ts !== "0" && !/^\d{1,12}\.\d{6}$/.test(ts)) throw new GovernError(`${p}: invalid start line`, 1);
+    if (ts !== "0" && !/^\d{1,12}\.\d{6}$/.test(ts)) throw new GovernError(`start-line.json: ${p}: invalid start line`, 1);
     return ts;
   } });
   const saved = read(d, "start-line.json", shape, undefined);
   if (saved) return saved.ts;
   const existing = posts(d, { ...cfg, channel: cfg.channel ?? "" });
   const ts = existing.at(-1)?.ts ?? "0";
-  directory(d); save(d, "start-line.json", { ts });
-  return ts;
+  directory(d);
+  // notify and listen may activate concurrently. Publish a complete file exclusively: the first boundary wins.
+  const file = join(d, "start-line.json"), tmp = `${file}.${randomUUID()}`;
+  writeFileSync(tmp, JSON.stringify({ ts }) + "\n", { mode: 0o600, flag: "wx" });
+  try { linkSync(tmp, file); }
+  catch (e) { if ((e as NodeJS.ErrnoException).code !== "EEXIST") throw e; }
+  finally { unlinkSync(tmp); }
+  return parseFile(file, readFileSync(file, "utf8"), shape).ts;
 }
 function newPosts(d: string, cfg: SlackConfig & { channel: string }): Post[] {
   const ts = startLine(d, cfg);
