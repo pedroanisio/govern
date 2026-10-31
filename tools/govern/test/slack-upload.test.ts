@@ -66,3 +66,26 @@ test("upload rejects unsafe URLs and malformed completion without logging API bo
   const f = fixture();
   await assert.rejects(uploadFile(async (m, b) => m === "files.completeUploadExternal" ? { files: [] } : f.call(m, b), f.d, "C1", f.policy, { file: f.file, thread: "2.000002" }, f.request), /completion/);
 });
+
+test("upload CLI reads configured credentials, validates required arguments and keeps secrets out of refusals", async t => {
+  const { makeEnv, childEnv, setConfig } = await import("./helpers.ts");
+  const { commands } = await import("../ext/slack/index.ts"), { parseArgs } = await import("../lib/util.ts");
+  const e = makeEnv("upload-cli"), before = process.env, file = write(join(e.root, "media/image.png"), "image");
+  setConfig(e, { slack: { team: "T1", channel: "C1", inbox: "generated/slack", botTokenVar: "UPLOAD_TEST_TOKEN", upload: { roots: ["media"], maxBytes: 100 } } });
+  process.env = childEnv(e); process.env.UPLOAD_TEST_TOKEN = "private_bot_token";
+  const calls: string[] = [], sub = commands[0]!.subs!.upload!;
+  t.mock.method(process.stdout, "write", () => true);
+  t.mock.method(globalThis, "fetch", async (url: unknown, init: RequestInit) => {
+    calls.push(String(url));
+    assert.equal((init.headers as Record<string, string>).Authorization, "Bearer private_bot_token");
+    return Response.json(String(url).endsWith("replies") ? { ok: true, messages: [{ ts: "1.000001" }] } : { ok: false, error: "private_bot_token" });
+  });
+  try {
+    for (const args of [[], ["--file", file]]) await assert.rejects(async () => sub.run!(parseArgs(args, sub.flags!, "slack upload")), /requires/);
+    await assert.rejects(async () => sub.run!(parseArgs(["--file", file, "--thread", "1.000001"], sub.flags!, "slack upload")), e => /redacted/.test(String(e)) && !String(e).includes("private_bot_token"));
+    assert.equal(calls.length, 2);
+    const f = fixture();
+    for (const extra of [{ text: " " }, { text: "x".repeat(40001) }, { title: "" }, { title: "x".repeat(256) }])
+      await assert.rejects(uploadFile(f.call, f.d, "C1", f.policy, { file: f.file, thread: "2.000002", ...extra }, f.request), /text|title/);
+  } finally { process.env = before; }
+});
