@@ -8,7 +8,7 @@ import { fail, usage, opt, flag, many } from "../../lib/util.ts";
 import type { Args } from "../../lib/util.ts";
 import { out, type Cmd } from "../../lib/cli.ts";
 import type { ExtDoc } from "../../lib/ext-registry.ts";
-import { poll, slackCall, postMessage, wasSent, wasAttempted } from "./channel.ts";
+import { poll, slackCall, postMessage, uploadFile, wasSent, wasAttempted } from "./channel.ts";
 import { routePending, startLine } from "./route.ts";
 import { digest } from "./digest.ts";
 import { commandText } from "./commands.ts";
@@ -109,6 +109,15 @@ async function cmdPost(a: Args): Promise<void> {
   out(`slack post: ${sent.ts}`);
 }
 
+/** Explicit binary media upload, constrained by the workspace's resolved upload roots. */
+async function cmdUpload(a: Args): Promise<void> {
+  const file = opt(a, "file") ?? usage("upload requires --file");
+  const thread = opt(a, "thread") ?? usage("upload requires --thread");
+  const { cfg, inbox, call } = channelSettings();
+  const receipt = await uploadFile(call, inbox, cfg.channel, cfg.upload, { file, thread, title: opt(a, "title"), text: opt(a, "text"), key: opt(a, "key") });
+  out(`slack upload: ${receipt.ts}`);
+}
+
 /** Explicit daily summary, using the same credentials and durable send keys as post. */
 async function cmdDigest(): Promise<void> {
   const { cfg, inbox, call } = channelSettings();
@@ -121,8 +130,10 @@ export const docs: ExtDoc[] = [{ title: "Slack: decisions from Slack buttons, si
 export const manpage = MANPAGE;
 
 export const commands: Cmd[] = [
-  { name: "slack", section: 7, noSub: "govern slack serve|notify|listen|post|digest (the protocol: tools/govern/SLACK.md)",
+  { name: "slack", section: 7, noSub: "govern slack serve|notify|listen|post|upload|digest (the protocol: tools/govern/SLACK.md)",
     subs: {
+      upload: { flags: { value: ["thread", "file", "title", "text", "key"] },
+        lines: [["--thread TS --file PATH [--title T] [--text T] [--key K]", "upload an allowed image or video inside slack.upload.roots and maxBytes; resolve the thread and journal the file id"]], run: cmdUpload },
       digest: { lines: [["", "post waiting people, failed tasks and open alerts once per local day; stay silent when empty"]], run: cmdDigest },
       listen: { flags: { bool: ["once", "loop"], value: ["interval"] },
         lines: [["[--once | --loop --interval 60]", "record new channel posts in slack.inbox; first run marks existing posts seen; answer configured requesters' fixed commands"]], run: cmdListen },

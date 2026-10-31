@@ -221,5 +221,14 @@ and prevents repeats that day. It uses the configured channel credentials and pr
 is refused instead of silently omitting work. An ambiguous send requires the keyed-send reconciliation above. No timer
 is installed by these commands.
 
-The config also accepts `upload: {roots, maxBytes}`; uploading is a later feature. Numeric limits must be positive integers
-and upload roots a nonempty list.
+## Uploading media
+
+Configure `upload: {"roots": ["generated"], "maxBytes": 100000000}` inside `slack`. Roots resolve relative to the workspace config base, as does `inbox`. Numeric limits must be positive integers and roots a nonempty list.
+
+```sh
+govern slack upload --thread 1793000000.000100 --file generated/clip.mp4 --title "Clip" --text "Ready for review" --key clip-1
+```
+
+Upload requires `slack.channel`, `slack.inbox`, a bot token with `files:write`, and `slack.upload`. The file must resolve, including symlinks, inside an allowed root and be a nonempty regular file no larger than `maxBytes`. Allowed extensions are PNG, JPG/JPEG, GIF, WebP, MP4/M4V, MOV and WebM. These are extension restrictions, not content inspection. `--thread` is required and resolves a reply timestamp to its parent, just like `post`. Optional text must be nonempty and at most 40000 characters; titles are 1..255 characters.
+
+The command calls `files.getUploadURLExternal`, PUTs the bytes without the bot token to an HTTPS `files.slack.com` upload URL, then calls `files.completeUploadExternal` to share the file in the thread. Redirects are refused. The private `sent.jsonl` receipt has `kind: "upload"`, the resolved thread and key; its `ts` is the Slack file id because completion does not supply a message timestamp. Keyed uploads use the same send-intent reservation and manual reconciliation as posts; uncertain results never retry automatically. No upload URL, token or file bytes are journaled.

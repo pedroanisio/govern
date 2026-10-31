@@ -3,6 +3,7 @@
 /** SYNOPSIS, DESCRIPTION, OPTIONS, ENVIRONMENT and EXAMPLES of the slack command, in the layout of the core manpage (bin/govern). */
 export const MANPAGE = `SYNOPSIS
     govern slack serve [--port 5003]  |  slack notify [--lane S]... [--loop --interval 30] [--dry-run]
+    govern slack upload --thread TS --file PATH [--title T] [--text T] [--key K]
     govern slack digest
     govern slack listen [--once | --loop --interval 60]
     govern slack post --kind ack|blocked|delivered|question|note (--text T | --file F) [--thread TS] [--key K]
@@ -28,21 +29,24 @@ DESCRIPTION
     Cleared conditions can alert again. slack digest posts waiting people, failed tasks and open alerts once per local
     calendar day; an empty summary sends nothing. Preserve routes.json, bot-replies.json and the send journals.
     One history page is read per run. has_more warns on stderr and in the heartbeat; older posts may be missed.
+    slack upload PUTs common images and videos through the external upload API. Resolved paths, including symlinks,
+    must stay inside slack.upload.roots and maxBytes. It journals a file id with kind upload and resolves thread parents.
 OPTIONS
     --once                  slack listen: one run (default)
     --loop                  slack listen, slack notify: repeat runs
     --interval N            slack listen, slack notify: seconds between runs (listen 60, notify 30)
     --kind K                slack post: ack, blocked, delivered, question or note
-    --text T                slack post: nonempty message text, at most 40000 characters with prefix
-    --file F                slack post: read message text from this file instead of --text
-    --thread TS             slack post: reply in this thread (a reply timestamp is resolved to its parent)
-    --key K                 slack post: refuse a previously sent key
+    --text T                slack post, slack upload: nonempty message text, at most 40000 characters with prefix
+    --file F                slack post, slack upload: message text file for post; binary image/video for upload
+    --thread TS             slack post, slack upload: reply in this thread (a reply timestamp is resolved to its parent)
+    --key K                 slack post, slack upload: refuse a previously sent key
+    --title T               slack upload: optional title, 1..255 characters
     --port N                slack serve: the loopback port (default 5003)
     --lane S                slack notify: only this lane (repeatable)
     --dry-run               slack notify: send and record nothing
 ENVIRONMENT
     Slack (slack): SLACK_SIGNING_SECRET (the Slack app's signing secret, at least 16 characters) and SLACK_BOT_TOKEN
-    (xoxb-, scope chat:write; slack.botTokenVar overrides the variable name), else the config's slack.envFile · GOVERN_SLACK_API (https://slack.com/api).
+    (xoxb-, scopes chat:write and files:write for upload; slack.botTokenVar overrides the variable name), else the config's slack.envFile · GOVERN_SLACK_API (https://slack.com/api).
 EXAMPLES
     govern slack serve --port 5003   # behind an HTTPS proxy whose /slack/actions is the Slack app's interactivity URL
 `;

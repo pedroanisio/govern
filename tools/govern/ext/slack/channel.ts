@@ -1,6 +1,6 @@
 // Slack channel reader and explicit posting. Disk rows and position match the retired poller; no reference is read at runtime.
-import { appendFileSync, chmodSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { openSync, closeSync, fstatSync, realpathSync, appendFileSync, chmodSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { join, relative, isAbsolute, basename, extname } from "node:path";
 import { randomUUID, createHash } from "node:crypto";
 import { GovernError } from "../../lib/util.ts";
 import { obj, str, record, parseFile } from "../../lib/shape.ts";
@@ -212,3 +212,58 @@ async function sendMessage(call: Call, d: string, channel: string, o: Send): Pro
     throw e;
   }
 }
+
+
+export interface Upload { file: string; thread: string; title?: string; text?: string; key?: string }
+const MEDIA: Record<string, string> = { ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".gif": "image/gif",
+  ".webp": "image/webp", ".mp4": "video/mp4", ".mov": "video/quicktime", ".webm": "video/webm", ".m4v": "video/mp4" };
+
+/** Upload an allowed local image/video using Slack's external upload protocol. One writer owns this inbox.
+ * The upload receipt uses Slack's file id as ts: completion does not provide a chat message timestamp. */
+export async function uploadFile(call: Call, d: string, channel: string, policy: SlackConfigUpload | undefined,
+  o: Upload, request: typeof fetch = fetch): Promise<Sent> {
+  if (!policy) return error("slack.upload is required (roots and maxBytes)");
+  if (!stamp(o.thread)) return error("--thread must be seconds.micros");
+  if (o.text !== undefined && (!o.text.trim() || [...o.text].length > LIMIT)) return error(`upload text must be nonempty and at most ${LIMIT} characters`);
+  if (o.title !== undefined && (!o.title.trim() || [...o.title].length > 255)) return error("upload title must be 1..255 characters");
+  let path: string, roots: string[];
+  try { path = realpathSync(o.file); roots = policy.roots.map(r => realpathSync(r)); } catch { return error("upload path or roots could not resolve"); }
+  if (!roots.some(root => { const r = relative(root, path); return r === "" || (r !== ".." && !r.startsWith(`..${process.platform === "win32" ? "\\" : "/"}`) && !isAbsolute(r)); })) return error("upload path must be inside slack.upload.roots");
+  let bytes: Buffer;
+  const fd = openSync(path, "r");
+  try {
+    const stat = fstatSync(fd);
+    if (!stat.isFile()) return error("upload must be a regular file");
+    if (!stat.size || stat.size > policy.maxBytes) return error("upload exceeds maxBytes or is empty");
+    bytes = readFileSync(fd);
+    if (bytes.length > policy.maxBytes) return error("upload exceeds maxBytes");
+  } finally { closeSync(fd); }
+  const mime = MEDIA[extname(path).toLowerCase()];
+  if (!mime) return error("upload must be a common image or video type (png, jpg, gif, webp, mp4, mov, webm, m4v)");
+  directory(d);
+  if (o.key !== undefined && (!o.key || wasSent(d, o.key))) return error("key is empty or already sent");
+  if (o.key && wasAttempted(d, o.key)) return error("key has an uncertain send; inspect Slack before reconciling send-intents.json");
+  const thread = await parentThread(call, channel, o.thread);
+  if (o.key) { const pending = intents(d); pending[o.key] = "uploading"; save(d, "send-intents.json", pending); }
+  try {
+    const upload = await call("files.getUploadURLExternal", { filename: basename(path), length: bytes.length });
+    let url: URL;
+    try { url = new URL(String(upload.upload_url)); } catch { throw new SlackError("invalid upload URL", false); }
+    if (url.protocol !== "https:" || url.hostname !== "files.slack.com" || url.username || url.password || url.port || url.hash) throw new SlackError("invalid upload URL", false);
+    if (typeof upload.file_id !== "string" || !/^F[A-Z0-9]+$/.test(upload.file_id)) throw new SlackError("invalid upload file id", false);
+    let response: Response;
+    try { response = await request(url.href, { method: "PUT", body: new Uint8Array(bytes), headers: { "Content-Type": mime }, redirect: "error", signal: AbortSignal.timeout(30000) }); }
+    catch { throw new SlackError("file upload: network failure", true); }
+    if (!response.ok) throw new SlackError(`file upload: HTTP ${response.status}`, true);
+    const result = await call("files.completeUploadExternal", { files: [{ id: upload.file_id, ...(o.title ? { title: o.title } : {}) }], channel_id: channel, thread_ts: thread, ...(o.text ? { initial_comment: o.text } : {}) });
+    if (!Array.isArray(result.files) || !result.files.some(f => object(f) && f.id === upload.file_id)) throw new SlackError("invalid upload completion", true);
+    const row: Sent = { ts: upload.file_id, thread, kind: "upload", key: o.key ?? null };
+    append(d, "sent.jsonl", [row]);
+    if (o.key) { const pending = intents(d); delete pending[o.key]; save(d, "send-intents.json", pending); }
+    return row;
+  } catch (e) {
+    if (o.key && e instanceof SlackError && !e.uncertain) { const pending = intents(d); delete pending[o.key]; save(d, "send-intents.json", pending); }
+    throw e;
+  }
+}
+type SlackConfigUpload = NonNullable<NonNullable<WorkspaceConfig["slack"]>["upload"]>;
