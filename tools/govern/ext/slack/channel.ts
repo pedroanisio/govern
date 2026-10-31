@@ -7,6 +7,15 @@ import { obj, str, record, parseFile } from "../../lib/shape.ts";
 import type { WorkspaceConfig } from "../../lib/workspace.ts";
 
 export type ChannelConfig = Pick<NonNullable<WorkspaceConfig["slack"]>, "bot" | "requesters" | "tags"> & { channel: string };
+// Structured arguments need JSON; scalar-only methods use Slack's form contract.
+const ENCODING = {
+  "chat.postMessage": "json",
+  "chat.update": "json",
+  "files.completeUploadExternal": "json",
+  "conversations.history": "form",
+  "conversations.replies": "form",
+  "files.getUploadURLExternal": "form",
+} as const satisfies Record<string, "json" | "form">;
 export type Call = (method: string, body: Record<string, unknown>) => Promise<Record<string, unknown>>;
 export interface Post { ts: string; thread_ts: string | null; user: string; text: string; files: string[]; tag: string | null; request: boolean; edited: boolean }
 interface State { top: string; threads: Record<string, string>; edits: Record<string, string> }
@@ -27,10 +36,21 @@ const apiError = (s: string, uncertain = false): never => { throw new SlackError
 export function slackCall(api: string, token: string, request: typeof fetch = fetch,
   sleep: (ms: number) => Promise<void> = ms => new Promise(r => setTimeout(r, ms))): Call {
   return async (method, body) => {
+    if (!Object.hasOwn(ENCODING, method)) return apiError("unsupported Slack method");
+    const json = ENCODING[method as keyof typeof ENCODING] === "json";
+    const form = new URLSearchParams();
+    if (!json) for (const [key, value] of Object.entries(body)) {
+      if (typeof value !== "string" && typeof value !== "boolean" && !(typeof value === "number" && Number.isFinite(value))) {
+        return apiError(`${method}: form arguments must be scalars`);
+      }
+      form.set(key, typeof value === "number" ? value.toLocaleString("en-US", { useGrouping: false, maximumSignificantDigits: 21 }) : String(value));
+    }
+    const payload = json ? JSON.stringify(body) : form.toString();
+    const contentType = json ? "application/json; charset=utf-8" : "application/x-www-form-urlencoded; charset=utf-8";
     for (let attempt = 0; ; attempt++) {
       let response: Response;
-      try { response = await request(`${api.replace(/\/$/, "")}/${method}`, { method: "POST", body: JSON.stringify(body),
-        headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json; charset=utf-8" }, signal: AbortSignal.timeout(30000) }); }
+      try { response = await request(`${api.replace(/\/$/, "")}/${method}`, { method: "POST", body: payload,
+        headers: { Authorization: `Bearer ${token}`, "Content-Type": contentType }, signal: AbortSignal.timeout(30000) }); }
       catch { return apiError(`${method}: network failure`, true); }
       if (response.status === 429 && (method === "chat.postMessage" || method === "chat.update") && attempt < 2) {
         const raw = response.headers.get("retry-after") ?? "1", delay = Number(raw);

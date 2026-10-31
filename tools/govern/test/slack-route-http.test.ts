@@ -1,5 +1,6 @@
 // Real loopback Web API and fake queue runner integration, for hosts that permit listen and subprocesses.
 import { test } from "node:test";
+import { slackBody } from "./slack-api.ts";
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import { spawn } from "node:child_process";
@@ -23,7 +24,9 @@ test("CLI fake API: listen routes, answers seen, notify reports stale independen
     route: { to: "codex", profile: "codex-read", maxPerHour: 1 }, alerts: { listenStaleSec: 300, unansweredSec: 600 } } });
   const server = createServer((req, res) => {
     let body = ""; req.on("data", b => { body += b; }); req.on("end", () => {
-      assert.equal(req.headers.authorization, "Bearer test-secret"); const b = JSON.parse(body); calls.push(b);
+      assert.equal(req.headers.authorization, "Bearer test-secret"); const b = slackBody(req.url!.split("/").at(-1)!, String(req.headers["content-type"]), body);
+      if (!b) { res.setHeader("Content-Type", "application/json"); res.end(JSON.stringify({ ok: false, error: "invalid_arguments" })); return; }
+      calls.push(b);
       res.setHeader("Content-Type", "application/json");
       res.end(JSON.stringify(req.url?.endsWith("history") ? { ok: true, messages: history } : { ok: true, channel: "C1", ts: b.ts ?? `99.${String(++counter).padStart(6, "0")}` }));
     });

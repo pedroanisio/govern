@@ -86,6 +86,12 @@ All notable changes to govern are documented here, following Keep a Changelog.
 - The negative probe of a self-test asks for a capability the profile really lacks: a profile holding `wt-edit` no longer fails with `not-edit leaked`; with none to ask for the record says `negative: none applicable`.
 - Claude runs and chats accept the output of Claude Code 2.1.219 and 2.1.312: the transport decoder names their new run, usage, message and tool-call metadata as opaque fields instead of failing every turn with `unknown key "terminal_reason"` (or `"timestamp"`).
 
+## [0.1.1] - 2026-10-31
+
+### Fixed
+
+- Slack API calls use an explicit method encoding table: scalar reads and upload URL requests are form encoded, structured messages and upload completion remain JSON, and unknown methods fail before sending.
+
 ## [0.1.0] - 2026-10-15
 
 ### Added
