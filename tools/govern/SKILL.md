@@ -56,7 +56,6 @@ govern task send --to codex --project <slug> --task <name> --kind TASK --summary
 
 - Approvals come only from the owner's own words, verbatim: `govern approve <slug> <gate> --quote "<exactly what the owner said>"`. Never infer an approval, never approve for the owner, never rephrase a quote until it passes: ask the person. The same holds for `govern check <slug> <stage> --accept --quote "…"` and `govern allow`.
 - The owner sees complete drafts, not intermediate passes.
-- `govern publish <slug>` only after the owner's go in this session; run the commands it prints unchanged.
 - Setup that grants access (pairing a phone, `peer`, `mesh`, `remote`) is the owner's alone: never run it, never ask for a code.
 - `govern freeze`, `unfreeze` and accepting an import or its flagged checks are the owner's, like a gate; `govern export` without `--freeze` is read-only.
 

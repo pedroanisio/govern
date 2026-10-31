@@ -709,24 +709,32 @@ function cmdManual(a: Args): void {
 
 function cmdPublish(a: Args): void {
   const p = load(a._[1]);
-  const pr = processOf(p), absent = (["final", "publish"] as const).filter((g) => !pr.gates.some((x) => x.name === g));
-  if (absent.length) fail(`${p.slug}: govern publish is for a lane whose process has the gates final and publish; process "${pr.name}" has no ${absent.join(", ")} gate`);
-  const missing = (["final", "publish"] as const).filter((g) => !gateApproved(p, pr.gates.find((x) => x.name === g)));
+  const pr = processOf(p), step = pr.publish;
+  if (!step) fail(`${p.slug}: process "${pr.name}" has no publish step`);
+  const missing = step.gates.filter((g) => !gateApproved(p, pr.gates.find((x) => x.name === g)));
   if (missing.length) fail(`${p.slug}: no owner approval recorded for: ${missing.join(", ")} (govern approve ${p.slug} <gate> --quote "…")`);
-  const vpkg = resolveFile(p, "vpkg"), release = resolveFile(p, "release");
-  if (!vpkg) fail(`${p.slug}: name the filed package first: govern file ${p.slug} vpkg ../../packages/<file>.vpkg.zip`);
-  if (!release) fail(`${p.slug}: name the release manifest: govern file ${p.slug} release <path>/release.json`);
-  const pkgs = packagesDir();
-  if (dirname(vpkg!) !== pkgs) fail(`${relative(repo(), vpkg!)} is not filed in the packages folder (${relative(repo(), pkgs)})`);
-  const sha = spawnSync("sha256sum", [vpkg!], { encoding: "utf8" }).stdout.replace(/ .*/s, "");
-  const sums = globSync("channel-vpkg-SHA256SUMS-*.txt", { cwd: pkgs }).some((f) => readFileSync(join(pkgs, f), "utf8").includes(sha));
-  if (!sha || !sums) fail(`${relative(repo(), vpkg!)}: sha256 not in any channel-vpkg-SHA256SUMS-*.txt (file the package first)`);
-  const base = vpkg!.split("/").pop();
-  out(`${p.slug}: approvals ✓ (final, publish) · package filed ✓ ${base}`);
-  out(`On the publishing host (smm), with the release manifest ${relative(repo(), release!)} copied there:`);
-  out(`  1. plan:  smm youtube publish release.json --upload`);
-  out(`  2. apply: PACKAGE_FILED=${base} smm youtube publish release.json --upload --apply`);
-  out(`Then read the result back, and run: govern note ${p.slug} "published <videoId> at <time>"`);
+  const values: Record<string, string> = { slug: p.slug, repo: repo(), dir: projectDir(p.slug), packages: packagesDir() };
+  const render = (template: string): string => template.replace(/\{([^{}]+)\}/g, (_, key: string) => values[key] ?? fail(`${p.slug}: unresolved publish placeholder {${key}}`));
+  // Resolve every named file before rendering templates, independent of declaration order.
+  for (const [name, spec] of Object.entries(step.files ?? {})) {
+    const file = resolveFile(p, name);
+    if (!file) fail(`${p.slug}: ${spec.missing ? render(spec.missing) : `name the ${name} file: govern file ${p.slug} ${name} <path>`}`);
+    values[`files.${name}`] = relative(repo(), file);
+    values[`basenames.${name}`] = file.split("/").pop()!;
+  }
+  for (const [name, spec] of Object.entries(step.files ?? {})) {
+    const file = resolve(repo(), values[`files.${name}`]!);
+    if (spec.directory) {
+      const directory = resolve(repo(), render(spec.directory));
+      if (dirname(file) !== directory) fail(`${relative(repo(), file)} is not filed in the required folder (${relative(repo(), directory)})`);
+    }
+    if (spec.checksumGlob) {
+      const sha = createHash("sha256").update(readFileSync(file)).digest("hex");
+      const sums = globSync(spec.checksumGlob, { cwd: dirname(file) }).some((f) => readFileSync(join(dirname(file), f), "utf8").includes(sha));
+      if (!sums) fail(`${relative(repo(), file)}: sha256 not in any ${spec.checksumGlob} (file the package first)`);
+    }
+  }
+  for (const command of step.commands) out(render(command));
 }
 
 /** Recipient of a new message: runner, auto (the tuning loop picks the runner), owner, configured mailbox or a live session. */
@@ -1284,7 +1292,7 @@ export const COMMANDS: readonly Cmd[] = [
     } },
   { name: "tune", section: 7, lines: [["", "measure the last 24 h and record the tuning decision (the dispatcher runs it hourly)"]], run: () => out(tune()) },
 
-  { name: "publish", section: 8, lines: [["<slug>", "the publish commands, once the final and publish gates are approved and the package is filed"]], run: cmdPublish },
+  { name: "publish", section: 8, lines: [["<slug>", "the process’s publish instructions, once its required gates and files pass"]], run: cmdPublish },
 ];
 
 // What an extension's commands call back into (tick advances, reject records a policy decision), without importing this file.

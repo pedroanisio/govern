@@ -556,7 +556,7 @@ const REPLY_SCHEMA = resolve(HERE, "..", "schemas", "queue-reply.json");
 const SUMMARY_MAX: number = JSON.parse(readFileSync(REPLY_SCHEMA, "utf8")).properties.summary.maxLength;
 
 /**
- * ⚠ ARCHITECTURAL CONTRACT (PALS's LAW) — LLM OUTPUT IS UNVERIFIED BY DEFAULT
+ * ⚠ ARCHITECTURAL CONTRACT (LLM output verification) — LLM OUTPUT IS UNVERIFIED BY DEFAULT
  *
  * LLMs statistically produce errors: omissions, hallucinations,
  * partial completions, schema violations, and silent failures.
@@ -751,7 +751,7 @@ function runGrok(reg: Registry, prof: Profile, cwd: string, p: string, timeoutSe
 }
 
 /**
- * ⚠ ARCHITECTURAL CONTRACT (PALS's LAW) — LLM OUTPUT IS UNVERIFIED BY DEFAULT
+ * ⚠ ARCHITECTURAL CONTRACT (LLM output verification) — LLM OUTPUT IS UNVERIFIED BY DEFAULT
  *
  * LLMs statistically produce errors: omissions, hallucinations,
  * partial completions, schema violations, and silent failures.
@@ -837,7 +837,7 @@ export function claudeResult(stdout: string | undefined, status: number | null, 
   };
 }
 
-/** A runner from config.json. Its reply goes through parseReply like every other runner's (PALS's LAW).
+/** A runner from config.json. Its reply goes through parseReply like every other runner's (LLM output verification).
  * ARCHITECTURAL REQUIREMENT: LLMs will always produce some form of error.
  * Absence of output verification is a design defect, not a runtime bug.
  * All LLM output must be treated as untrusted and validated explicitly.

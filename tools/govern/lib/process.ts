@@ -30,6 +30,14 @@ export interface Recipe {
   resource: string; machines: number; prepare?: string[]; split: string[]; piece: string[]; join: string[]; verify: string[];
   pieceTimeout?: number; timeout?: number; attempts?: number;
 }
+/** Publishing prints process-owned instructions after required approvals and file checks.
+ * Templates accept {slug}, {repo}, {dir}, {packages}, {files.NAME} (repo-relative),
+ * and {basenames.NAME}. No publishing command is executed by govern. */
+export interface PublishDef {
+  gates: string[];
+  files?: Record<string, { missing?: string; directory?: string; checksumGlob?: string }>;
+  commands: string[];
+}
 export interface Process {
   version: 1;
   revision?: number;
@@ -43,6 +51,7 @@ export interface Process {
   /** At least one: the process file's check refuses an empty list. */
   stages: [StageDef, ...StageDef[]];
   gates: GateDef[];
+  publish?: PublishDef;
   /** The process's own manual, a file relative to the process file (`govern manual <name>`; the brief points at it). */
   manual?: string;
   /** The process's prompts (`govern ask`): a folder relative to the process file; each prompt's schema and rules are beside it. */
@@ -92,8 +101,11 @@ const RECIPES: Shape<Record<string, Recipe>> = (v, p) => {
   for (const k of Object.keys(m)) NAME_CHARS(k, keyPath(p, k));
   return m;
 };
+const PUBLISH = obj({ gates: arr(name), commands: arr(name, { nonEmpty: true }) }, {
+  files: record(obj({}, { missing: name, directory: name, checksumGlob: name })),
+});
 const PROCESS = obj({ version: literal(1), name, stages: arr(STAGE, { nonEmpty: true }) },
-  { revision:posInt, calendars:CALENDARS, description: str, kinds: arr(name, { nonEmpty: true }), exitFrom: literal("workflow"), gates: arr(GATE), manual: str, prompts: str,
+  { publish: PUBLISH, revision:posInt, calendars:CALENDARS, description: str, kinds: arr(name, { nonEmpty: true }), exitFrom: literal("workflow"), gates: arr(GATE), manual: str, prompts: str,
     fields: record(FIELD), people: PEOPLE, setup: arr(obj({}, { ifFile: str, commands: record(arr(str)), files: record(str) })), recipes: RECIPES });
 
 /** Names unique within a list: the second one is refused at its path. */
@@ -109,6 +121,16 @@ function resolveRefs(p: ReturnType<typeof PROCESS>): void {
   unique(stages, "stage", "$.stages");
   unique(gates, "gate", "$.gates");
   const names = new Set(stages.map((s) => s.name)), byName = new Map(gates.map((g) => [g.name, g]));
+  if (p.publish) {
+    for (const gate of p.publish.gates) if (!byName.has(gate)) reject("$.publish.gates", `unknown gate ${gate}`);
+    const templates = [...p.publish.commands, ...Object.values(p.publish.files ?? {}).flatMap((f) => [f.directory ?? "", f.missing ?? ""])];
+    for (const template of templates) for (const m of template.matchAll(/\{([^{}]+)\}/g)) {
+      const key = m[1]!;
+      if (["slug", "repo", "dir", "packages"].includes(key)) continue;
+      const file = /^(?:files|basenames)\.(.+)$/.exec(key)?.[1];
+      if (!file || !Object.hasOwn(p.publish.files ?? {}, file)) reject("$.publish", `unknown placeholder {${key}}`);
+    }
+  }
   gates.forEach((g, i) => {
     if (g.stage !== undefined && !names.has(g.stage)) reject(`$.gates[${i}].stage`, `gate ${g.name} names unknown stage ${g.stage}`);
     (g.needs ?? []).forEach((n, j) => {

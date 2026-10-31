@@ -264,7 +264,7 @@ function conform(schema: any, v: any, path: string): string[] {
 // ---------------------------------------------------------------- ask
 
 /**
- * ⚠ ARCHITECTURAL CONTRACT (PALS's LAW) — LLM OUTPUT IS UNVERIFIED BY DEFAULT
+ * ⚠ ARCHITECTURAL CONTRACT (LLM output verification) — LLM OUTPUT IS UNVERIFIED BY DEFAULT
  *
  * LLMs statistically produce errors: omissions, hallucinations,
  * partial completions, schema violations, and silent failures.

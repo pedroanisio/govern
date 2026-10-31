@@ -55,7 +55,7 @@ govern does **not**:
 - implement messaging channels or its own model; its durable conversation runtime uses configured agent harnesses;
 - schedule clusters or replace CI. It governs work on existing machines and services;
 - judge the work. Judgement stays with agents and people;
-- belong to one project. PALS Notes is its first user, not its scope.
+- belong to one project. A workspace describes its own domain and processes.
 
 ---
 

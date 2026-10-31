@@ -1,6 +1,6 @@
 // A lane: its folder, its govern.json (state, commands, process) and its brief. A lane follows a process (lib/process.ts).
 import { existsSync, readFileSync, appendFileSync, mkdirSync, globSync } from "node:fs";
-import { join, dirname, resolve, relative } from "node:path";
+import { join, dirname, basename, resolve, relative } from "node:path";
 import { WORKFLOW, HUMAN_TASKS, VOTES, value, type Value, type Workflow, type HumanTask, type Vote } from './business-schema.ts';
 import { initializeBusiness, validateCase, gateApproved, setData } from './business.ts';
 import { GovernError, fail, usage, readJson, writeJson, nowIso, latest, plain, clip, readJsonl } from "./util.ts";
@@ -201,7 +201,7 @@ export function create(given: string, o: { kind?: string; process?: string; titl
       kind = o.kind!;
     } else kind = pr.name;
   } else {
-    if (!o.kind || !(KINDS as readonly string[]).includes(o.kind)) usage("--kind must be long, short or ops (or name a --process)");
+    if (!o.kind || !(KINDS as readonly string[]).includes(o.kind)) usage(`choose a process: ${[...processes().keys()].sort((a, b) => a === "dev" ? -1 : b === "dev" ? 1 : a.localeCompare(b)).map((n) => `--process ${n}`).join(", ")} (govern process list)`);
     kind = o.kind!;
     proc = kind === "ops" ? "ops" : "video";
   }
@@ -249,8 +249,14 @@ export function checkOf(p: Project, stage = p.stage): string | undefined {
   return p.checks?.[stage] ?? processOf(p).stages.find((s) => s.name === stage)?.check;
 }
 
-/** Every lane's slug under the lanes folder, sorted. */
-export const laneSlugs = (): string[] => globSync("**/govern.json", { cwd: projectsDir() }).map((f) => dirname(f)).sort();
+/** Every lane's slug under the lanes folder, sorted, without entering checkouts or runtime dependencies. */
+export function laneSlugs(): string[] {
+  const root = projectsDir();
+  return globSync("**/govern.json", {
+    cwd: root,
+    exclude: (path) => ["_tmp", "node_modules", ".git"].includes(basename(path)) || existsSync(join(root, path, ".git")),
+  }).map((f) => dirname(f)).sort();
+}
 
 /** The rows of a command that lists every lane (status, desk): `row` formats a lane that loads; a lane whose
  *  govern.json (or a lane its row reads, through `after`) fails its parse becomes one row, `<slug> ✖ <file>: <path>:

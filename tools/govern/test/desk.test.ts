@@ -13,7 +13,9 @@ test("an ops lane has its own stages, no owner gates and no video files", () => 
   assert.doesNotMatch(b, /approvals|lang/);
   assert.match(govern(e, ["work", "ops/engine", "script"]).err, /stage must be one of: plan, doing, review, done/);
   assert.match(govern(e, ["work", "ops/engine", "doing"]).out, /stage 2\/4 doing/);
-  assert.match(govern(e, ["new", "x", "--kind", "film"]).err, /--kind must be long, short or ops/);
+  const invalid = govern(e, ["new", "x", "--kind", "film"]);
+  assert.equal(invalid.code, 2);
+  assert.match(invalid.err, /choose a process: --process dev, .*--process ops.*--process video.*\(govern process list\)/);
 });
 
 test("desk shows lanes, the open work segment, the owner's inbox, the queue and today's tokens", () => {
