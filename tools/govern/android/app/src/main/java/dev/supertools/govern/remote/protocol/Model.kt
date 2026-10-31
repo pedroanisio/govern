@@ -59,6 +59,19 @@ data class LastNote(val at: String, val text: String)
 @Serializable
 data class LastJob(val name: String, val status: String, val at: String)
 
+/** A lane's freeze, as the phone needs it: the owner's words and the pointer, not who froze it (always the owner) or
+ *  where their words came from. */
+@Serializable
+data class FrozenView(val at: String, val quote: String, val continuedAs: String?)
+
+/** Where an imported lane came from, as the phone needs it: not the bundle's hash or the source workspace's. */
+@Serializable
+data class ImportedFromView(val slug: String, val exportedAt: String, val mode: String)
+
+/** One of the source lane's approvals, carried as history only: a clone must never be a way around a gate. */
+@Serializable
+data class ImportedApprovalView(val gate: String, val at: String, val by: String?, val quote: String)
+
 @Serializable
 data class LaneSummary(
     val slug: String,
@@ -77,6 +90,8 @@ data class LaneSummary(
     val lastNote: LastNote?,
     val lastJob: LastJob?,
     val checkSummary: CheckSummary,
+    val frozen: FrozenView?,
+    val importedFrom: ImportedFromView?,
 )
 
 @Serializable
@@ -131,6 +146,8 @@ data class LaneDetail(
     val lastNote: LastNote?,
     val lastJob: LastJob?,
     val checkSummary: CheckSummary,
+    val frozen: FrozenView?,
+    val importedFrom: ImportedFromView?,
     val stages: List<String>,
     val exit: String?,
     val check: String?,
@@ -145,6 +162,7 @@ data class LaneDetail(
     val artifacts: List<ArtifactView>,
     val sessions: List<SessionSummary>,
     val decisions: List<DecisionView>,
+    val importedApprovals: List<ImportedApprovalView>,
 )
 
 @Serializable

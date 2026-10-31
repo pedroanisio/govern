@@ -190,7 +190,9 @@ class FieldViewModelsTest {
 
     @Test fun decisionEligibilityRequiresLiveScopeOwnerDependenciesAndOwnWords() {
         val gate = lane.gates.first().copy(needs = emptyList())
-        val detail = lane.copy(gates = listOf(gate))
+        // the fixture lane is frozen (ModelTest.frozenAndImportedFieldsParse): reset it here, since this test is about
+        // scope, ownership, dependencies and words, not freezing, which has its own assertion below
+        val detail = lane.copy(gates = listOf(gate), frozen = null)
         assertTrue(canDecide(detail, gate.name, "owner", null, true, false, "Looks good"))
         assertFalse(canDecide(detail, gate.name, "owner", null, false, false, "Looks good"))
         assertFalse(canDecide(detail, gate.name, "owner", null, true, true, "Looks good"))
@@ -199,6 +201,8 @@ class FieldViewModelsTest {
         assertFalse(canDecide(detail, gate.name, "owner", null, true, false, " "))
         assertFalse(canDecide(detail, "missing", "owner", null, true, false, "Looks good"))
         assertFalse(canDecide(detail.copy(gates = listOf(gate.copy(needs = listOf("missing")))), gate.name,
+            "owner", null, true, false, "Looks good"))
+        assertFalse(canDecide(detail.copy(frozen = FrozenView("2026-10-20T09:00:00.000Z", "pausing", null)), gate.name,
             "owner", null, true, false, "Looks good"))
     }
 

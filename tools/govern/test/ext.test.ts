@@ -16,7 +16,7 @@ const TOOL = resolve(HERE, "..");
 const ALL = EXTENSION_NAMES.join(",");
 
 /** The commands added after the split, each with its owner: the core, or the extension that brought it. */
-const ADDED: Record<string, string> = { ext: "core", slack: "slack", drive: "business" };
+const ADDED: Record<string, string> = { ext: "core", slack: "slack", drive: "business", freeze: "core", unfreeze: "core", export: "core", import: "core", clone: "core" };
 /** The command table before the extensions existed: no name may be lost to the split. */
 const OLD_TABLE = ["version", "conversation", "init", "new", "work", "brief", "status", "note", "approve", "reject", "data", "human-inbox", "human", "allow", "done",
   "cmd", "file", "process", "bpmn", "check", "advance", "event", "event-listen", "tick", "alerts", "subprocess", "recover", "dep", "hook", "run", "slice", "wait",
@@ -232,7 +232,7 @@ test("govern help --topics lists an extension's documents only while it is enabl
   const off = govern(e, ["help", "--topics"], { GOVERN_EXTENSIONS: "" });
   assert.equal(off.code, 0, off.err);
   for (const d of docs) assert.doesNotMatch(off.out, new RegExp(d), `${d} is hidden while its extension is off`);
-  for (const d of ["SKILL.md", "REFERENCE.md", "ITERATION.md"]) assert.match(off.out, new RegExp(`^${d}\\s`, "m"), d);
+  for (const d of ["SKILL.md", "REFERENCE.md", "ITERATION.md", "PORTABILITY.md"]) assert.match(off.out, new RegExp(`^${d}\\s`, "m"), d);
   assert.doesNotMatch(off.out, /extension:/);
   const remote = govern(e, ["help", "--topics"], { GOVERN_EXTENSIONS: "remote" });
   assert.match(remote.out, /^REMOTE\.md .*\n {18}the phone: .*\(extension: remote\)$/m);
@@ -241,7 +241,7 @@ test("govern help --topics lists an extension's documents only while it is enabl
   assert.match(pc.out, /^PEERS\.md .*\n {18}.*\(extension: center\)$/m);
   const all = govern(e, ["help", "--topics"], { GOVERN_EXTENSIONS: ALL });
   assert.match(all.out, /\(extension: peer, center\)/, "one document, two extensions");
-  assert.equal(all.out.split("\n").filter((l) => /\.md\s/.test(l)).length, 3 + docs.length);
+  assert.equal(all.out.split("\n").filter((l) => /\.md\s/.test(l)).length, 4 + docs.length);
   assert.match(all.out, /\(extension: business\)/);
 });
 

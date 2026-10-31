@@ -58,6 +58,7 @@ govern task send --to codex --project <slug> --task <name> --kind TASK --summary
 - The owner sees complete drafts, not intermediate passes.
 - `govern publish <slug>` only after the owner's go in this session; run the commands it prints unchanged.
 - Setup that grants access (pairing a phone, `peer`, `mesh`, `remote`) is the owner's alone: never run it, never ask for a code.
+- `govern freeze`, `unfreeze` and accepting an import or its flagged checks are the owner's, like a gate; `govern export` without `--freeze` is read-only.
 
 ## Never, in production work
 
@@ -81,4 +82,4 @@ govern task send --to codex --project <slug> --task <name> --kind TASK --summary
 - `govern help <command>`: flags and rules of one command. `govern help --topics`: the documents below with their paths.
 - `govern manual --full`: this manual plus [REFERENCE.md](REFERENCE.md), the detailed rules (workspace, checks, resources, allowances, runners, capabilities, environment variables). `govern manual --size` prints the sizes.
 - Extensions (peer, center, remote, decide, conversation, business, slack) load only where the workspace enables them (`GOVERN_EXTENSIONS` or `extensions` in `.govern/config.json`): `govern ext list` shows each one's state, `govern ext enable <name>` and `govern ext disable <name>` change it, and a command of a disabled one is refused (exit 4). The documents below that belong to one are listed by `govern help --topics` only while it is enabled.
-- [BUSINESS.md](BUSINESS.md): typed case data, routes, human tasks, quorum. [LIFECYCLE.md](LIFECYCLE.md): timers, events, recovery, subprocesses. [ITERATION.md](ITERATION.md): loops and branching. [CONVERSATIONS.md](CONVERSATIONS.md): persistent conversations. [REMOTE.md](REMOTE.md): phone and devices. [SLACK.md](SLACK.md): decisions from Slack buttons. [PEERS.md](PEERS.md): other hosts and mesh.
+- [BUSINESS.md](BUSINESS.md): typed case data, routes, human tasks, quorum. [LIFECYCLE.md](LIFECYCLE.md): timers, events, recovery, subprocesses. [ITERATION.md](ITERATION.md): loops and branching. [CONVERSATIONS.md](CONVERSATIONS.md): persistent conversations. [REMOTE.md](REMOTE.md): phone and devices. [SLACK.md](SLACK.md): decisions from Slack buttons. [PEERS.md](PEERS.md): other hosts and mesh. [PORTABILITY.md](PORTABILITY.md): freeze, export, import, clone.

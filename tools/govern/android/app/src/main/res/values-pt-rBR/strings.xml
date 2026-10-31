@@ -58,6 +58,9 @@
     <string name="finished_at">Concluída em %1$s</string>
     <string name="exit_when">Concluir quando: %1$s</string>
     <string name="check_command">Verificação: %1$s</string>
+    <string name="frozen_badge">Congelada desde %1$s: "%2$s"</string>
+    <string name="frozen_continued_as">Continuada como %1$s</string>
+    <string name="imported_from">Importada de %1$s (exportada em %2$s)</string>
     <string name="stages">Etapas</string>
     <string name="gates">Aprovações</string>
     <string name="approved_at">Aprovado em %1$s</string>

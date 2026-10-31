@@ -4,7 +4,7 @@ import { existsSync, appendFileSync, readFileSync, readdirSync, openSync, closeS
 import { join, resolve } from "node:path";
 import { fail, readJson, readJsonl, writeJson, stamp, nowIso, sleepSync, shq, changedSince, clip, procOf, procTable, procSource, exited, type ProcStat } from "./util.ts";
 import { fileURLToPath } from "node:url";
-import { type Project, projectDir, governDir, appendLedger, argvOf, ledgerFile } from "./project.ts";
+import { type Project, projectDir, governDir, appendLedger, argvOf, ledgerFile, frozenMessage, importQuarantined } from "./project.ts";
 import { repo, expandPlaceholders, pathNamed } from "./workspace.ts";
 import { place, lockDir, slots, costOf, type Price, type Resource } from "./resources.ts";
 import * as locks from "./locks.ts";
@@ -104,6 +104,9 @@ export function settleDead(j: { slug: string; id: string }): boolean {
  *  resource's slot is taken first: a foreground job waits for it here, a --bg job's sh waits (lib/lockwait.ts).
  *  estimate: the hours to reserve against an allowance (see reserveFor); override: allow --on to move a command off its own resource; slice: a recipe job reserves for all its machines. */
 export function start(p: Project, name: string, extra: string[], bg: boolean, on?: string, estimate?: number, override = false, slice?: Job["slice"]): JobState {
+  if (p.frozen) fail(frozenMessage(p.slug, p.frozen));
+  if (importQuarantined(readJsonl(ledgerFile(p.slug))))
+    fail(`${p.slug}: imported lane, not accepted: review it with govern brief ${p.slug}, then govern check ${p.slug} --accept-import --quote "…"`);
   const base = p.commands[name];
   if (!base) fail(`${p.slug}: no command "${name}" (have: ${Object.keys(p.commands).join(", ") || "none"}; add with govern cmd ${p.slug} ${name} -- <argv>)`);
   const own = Array.isArray(base) ? undefined : base.resource;

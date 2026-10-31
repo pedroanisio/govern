@@ -14,7 +14,9 @@ import { join, dirname, resolve, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import { randomUUID, createHash } from "node:crypto";
 import { GovernError, EXIT_STATE, fail, usage, parseArgs, opt, flag, many, flagNames, secondsOpt, nowIso, readJsonl, kTok, clip, type Args, type FlagSpec } from "./lib/util.ts";
-import { stagesOf, load, save, create, stageOf, brief, appendLedger, resolveFile, ledgerFile, projectDir, checkSlug, checkOf, pendingCheckChanges, blockedBy, laneState, driftWarning, laneSlugs, laneRows, stateFile, argvOf, commandLine, type Project, type Command } from "./lib/project.ts";
+import { stagesOf, load, save, create, stageOf, brief, appendLedger, resolveFile, ledgerFile, projectDir, checkSlug, checkOf, pendingCheckChanges, importUnaccepted, importQuarantined, quarantineDetail, blockedBy, laneState, driftWarning, laneSlugs, laneRows, stateFile, argvOf, commandLine, frozenMessage, type Project, type Command } from "./lib/project.ts";
+import { importBundle } from "./lib/importlane.ts";
+import * as conversation from "./lib/conversation.ts";
 import { processes, getProcess, processOf, listLine, show, manualOf } from "./lib/process.ts";
 import { repo, findRepo, projectsDir, packagesDir, initWorkspace, stateDir, decideConfig } from "./lib/workspace.ts";
 import { emptyRecord, PROTO } from "./lib/shape.ts";
@@ -34,6 +36,7 @@ import { asksForChanges, WRITE_RULE } from "./lib/writeask.ts";
 import { checkProfile } from "./lib/capcheck.ts";
 import { tune, chooseRunner } from "./lib/tune.ts";
 import { verifyQuote, GROK_MARKERS } from "./lib/approval.ts";
+import { buildBundle, defaultBundleName } from "./lib/bundle.ts";
 import { parseAddress } from "./lib/peer-id.ts";
 import { EXTENSIONS, EXTENSION_FLAGS } from "./lib/ext-registry.ts";
 import * as extensions from "./lib/ext.ts";
@@ -93,6 +96,7 @@ function passSkipped(p: Project, to: string): void {
   if (target <= from) return;
   const b = blockedBy(p);
   if (b.length) fail(`${p.slug} is blocked by ${b.join(", ")}`);
+  const led = readJsonl(ledgerFile(p.slug));
   for (const s of list.slice(Math.max(from, 0), target)) {
     const def=processOf(p).stages.find(x=>x.name===s)!;
     if(def.event||def.call||def.foreach||def.onError||def.timer)fail(`${p.slug}: lifecycle stage ${s} must be completed with govern advance, not skipped`);
@@ -100,6 +104,7 @@ function passSkipped(p: Project, to: string): void {
     requireHumanComplete(p, s);
     const chk = checkOf(p, s);
     if (chk) {
+      if (importUnaccepted(p, led, s)) fail(`${p.slug}: cannot skip stage ${s}: its check "${chk}" was imported and the owner has not accepted it (govern check ${p.slug} ${s} --accept --quote "…")`);
       const r = runCheck(p, chk, s);
       if (!r.ok) fail(`${p.slug}: cannot skip stage ${s}: check ${chk} failed (${r.why})\n${r.text}\nnext: fix it, then govern advance ${p.slug}`);
     } else if (requiresCheck(p, s)) fail(`${p.slug}: cannot skip stage ${s}: it requires a check and has none (${setCheckHint(p, s)})`);
@@ -217,8 +222,127 @@ function cmdAllow(a: Args): void {
   out(`${al.name}: +${extra} ${allowances.unitName(al)} approved by ${owner} · limit ${Math.round((al.limit + allowances.status(al).extra) * 1e6) / 1e6}`);
 }
 
-/** Run the stage's exit check as a foreground job; records it in the ledger, prints nothing. */
+/** What of the lane's work is in flight: a running job, a running turn of a conversation bound to it, or a claimed queue
+ *  task for it, each named. Empty when nothing is. */
+function laneInFlight(slug: string): string[] {
+  const found: string[] = [];
+  for (const id of jobs.list(slug)) if (jobs.state(slug, id).status === "running") found.push(`running job ${id}`);
+  for (const c of conversation.list()) if (c.lane === slug && c.runs.some((r) => r.state === "running")) found.push(`running conversation ${c.id}`);
+  for (const { state, m } of queue.all()) if (state === "claimed" && (m.lane === slug || m.project === slug)) found.push(`claimed queue task ${m.id}`);
+  return found;
+}
+
+/** Freeze lane `p` now, in the owner's own `quote` (verified exactly as govern approve verifies one), optionally
+ *  naming where the work continued. On an already-frozen lane, only a given `continuedAs` changes anything (it is
+ *  recorded; nothing else is). Refused while any of the lane's work is in flight. Shared by `govern freeze` and
+ *  `govern export --freeze`, which freezes inside the same transaction lock it then reads the lane under. */
+function freezeLane(p: Project, quote: string, continuedAs?: string): void {
+  const source = verifyQuote(quote);
+  if (p.frozen) {
+    if (!continuedAs) return;
+    p.frozen = { ...p.frozen, continuedAs };
+    save(p, { allowFrozen: true });
+    appendLedger(p.slug, { kind: "freeze", continuedAs });
+    return;
+  }
+  const inFlight = laneInFlight(p.slug);
+  if (inFlight.length) fail(`${p.slug}: cannot freeze while work is in flight: ${inFlight.join(", ")}`);
+  const at = nowIso();
+  p.frozen = { at, by: "owner", quote, source, ...(continuedAs ? { continuedAs } : {}) };
+  save(p, { allowFrozen: true });
+  appendLedger(p.slug, { kind: "freeze", at, quote, by: "owner", source, ...(continuedAs ? { continuedAs } : {}) });
+}
+
+/** `govern freeze <slug> --quote Q [--continued-as TEXT]`: stop the lane's work and make it read-only. */
+function cmdFreeze(a: Args): void {
+  const p = load(a._[1]);
+  const quote = opt(a, "quote");
+  if (!quote || quote.trim().length < 2) usage("--quote is required: the owner's own words freezing the lane");
+  const continuedAs = opt(a, "continued-as");
+  const wasFrozen = !!p.frozen;
+  freezeLane(p, quote, continuedAs);
+  if (wasFrozen) return out(continuedAs ? `${p.slug}: continued as ${continuedAs}` : `${p.slug}: ${frozenMessage(p.slug, p.frozen!)}`);
+  out(`${p.slug}: frozen`);
+}
+
+/** `govern export <slug> [--template] [--out FILE] [--exclude GLOB]… [--freeze --quote Q]`: read the lane under its
+ *  transaction lock (optionally freezing it first, inside that same lock) and write one bundle file, mode 600. The
+ *  export's own ledger entry is appended once the file is written, outside the lock (lib/bundle.ts; PLAN, Export). */
+function cmdExport(a: Args): void {
+  const slug = checkSlug(a._[1]);
+  const template = flag(a, "template");
+  const excludes = many(a, "exclude");
+  const doFreeze = flag(a, "freeze");
+  const quote = opt(a, "quote");
+  if (doFreeze && (!quote || quote.trim().length < 2)) usage("--quote is required with --freeze: the owner's own words freezing the lane");
+  if (!doFreeze && quote !== undefined) usage("--quote is only used together with --freeze");
+  const bundle = lifecycle.transaction(slug, () => {
+    if (doFreeze) freezeLane(load(slug), quote!);
+    return buildBundle(slug, { template, excludes });
+  });
+  const target = resolve(opt(a, "out") ?? defaultBundleName(slug));
+  mkdirSync(dirname(target), { recursive: true });
+  writeFileSync(target, JSON.stringify(bundle), { mode: 0o600 });
+  appendLedger(slug, { kind: "export", mode: bundle.body.mode, bundleSha256: bundle.sha256, out: target, ledgerOffset: bundle.body.source.ledgerOffset });
+  out(`${slug}: exported ${bundle.body.mode} bundle to ${target} (sha256 ${bundle.sha256})`);
+}
+
+/** `govern import <bundle> [--as SLUG] [--drop-deps]`: verify a bundle (untrusted input) end to end, then write the new
+ *  lane into a temporary folder under the lanes folder and rename it into place, so a failed import leaves nothing
+ *  behind (lib/importlane.ts; PLAN, Import). */
+function cmdImport(a: Args): void {
+  const bundlePath = resolve(a._[1] ?? usage("govern import <bundle> [--as SLUG] [--drop-deps]"));
+  const r = importBundle(bundlePath, { as: opt(a, "as"), dropDeps: flag(a, "drop-deps") });
+  out(`${r.slug}: imported ${r.mode} bundle from ${bundlePath} (sha256 ${r.bundleSha256}) — every imported check needs the owner's acceptance before it can pass a stage`);
+  out(quarantineDetail(load(r.slug)).join("\n"));
+}
+
+/** `govern clone <slug> --as NEW [--template] [--exclude GLOB]…`: export the lane to a bundle file under the
+ *  workspace's state folder, import it as NEW, then delete the file. The source's govern.json stays byte-identical;
+ *  its ledger gains only the export entry (lib/bundle.ts, lib/importlane.ts; PLAN, Clone). */
+function cmdClone(a: Args): void {
+  const slug = checkSlug(a._[1]);
+  const as = opt(a, "as") ?? usage("govern clone <slug> --as NEW [--template] [--exclude GLOB]…");
+  const template = flag(a, "template");
+  const excludes = many(a, "exclude");
+  const bundle = lifecycle.transaction(slug, () => buildBundle(slug, { template, excludes }));
+  // A per-call name: the default name has one-second precision, so two clones of one lane in a second would share it.
+  const tmp = join(stateDir(), `clone-${randomUUID()}-${defaultBundleName(slug)}`);
+  mkdirSync(dirname(tmp), { recursive: true });
+  writeFileSync(tmp, JSON.stringify(bundle), { mode: 0o600, flag: "wx" });
+  appendLedger(slug, { kind: "export", mode: bundle.body.mode, bundleSha256: bundle.sha256, out: tmp, ledgerOffset: bundle.body.source.ledgerOffset });
+  try {
+    // A clone's bundle is one this workspace wrote to itself (above, exclusively), so its commands already run
+    // here: `via: "clone"` exempts it from the quarantine every other import sits in (lib/project.ts, importQuarantined).
+    // Not when the source is itself a quarantined import: its commands have never run here, and the copy stays
+    // quarantined until the owner accepts it, as the source does.
+    const trusted = !importQuarantined(readJsonl(ledgerFile(slug)));
+    const r = importBundle(tmp, { as, dropDeps: false, ...(trusted ? { via: "clone" as const } : {}) });
+    out(`${slug}: cloned as ${r.slug} (${r.mode} bundle, sha256 ${r.bundleSha256})`);
+  } finally {
+    unlinkSync(tmp);
+  }
+}
+
+/** `govern unfreeze <slug> --quote Q`: lift a freeze, in the owner's own words. */
+function cmdUnfreeze(a: Args): void {
+  const p = load(a._[1]);
+  if (!p.frozen) return out(`${p.slug}: not frozen — nothing changed`);
+  const quote = opt(a, "quote");
+  if (!quote || quote.trim().length < 2) usage("--quote is required: the owner's own words lifting the freeze");
+  const source = verifyQuote(quote!);
+  delete p.frozen;
+  save(p, { allowFrozen: true });
+  appendLedger(p.slug, { kind: "unfreeze", quote, by: "owner", source });
+  out(`${p.slug}: unfrozen`);
+}
+
+/** Run the stage's exit check as a foreground job; records it in the ledger, prints nothing. Refuses, before starting
+ *  the job, when the check is an imported one the owner has not accepted (lib/project.ts, importUnaccepted): every
+ *  caller — a plain `check`, `advance`, the Stop hook — goes through here, so the owner's acceptance is the only way
+ *  an imported check ever runs. */
 function runCheck(p: Project, name: string, stage = p.stage): { ok: boolean; exit: number | null | undefined; why: string; text: string } {
+  if (importUnaccepted(p, readJsonl(ledgerFile(p.slug)), stage)) fail(`${p.slug}: stage ${stage}'s check "${name}" was imported and the owner has not accepted it: govern check ${p.slug} ${stage} --accept --quote "…"`);
   const st = jobs.start(p, name, [], false);
   const ok = st.exit === 0;
   appendLedger(p.slug, { kind: "check", stage, name, ok, exit: st.exit, job: st.id });
@@ -229,6 +353,16 @@ function runCheck(p: Project, name: string, stage = p.stage): { ok: boolean; exi
  *  check changes (lib/project.ts, pendingCheckChanges). A set's `from` is the stage's effective check before it. */
 function cmdCheck(a: Args): void {
   const p = load(a._[1]);
+  if (flag(a, "accept-import")) {
+    const quote = opt(a, "quote");
+    if (!quote || quote.trim().length < 2) usage(`--quote is required: the owner's own words accepting the import of ${p.slug} (only the owner accepts)`);
+    if (!importQuarantined(readJsonl(ledgerFile(p.slug)))) fail(`${p.slug}: nothing to accept — it is not a quarantined import`);
+    const source = verifyQuote(quote!);
+    p.notes.push({ at: nowIso(), stage: p.stage, text: `owner accepted the import of ${p.slug}: "${quote}"` });
+    save(p);
+    appendLedger(p.slug, { kind: "import-accept", quote, by: "owner", source });
+    return out(`${p.slug}: the owner accepted the import`);
+  }
   if (flag(a, "accept")) {
     const stage = stageOf(a._[2], p);
     const quote = opt(a, "quote");
@@ -280,6 +414,7 @@ function cmdAdvance(a: Args): void {
   const note = opt(a, "note");
   const chk = checkOf(p);
   if (chk) {
+    if (importUnaccepted(p, readJsonl(ledgerFile(p.slug)), p.stage)) fail(`${p.slug}: stage ${p.stage}'s check "${chk}" was imported and the owner has not accepted it: govern check ${p.slug} ${p.stage} --accept --quote "…"`);
     lifecycle.beginAttempt(p);
     let r:ReturnType<typeof runCheck>;
     try{r=runCheck(p,chk);}catch(e){if(e instanceof GovernError && stageDef.onError)lifecycle.checkFailed(p,e.message);throw e;}
@@ -935,6 +1070,19 @@ export const COMMANDS: readonly Cmd[] = [
     lines: [["<slug> <gate> --quote \"<the owner's words>\" [--by NAME]", "(gates come from the lane's process; --by: the gate's decision owner,\nrequired when the process names one other than owner. In a Claude session the quote\nmust be in a message the person typed; a Codex or Grok session is refused)"]], run: cmdApprove },
   { name: "allow", section: 0, flags: { value: ["extra", "quote", "by"] },
     lines: [["<allowance> --extra N --quote \"<the decision owner's words>\" [--by NAME]", "raise an allowance's limit by N for its current period (govern.config.json: allowances; govern usage\nlists them). --by: the allowance's decision owner, required when it names one other than owner. The quote must\ncontain N as a number (10 matches 10 and 10.0, not 100) and grants once per allowance and period. In a\nClaude session the quote must be in a message the person typed; a Codex or Grok session is refused)"]], run: cmdAllow },
+  { name: "freeze", section: 0, flags: { value: ["quote", "continued-as"] },
+    lines: [["<slug> --quote \"<the owner's words>\" [--continued-as TEXT]", "stop the lane's work and make it read-only (refused while a job, a conversation turn or a queue task of the lane\nis in flight). On an already-frozen lane, --continued-as only records where the work continued. In a Claude session\nthe quote must be in a message the person typed; a Codex or Grok session is refused"]], run: cmdFreeze },
+  { name: "unfreeze", section: 0, flags: { value: ["quote"] },
+    lines: [["<slug> --quote \"<the owner's words>\"", "lift a freeze"]], run: cmdUnfreeze },
+  { name: "export", section: 0, flags: { bool: ["template", "freeze"], value: ["out", "quote"], multi: ["exclude"] },
+    lines: [["<slug> [--template] [--out FILE] [--exclude GLOB]… [--freeze --quote \"<the owner's words>\"]",
+      "write the lane to one bundle file (mode 600): reads it under its transaction lock, recording the ledger's line\ncount as ledgerOffset. --template carries configuration only (no files, data, notes, approvals, ledger or\nconversations); --exclude (repeatable) skips matching paths, needed for a directory holding .git; --freeze freezes\nthe lane first, inside the same lock, exactly as govern freeze does"]], run: cmdExport },
+  { name: "import", section: 0, flags: { value: ["as"], bool: ["drop-deps"] },
+    lines: [["<bundle> [--as SLUG] [--drop-deps]",
+      "verify a lane bundle end to end (untrusted input) and write it as a new lane, with a new identity: approvals move\nto history (importedApprovals) and every gate starts closed, every check needs the owner's acceptance\n(govern check <slug> <stage> --accept --quote \"…\") before it can pass a stage, and active stages re-enter their\nruntime so timers restart here. --as names the new slug (default: the bundle's source slug); --drop-deps drops\nafter: references to lanes this workspace does not have, instead of refusing"]], run: cmdImport },
+  { name: "clone", section: 0, flags: { bool: ["template"], value: ["as"], multi: ["exclude"] },
+    lines: [["<slug> --as NEW [--template] [--exclude GLOB]…",
+      "export the lane to a bundle under the workspace's state folder, import it as NEW, then delete the file: the\nsource's govern.json stays byte-identical and its ledger gains only the export entry. Omitting --template\ncontinues NEW at the source's stage with its history and every gate closed; --template starts NEW at the process's\nfirst stage with no history. --exclude (repeatable) skips matching paths, as in govern export"]], run: cmdClone },
   { name: "done", section: 0, flags: { value: ["engine"] }, lines: [["<slug> [--engine claude|codex|grok]", "end the current work segment"]],
     run: (a) => { const p = load(a._[1]); appendLedger(p.slug, { kind: "done", engine: engineOf(a), session: sessionOf(engineOf(a)) }); out(`${p.slug}: segment closed`); } },
   { name: "cmd", section: 0, flags: { value: ["timeout", "rm", "resource"] },
@@ -952,9 +1100,11 @@ export const COMMANDS: readonly Cmd[] = [
   { name: "bpmn", section: 1, flags: { value: ["svg", "scene", "png", "width", "height"], bool: ["static"] },
     lines: [["<process|lane> [--svg FILE] [--scene FILE] [--png FILE] [--width N --height N] [--static]", "the BPMN diagram of a process, with the live state of the lanes on it, or of one lane with its own progress (SVG to stdout by default; --scene writes a scene-render scene, --png renders it with $SCENE_RENDER or scene-render on PATH; --static omits the live state)"]],
     run: cmdBpmn },
-  { name: "check", section: 1, flags: { value: ["set", "stage", "quote"], bool: ["accept"] },
+  { name: "check", section: 1, flags: { value: ["set", "stage", "quote"], bool: ["accept", "accept-import"] },
     lines: [["<slug> [--set <command> --stage <stage>]", "run the stage's exit check (or set the lane's own: ledgered; a swap is flagged)"],
-      ["<slug> <stage> --accept --quote \"<the owner's words>\"", "the owner accepts that stage's flagged check changes"]], run: cmdCheck },
+      ["<slug> <stage> --accept --quote \"<the owner's words>\"", "the owner accepts that stage's flagged check changes"],
+      ["<slug> --accept-import --quote \"<the owner's words>\"", "the owner accepts an imported lane: lifts the quarantine jobs.start holds it under (every command refused until\nthen) and counts as accepting every stage's flagged check changes too; refused on a lane with nothing to accept"]],
+    run: cmdCheck },
   { name: "advance", section: 1, flags: { value: ["note", "stage"] },
     lines: [["<slug> [--stage STAGE] [--note \"<evidence>\"]", "next stage: needs the check to pass (or --note when none and none is required) and the gate"]], run: cmdAdvance },
   { name: "dep", section: 1, flags: { value: ["after", "rm"] },
@@ -1235,7 +1385,7 @@ async function main(argv: string[]): Promise<void> {
   const a = parseArgs(rest, withHelp(entry.flags), label, FLAG_WORDS);
   if (flag(a, "help")) return void out(await helpFor(c.name, sub));
   a._.unshift(...lead);
-  const mutations = new Set(['new','note','approve','reject','data','human','advance','cmd','file','dep','check','event','alerts','subprocess','recover']);
+  const mutations = new Set(['new','note','approve','reject','data','human','advance','cmd','file','dep','check','event','alerts','subprocess','recover','freeze','unfreeze']);
   if (mutations.has(name)) withLaneLock(laneLockDir(a._[1]), () => entry.run!(a));
   else await entry.run!(a);
   if (c.footer !== false) ctxFooter();

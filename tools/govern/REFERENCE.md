@@ -11,6 +11,7 @@ Sections (headings are stable; other changes add to them):
 - Steps that go to Codex
 - Asking another agent: the task queue
 - The owner's gates
+- Freezing, exporting, importing and cloning a lane
 - Never, in production work
 - Keep the context small
 - Measure
@@ -159,6 +160,52 @@ govern task send --to codex|claude|grok|<runner>|<profile>|auto|owner|<session> 
 - **Approvals** come only from the owner's own words. Record them verbatim: `govern approve <slug> <gate> --quote "<exactly what the owner said>"`. Never infer an approval, and never approve for the owner. **What govern checks.** Inside a Claude Code session the quote must appear (case, spacing and typographic quotes ignored; a part of a message is enough) in a message the person typed in this session's transcript, not in tool output, a file, pasted content, a reminder, or another session's or a task's message. If it is not found, `approve` fails (exit 1) and says where it looked; do not rephrase until it passes: ask the person. The approval records the session and message (`source`) in govern.json and the ledger. From a plain terminal, nothing is in a transcript to check, so the approval is recorded as typed by the OS user. A Codex or Grok session is refused (govern cannot verify it; for Grok that includes any process whose parent chain is a grok process): the person approves from their own terminal or a Claude session. A gate whose process names an `owner` other than "owner" (say `editor`) needs `--by editor`, and the approval records whose words they were. **What this does not guarantee:** it raises the bar from "any string" to "words in the person's own turn". It is not tamper-proof: an agent that can edit transcript files or the session registry can forge a typed message, and an old message that happens to contain the quote still matches. The check is a guard against your own mistakes, not a licence to approve for the person. Accepting a change to a check (`govern check <slug> <stage> --accept --quote "…"`) is checked the same way and records its `source` in the ledger.
 - **The owner sees complete drafts,** not intermediate passes.
 - **Publish.** `govern publish <slug>` is specific to video on YouTube: it is for a lane of a process with the gates `final` and `publish`. It refuses (exit 4) a lane whose process lacks either gate, and otherwise unless both gates are approved, the lane names the files `vpkg` (the package) and `release` (the release manifest), the package lies directly in the config's `packages` folder, and its sha256 is listed in a `channel-vpkg-SHA256SUMS-*.txt` file there. It then prints the publishing commands: a plan, then the apply, both run on the publishing host. Run those printed commands through Bash, unchanged, so a publish guard sees them. Only do this after the owner's go in this session.
+
+## Freezing, exporting, importing and cloning a lane
+
+See [PORTABILITY.md](PORTABILITY.md) for the full picture (the bundle format, what a copy does not inherit, and why).
+This section is the command-level detail; three of these are the owner's alone, never an agent's: freezing a lane,
+accepting an imported lane's checks, and accepting an import itself.
+
+- **Freeze and unfreeze.** `govern freeze <slug> --quote "<the owner's own words>" [--continued-as TEXT]` stops the
+  lane's work and makes it read-only; `govern unfreeze <slug> --quote "<the owner's own words>"` lifts it. Both verify
+  the quote exactly as `govern approve` does (a terminal's OS user, or a message typed in this Claude Code session's
+  transcript; a Codex or Grok session is refused). `freeze` is refused, naming each one, while a job, a conversation
+  turn or a queue task of the lane is running. Once frozen, every write to the lane's `govern.json` is refused except
+  freeze's and unfreeze's own, every ledger entry but `freeze`, `unfreeze` and `export`, every job start, and every
+  queued task (left open with a `held: lane frozen` line instead of failing); `brief`, `status` and `desk` keep
+  showing the lane as `frozen since <at>`. `--continued-as` on an already-frozen lane only records the free-text
+  pointer to where the work went; it changes nothing else. **This is the owner's decision; never run `govern freeze`
+  or `govern unfreeze` as an agent.**
+- **Export.** `govern export <slug> [--template] [--out FILE] [--exclude GLOB]... [--freeze --quote Q]` reads the lane
+  under its transaction lock and writes it to one bundle file (mode 600), recording the
+  ledger's current line count as `ledgerOffset` so the bundle is one consistent snapshot. `--template` carries
+  configuration only (no files, data, notes, approvals, ledger or conversations); `--exclude` (repeatable) skips
+  matching paths, needed for a directory holding `.git`; `--freeze` freezes the lane first, inside the same lock,
+  exactly as `govern freeze` does — this is the only form of `export` that needs the owner's quote, and the only one
+  that changes the source lane. A plain `govern export <slug>` with no `--freeze` is read-only.
+- **Import.** `govern import <bundle> [--as SLUG] [--drop-deps]` treats the bundle as untrusted input: it verifies the
+  bundle's shape and format, recomputes every hash, checks every file path, rewrites the lane (new identity; approvals
+  moved to `importedApprovals`, history only; every gate starts closed), parses the result against the lane's own
+  shape (refusing a bundle whose lane names a process this workspace does not have, unless the bundle pins its own
+  process snapshot), checks the target slug is free, resolves `after:` dependencies (`--drop-deps` drops ones this
+  workspace lacks instead of refusing), and verifies every device approval's signature — only then does it write the
+  new lane, through a temporary folder renamed into place. Every check the import brings along needs
+  `govern check <slug> <stage> --accept --quote "<the owner's own words>"` before that stage can pass: **this
+  acceptance is the owner's, like an approval — never run it for an imported check yourself.** Beyond checks, the
+  whole lane is quarantined: `jobs.start` refuses every command (`run`, `slice`, `check`, `advance`, a stage's
+  `onError.compensate`) of a lane whose ledger holds an `import` entry with no later `import-accept` one, naming
+  `govern check <slug> --accept-import --quote "<the owner's own words>"` — **this, too, is the owner's alone, and
+  it also counts as accepting every stage's flagged check changes.** `govern brief <slug>` lists what there is to
+  review while quarantined: every command with its full argv, the pinned process's name and hash, and every command
+  the process names outside a stage check.
+- **Clone.** `govern clone <slug> --as NEW [--template] [--exclude GLOB]...` exports the lane to a bundle under the
+  workspace's own state folder, imports it as `NEW`, then deletes the file; the source's `govern.json` stays
+  byte-identical and its ledger gains only the `export` entry. Without `--template`, `NEW` continues at the source's
+  stage with its history, gates closed and checks flagged as any import's are; `--template` starts `NEW` at the
+  process's first stage with no history. `--exclude` works as it does for `export`. `NEW` is not quarantined: its
+  `import` ledger entry carries `via: "clone"`, which the quarantine rule ignores, since the bundle it carries is one
+  this workspace wrote to itself — its commands run at once.
 
 ## Never, in production work
 

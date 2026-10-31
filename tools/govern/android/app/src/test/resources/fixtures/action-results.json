@@ -55,6 +55,8 @@
         "status": "ok",
         "at": "2026-10-14T20:12:01.497Z"
       },
+      "frozen": null,
+      "importedFrom": null,
       "checks": [
         {
           "stage": "draft",
@@ -116,6 +118,7 @@
         }
       ],
       "decisions": [],
+      "importedApprovals": [],
       "stages": [
         "draft",
         "ship"
@@ -249,6 +252,8 @@
         "status": "ok",
         "at": "2026-10-14T20:12:01.497Z"
       },
+      "frozen": null,
+      "importedFrom": null,
       "checks": [
         {
           "stage": "draft",
@@ -310,6 +315,7 @@
         }
       ],
       "decisions": [],
+      "importedApprovals": [],
       "stages": [
         "draft",
         "ship"

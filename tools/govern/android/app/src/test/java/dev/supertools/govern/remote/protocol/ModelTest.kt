@@ -58,6 +58,28 @@ class ModelTest {
     }
 
     @Test
+    fun frozenAndImportedFieldsParse() {
+        val d = parseWire<Desk>("desk", fixture("desk.json"))
+        val lane = d.lanes.single()
+        assertEquals(FrozenView("2026-10-20T09:00:00.000Z", "pausing for the contract fixture", null), lane.frozen)
+        assertEquals(ImportedFromView("source-lane", "2026-10-19T09:00:00.000Z", "full"), lane.importedFrom)
+
+        val l = parseWire<LaneDetail>("lane", fixture("lane.json"))
+        assertEquals(lane.frozen, l.frozen)
+        assertEquals(lane.importedFrom, l.importedFrom)
+        assertEquals(listOf(ImportedApprovalView("final", "2026-10-18T09:00:00.000Z", "owner", "approved before the move")), l.importedApprovals)
+
+        // a lane neither frozen nor imported carries both fields as explicit null, not absent
+        val laneObject = (WireJson.parseToJsonElement(fixture("desk.json")) as kotlinx.serialization.json.JsonObject)["lanes"]!!
+            .let { it as kotlinx.serialization.json.JsonArray }[0] as kotlinx.serialization.json.JsonObject
+        val unfrozen = kotlinx.serialization.json.JsonObject(laneObject + mapOf(
+            "frozen" to kotlinx.serialization.json.JsonNull, "importedFrom" to kotlinx.serialization.json.JsonNull))
+        val unfrozenLane = parseWire<LaneSummary>("lane summary", unfrozen.toString())
+        assertNull(unfrozenLane.frozen)
+        assertNull(unfrozenLane.importedFrom)
+    }
+
+    @Test
     fun sessionAndJobFixturesParse() {
         val s = parseWire<SessionDetail>("session", fixture("session.json"))
         assertEquals("chat", s.session.id)

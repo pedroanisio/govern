@@ -2,8 +2,8 @@
 import { basename, extname, join } from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import { closeSync, constants, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readSync, readdirSync, renameSync, writeFileSync, readFileSync, unlinkSync } from "node:fs";
-import { projectDir, ledgerFile, appendLedger, load } from "./project.ts";
-import { readJsonl } from "./util.ts";
+import { projectDir, ledgerFile, appendLedger, load, frozenOf, frozenMessage } from "./project.ts";
+import { fail, readJsonl } from "./util.ts";
 import { transaction } from "./lifecycle.ts";
 import { BadRequest, NotFound, TooLarge } from "./http-errors.ts";
 
@@ -75,6 +75,9 @@ export function list(slug: string): ArtifactView[] {
 export function add(slug: string, source: string, o: { name?: string; title?: string; caption?: string } = {}): ArtifactView {
   load(slug);
   return transaction(slug, () => {
+    // Re-read under the lane lock: load()'s frozen (before the lock) cannot see a freeze that lands while this waits for it.
+    const frozen = frozenOf(slug);
+    if (frozen) fail(frozenMessage(slug, frozen));
     const name = safeName(o.name ?? basename(source)), f = path(slug, name);
     if (existsSync(f) && !lstatSync(f).isFile()) throw new BadRequest("artifact must be a regular file, not a symlink");
     // lstat also catches dangling links, for which existsSync is false.

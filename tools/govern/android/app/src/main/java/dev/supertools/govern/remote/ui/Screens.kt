@@ -296,6 +296,8 @@ private fun LaneScreen(lane: LaneDetail, state: HostState, model: AppModel, conf
                 lane.finished?.let { Text(stringResource(R.string.finished_at, it)) }
                 lane.exit?.let { Text(stringResource(R.string.exit_when, it)) }
                 lane.check?.let { Text(stringResource(R.string.check_command, it), style = FieldCode) }
+                lane.frozen?.let { FrozenBadge(it) }
+                lane.importedFrom?.let { Text(stringResource(R.string.imported_from, it.slug, it.exportedAt), style = MaterialTheme.typography.bodySmall) }
             }
             item { Section(stringResource(R.string.stages)) }
             items(lane.stages) { stage ->
@@ -315,7 +317,7 @@ private fun LaneScreen(lane: LaneDetail, state: HostState, model: AppModel, conf
                             missing.isNotEmpty() -> stringResource(R.string.needs_first, missing.joinToString(", "))
                             else -> stringResource(R.string.waiting_for, gate.owner)
                         })
-                        if (!gate.approved && !gate.policy && gate.owner == state.host.person && missing.isEmpty() && lane.finished == null)
+                        if (!gate.approved && !gate.policy && gate.owner == state.host.person && missing.isEmpty() && lane.finished == null && lane.frozen == null)
                             Button({ model.openDecision(gate.name) }, enabled = enabled) { Text(stringResource(R.string.approve)) }
                     }
                 }
@@ -324,7 +326,7 @@ private fun LaneScreen(lane: LaneDetail, state: HostState, model: AppModel, conf
             items(lane.alerts) { alert ->
                 Text(alert.message)
                 Text(stringResource(if (alert.acknowledgedAt == null) R.string.open_since else R.string.acknowledged_at, alert.acknowledgedAt ?: alert.at), style = MaterialTheme.typography.bodySmall)
-                if (alert.acknowledgedAt == null) OutlinedButton({
+                if (alert.acknowledgedAt == null && lane.frozen == null) OutlinedButton({
                     confirm(model.text(R.string.acknowledge_alert), model.text(R.string.action_summary, lane.slug, alert.message),
                         model.ackBody(lane.slug, alert.id), model.text(R.string.alert_acknowledged, alert.id))
                 }, enabled = enabled) { Text(stringResource(R.string.acknowledge)) }
@@ -341,6 +343,16 @@ private fun LaneScreen(lane: LaneDetail, state: HostState, model: AppModel, conf
                 item { ActivityDayHeading(group) }
                 items(group.entries) { ActivityRow(it) }
             }
+        }
+    }
+}
+
+@Composable
+fun FrozenBadge(frozen: FrozenView) {
+    Surface(shape = androidx.compose.foundation.shape.CircleShape, color = MaterialTheme.colorScheme.errorContainer) {
+        Column(Modifier.padding(horizontal = 12.dp, vertical = 6.dp)) {
+            Text(stringResource(R.string.frozen_badge, frozen.at, frozen.quote), color = MaterialTheme.colorScheme.onErrorContainer, style = MaterialTheme.typography.bodySmall)
+            frozen.continuedAs?.let { Text(stringResource(R.string.frozen_continued_as, it), color = MaterialTheme.colorScheme.onErrorContainer, style = MaterialTheme.typography.bodySmall) }
         }
     }
 }

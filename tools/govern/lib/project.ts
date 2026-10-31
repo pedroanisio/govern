@@ -28,8 +28,16 @@ export const commandLine = (c: string[] | Command): string => {
 /** `by`: whose words (the gate's decision owner); `source`: where they were found (lib/approval.ts). Both absent on approvals recorded before they existed. */
 export interface Approval { at: string; quote: string; by?: string; source?: Source }
 export interface Note { at: string; stage: string; text: string }
+/** A lane's freeze: when, who (always "owner": freezing is the owner's decision), their words and where they came from
+ *  (lib/approval.ts), and, once named, a free-text pointer to where the work continued. */
+export interface Frozen { at: string; by: string; quote: string; source: Source; continuedAs?: string }
 /** Another lane this one waits on: met when that lane is finished, or (with `stage`) has moved past that stage. */
 export interface After { lane: string; stage?: string }
+/** Where an imported lane came from: the source's identity and the bundle that carried it (lib/importlane.ts; PLAN,
+ *  Import). New state on every imported lane; absent on a lane never imported. */
+export interface ImportedFrom { slug: string; workspace: string; exportedAt: string; ledgerOffset: number; bundleSha256: string; mode: "full" | "template" }
+/** One of the source lane's approvals, carried as history only: a clone must never be a way around a gate. */
+export interface ImportedApproval extends Approval { gate: string }
 export interface Project {
   version: 1;
   slug: string;
@@ -62,6 +70,9 @@ export interface Project {
   votes?: Record<string, Vote[]>;
   approvals: Record<string, Approval>;
   notes: Note[];
+  frozen?: Frozen;
+  importedFrom?: ImportedFrom;
+  importedApprovals?: ImportedApproval[];
 }
 
 /** Lane `slug`'s folder under the lanes folder. */
@@ -103,11 +114,17 @@ const SOURCE: Shape<Source> = (v, at) => {
     : k === "slack" ? obj({ kind: literal("slack"), team: str, user: str, timestamp: str, signedBody: str, signature: str })(v, at)
     : reject(at, `must be {kind: "terminal", user}, {kind: "session", sessionId, message, messageAt}, {kind: "device", device, signedBody, signature} or {kind: "slack", team, user, timestamp, signedBody, signature}`);
 };
+const FROZEN: Shape<Frozen> = obj({ at: iso, by: name, quote: str, source: SOURCE }, { continuedAs: str });
+/** A whole number, 0 or more: ledgerOffset carries no sign and may be 0 (nothing exported yet). */
+const nat: Shape<number> = (v, p) => (Number.isInteger(v) && (v as number) >= 0 ? (v as number) : reject(p, "must be a whole number, 0 or more"));
+const IMPORTED_FROM: Shape<ImportedFrom> = obj({ slug: name, workspace: str, exportedAt: iso, ledgerOffset: nat, bundleSha256: str, mode: literal("full", "template") });
+const IMPORTED_APPROVAL: Shape<ImportedApproval> = obj({ gate: name, at: iso, quote: str }, { by: name, source: SOURCE });
 const PROJECT = obj(
   { version: literal(1), slug: name, title: str, kind: name, lang: name, stage: name, created: iso,
     commands: record(COMMAND), files: record(str), approvals: record(obj({ at: iso, quote: str }, { by: name, source: SOURCE })),
     notes: arr(obj({ at: iso, stage: name, text: str })) },
-  {processSnapshot:SNAPSHOT, runtime:RUNTIME, events:EVENTS, alerts:ALERTS, invocation:INVOCATION, data: record(value), workflow: WORKFLOW, humanTasks: HUMAN_TASKS, votes: VOTES, process: name, parent: str, finished: iso, checks: record(name), after: arr(obj({ lane: name }, { stage: name })) },
+  {processSnapshot:SNAPSHOT, runtime:RUNTIME, events:EVENTS, alerts:ALERTS, invocation:INVOCATION, data: record(value), workflow: WORKFLOW, humanTasks: HUMAN_TASKS, votes: VOTES, process: name, parent: str, finished: iso, checks: record(name), after: arr(obj({ lane: name }, { stage: name })), frozen: FROZEN,
+   importedFrom: IMPORTED_FROM, importedApprovals: arr(IMPORTED_APPROVAL) },
 );
 
 /** Parse the text of lane `slug`'s govern.json (`file`): typed, unknown keys refused, then checked against what the types
@@ -146,10 +163,16 @@ export function load(given: string | undefined): Project {
   if (!existsSync(f)) fail(`${slug}: no govern.json — start it with: govern new ${slug} --process NAME (or --kind long|short|ops) --title "…"`);
   return parseProject(f, readFileSync(f, "utf8"), slug);
 }
+/** The message every freeze refusal gives, naming the freeze and how to lift it. */
+export const frozenMessage = (slug: string, f: Frozen): string =>
+  `${slug} is frozen since ${f.at} ("${f.quote}")${f.continuedAs ? `; continued as ${f.continuedAs}` : ""}: govern unfreeze ${slug} --quote "…" to change it`;
+
 /** Write lane `p`'s govern.json, only after the same parse load() runs (shape and the semantic checks) passes over the
  *  exact text: govern never writes a file it would then refuse to read. A failure is that GovernError, and nothing is
- *  written. What is written is that parse's result, so the slugs in it are the folders' (no `.` segments). */
-export function save(p: Project): void {
+ *  written. What is written is that parse's result, so the slugs in it are the folders' (no `.` segments).
+ *  Refuses to write a lane whose state (the one being written) is frozen, unless `allowFrozen`: only the freeze command
+ *  itself (setting or lifting the freeze) passes that, so every other command is refused in this one place. */
+export function save(p: Project, o: { allowFrozen?: boolean } = {}): void {
   const slug = checkSlug(p.slug);
   const f = stateFile(slug);
   let q: Project;
@@ -158,6 +181,7 @@ export function save(p: Project): void {
     if (e instanceof GovernError) fail(`${e.message} (not saved: govern writes no govern.json it would refuse to read)`, e.code);
     throw e;
   }
+  if (q.frozen && !o.allowFrozen) fail(frozenMessage(slug, q.frozen));
   writeJson(f, q);
 }
 
@@ -261,8 +285,13 @@ export function afterMet(a: After): { label: string; met: boolean } {
 }
 /** The labels of the lanes this one still waits on. */
 export const blockedBy = (p: Project): string[] => (p.after ?? []).map(afterMet).filter((x) => !x.met).map((x) => x.label);
-/** "finished", "ready" / "blocked by …" for a lane with dependencies, else "". */
+/** How a frozen lane shows in brief, status and desk: the time, and the pointer once one is named. */
+export const frozenNote = (f: Frozen): string => `frozen since ${f.at}${f.continuedAs ? ` · continued as ${f.continuedAs}` : ""}`;
+
+/** "frozen since …", "finished", "ready" / "blocked by …" for a lane with dependencies, else "". A frozen lane shows that
+ *  before anything else: it is read-only regardless of what its stage or dependencies say. */
 export function laneState(p: Project): string {
+  if (p.frozen) return frozenNote(p.frozen);
   if (p.finished) return "finished";
   if (!p.after?.length) return "";
   const b = blockedBy(p);
@@ -299,8 +328,23 @@ export function driftWarning(p: Project, led: Record<string, any>[], now = Date.
   return `⚠ stage may be behind: ${what} since ${d.since === "advance" ? "the last advance" : "the lane was created"} ${d.hours} h ago`;
 }
 
-/** Append `entry` to the lane's ledger as one JSON line, stamped with the time and slug; creates `govern/` when missing. */
+/** Ledger kinds recorded for a frozen lane: freezing it, lifting the freeze, and exporting it (lib/project.ts plan, Freeze). */
+const FROZEN_LEDGER_KINDS = new Set(["freeze", "unfreeze", "export"]);
+/** The lane's stored `frozen` field, read directly off its govern.json (no full parse): what a caller with only the
+ *  slug checks (appendLedger here; queue dispatch and a bound conversation's send elsewhere). Undefined when the lane
+ *  has none, is unfrozen, or its file cannot be read or parsed as JSON. */
+export function frozenOf(slug: string): Frozen | undefined {
+  try { return (JSON.parse(readFileSync(stateFile(slug), "utf8")) as { frozen?: Frozen }).frozen; }
+  catch { return undefined; }
+}
+
+/** Append `entry` to the lane's ledger as one JSON line, stamped with the time and slug; creates `govern/` when missing.
+ *  Refuses any entry but freeze, unfreeze or export for a frozen lane. */
 export function appendLedger(slug: string, entry: Record<string, unknown>): void {
+  if (!FROZEN_LEDGER_KINDS.has(String(entry.kind))) {
+    const frozen = frozenOf(slug);
+    if (frozen) fail(frozenMessage(slug, frozen));
+  }
   mkdirSync(governDir(slug), { recursive: true });
   appendFileSync(ledgerFile(slug), JSON.stringify({ t: nowIso(), slug, ...entry }) + "\n");
 }
@@ -345,6 +389,13 @@ function fromFirstSwap(xs: Entry[]): Entry[] {
   const i = xs.findIndex((e) => e.from != null);
   return i < 0 ? [] : xs.slice(i);
 }
+/** The ledger index of `stage`'s last check-accept entry, or of a later lane-wide `import-accept` (govern check
+ *  --accept-import clears every stage's imported check changes in one decision), or -1 when neither ever happened. */
+function lastAccepted(led: Entry[], stage: string): number {
+  let accepted = -1;
+  led.forEach((e, i) => { if ((e.kind === "check-accept" && e.stage === stage) || e.kind === "import-accept") accepted = i; });
+  return accepted;
+}
 /** The check changes that wait on the owner, per stage of the lane's process, in process order.
  *  Rule: a change is a swap when what it replaces existed — a check-set whose `from` (the stage's effective check before
  *  it: the lane's own, else the process's) is not null, or a cmd-set / cmd-rm of a command that existed and was then the
@@ -352,22 +403,62 @@ function fromFirstSwap(xs: Entry[]): Entry[] {
  *  accepts it: a `check-accept` entry for a stage clears every change for that stage ledgered before it. Nothing else
  *  clears it: not a passing check (a gamed check is what produces that pass), not moving back and forth, not leaving the
  *  stage. Setup — a stage with no check getting one, a command defined for the first time — is ledgered but is no swap;
- *  after a pending swap it still shows in the chain, which runs from the first swap on. */
+ *  after a pending swap it still shows in the chain, which runs from the first swap on.
+ *  An `import` entry (lib/importlane.ts; PLAN, Import) is different: every check and command the import wrote is
+ *  untrusted regardless of whether it replaced anything in this (new) lane, so once one sits in the window the usual
+ *  "first swap" filter is skipped and every check-set / cmd-set since it is flagged, `from: null` included. */
 export function pendingCheckChanges(p: Project, led: Entry[]): PendingChanges[] {
   if (p.finished) return [];
   const res: PendingChanges[] = [];
   for (const stage of stagesOf(p)) {
-    let accepted = -1;
-    led.forEach((e, i) => { if (e.kind === "check-accept" && e.stage === stage) accepted = i; });
-    const since = led.slice(accepted + 1).filter((e) => stagesOfChange(e).includes(stage));
-    const sets = fromFirstSwap(since.filter((e) => e.kind === "check-set"));
+    const accepted = lastAccepted(led, stage);
+    const sinceAll = led.slice(accepted + 1);
+    const imported = sinceAll.some((e) => e.kind === "import");
+    const since = sinceAll.filter((e) => stagesOfChange(e).includes(stage));
+    const sets = imported ? since.filter((e) => e.kind === "check-set") : fromFirstSwap(since.filter((e) => e.kind === "check-set"));
     const names = [...new Set(since.filter((e) => e.kind !== "check-set").map((e) => String(e.name)))];
-    const cmds = names.map((name) => ({ name, changes: fromFirstSwap(since.filter((e) => e.kind !== "check-set" && e.name === name)) })).filter((x) => x.changes.length);
+    const cmds = names
+      .map((name) => ({ name, changes: imported ? since.filter((e) => e.kind !== "check-set" && e.name === name) : fromFirstSwap(since.filter((e) => e.kind !== "check-set" && e.name === name)) }))
+      .filter((x) => x.changes.length);
     if (sets.length || cmds.length) res.push({ stage, sets, cmds });
   }
   return res;
 }
+/** Whether `stage`'s effective check still carries an unaccepted import: an `import` ledger entry sits since the
+ *  stage's last accept, and pendingCheckChanges still has something to accept for it. An imported check must not pass
+ *  a stage until the owner accepts it (PLAN, Import: "no stage can pass on one until the owner accepts it"). */
+export function importUnaccepted(p: Project, led: Entry[], stage = p.stage): boolean {
+  const accepted = lastAccepted(led, stage);
+  if (!led.slice(accepted + 1).some((e) => e.kind === "import")) return false;
+  return pendingCheckChanges(p, led).some((x) => x.stage === stage);
+}
+
+/** Whether the lane is quarantined: its ledger holds an `import` entry (not a clone's — a clone's bundle is one this
+ *  workspace wrote to itself and ran here already, ledgered `via: "clone"`) with no later `import-accept` entry.
+ *  `jobs.start` refuses every command of a quarantined lane: check, advance, run, slice, compensate and anything
+ *  else, until the owner accepts the import (govern check <slug> --accept-import --quote "…"). */
+export function importQuarantined(led: Entry[]): boolean {
+  const imported = led.findLastIndex((e) => e.kind === "import" && e.via !== "clone");
+  if (imported < 0) return false;
+  return !led.slice(imported + 1).some((e) => e.kind === "import-accept");
+}
+
 const shownCommand = (c: unknown) => (c == null ? "none" : commandLine(c as string[] | Command));
+/** While a lane sits quarantined (importQuarantined): what the owner reviews before `--accept-import` — every
+ *  command it carries with its full argv, the pinned process's name and snapshot hash, and every command the
+ *  process names outside a stage check (today, a stage's `onError.compensate`), each marked by where it is used. */
+export function quarantineDetail(p: Project): string[] {
+  const pr = processOf(p);
+  const L: string[] = [`⚠ imported lane, not accepted: govern check ${p.slug} --accept-import --quote "<the owner's own words>"`];
+  L.push(`process: ${pr.name}${p.processSnapshot ? ` (pinned ${p.processSnapshot.hash.slice(0, 12)})` : ""}`);
+  const cmds = Object.entries(p.commands);
+  L.push(`commands: ${cmds.length ? cmds.map(([n, c]) => `${n} = ${commandLine(c)}`).join(" · ") : "(none)"}`);
+  for (const s of pr.stages) {
+    if (s.check) L.push(`  stage ${s.name} check: "${s.check}"`);
+    if (s.onError?.compensate) L.push(`  stage ${s.name} onError.compensate: "${s.onError.compensate}"`);
+  }
+  return L;
+}
 
 /** The compact context an AI session starts from instead of exploring the repo. */
 export function brief(p: Project, o: { notes?: number } = {}): string {
@@ -381,7 +472,9 @@ export function brief(p: Project, o: { notes?: number } = {}): string {
   L.push(`# ${p.slug} — ${p.title}`);
   const label = kinded || pr.name === "ops" ? `kind ${p.kind}` : `process ${pr.name}`;
   L.push(`${label}${kinded ? ` · lang ${p.lang}` : ""}${p.parent ? ` · from ${p.parent}` : ""} · stage ${n}/${list.length} ${p.stage}${p.finished ? " (finished)" : ""} · folder ${rel(dir)}`);
+  if (p.frozen) L.push(`⚠ ${frozenNote(p.frozen)}`);
   const led = readJsonl(ledgerFile(p.slug));
+  if (importQuarantined(led)) L.push(...quarantineDetail(p));
   const drift = driftWarning(p, led);
   if (drift) L.push(drift);
   if (manualOf(pr)) L.push(`manual: govern manual ${pr.name}`);

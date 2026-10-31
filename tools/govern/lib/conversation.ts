@@ -15,7 +15,7 @@ import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { userInfo } from "node:os";
 import { stateDir, config, repo, queueDir } from "./workspace.ts";
-import { load as loadCase, projectDir } from "./project.ts";
+import { load as loadCase, projectDir, frozenOf, frozenMessage } from "./project.ts";
 import { withLaneLock } from "./lane-lock.ts";
 import { owner, ownerLive, type Owner } from "./conversation-owner.ts";
 import { registry, getProfile, profileHash, guardProblem, checkProblem } from "./caps.ts";
@@ -357,6 +357,7 @@ export function send(
     usage("request-id must be nonempty and at most 256 characters");
   return transact(id, (s) => {
     if (s.closedAt) fail("conversation is closed");
+    if (s.lane) { const frozen = frozenOf(s.lane); if (frozen) fail(frozenMessage(s.lane, frozen)); }
     const requestId = o.requestId ?? randomUUID(),
       old = s.runs.find((r) => r.requestId === requestId);
     if (old) {

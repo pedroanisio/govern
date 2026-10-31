@@ -80,6 +80,7 @@ test("govern help --topics lists every reference document with its path and one 
   }
   assert.equal(r.out.split("\n").filter((l) => /\.md\s/.test(l)).length, TOPICS.length + EXT_DOCS.length, "one path line per document");
   assert.match(govern(e, ["help", "--topics", "run"]).err, /takes no command/);
+  assert.ok(r.out.includes("PORTABILITY.md"), "freeze, export, import and clone are core: their document is always a topic");
 });
 
 test("govern manual prints the core; --full adds REFERENCE.md; --size prints bytes and approximate tokens", () => {

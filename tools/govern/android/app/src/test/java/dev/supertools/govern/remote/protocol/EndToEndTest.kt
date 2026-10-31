@@ -53,7 +53,8 @@ class EndToEndTest {
         assertTrue("no govern.ts at $governTs", governTs.isFile)
         root = Files.createTempDirectory("govern-remote-e2e").toFile()
         File(root, "home").mkdirs()
-        File(root, "govern.config.json").writeText("""{"projects":"projects","queue":"queue","processes":"processes","packages":"packages","tuningLog":"tuning.jsonl"}""")
+        // remote and conversation are extensions a workspace enables; govern.config.json is the owner's file, so it names them.
+        File(root, "govern.config.json").writeText("""{"projects":"projects","queue":"queue","processes":"processes","packages":"packages","tuningLog":"tuning.jsonl","extensions":["remote","conversation"]}""")
         File(root, "processes").mkdirs()
         File(root, "processes/release.json").writeText(
             """{"version":1,"name":"release","stages":[{"name":"draft"},{"name":"ship"}],"gates":[{"name":"final","stage":"draft"}]}""")
@@ -110,6 +111,32 @@ class EndToEndTest {
         govern("remote", "revoke", pairing.deviceId)
         assertEquals(401, assertThrows(ServerException::class.java) { client.desk() }.status)
         assertTrue(File(root, "projects/r1/govern.json").readText().contains("\"kind\": \"device\""))
+    }
+
+    @Test
+    fun frozenLaneRefusesApproval() {
+        // `govern freeze` from this test's own environment: `env()` strips every GOVERN_/CLAUDE_CODE_/CODEX_/GROK_
+        // variable, so this runs as a plain terminal, exactly as `verifyQuote` requires for the owner's own words.
+        govern("freeze", "r1", "--quote", "pausing the release for review")
+        val printed = govern("remote", "pair", "--url", "http://127.0.0.1:$port")
+        val link = PairingLinks.parse(Regex("govern-remote://\\S+").find(printed)!!.value)
+        serve()
+        val kp = keyPair()
+        val pairing = GovernClient(Endpoint(link.url, null, link.pin)).pair(link.code, "jvm test", Base64.getEncoder().encodeToString(kp.public.encoded))
+        val client = GovernClient(Endpoint(link.url, pairing.token, link.pin))
+
+        val desk = client.desk()
+        val lane = desk.lanes.single()
+        assertEquals("pausing the release for review", lane.frozen?.quote)
+        assertFalse(lane.gates.single().approved)
+
+        val approval = signed(kp, Actions.approve("r1", "final", "approve it anyway"))
+        val refusal = assertThrows(ServerException::class.java) { client.act(approval) }
+        assertEquals(409, refusal.status)
+        assertTrue(refusal.message!!, refusal.message!!.contains("r1 is frozen since"))
+        assertTrue(refusal.message!!, refusal.message!!.contains("pausing the release for review"))
+        assertTrue(refusal.message!!, refusal.message!!.contains("govern unfreeze r1 --quote"))
+        assertFalse(client.lane("r1").gates.single().approved)
     }
 
     @Test
