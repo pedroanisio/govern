@@ -90,6 +90,9 @@ decisions do not use it, but every person needs one, and each must be different.
      scopes:
        bot:
          - chat:write
+         - files:write
+         - channels:history
+         - groups:history
    settings:
      interactivity:
        is_enabled: true
@@ -98,6 +101,8 @@ decisions do not use it, but every person needs one, and each must be different.
      socket_mode_enabled: false
      token_rotation_enabled: false
    ```
+
+   `chat:write` posts messages, `files:write` enables media upload, and `channels:history` / `groups:history` let `listen` read public / private channels the bot belongs to. Request only the scopes for the features you enable; reinstall the app after changing scopes. Invite the bot to the channel.
 
    Socket Mode stays off: its payloads carry no per-request signature, and govern accepts only signed requests.
 3. **Install App → Install to Workspace**, and allow it. Copy the **Bot User OAuth Token** (`xoxb-…`).
@@ -135,7 +140,7 @@ relative one is read relative to `.govern/`.
 }
 ```
 
-govern reads only `SLACK_SIGNING_SECRET` from that file; the bot token there is for the posting script.
+The server reads `SLACK_SIGNING_SECRET`; `notify`, `listen`, `post`, `upload` and `digest` read the bot token from the same file (or environment). `slack.botTokenVar` can override its variable name.
 
 ## 5. Make govern reachable
 
@@ -186,7 +191,7 @@ govern data sup-1001 --set '{"rascunhoSha":"<hash of the draft>"}'
 ```
 
 1. **Ana clicks Concluído** in the message `govern slack notify` posted. The task is claimed and completed as hers;
-   `govern drive` advances the case to `validar`, and the next notify run updates Ana's message and posts the decision.
+   `serve` immediately updates the clicked message. `govern drive` advances the case to `validar`, and the next notify run posts the next decision.
 2. **Gil clicks Aprovar.** The gate is approved by gil and the case moves on to `enviar`. Had he clicked **Devolver**,
    the case would be back at `rascunho`, and step 1 starts again.
 
@@ -200,9 +205,7 @@ tail -n 3 .govern/projects/sup-1001/govern/ledger.jsonl
 Each decision's ledger entry names the person (`"by": "gil"`) and carries `"source": {"kind": "slack", "team": …, "user": …,
 "timestamp": …, "signedBody": …, "signature": …}`.
 
-Slack shows nothing at the click itself: the next `govern slack notify` run replaces the buttons with the outcome. A
-click on a decided button before that is refused (the case has moved on), and the refusal is in `govern slack serve`'s
-HTTP reply, not in Slack.
+After recording a click, `serve` immediately replaces the clicked message through the signed payload’s HTTPS `hooks.slack.com` response URL. Refusals explain why in an ephemeral reply to the clicker. Failed feedback never undoes a decision; `notify` still reconciles. Requests without a response URL, including the terminal example below, receive HTTP-only feedback.
 
 ## 8. Test the server without Slack
 
@@ -229,8 +232,7 @@ Sending the same request again answers `401` with `this request was already rece
 
 ## Troubleshooting
 
-`govern slack serve`'s reply names the reason. Through Slack you will not see it; to read it, reproduce the click with
-step 8.
+`govern slack serve` reports refusals to the clicker when Slack provides a valid response URL. Its HTTP reply also names the reason; step 8 can reproduce it. If a response update fails, inspect the service log and let `notify` reconcile the recorded decision.
 
 | Symptom | Cause | Fix |
 |---|---|---|
@@ -253,3 +255,16 @@ agents analyse and draft, commands do the Slack, Jira and Zendesk work, and peop
 
 The signing secret is shared with Slack. Anyone who can read it can forge a click: keep the file readable only by the
 account that runs the server, and away from agent sessions.
+
+
+## Reading, sending media and running services
+
+Add `channel`, `inbox`, bot identities and requesters to the Slack config before enabling channel features; see the complete [configuration and migration procedure](SLACK.md#reading-a-channel-and-sending-messages). Stop the previous poller first: only one reader may own the inbox. Existing `state.json` and `inbox.jsonl` continue in place; preserve their private permissions. First activation of routing or alerts records a fixed private `start-line.json`, so old inbox requests do not trigger automatic replies or alerts. Posts arriving during that run are new. Keep the boundary and journals across restarts.
+
+For upload, configure `"upload": {"roots": ["generated"], "maxBytes": 100000000}`. Paths, including symlinks, must remain inside those roots:
+
+```sh
+govern slack upload --thread 1793000000.000100 --file generated/clip.mp4 --title "Reply clip" --key reply-clip-1
+```
+
+`govern slack install-service` writes user services for `listen --loop`, `notify --loop` and a daily digest timer. It starts nothing. Configure `slack.envFile` before using the printed enable commands; interactive shell tokens are not copied. Stop any old reader before enabling the listener. The interactivity server, HTTPS tunnel, and task dispatcher are separate services. See [user services](SLACK.md#user-services) for start, status and stop commands.

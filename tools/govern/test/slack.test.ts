@@ -61,7 +61,7 @@ function inWorkspace<T>(e: Env, f: () => T): T {
 async function serving(e: Env, f: (url: string) => Promise<void>, now = () => NOW): Promise<void> {
   const old = process.env.GOVERN_REPO;
   process.env.GOVERN_REPO = e.root;
-  const server: Server = slackServer(SECRET, { now });
+  const server: Server = slackServer(SECRET, { now, request: (async () => new Response("ok")) as typeof fetch });
   await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
   const addr = server.address();
   assert.ok(addr && typeof addr === "object");
