@@ -11,6 +11,8 @@ All notable changes to govern are documented here, following Keep a Changelog.
 
 ### Added
 
+- `govern slack install-service` writes user units for independent listen and notify loops plus a persistent daily digest timer, without starting them or copying credentials.
+
 - Slack clicks report recorded decisions immediately through a validated response URL; refusals explain why to the clicker, and callback failures leave decisions intact for notify reconciliation.
 
 - `govern slack upload` constrains resolved media paths to configured roots and a byte limit, uploads through the external upload API, resolves thread parents and journals file receipts with durable send keys.

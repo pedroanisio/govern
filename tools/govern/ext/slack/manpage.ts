@@ -4,6 +4,7 @@
 export const MANPAGE = `SYNOPSIS
     govern slack serve [--port 5003]  |  slack notify [--lane S]... [--loop --interval 30] [--dry-run]
     govern slack upload --thread TS --file PATH [--title T] [--text T] [--key K]
+    govern slack install-service
     govern slack digest
     govern slack listen [--once | --loop --interval 60]
     govern slack post --kind ack|blocked|delivered|question|note (--text T | --file F) [--thread TS] [--key K]
@@ -32,6 +33,8 @@ DESCRIPTION
     One history page is read per run. has_more warns on stderr and in the heartbeat; older posts may be missed.
     slack upload PUTs common images and videos through the external upload API. Resolved paths, including symlinks,
     must stay inside slack.upload.roots and maxBytes. It journals a file id with kind upload and resolves thread parents.
+    slack install-service writes user units for listen and notify loops plus a daily digest timer, without starting
+    them. Stop the old poller before explicitly enabling them. Use slack.envFile for credentials; tokens are not copied.
 OPTIONS
     --once                  slack listen: one run (default)
     --loop                  slack listen, slack notify: repeat runs

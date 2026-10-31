@@ -12,6 +12,7 @@ import { poll, slackCall, postMessage, uploadFile, wasSent, wasAttempted } from 
 import { routePending, startLine } from "./route.ts";
 import { digest } from "./digest.ts";
 import { commandText } from "./commands.ts";
+import { installServices } from "./service.ts";
 import { MANPAGE } from "./manpage.ts";
 
 /** `fromEnv` (the variable `name` as the environment has it), else that variable from the config's slack.envFile;
@@ -130,8 +131,9 @@ export const docs: ExtDoc[] = [{ title: "Slack: decisions from Slack buttons, si
 export const manpage = MANPAGE;
 
 export const commands: Cmd[] = [
-  { name: "slack", section: 7, noSub: "govern slack serve|notify|listen|post|upload|digest (the protocol: tools/govern/SLACK.md)",
+  { name: "slack", section: 7, noSub: "govern slack serve|notify|listen|post|upload|digest|install-service (the protocol: tools/govern/SLACK.md)",
     subs: {
+      "install-service": { lines: [["", "write user units for listen, notify and a daily digest timer; print enable instructions without starting them"]], run: () => out(installServices()) },
       upload: { flags: { value: ["thread", "file", "title", "text", "key"] },
         lines: [["--thread TS --file PATH [--title T] [--text T] [--key K]", "upload an allowed image or video inside slack.upload.roots and maxBytes; resolve the thread and journal the file id"]], run: cmdUpload },
       digest: { lines: [["", "post waiting people, failed tasks and open alerts once per local day; stay silent when empty"]], run: cmdDigest },

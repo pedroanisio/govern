@@ -218,8 +218,7 @@ and keep the listener within the history and thread windows described above.
 `govern slack digest` explicitly sends one summary of what waits on each person, failed queue/drive tasks and open lane
 and channel alerts. With nothing to report it sends nothing. A `digest:YYYY-MM-DD` send key uses the host's local calendar
 and prevents repeats that day. It uses the configured channel credentials and private send journal. An oversized digest
-is refused instead of silently omitting work. An ambiguous send requires the keyed-send reconciliation above. No timer
-is installed by these commands.
+is refused instead of silently omitting work. An ambiguous send requires the keyed-send reconciliation above. Use `install-service` below to write a daily timer explicitly.
 
 ## Uploading media
 
@@ -232,3 +231,17 @@ govern slack upload --thread 1793000000.000100 --file generated/clip.mp4 --title
 Upload requires `slack.channel`, `slack.inbox`, a bot token with `files:write`, and `slack.upload`. The file must resolve, including symlinks, inside an allowed root and be a nonempty regular file no larger than `maxBytes`. Allowed extensions are PNG, JPG/JPEG, GIF, WebP, MP4/M4V, MOV and WebM. These are extension restrictions, not content inspection. `--thread` is required and resolves a reply timestamp to its parent, just like `post`. Optional text must be nonempty and at most 40000 characters; titles are 1..255 characters.
 
 The command calls `files.getUploadURLExternal`, PUTs the bytes without the bot token to an HTTPS `files.slack.com` upload URL, then calls `files.completeUploadExternal` to share the file in the thread. Redirects are refused. The private `sent.jsonl` receipt has `kind: "upload"`, the resolved thread and key; its `ts` is the Slack file id because completion does not supply a message timestamp. Keyed uploads use the same send-intent reservation and manual reconciliation as posts; uncertain results never retry automatically. No upload URL, token or file bytes are journaled.
+
+
+## User services
+
+`govern slack install-service` writes `govern-slack-listen.service`, `govern-slack-notify.service`, `govern-slack-digest.service` and `govern-slack-digest.timer` under `$XDG_CONFIG_HOME/systemd/user` (default `~/.config/systemd/user`). It requires the channel and inbox, writes private files, and starts nothing. The listener loops every 60 seconds and the notifier independently every 30 seconds. The persistent daily timer uses local time; the digest's daily key still prevents repeats.
+
+Set `slack.envFile` for the bot token: shell secrets are never copied into units. Workspace and PATH values are quoted for systemd. These units belong to one workspace per OS account; rerunning the installer replaces their definitions. Stop the previous poller or listener so exactly one reader owns the inbox, then run the printed commands:
+
+```sh
+systemctl --user daemon-reload
+systemctl --user enable --now govern-slack-listen.service govern-slack-notify.service govern-slack-digest.timer
+```
+
+Inspect with `systemctl --user status govern-slack-listen govern-slack-notify govern-slack-digest.timer` and `journalctl --user -u govern-slack-listen -u govern-slack-notify`. The installer does not install `serve`, a tunnel, or the queue dispatcher. Run those separately when needed. To stop the channel services, use `systemctl --user disable --now govern-slack-listen.service govern-slack-notify.service govern-slack-digest.timer`.
