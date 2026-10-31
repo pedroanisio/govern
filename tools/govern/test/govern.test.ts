@@ -694,12 +694,12 @@ test("publish refuses without approvals and an unfiled package; prints guard-vis
   assert.match(r.out, /PACKAGE_FILED=film-1\.0\.0\.vpkg\.zip smm youtube publish release\.json --upload --apply/);
 });
 
-test("publish refuses a lane whose process has no final and publish gates, and does not send the owner to approve them", () => {
+test("publish refuses a lane whose process has no publish step, and does not send the owner to approve them", () => {
   const e = makeEnv();
   assert.equal(govern(e, ["new", "tool", "--process", "dev", "--title", "A tool"]).code, 0);
   const r = govern(e, ["publish", "tool"]);
   assert.equal(r.code, 4, r.out);
-  assert.match(r.err, /tool: govern publish is for a lane whose process has the gates final and publish; process "dev" has no final, publish gate/);
+  assert.match(r.err, /tool: process "dev" has no publish step/);
   assert.doesNotMatch(r.err, /govern approve/);
 });
 

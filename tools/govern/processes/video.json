@@ -18,5 +18,28 @@
     { "name": "script", "stage": "script-check" },
     { "name": "final", "stage": "final", "needs": ["script"], "message": "no script approval recorded yet" },
     { "name": "publish", "stage": "deliver", "needs": ["final"], "message": "no final-cut approval recorded yet" }
-  ]
+  ],
+  "publish": {
+    "gates": [
+      "final",
+      "publish"
+    ],
+    "files": {
+      "vpkg": {
+        "missing": "name the filed package first: govern file {slug} vpkg ../../packages/<file>.vpkg.zip",
+        "directory": "{packages}",
+        "checksumGlob": "channel-vpkg-SHA256SUMS-*.txt"
+      },
+      "release": {
+        "missing": "name the release manifest: govern file {slug} release <path>/release.json"
+      }
+    },
+    "commands": [
+      "{slug}: approvals ✓ (final, publish) · package filed ✓ {basenames.vpkg}",
+      "On the publishing host (smm), with the release manifest {files.release} copied there:",
+      "  1. plan:  smm youtube publish release.json --upload",
+      "  2. apply: PACKAGE_FILED={basenames.vpkg} smm youtube publish release.json --upload --apply",
+      "Then read the result back, and run: govern note {slug} \"published <videoId> at <time>\""
+    ]
+  }
 }
