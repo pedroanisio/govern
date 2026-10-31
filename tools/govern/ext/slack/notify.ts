@@ -11,6 +11,7 @@ import { activeStages, eligibleHuman, eligibleApprover, gateApproved } from "../
 import { stateDir, slackConfig } from "../../lib/workspace.ts";
 import { withLaneLock } from "../../lib/lane-lock.ts";
 import { GovernError, fail } from "../../lib/util.ts";
+import { slackCall } from "./channel.ts";
 import { ACTION_ID, caseDigest, decisionValue, optionSet, type Decision, type Target } from "./slack.ts";
 import type { Scalar } from "../../lib/business-schema.ts";
 
@@ -86,16 +87,7 @@ function driveFailures(): { key: string; lane: string; stage: string; round: num
 }
 /** One Slack Web API call: its ts and channel, or a GovernError naming the method and Slack's reason. */
 async function call(api: string, token: string, method: string, body: Record<string, unknown>): Promise<{ ts: string; channel: string }> {
-  let r: Response;
-  try {
-    r = await fetch(`${api}/${method}`, { method: "POST", body: JSON.stringify(body), signal: AbortSignal.timeout(10_000),
-      headers: { "Content-Type": "application/json; charset=utf-8", Authorization: `Bearer ${token}` } });
-  } catch (e) { throw new GovernError(`${method}: ${(e as Error).message}`); }
-  if (r.status === 429) throw new GovernError(`${method}: rate limited (retry after ${r.headers.get("retry-after") ?? "?"} s)`);
-  let j: unknown;
-  try { j = await r.json(); } catch { throw new GovernError(`${method}: Slack answered ${r.status} without JSON`); }
-  if (!record(j) || typeof j.ok !== "boolean") throw new GovernError(`${method}: Slack's answer has no ok field`);
-  if (!j.ok) throw new GovernError(`${method}: ${typeof j.error === "string" ? j.error : "refused"}`);
+  const j = await slackCall(api, token)(method, body);
   if (typeof j.ts !== "string" || typeof j.channel !== "string") throw new GovernError(`${method}: Slack's answer has no ts or channel`);
   return { ts: j.ts, channel: j.channel };
 }

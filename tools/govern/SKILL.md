@@ -5,7 +5,7 @@ description: Work on a lane of agent work (a video, software, ops, an audit, gov
 
 # Working with govern
 
-govern keeps the work of you and the owner in files and keeps the conversation about it cheap. A lane of work follows a **process**: its stages, the exit condition and check of each, and the owner's gates. The money in agent work goes into four things, and the rules below remove them:
+govern keeps work in files. Each lane follows a **process** with stages, exit checks and owner gates. The rules below reduce four costs:
 - re-reading a huge context on every call;
 - polling long jobs from inside the model;
 - review and fix agent cascades;
@@ -82,3 +82,5 @@ govern task send --to codex --project <slug> --task <name> --kind TASK --summary
 - `govern manual --full`: this manual plus [REFERENCE.md](REFERENCE.md), the detailed rules (workspace, checks, resources, allowances, runners, capabilities, environment variables). `govern manual --size` prints the sizes.
 - Extensions (peer, center, remote, decide, conversation, business, slack) load only where the workspace enables them (`GOVERN_EXTENSIONS` or `extensions` in `.govern/config.json`): `govern ext list` shows each one's state, `govern ext enable <name>` and `govern ext disable <name>` change it, and a command of a disabled one is refused (exit 4). The documents below that belong to one are listed by `govern help --topics` only while it is enabled.
 - [BUSINESS.md](BUSINESS.md): typed case data, routes, human tasks, quorum. [LIFECYCLE.md](LIFECYCLE.md): timers, events, recovery, subprocesses. [ITERATION.md](ITERATION.md): loops and branching. [CONVERSATIONS.md](CONVERSATIONS.md): persistent conversations. [REMOTE.md](REMOTE.md): phone and devices. [SLACK.md](SLACK.md): decisions from Slack buttons. [PEERS.md](PEERS.md): other hosts and mesh. [PORTABILITY.md](PORTABILITY.md): freeze, export, import, clone.
+
+- Slack: `govern slack listen` records posts; `govern slack post` journals sends. See [SLACK.md](SLACK.md).

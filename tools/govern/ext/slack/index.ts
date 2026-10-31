@@ -8,6 +8,8 @@ import { fail, usage, opt, flag, many } from "../../lib/util.ts";
 import type { Args } from "../../lib/util.ts";
 import { out, type Cmd } from "../../lib/cli.ts";
 import type { ExtDoc } from "../../lib/ext-registry.ts";
+import { poll, slackCall, postMessage, wasSent, wasAttempted } from "./channel.ts";
+import { commandText } from "./commands.ts";
 import { MANPAGE } from "./manpage.ts";
 
 /** `fromEnv` (the variable `name` as the environment has it), else that variable from the config's slack.envFile;
@@ -43,8 +45,8 @@ const summary = (r: NotifyReport): string =>
 async function cmdNotify(a: Args): Promise<void> {
   const cfg = slackConfig() ?? fail(`${configFile()} names no slack.team: the Slack team whose requests count`);
   const channel = cfg.channel ?? fail(`${configFile()} names no slack.channel: the channel notify posts to (C…)`);
-  const token = secret("SLACK_BOT_TOKEN", process.env.SLACK_BOT_TOKEN, cfg.envFile)
-    ?? fail(`SLACK_BOT_TOKEN is not set: export it, or put it in the dotenv file slack.envFile names in ${configFile()}`);
+  const token = secret(cfg.botTokenVar ?? "SLACK_BOT_TOKEN", (cfg.botTokenVar ? process.env[cfg.botTokenVar] : process.env.SLACK_BOT_TOKEN), cfg.envFile)
+    ?? fail(`${cfg.botTokenVar ?? "SLACK_BOT_TOKEN"} is not set: export it, or put it in the dotenv file slack.envFile names in ${configFile()}`);
   const lanes = many(a, "lane"), interval = Number(opt(a, "interval") ?? 30);
   if (!Number.isInteger(interval) || interval < 5) usage("--interval must be a whole number of seconds, 5 or more");
   const once = async () => {
@@ -60,14 +62,60 @@ async function cmdNotify(a: Args): Promise<void> {
   }
 }
 
+/** The channel commands stay off until both their destination and private local inbox are named. */
+function channelSettings() {
+  const cfg = slackConfig() ?? fail(`${configFile()} names no slack configuration`);
+  const channel = cfg.channel || fail(`${configFile()} names no slack.channel`);
+  const inbox = cfg.inbox || fail(`${configFile()} names no slack.inbox`);
+  const variable = cfg.botTokenVar ?? "SLACK_BOT_TOKEN";
+  const token = secret(variable, (cfg.botTokenVar ? process.env[variable] : process.env.SLACK_BOT_TOKEN), cfg.envFile) ?? fail(`${variable} is not set: export it, or put it in slack.envFile`);
+  return { cfg: { ...cfg, channel }, inbox, call: slackCall(process.env.GOVERN_SLACK_API ?? SLACK_API, token) };
+}
+
+async function cmdListen(a: Args): Promise<void> {
+  if (flag(a, "once") && flag(a, "loop")) usage("--once and --loop are mutually exclusive");
+  if (opt(a, "interval") !== undefined && !flag(a, "loop")) usage("--interval requires --loop");
+  const interval = Number(opt(a, "interval") ?? 60);
+  if (!Number.isInteger(interval) || interval < 1) usage("--interval must be a positive whole number of seconds");
+  const { cfg, inbox, call } = channelSettings();
+  const once = async () => {
+    const count = await poll(call, inbox, cfg, async (post, command) => {
+      const key = `command:${post.ts}`;
+      if (wasSent(inbox, key)) return;
+      if (wasAttempted(inbox, key)) { process.stderr.write(`slack listen: command ${post.ts} has an uncertain send; inspect send-intents.json\n`); return; }
+      await postMessage(call, inbox, cfg.channel, { kind: "note", text: commandText(command), thread: post.thread_ts ?? post.ts, threadIsParent: true, key });
+    });
+    if (count) out(`slack listen: ${count} new`);
+  };
+  if (!flag(a, "loop")) { await once(); return; }
+  for (;;) {
+    try { await once(); } catch (e) { process.stderr.write(`slack listen: ${(e as Error).message}\n`); }
+    await new Promise(r => setTimeout(r, interval * 1000));
+  }
+}
+
+async function cmdPost(a: Args): Promise<void> {
+  const kind = opt(a, "kind") ?? usage("post requires --kind");
+  const text = opt(a, "text"), file = opt(a, "file");
+  if ((text === undefined) === (file === undefined)) usage("post requires exactly one of --text or --file");
+  const { cfg, inbox, call } = channelSettings();
+  const sent = await postMessage(call, inbox, cfg.channel, { kind, text: file === undefined ? text! : readFileSync(file, "utf8"),
+    thread: opt(a, "thread"), key: opt(a, "key") });
+  out(`slack post: ${sent.ts}`);
+}
+
 export const name = "slack";
 export const description = "Slack: decisions people make with buttons in Slack, verified by Slack's signature";
 export const docs: ExtDoc[] = [{ title: "Slack: decisions from Slack buttons, signature checks, people mapping", path: "SLACK.md" }];
 export const manpage = MANPAGE;
 
 export const commands: Cmd[] = [
-  { name: "slack", section: 7, noSub: "govern slack serve|notify (the protocol: tools/govern/SLACK.md)",
+  { name: "slack", section: 7, noSub: "govern slack serve|notify|listen|post (the protocol: tools/govern/SLACK.md)",
     subs: {
+      listen: { flags: { bool: ["once", "loop"], value: ["interval"] },
+        lines: [["[--once | --loop --interval 60]", "record new channel posts in slack.inbox; first run marks existing posts seen; answer configured requesters' fixed commands"]], run: cmdListen },
+      post: { flags: { value: ["kind", "text", "file", "thread", "key"] },
+        lines: [["--kind ack|blocked|delivered|question|note (--text T | --file F) [--thread TS] [--key K]", "send a prefixed message to slack.channel, resolve a thread parent and journal the send in slack.inbox/sent.jsonl"]], run: cmdPost },
       serve: { flags: { value: ["port"] },
         lines: [["[--port 5003]", "serve Slack's interactivity requests on loopback (POST /slack/actions); the signing secret comes from\nSLACK_SIGNING_SECRET or the config's slack.envFile, the team from slack.team"]], run: cmdServe },
       notify: { flags: { multi: ["lane"], value: ["interval"], bool: ["loop", "dry-run"] },

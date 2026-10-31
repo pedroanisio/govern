@@ -55,7 +55,7 @@ export const EXTENSIONS: readonly ExtInfo[] = [
     commands: ["slack"],
     docs: [{ title: "Slack: decisions from Slack buttons, signature checks, people mapping", path: "SLACK.md" }],
     files: ["ext/slack/index.ts", "ext/slack/slack.ts", "ext/slack/notify.ts"],
-    flags: ["dry-run", "interval", "lane", "loop", "port"] },
+    flags: ["dry-run", "file", "interval", "key", "kind", "lane", "loop", "once", "port", "text", "thread"] },
 ];
 
 /** The extension names, in registry order. */

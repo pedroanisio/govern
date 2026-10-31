@@ -3,6 +3,8 @@
 /** SYNOPSIS, DESCRIPTION, OPTIONS, ENVIRONMENT and EXAMPLES of the slack command, in the layout of the core manpage (bin/govern). */
 export const MANPAGE = `SYNOPSIS
     govern slack serve [--port 5003]  |  slack notify [--lane S]... [--loop --interval 30] [--dry-run]
+    govern slack listen [--once | --loop --interval 60]
+    govern slack post --kind ack|blocked|delivered|question|note (--text T | --file F) [--thread TS] [--key K]
 DESCRIPTION
     slack serve takes Slack's interactivity requests on loopback (POST /slack/actions; put an HTTPS proxy in front for
     Slack to reach it). A request counts only when its X-Slack-Signature is the app's signing secret's HMAC of the body,
@@ -13,13 +15,26 @@ DESCRIPTION
     gates that can be decided now, each gate option as its own button), their open timer alerts and the stages govern
     drive left to the operator, once each; it updates a message without its buttons once its decision is made or the case
     changes.
+    slack listen records new posts in slack.inbox using the poller-compatible state.json and inbox.jsonl. First run
+    marks existing posts seen; subsequent runs follow at most twenty changed threads. Only configured requesters can
+    ask a fixed command after an exact bot mention: status, pending, lane <slug>, help. No post executes code.
+    slack post sends a kind-prefixed message, resolving --thread to its parent, and appends sent.jsonl. A sent --key
+    cannot be sent again. Run one reader and one writer per inbox. Bot identities, requesters and tags come from config.
 OPTIONS
+    --once                  slack listen: one run (default)
+    --loop                  slack listen, slack notify: repeat runs
+    --interval N            slack listen, slack notify: seconds between runs (listen 60, notify 30)
+    --kind K                slack post: ack, blocked, delivered, question or note
+    --text T                slack post: nonempty message text, at most 40000 characters with prefix
+    --file F                slack post: read message text from this file instead of --text
+    --thread TS             slack post: reply in this thread (a reply timestamp is resolved to its parent)
+    --key K                 slack post: refuse a previously sent key
     --port N                slack serve: the loopback port (default 5003)
     --lane S                slack notify: only this lane (repeatable)
     --dry-run               slack notify: send and record nothing
 ENVIRONMENT
     Slack (slack): SLACK_SIGNING_SECRET (the Slack app's signing secret, at least 16 characters) and SLACK_BOT_TOKEN
-    (xoxb-, scope chat:write), else the config's slack.envFile · GOVERN_SLACK_API (https://slack.com/api).
+    (xoxb-, scope chat:write; slack.botTokenVar overrides the variable name), else the config's slack.envFile · GOVERN_SLACK_API (https://slack.com/api).
 EXAMPLES
     govern slack serve --port 5003   # behind an HTTPS proxy whose /slack/actions is the Slack app's interactivity URL
 `;

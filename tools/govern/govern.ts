@@ -27,6 +27,7 @@ import { laneByCwd, recordLane } from "./lib/attribution.ts";
 import * as queue from "./lib/queue.ts";
 import { tag, verdict } from "./lib/replycheck.ts";
 import { desk } from "./lib/desk.ts";
+import { status } from "./lib/status.ts";
 import { listLines, showLines, place } from "./lib/resources.ts";
 import * as reaping from "./lib/reap.ts";
 import * as slicing from "./lib/slice.ts";
@@ -154,21 +155,8 @@ function cmdWork(a: Args): void {
 
 function cmdStatus(a: Args): void {
   if (a._[1]) return out(brief(load(a._[1])));
-  const slugs = laneSlugs();
-  if (!slugs.length) return out("nothing under govern yet (govern new <slug> --process NAME, or --kind long|short|ops)");
-  const { rows, failed } = laneRows(slugs, (s, p) => {
-    const led = readJsonl(ledgerFile(s));
-    const lastJob = led.filter((e) => e.kind === "job").pop();
-    const gates = processOf(p).gates;
-    const ap = gates.map((g) => (gateApproved(p, g) ? g.name.charAt(0).toUpperCase() : "·")).join("");
-    const list = stagesOf(p);
-    const parts = [`${s.padEnd(36)} ${p.kind.padEnd(5)} ${list.indexOf(p.stage) + 1}/${list.length} ${p.stage.padEnd(12)}`, gates.length ? `approvals ${ap}` : "",
-      laneState(p), p.workflow && !p.finished ? `active ${p.workflow.active.join(', ')}` : '', lastJob ? `last job ${lastJob.name} ${lastJob.status}` : ""];
-    const drift = driftWarning(p, led);
-    return parts.filter(Boolean).join("  ").trimEnd() + (drift ? `\n    ${drift}` : "");
-  });
-  for (const r of rows) out(r);
-  if (failed) unreadable(failed, slugs.length);
+  const r = status(); out(r.text);
+  if (r.failed) unreadable(r.failed, r.lanes);
 }
 
 /** After a listing printed every lane: some could not be read, which is a failed check (exit 1), not a usage error. */

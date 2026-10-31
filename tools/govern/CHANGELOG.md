@@ -9,6 +9,11 @@ All notable changes to govern are documented here, following Keep a Changelog.
 
 ## [Unreleased]
 
+### Added
+
+- `govern slack listen` records channel posts and edits in a private poller-compatible inbox, follows at most twenty changed threads per run, and writes a successful-run heartbeat. Configured requesters can ask fixed `status`, `pending`, `lane <slug>` and `help` commands in Slack.
+- `govern slack post` sends kind-prefixed text or a file's text, resolves parent threads, journals sends and refuses already-sent keys. Slack API errors redact credentials and HTTP 429 retries are bounded. `slack.botTokenVar` overrides the token variable for both posting and notification; typed channel, identity, requester, tag, inbox, route, alert and upload settings reject unknown fields.
+
 ### Changed
 
 - Exit 2 now means a usage error only: an unknown command, subcommand or flag, a missing argument, a malformed or contradictory flag value. A refusal by the workspace's state (no such lane, a gate, check or dependency holding, a bad govern.json, process file or config, a disabled extension, a limit) exits 4, the lowest code govern did not already use (1 a failed check, 3 a failed Codex reply). A script that branched on 2 for state refusals must test 4.

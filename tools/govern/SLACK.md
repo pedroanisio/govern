@@ -113,3 +113,66 @@ signature against the recorded body and timestamp again.
   sessions.
 - Slack authenticates the user. govern trusts that identity and the `people.<id>.slack` mapping the process owner wrote.
 - A clicked message is updated by the next `govern slack notify` run, not at once; the clicker gets no reply in Slack.
+
+## Reading a channel and sending messages
+
+Enable the extension, then configure the channel and a private inbox relative to the workspace config file:
+
+```json
+"slack": {
+  "team": "TTEAM", "channel": "CCHANNEL", "envFile": ".env", "botTokenVar": "BOT_TOKEN",
+  "bot": ["UBOT", "BBOT"],
+  "requesters": { "UOPERATOR": "operator", "UPARTNER": "partner" },
+  "tags": ["brief", "request", "stats", "alert", "setup", "question"],
+  "inbox": "generated/slack"
+}
+```
+
+`botTokenVar` defaults to `SLACK_BOT_TOKEN`. Its value comes from the environment first, then `envFile`; govern never
+records the token. Both `notify` and the channel commands use this setting. Config rejects unknown fields, including
+nested ones. `listen` and `post` refuse missing channel, inbox or credentials. No channel reader runs automatically.
+The bot needs the channel's history scope and `chat:write`, and must belong to the channel.
+
+- `govern slack listen --once` runs once (also the default). `--loop --interval 60` repeats, reporting failures and retrying
+  on the next run. A failed single run exits 1. The interval is a positive whole number of seconds.
+- One history page is read per run (100 posts); only changed threads are read (200 messages per thread), at most twenty
+  threads per run. Remaining changed threads wait for the next run. Nothing is lost while fewer posts than one page
+  arrive between runs and thread replies stay within their page. A history `has_more` response is reported on stderr
+  and recorded as `hasMore` in the heartbeat. It warns that older posts beyond the page may be missed.
+- The first run marks existing history seen. Later runs append other people's posts to `inbox.jsonl`, including author,
+  timestamps, text, file IDs, recognized leading `[tag]`, requester eligibility and an `edited` flag. An unreadable post
+  produces an `unreadable` row. Requester eligibility says who posted, regardless of tag; it never grants approval.
+- `state.json` retains the poller's exact `top`, `threads`, `edits` structure. Inbox writes precede state writes: after a
+  crash a consumer may see a repeated row, and should deduplicate by timestamp and edit. `heartbeat.json` holds
+  `lastSuccess`, an ISO timestamp updated only after a successful run. The folder is mode 700 and files are mode 600.
+
+Run only one reader per inbox. To migrate, stop the previous reader and its timer, preserve its `state.json` and
+`inbox.jsonl`, point `slack.inbox` there, and run `govern slack listen --once` before starting the loop. No Python poller
+or reference file is needed at runtime. Preserve `commands.json`, `sent.jsonl` and `send-intents.json` across restarts too.
+
+```sh
+govern slack post --kind ack --text 'Received' --thread 1793000000.000001 --key work-received
+govern slack post --kind delivered --file generated/result.txt --key work-delivered
+```
+
+Kinds are `ack`, `blocked`, `delivered`, `question`, `note`. The text starts with `<kind>: ` and must be nonempty and at
+most 40000 Unicode characters including the prefix. Exactly one of `--text` and `--file` is required. A thread timestamp
+is resolved through `conversations.replies` to its parent. Successful sends append `ts`, resolved `thread`, `kind`, and
+`key` (null when omitted) to `sent.jsonl`; a previously sent key is refused. Use one writer per inbox. A keyed send also
+uses a stable `client_msg_id`. A private `send-intents.json` is written before a keyed send: a crash or an ambiguous
+network result leaves the key reserved and prevents an automatic duplicate, including command replies. A proven Slack
+refusal releases that reservation for retry. For an uncertain send, inspect the Slack thread, add the confirmed receipt
+to `sent.jsonl` if delivered, then clear that key from `send-intents.json`; clear only after confirming the outcome.
+An unkeyed send has no such protection. Message sends retry HTTP 429 at most twice, honoring numeric `Retry-After` up to 300 seconds;
+a longer or malformed delay fails for a later invocation to retry. Native network exceptions and response bodies are
+never included in API errors.
+
+A requester may write exactly `<@UBOT> status`, `<@UBOT> pending`, `<@UBOT> lane <slug>` or `<@UBOT> help`. The bot mention
+must match `slack.bot`. The code parses this fixed grammar, reads the shared status/brief and pending-decision views,
+and answers in that post's thread, capped to Slack's limit. It records answered timestamps separately from the poller's
+state and uses a send key per command. Everyone else's posts and anything outside the grammar enter the inbox. Posts
+never become shell commands, model prompts or queue tasks.
+
+The config also accepts typed `route: {to, profile, maxPerHour}`, `alerts: {listenStaleSec, unansweredSec}` and
+`upload: {roots, maxBytes}` settings; numeric limits must be positive integers and upload roots a nonempty list. Those
+settings do not enable routing, channel alerts or uploading in these commands.
