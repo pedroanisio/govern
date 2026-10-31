@@ -11,6 +11,9 @@ All notable changes to govern are documented here, following Keep a Changelog.
 
 ### Added
 
+- Configured Slack requester requests, briefs and non-command mentions route once per timestamp through sealed read-only queue profiles, with quoted untrusted input, mandatory file-reference checks and owner-only replies with explicit verification status. Hourly overflow remains in the durable inbox, alerts independently and drains on later runs. Automatic `seen:` receipts name the queued task.
+- `govern slack notify` independently detects stale listener heartbeat, unanswered requester requests and route limits, posts each condition once, and clears it when resolved. `govern slack digest` sends waiting people, failed tasks and open alerts once per local day, with no post for an empty summary.
+
 - `govern slack listen` records channel posts and edits in a private poller-compatible inbox, follows at most twenty changed threads per run, and writes a successful-run heartbeat. Configured requesters can ask fixed `status`, `pending`, `lane <slug>` and `help` commands in Slack.
 - `govern slack post` sends kind-prefixed text or a file's text, resolves parent threads, journals sends and refuses already-sent keys. Slack API errors redact credentials and HTTP 429 retries are bounded. `slack.botTokenVar` overrides the token variable for both posting and notification; typed channel, identity, requester, tag, inbox, route, alert and upload settings reject unknown fields.
 

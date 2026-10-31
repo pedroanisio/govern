@@ -66,9 +66,10 @@ export function parsePost(raw: unknown, cfg: ChannelConfig, edited = false): Pos
     request: Object.hasOwn(cfg.requesters ?? {}, user), edited };
 }
 
-/** Private atomic replacement: inbox rows are appended before committing position. */
-function directory(d: string): void { mkdirSync(d, { recursive: true, mode: 0o700 }); chmodSync(d, 0o700); }
-function save(d: string, name: string, value: unknown): void {
+/** Create or tighten the private channel journal directory to mode 700. */
+export function directory(d: string): void { mkdirSync(d, { recursive: true, mode: 0o700 }); chmodSync(d, 0o700); }
+/** Atomically replace a private JSON journal inside the inbox. */
+export function save(d: string, name: string, value: unknown): void {
   const path = join(d, name), tmp = `${path}.${randomUUID()}`;
   writeFileSync(tmp, JSON.stringify(value) + "\n", { mode: 0o600 }); renameSync(tmp, path);
 }
@@ -132,7 +133,11 @@ export async function poll(call: Call, d: string, cfg: ChannelConfig,
     let p: Post;
     try { p = parsePost(raw, cfg, edited); }
     catch (e) { rows.push({ order: 0, row: { unreadable: (e as Error).message } }); continue; }
-    if (cfg.bot?.includes(p.user)) continue;
+    if (cfg.bot?.includes(p.user)) {
+      const f = join(d, "bot-replies.json");
+      const replies = existsSync(f) ? parseFile(f, readFileSync(f, "utf8"), record(str)) : Object.create(null) as Record<string, string>;
+      replies[p.thread_ts ?? p.ts] = p.ts; save(d, "bot-replies.json", replies); continue;
+    }
     const command = parseCommand(p, cfg);
     if (command && answer) {
       if (!Object.hasOwn(answered, p.ts)) { await answer(p, command); answered[p.ts] = command; save(d, "commands.json", answered); }
@@ -148,7 +153,8 @@ export interface Send { kind: string; text: string; thread?: string; key?: strin
   threadIsParent?: boolean }
 interface Sent { ts: string; thread: string | null; kind: string; key: string | null }
 const sentShape = obj({ ts: str, thread: (v, p) => v === null ? null : str(v, p), kind: str, key: (v, p) => v === null ? null : str(v, p) });
-function sent(d: string): Sent[] {
+/** Read the private send journal, rejecting rows outside its typed contract. */
+export function sent(d: string): Sent[] {
   const f = join(d, "sent.jsonl");
   return existsSync(f) ? readFileSync(f, "utf8").split("\n").filter(Boolean).map(line => parseFile(f, line, sentShape)) : [];
 }
@@ -174,6 +180,17 @@ export async function parentThread(call: Call, channel: string, ts: string): Pro
 /** Explicit sends journal their key, timestamp and resolved thread; no token is persisted. Run one writer per inbox. */
 export async function postMessage(call: Call, d: string, channel: string, o: Send): Promise<Sent> {
   if (!["ack", "blocked", "delivered", "question", "note"].includes(o.kind)) return error("--kind must be ack|blocked|delivered|question|note");
+  return sendMessage(call, d, channel, o);
+}
+
+/** The sole automatic route receipt contains only a queue task id, never model output. */
+export async function seenMessage(call: Call, d: string, channel: string, post: Post, task: string): Promise<void> {
+  const key = `route:${post.ts}`;
+  if (wasSent(d, key)) return;
+  await sendMessage(call, d, channel, { kind: "seen", text: `queued task ${task}`, thread: post.thread_ts ?? post.ts, threadIsParent: true, key });
+}
+
+async function sendMessage(call: Call, d: string, channel: string, o: Send): Promise<Sent> {
   const text = `${o.kind}: ${o.text}`;
   if (!o.text.trim() || [...text].length > LIMIT) return error(`text must be nonempty and at most ${LIMIT} characters including kind`);
   if (o.thread !== undefined && !stamp(o.thread)) return error("--thread must be seconds.micros");

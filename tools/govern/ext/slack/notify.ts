@@ -11,6 +11,7 @@ import { activeStages, eligibleHuman, eligibleApprover, gateApproved } from "../
 import { stateDir, slackConfig } from "../../lib/workspace.ts";
 import { withLaneLock } from "../../lib/lane-lock.ts";
 import { GovernError, fail } from "../../lib/util.ts";
+import { channelAlerts } from "./route.ts";
 import { slackCall } from "./channel.ts";
 import { ACTION_ID, caseDigest, decisionValue, optionSet, type Decision, type Target } from "./slack.ts";
 import type { Scalar } from "../../lib/business-schema.ts";
@@ -73,7 +74,7 @@ const record = (v: unknown): v is Record<string, unknown> => typeof v === "objec
 
 /** The stages `govern drive` left to the operator (its state under the state folder's drive/), by lane:stage. A file that
  *  is not the driver's JSON is reported, never read as "no failures". */
-function driveFailures(): { key: string; lane: string; stage: string; round: number; attempt: number; reason: string }[] {
+export function driveFailures(): { key: string; lane: string; stage: string; round: number; attempt: number; reason: string }[] {
   const f = join(stateDir(), "drive", "state.json");
   if (!existsSync(f)) return [];
   let runs: unknown;
@@ -184,6 +185,20 @@ export async function notify(o: NotifyOptions): Promise<NotifyReport> {
         if (!o.dryRun) delete state.posted[key];
       }
     }
+  }
+  const channelCfg = slackConfig();
+  const channelConditions = channelCfg ? channelAlerts(channelCfg) : [];
+  const activeChannelKeys = new Set(channelConditions.map(a => a.key));
+  for (const [key, ts] of Object.entries(state.alerts)) {
+    if (!key.startsWith("channel:") || activeChannelKeys.has(key)) continue;
+    if (await send(key, "chat.update", { channel: o.channel, ts, ...closing(key, "condition cleared") })) {
+      report.closed.push(key); if (!o.dryRun) delete state.alerts[key];
+    }
+  }
+  for (const a of channelConditions) {
+    if (state.alerts[a.key]) continue;
+    const result = await send(a.key, "chat.postMessage", { channel: o.channel, text: a.text });
+    if (result) { report.alerts.push(a.key); if (!o.dryRun) state.alerts[a.key] = result.ts; }
   }
   if (!o.dryRun) writeState(state);
   return report;

@@ -3,6 +3,7 @@
 /** SYNOPSIS, DESCRIPTION, OPTIONS, ENVIRONMENT and EXAMPLES of the slack command, in the layout of the core manpage (bin/govern). */
 export const MANPAGE = `SYNOPSIS
     govern slack serve [--port 5003]  |  slack notify [--lane S]... [--loop --interval 30] [--dry-run]
+    govern slack digest
     govern slack listen [--once | --loop --interval 60]
     govern slack post --kind ack|blocked|delivered|question|note (--text T | --file F) [--thread TS] [--key K]
 DESCRIPTION
@@ -20,6 +21,13 @@ DESCRIPTION
     ask a fixed command after an exact bot mention: status, pending, lane <slug>, help. No post executes code.
     slack post sends a kind-prefixed message, resolving --thread to its parent, and appends sent.jsonl. A sent --key
     cannot be sent again. Run one reader and one writer per inbox. Bot identities, requesters and tags come from config.
+    With slack.route configured, listen queues requester requests, briefs and non-command bot mentions under a sealed
+    read-only profile, once per timestamp and within maxPerHour. It posts seen: with the task id; model replies go only
+    to the owner's queue, through parseReply and mandatory file-reference checks. Backlog stays in the durable inbox.
+    Independently run slack notify to alert on stale heartbeat, unanswered requests (slack.alerts), and route limits.
+    Cleared conditions can alert again. slack digest posts waiting people, failed tasks and open alerts once per local
+    calendar day; an empty summary sends nothing. Preserve routes.json, bot-replies.json and the send journals.
+    One history page is read per run. has_more warns on stderr and in the heartbeat; older posts may be missed.
 OPTIONS
     --once                  slack listen: one run (default)
     --loop                  slack listen, slack notify: repeat runs

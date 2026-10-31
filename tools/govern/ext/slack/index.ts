@@ -9,6 +9,8 @@ import type { Args } from "../../lib/util.ts";
 import { out, type Cmd } from "../../lib/cli.ts";
 import type { ExtDoc } from "../../lib/ext-registry.ts";
 import { poll, slackCall, postMessage, wasSent, wasAttempted } from "./channel.ts";
+import { routePending } from "./route.ts";
+import { digest } from "./digest.ts";
 import { commandText } from "./commands.ts";
 import { MANPAGE } from "./manpage.ts";
 
@@ -85,6 +87,8 @@ async function cmdListen(a: Args): Promise<void> {
       if (wasAttempted(inbox, key)) { process.stderr.write(`slack listen: command ${post.ts} has an uncertain send; inspect send-intents.json\n`); return; }
       await postMessage(call, inbox, cfg.channel, { kind: "note", text: commandText(command), thread: post.thread_ts ?? post.ts, threadIsParent: true, key });
     });
+    const routed = await routePending(call, inbox, cfg);
+    if (routed.waiting.length) process.stderr.write(`slack listen: route limit; ${routed.waiting.length} request(s) remain in inbox\n`);
     if (count) out(`slack listen: ${count} new`);
   };
   if (!flag(a, "loop")) { await once(); return; }
@@ -104,14 +108,21 @@ async function cmdPost(a: Args): Promise<void> {
   out(`slack post: ${sent.ts}`);
 }
 
+/** Explicit daily summary, using the same credentials and durable send keys as post. */
+async function cmdDigest(): Promise<void> {
+  const { cfg, inbox, call } = channelSettings();
+  out(await digest(call, inbox, cfg) ? "slack digest: posted" : "slack digest: nothing to post");
+}
+
 export const name = "slack";
 export const description = "Slack: decisions people make with buttons in Slack, verified by Slack's signature";
 export const docs: ExtDoc[] = [{ title: "Slack: decisions from Slack buttons, signature checks, people mapping", path: "SLACK.md" }];
 export const manpage = MANPAGE;
 
 export const commands: Cmd[] = [
-  { name: "slack", section: 7, noSub: "govern slack serve|notify|listen|post (the protocol: tools/govern/SLACK.md)",
+  { name: "slack", section: 7, noSub: "govern slack serve|notify|listen|post|digest (the protocol: tools/govern/SLACK.md)",
     subs: {
+      digest: { lines: [["", "post waiting people, failed tasks and open alerts once per local day; stay silent when empty"]], run: cmdDigest },
       listen: { flags: { bool: ["once", "loop"], value: ["interval"] },
         lines: [["[--once | --loop --interval 60]", "record new channel posts in slack.inbox; first run marks existing posts seen; answer configured requesters' fixed commands"]], run: cmdListen },
       post: { flags: { value: ["kind", "text", "file", "thread", "key"] },

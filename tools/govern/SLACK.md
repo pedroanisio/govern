@@ -170,9 +170,55 @@ never included in API errors.
 A requester may write exactly `<@UBOT> status`, `<@UBOT> pending`, `<@UBOT> lane <slug>` or `<@UBOT> help`. The bot mention
 must match `slack.bot`. The code parses this fixed grammar, reads the shared status/brief and pending-decision views,
 and answers in that post's thread, capped to Slack's limit. It records answered timestamps separately from the poller's
-state and uses a send key per command. Everyone else's posts and anything outside the grammar enter the inbox. Posts
-never become shell commands, model prompts or queue tasks.
+state and uses a send key per command. Everyone else's posts and anything outside the grammar enter the inbox. Posts never become shell commands. Configured routing below handles eligible non-command posts as untrusted data.
 
-The config also accepts typed `route: {to, profile, maxPerHour}`, `alerts: {listenStaleSec, unansweredSec}` and
-`upload: {roots, maxBytes}` settings; numeric limits must be positive integers and upload roots a nonempty list. Those
-settings do not enable routing, channel alerts or uploading in these commands.
+## Routing requests, independent alerts and a daily digest
+
+All settings are optional. Nothing routes until `slack.route` is configured:
+
+```json
+"route": { "to": "codex", "profile": "codex-read", "maxPerHour": 6 },
+"alerts": { "listenStaleSec": 300, "unansweredSec": 600 }
+```
+
+After a successful poll, `listen` replays the durable inbox. Posts from current requesters with a recognized `[request]`
+or `[brief]` tag, or a direct bot mention outside the command grammar, enter the same queue as `govern task send`.
+Other authors stay in the inbox. Revoking a requester prevents routing their waiting posts. Existing inbox rows are
+eligible when routing is first enabled; the first listener run still only seeds history. Edits do not route a timestamp
+again. A route accepts a sealed profile with only read capabilities, without secrets or MCP; it refuses write profiles,
+missing profiles, a mismatched engine and a custom queue runner that bypasses the seal.
+
+The post is JSON-quoted inside a fence longer than any backtick sequence in it. An instruction declares it untrusted
+data that may not direct the run. A routed task belongs to the `slack` queue project and is sent from `owner` so its reply
+returns to the owner's queue inbox. `routes.json` stores the task receipt and routing time. A deterministic task name
+also recovers a queue write that succeeded before its receipt was saved. Keep this journal and the queue across restarts.
+
+The rolling hourly quota counts queued tasks, regardless of their later result. Posts over the limit remain recorded in
+`inbox.jsonl`; the listener reports the backlog, and `notify` alerts once. Later listener runs drain it as quota becomes
+available. A queued task gets one keyed `seen: queued task <id>` receipt in its parent thread. A refused receipt retries
+without queuing another task. An ambiguous receipt retains its send intent and needs the same operator reconciliation
+as an explicit keyed post. No model reply is ever posted to Slack automatically.
+
+The queue dispatcher validates output with `parseReply` against `queue-reply.json`, rejects unknown fields and malformed,
+incomplete or adversarial envelopes, and sends a BLOCKED queue reply on failure. Every routed task also requests the
+`file-refs` content check: the model must cite workspace `file:line` evidence. Missing or invalid references mark the
+reply unverified for the owner; this check proves references exist, not the truth of the analysis. Queue run limits,
+timeouts and the single envelope-repair attempt remain code-owned bounds. Read the reply with `govern task inbox --as owner`.
+
+Run `govern slack notify --loop` independently from `listen`. With `alerts` configured it checks the heartbeat even when
+the listener has died. Missing or old heartbeats alert after `listenStaleSec`; old requester requests alert after
+`unansweredSec` when their thread has neither a journaled send nor an observed bot post. The listener records observed
+bot posts in `bot-replies.json`, without adding them to the inbox. Commands do not count as unanswered requests. A send
+in the same thread, including `seen:`, answers the request. The route-limit alert needs `route`, independently of
+`alerts`. Each condition posts once, updates to cleared when it clears, and may alert again if it recurs. API failures
+retry next notify run; `--dry-run` sends and records nothing. These checks use the local inbox and heartbeat; retain them
+and keep the listener within the history and thread windows described above.
+
+`govern slack digest` explicitly sends one summary of what waits on each person, failed queue/drive tasks and open lane
+and channel alerts. With nothing to report it sends nothing. A `digest:YYYY-MM-DD` send key uses the host's local calendar
+and prevents repeats that day. It uses the configured channel credentials and private send journal. An oversized digest
+is refused instead of silently omitting work. An ambiguous send requires the keyed-send reconciliation above. No timer
+is installed by these commands.
+
+The config also accepts `upload: {roots, maxBytes}`; uploading is a later feature. Numeric limits must be positive integers
+and upload roots a nonempty list.
