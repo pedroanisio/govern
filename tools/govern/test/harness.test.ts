@@ -58,6 +58,6 @@ test("makeEnv's roots and tempDir's dirs are removed when the test file that mad
 });
 
 test("every file in test/ is a test the glob runs, the helpers, a fake agent or the fixtures", () => {
-  const known = (f: string) => /\.test\.ts$/.test(f) || f === "helpers.ts" || /^fake-[\w-]+\.ts$/.test(f) || (f === "fixtures" && statSync(join(HERE, f)).isDirectory());
+  const known = (f: string) => /\.test\.ts$/.test(f) || f === "helpers.ts" || f === "slack-api.ts" || /^fake-[\w-]+\.ts$/.test(f) || (f === "fixtures" && statSync(join(HERE, f)).isDirectory());
   assert.deepEqual(readdirSync(HERE).filter((f) => !known(f)), []);
 });
