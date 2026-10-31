@@ -30,6 +30,7 @@ DESCRIPTION
     Independently run slack notify to alert on stale heartbeat, unanswered requests (slack.alerts), and route limits.
     Cleared conditions can alert again. slack digest posts waiting people, failed tasks and open alerts once per local
     calendar day; an empty summary sends nothing. Preserve routes.json, bot-replies.json and the send journals.
+    First activation of routing or alerts initializes start-line.json even during a notify dry run.
     One history page is read per run. has_more warns on stderr and in the heartbeat; older posts may be missed.
     slack upload PUTs common images and videos through the external upload API. Resolved paths, including symlinks,
     must stay inside slack.upload.roots and maxBytes. It journals a file id with kind upload and resolves thread parents.
@@ -47,7 +48,7 @@ OPTIONS
     --title T               slack upload: optional title, 1..255 characters
     --port N                slack serve: the loopback port (default 5003)
     --lane S                slack notify: only this lane (repeatable)
-    --dry-run               slack notify: send and record nothing
+    --dry-run               slack notify: send nothing and leave notification receipts unchanged
 ENVIRONMENT
     XDG_CONFIG_HOME (default ~/.config): slack install-service writes systemd/user units here.
     Slack (slack): SLACK_SIGNING_SECRET (the Slack app's signing secret, at least 16 characters) and SLACK_BOT_TOKEN

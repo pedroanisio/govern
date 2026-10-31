@@ -144,6 +144,6 @@ export const commands: Cmd[] = [
       serve: { flags: { value: ["port"] },
         lines: [["[--port 5003]", "serve Slack's interactivity requests on loopback (POST /slack/actions); the signing secret comes from\nSLACK_SIGNING_SECRET or the config's slack.envFile, the team from slack.team"]], run: cmdServe },
       notify: { flags: { multi: ["lane"], value: ["interval"], bool: ["loop", "dry-run"] },
-        lines: [["[--lane S]... [--loop --interval 30] [--dry-run]", "post to slack.channel what the lanes wait on from people (human tasks, gates) and open timer alerts, once each,\nwith buttons bound to the case; update a message when its decision is made or the case changes. The bot token is\nSLACK_BOT_TOKEN or the config's slack.envFile; --dry-run sends and records nothing"]], run: cmdNotify },
+        lines: [["[--lane S]... [--loop --interval 30] [--dry-run]", "post to slack.channel what the lanes wait on from people (human tasks, gates) and open timer alerts, once each,\nwith buttons bound to the case; update a message when its decision is made or the case changes. The bot token is\nSLACK_BOT_TOKEN or the config's slack.envFile; --dry-run sends no notifications and leaves notification receipts unchanged"]], run: cmdNotify },
     } },
 ];

@@ -219,7 +219,7 @@ const MEDIA: Record<string, string> = { ".png": "image/png", ".jpg": "image/jpeg
   ".webp": "image/webp", ".mp4": "video/mp4", ".mov": "video/quicktime", ".webm": "video/webm", ".m4v": "video/mp4" };
 
 /** Upload an allowed local image/video using Slack's external upload protocol. One writer owns this inbox.
- * The upload receipt uses Slack's file id as ts: completion does not provide a chat message timestamp. */
+ * The upload receipt uses Slack's file id as ts; it does not assume a chat message timestamp. */
 export async function uploadFile(call: Call, d: string, channel: string, policy: SlackConfigUpload | undefined,
   o: Upload, request: typeof fetch = fetch): Promise<Sent> {
   if (!policy) return error("slack.upload is required (roots and maxBytes)");

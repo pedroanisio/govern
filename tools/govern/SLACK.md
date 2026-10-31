@@ -72,7 +72,7 @@ channel) in the environment or the `slack.envFile`. `govern slack notify` (or `-
 
 When the decision is made, or the case changes under a message, the message is updated without its buttons; a changed
 case gets a new message. What was posted is kept under the state folder's `slack/`. A failed Slack call is reported (exit
-1) and tried again on the next run. `--dry-run` sends and records nothing. Run one notifier per workspace.
+1) and tried again on the next run. `--dry-run` sends nothing and leaves notification receipts unchanged. Run one notifier per workspace.
 
 Button labels come from `slack.labels` (`complete`, `approve`, `reject`; default Done, Approve, Send back).
 
@@ -185,7 +185,7 @@ After a successful poll, `listen` replays the durable inbox. Posts from current 
 or `[brief]` tag, or a direct bot mention outside the command grammar, enter the same queue as `govern task send`.
 Other authors stay in the inbox. Revoking a requester prevents routing their waiting posts. When routing or alerts is first enabled, a private `start-line.json` captures the newest timestamp already in the
 inbox before polling. Only later posts are eligible, including arrivals during that run. Preserve this fixed activation
-boundary across restarts; it never advances as the backlog drains. The first listener run still only seeds history. Edits do not route a timestamp
+boundary across restarts; it never advances as the backlog drains. First activation initializes it even during a `notify --dry-run`; notification receipts remain unchanged. The first listener run still only seeds history. Edits do not route a timestamp
 again. A route accepts a sealed profile with only read capabilities, without secrets or MCP; it refuses write profiles,
 missing profiles, a mismatched engine and a custom queue runner that bypasses the seal.
 
@@ -212,7 +212,7 @@ the listener has died. Missing or old heartbeats alert after `listenStaleSec`; o
 bot posts in `bot-replies.json`, without adding them to the inbox. Commands do not count as unanswered requests. A send
 in the same thread, including `seen:`, answers the request. The route-limit alert needs `route`, independently of
 `alerts`. Each condition posts once, updates to cleared when it clears, and may alert again if it recurs. API failures
-retry next notify run; `--dry-run` sends and records nothing. These checks use the local inbox and heartbeat; retain them
+retry next notify run; `--dry-run` sends nothing and leaves notification receipts unchanged. These checks use the local inbox and heartbeat; retain them
 and keep the listener within the history and thread windows described above.
 
 `govern slack digest` explicitly sends one summary of what waits on each person, failed queue/drive tasks and open lane
@@ -230,7 +230,7 @@ govern slack upload --thread 1793000000.000100 --file generated/clip.mp4 --title
 
 Upload requires `slack.channel`, `slack.inbox`, a bot token with `files:write`, and `slack.upload`. The file must resolve, including symlinks, inside an allowed root and be a nonempty regular file no larger than `maxBytes`. Allowed extensions are PNG, JPG/JPEG, GIF, WebP, MP4/M4V, MOV and WebM. These are extension restrictions, not content inspection. `--thread` is required and resolves a reply timestamp to its parent, just like `post`. Optional text must be nonempty and at most 40000 characters; titles are 1..255 characters.
 
-The command calls `files.getUploadURLExternal`, PUTs the bytes without the bot token to an HTTPS `files.slack.com` upload URL, then calls `files.completeUploadExternal` to share the file in the thread. Redirects are refused. The private `sent.jsonl` receipt has `kind: "upload"`, the resolved thread and key; its `ts` is the Slack file id because completion does not supply a message timestamp. Keyed uploads use the same send-intent reservation and manual reconciliation as posts; uncertain results never retry automatically. No upload URL, token or file bytes are journaled.
+The command calls `files.getUploadURLExternal`, PUTs the bytes without the bot token to an HTTPS `files.slack.com` upload URL, then calls `files.completeUploadExternal` to share the file in the thread. Redirects are refused. The private `sent.jsonl` receipt has `kind: "upload"`, the resolved thread and key; its `ts` is the Slack file id rather than an assumed chat message timestamp. Keyed uploads use the same send-intent reservation and manual reconciliation as posts; uncertain results never retry automatically. No upload URL, token or file bytes are journaled.
 
 
 ## User services
