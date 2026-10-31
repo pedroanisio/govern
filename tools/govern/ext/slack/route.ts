@@ -51,6 +51,25 @@ function parseInbox(row: Record<string, unknown>, cfg: ChannelConfig): Post {
   return { ts: row.ts, thread_ts: row.thread_ts as string | null, user: row.user, text: row.text, files: [],
     tag: tag && cfg.tags?.includes(tag) ? tag : null, request: Object.hasOwn(cfg.requesters ?? {}, row.user), edited: false };
 }
+/** Capture activation before polling, once for routing and alerts together. Retain this journal across restarts. */
+export function startLine(d: string, cfg: SlackConfig): string {
+  if (!cfg.route && !cfg.alerts) return "0";
+  const shape = obj({ ts: (v: unknown, p: string) => {
+    const ts = str(v, p);
+    if (ts !== "0" && !/^\d{1,12}\.\d{6}$/.test(ts)) throw new GovernError(`${p}: invalid start line`, 1);
+    return ts;
+  } });
+  const saved = read(d, "start-line.json", shape, undefined);
+  if (saved) return saved.ts;
+  const existing = posts(d, { ...cfg, channel: cfg.channel ?? "" });
+  const ts = existing.at(-1)?.ts ?? "0";
+  directory(d); save(d, "start-line.json", { ts });
+  return ts;
+}
+function newPosts(d: string, cfg: SlackConfig & { channel: string }): Post[] {
+  const ts = startLine(d, cfg);
+  return posts(d, cfg).filter(p => Number(p.ts) > Number(ts));
+}
 function eligible(p: Post, cfg: ChannelConfig): boolean {
   return p.request && !cfg.bot?.includes(p.user) && !parseCommand(p, cfg)
     && (p.tag === "request" || p.tag === "brief" || (cfg.bot ?? []).some(id => p.text.includes(`<@${id}>`)));
@@ -76,7 +95,7 @@ export async function routePending(call: Call, d: string, cfg: SlackConfig & { c
   const reg = registry(), profile = getProfile(cfg.route.profile, reg);
   if (cfg.route.to !== profile.engine && Object.hasOwn(queue.config().runners ?? {}, cfg.route.to)) throw new GovernError("slack.route requires a sealed runner, not a config runner", 1);
   if (target.access !== "read-only" || profile.mcpConfig || capsOf(reg, profile).some(c => c.effect !== "read" || c.secrets.length)) throw new GovernError("slack.route requires a read-only profile without secrets or MCP", 1);
-  const candidates = posts(d, cfg).filter(p => eligible(p, cfg));
+  const candidates = newPosts(d, cfg).filter(p => eligible(p, cfg));
   directory(d);
   const routes = read<Record<string, Route>>(d, "routes.json", ROUTES, {});
   const tasks = queue.all().filter(x => x.m.project === "slack" && x.m.from === "owner" && x.m.kind === "TASK").map(x => x.m);
@@ -109,19 +128,20 @@ export interface ChannelAlert { key: string; text: string }
 export function channelAlerts(cfg: SlackConfig, now = Date.now()): ChannelAlert[] {
   if (!cfg.inbox && (cfg.alerts || cfg.route)) throw new GovernError("slack.inbox is required for channel alerts", 1);
   if (!cfg.inbox || !cfg.channel) return [];
+  startLine(cfg.inbox, cfg);
   const d = cfg.inbox, out: ChannelAlert[] = [], c = { ...cfg, channel: cfg.channel };
   if (cfg.alerts) {
     const beat = read(d, "heartbeat.json", obj({ lastSuccess: str }, { hasMore: bool }), undefined);
     if (!beat || !Number.isFinite(Date.parse(beat.lastSuccess)) || now - Date.parse(beat.lastSuccess) > cfg.alerts.listenStaleSec * 1000) out.push({ key: "channel:listen-stale", text: "Slack listener heartbeat is missing or stale" });
     const receipts = sent(d), bots = read<Record<string, string>>(d, "bot-replies.json", record(str), {});
-    for (const p of posts(d, c).filter(p => eligible(p, c))) {
+    for (const p of newPosts(d, c).filter(p => eligible(p, c))) {
       const thread = p.thread_ts ?? p.ts;
       if (now / 1000 - Number(p.ts) > cfg.alerts.unansweredSec && !receipts.some(r => r.thread === thread || r.ts === thread) && !Object.hasOwn(bots, thread)) out.push({ key: `channel:unanswered:${p.ts}`, text: `Slack request ${p.ts} from ${cfg.requesters![p.user]} has no reply in thread ${thread}` });
     }
   }
   if (cfg.route) {
     const routes = read<Record<string, Route>>(d, "routes.json", ROUTES, {});
-    const waiting = posts(d, c).filter(p => eligible(p, c) && !Object.hasOwn(routes, p.ts));
+    const waiting = newPosts(d, c).filter(p => eligible(p, c) && !Object.hasOwn(routes, p.ts));
     if (waiting.length && Object.values(routes).filter(r => Date.parse(r.at) > now - 3600000).length >= cfg.route.maxPerHour) out.push({ key: "channel:route-limit", text: `Slack route hourly limit reached; ${waiting.length} request(s) remain in the durable inbox` });
   }
   return out;

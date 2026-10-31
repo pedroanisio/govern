@@ -6,7 +6,7 @@ import { spawn } from "node:child_process";
 import { join } from "node:path";
 import { makeEnv, childEnv, setConfig, write, seedChecks, GOVERN } from "./helpers.ts";
 import * as queue from "../lib/queue.ts";
-import { routePending } from "../ext/slack/route.ts";
+import { routePending, startLine } from "../ext/slack/route.ts";
 
 async function cli(e: ReturnType<typeof makeEnv>, args: string[], extra: Record<string, string>) {
   return new Promise<{ code: number | null; out: string; err: string }>((resolve, reject) => {
@@ -51,6 +51,7 @@ for (const [label, raw, expect] of [
   const e = makeEnv("slack-route-dispatch"), before = process.env, d = join(e.root, "generated/slack"); process.env = childEnv(e);
   try {
     const cfg = { team: "T1", channel: "C1", requesters: { U1: "operator" }, tags: ["request"], route: { to: "codex", profile: "codex-read", maxPerHour: 1 } };
+    startLine(d, cfg);
     write(join(d, "inbox.jsonl"), JSON.stringify({ ts: "1.000001", thread_ts: null, user: "U1", text: "[request] analyze", files: [], tag: "request", request: true, edited: false }) + "\n");
     write(join(e.root, "evidence.txt"), "verified line\n");
     const script = write(join(e.root, "reply.jsonl"), JSON.stringify({ type: "item.completed", item: { type: "agent_message", text: raw } }) + "\n");

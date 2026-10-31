@@ -183,8 +183,9 @@ All settings are optional. Nothing routes until `slack.route` is configured:
 
 After a successful poll, `listen` replays the durable inbox. Posts from current requesters with a recognized `[request]`
 or `[brief]` tag, or a direct bot mention outside the command grammar, enter the same queue as `govern task send`.
-Other authors stay in the inbox. Revoking a requester prevents routing their waiting posts. Existing inbox rows are
-eligible when routing is first enabled; the first listener run still only seeds history. Edits do not route a timestamp
+Other authors stay in the inbox. Revoking a requester prevents routing their waiting posts. When routing or alerts is first enabled, a private `start-line.json` captures the newest timestamp already in the
+inbox before polling. Only later posts are eligible, including arrivals during that run. Preserve this fixed activation
+boundary across restarts; it never advances as the backlog drains. The first listener run still only seeds history. Edits do not route a timestamp
 again. A route accepts a sealed profile with only read capabilities, without secrets or MCP; it refuses write profiles,
 missing profiles, a mismatched engine and a custom queue runner that bypasses the seal.
 

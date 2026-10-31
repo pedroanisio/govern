@@ -2,10 +2,10 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { join } from "node:path";
-import { readFileSync, existsSync } from "node:fs";
+import { readFileSync, existsSync, rmSync, statSync } from "node:fs";
 import { makeEnv, childEnv, setConfig, write, jsonl } from "./helpers.ts";
 import { digest } from "../ext/slack/digest.ts";
-import { routePending, channelAlerts, routePrompt } from "../ext/slack/route.ts";
+import { routePending, channelAlerts, routePrompt, startLine } from "../ext/slack/route.ts";
 import { poll, parsePost, type Call } from "../ext/slack/channel.ts";
 import * as queue from "../lib/queue.ts";
 import { create, load, save } from "../lib/project.ts";
@@ -19,7 +19,7 @@ const NOW = Date.parse("2026-10-31T12:00:00Z");
 async function workspace(f: (d: string, e: ReturnType<typeof makeEnv>) => Promise<void>) {
   const e = makeEnv("slack-route"), before = process.env, d = join(e.root, "generated/slack");
   setConfig(e, { slack: { ...base, inbox: "generated/slack" } }); process.env = childEnv(e);
-  try { await f(d, e); } finally { process.env = before; }
+  try { startLine(d, base); await f(d, e); } finally { process.env = before; }
 }
 function api() {
   const calls: { method: string; body: Record<string, unknown> }[] = [];
@@ -221,4 +221,31 @@ test("digest sorts multiple waiting people, includes unassigned gates and exclud
   const a = api(); assert.equal(await digest(a.call, d, { ...base, route: undefined, alerts: undefined, inbox: d }, new Date(2026, 9, 31)), true);
   const text = String(a.calls[0]!.body.text); assert.match(text, /ana:/); assert.match(text, /zoe:/); assert.ok(text.indexOf("ana:") < text.indexOf("zoe:"));
   assert.match(text, /unassigned:\n  multi: gate review/); assert.doesNotMatch(text, /already acknowledged/);
+}));
+
+
+test("activation excludes reference-format old inbox rows, admits same-run arrivals and never advances across restarts", async () => workspace(async (d, e) => {
+  rmSync(join(d, "start-line.json"));
+  const old = { ts: "10.000001", thread_ts: null, user: "U1", text: "[request] old", files: [], tag: "request", request: true, edited: false };
+  inbox(d, [old]);
+  write(join(d, "state.json"), JSON.stringify({ top: old.ts, threads: {}, edits: {} }));
+  write(join(d, "heartbeat.json"), JSON.stringify({ lastSuccess: new Date(NOW).toISOString() }));
+  const a = api(), cfg = { ...base, inbox: d };
+  // notify may activate the boundary first, independently of listen.
+  assert.deepEqual(channelAlerts(cfg, NOW), []);
+  assert.deepEqual(await routePending(a.call, d, cfg, NOW), { routed: [], waiting: [] });
+  assert.equal(a.calls.length, 0); assert.equal(queue.all().length, 0);
+  assert.equal(statSync(join(d, "start-line.json")).mode & 0o777, 0o600);
+  const boundary = readFileSync(join(d, "start-line.json"), "utf8");
+  assert.equal(JSON.parse(boundary).ts, old.ts);
+  await poll(async () => ({ ok: true, messages: [raw("11.000001")] }), d, cfg);
+  // Fresh module state after restart still uses only the durable boundary.
+  const restarted = await import("../ext/slack/route.ts" + "?restart") as typeof import("../ext/slack/route.ts");
+  assert.ok(restarted.channelAlerts(cfg, NOW).some(a => a.key === "channel:unanswered:11.000001"));
+  assert.equal((await restarted.routePending(a.call, d, cfg, NOW)).routed.length, 1);
+  assert.equal(a.calls.length, 1); assert.equal(a.calls[0]!.body.thread_ts, "11.000001");
+  await restarted.routePending(a.call, d, cfg, NOW + 3600001);
+  assert.equal(queue.all().length, 1);
+  assert.equal(readFileSync(join(d, "start-line.json"), "utf8"), boundary);
+  assert.deepEqual(restarted.channelAlerts({ ...cfg, alerts: undefined }, NOW + 3600001), []);
 }));

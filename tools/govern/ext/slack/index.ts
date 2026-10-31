@@ -9,7 +9,7 @@ import type { Args } from "../../lib/util.ts";
 import { out, type Cmd } from "../../lib/cli.ts";
 import type { ExtDoc } from "../../lib/ext-registry.ts";
 import { poll, slackCall, postMessage, wasSent, wasAttempted } from "./channel.ts";
-import { routePending } from "./route.ts";
+import { routePending, startLine } from "./route.ts";
 import { digest } from "./digest.ts";
 import { commandText } from "./commands.ts";
 import { MANPAGE } from "./manpage.ts";
@@ -81,6 +81,7 @@ async function cmdListen(a: Args): Promise<void> {
   if (!Number.isInteger(interval) || interval < 1) usage("--interval must be a positive whole number of seconds");
   const { cfg, inbox, call } = channelSettings();
   const once = async () => {
+    startLine(inbox, cfg);
     const count = await poll(call, inbox, cfg, async (post, command) => {
       const key = `command:${post.ts}`;
       if (wasSent(inbox, key)) return;
