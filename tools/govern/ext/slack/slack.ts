@@ -197,13 +197,61 @@ const STATUS = (e: unknown): number =>
   e instanceof Unauthorized ? 401 : e instanceof BadRequest ? 400 : e instanceof Forbidden ? 403 : e instanceof NotFound ? 404
     : e instanceof TooLarge ? 413 : e instanceof GovernError ? 409 : 500;
 
+interface InteractionOptions { now?: () => number; request?: typeof fetch }
+interface InteractionResult { status: number; value: { ok: boolean; text?: string; error?: string } }
+
+/** Only an authenticated payload can provide a response capability. Never follow redirects or send an API token. */
+function responseUrl(body: Buffer): string | undefined {
+  const raw: unknown = JSON.parse(new URLSearchParams(body.toString("utf8")).get("payload") ?? "null");
+  if (!record(raw) || raw.response_url === undefined) return undefined;
+  let url: URL;
+  try { url = new URL(typeof raw.response_url === "string" ? raw.response_url : ""); }
+  catch { throw new BadRequest("response_url must be an https://hooks.slack.com/ URL"); }
+  if (url.protocol !== "https:" || url.hostname !== "hooks.slack.com" || url.username || url.password || url.port || url.hash)
+    throw new BadRequest("response_url must be an https://hooks.slack.com/ URL");
+  return url.href;
+}
+
+/** Verify, record, then report the outcome through Slack's response URL. Failed feedback never reverses a decision. */
+export async function handleInteraction(secret: string, body: Buffer, ts: string | undefined, sig: string | undefined,
+  o: InteractionOptions = {}): Promise<InteractionResult> {
+  let url: string | undefined, result: InteractionResult;
+  try {
+    const at = (o.now ?? (() => Math.floor(Date.now() / 1000)))();
+    verifySignature(secret, ts, sig, body, at);
+    // Extract feedback before action parsing so signed payload refusals can explain themselves too.
+    try { url = responseUrl(body); } catch (e) {
+      if (e instanceof SyntaxError) throw new BadRequest("the payload is not JSON");
+      throw e;
+    }
+    const a = parseAction(body);
+    remember(sig!, at);
+    const line = perform(a, { kind: "slack", team: a.team, user: a.user, timestamp: ts!, signedBody: body.toString("utf8"), signature: sig! });
+    result = { status: 200, value: { ok: true, text: line } };
+  } catch (e) {
+    const status = STATUS(e);
+    result = { status, value: { ok: false, error: status === 500 ? "decision failed" : (e as Error).message } };
+    if (status === 500) process.stderr.write(`slack: ${nowIso()} decision failed; inspect the lane ledger\n`);
+  }
+  if (url) {
+    try {
+      const response = await (o.request ?? fetch)(url, { method: "POST", redirect: "error", signal: AbortSignal.timeout(2000),
+        headers: { "Content-Type": "application/json; charset=utf-8" },
+        body: JSON.stringify(result.value.ok
+          ? { replace_original: true, response_type: "in_channel", text: result.value.text, blocks: [] }
+          : { replace_original: false, response_type: "ephemeral", text: `Refused: ${result.value.error}` }) });
+      if (!response.ok) throw new Error("refused");
+    } catch { process.stderr.write("slack: response update failed; decision outcome retained; notify will reconcile\n"); }
+  }
+  return result;
+}
+
 /** The Slack interactivity server (not yet listening): POST /slack/actions with Slack's signed form body of at most
  *  MAX_BODY bytes. 200 {ok, text} when the decision is recorded; 401 (signature, clock, replay), 400 (payload), 403 (team,
  *  person), 404 (path, lane), 409 (a refused decision), 413 (size) or 500 otherwise, as {ok: false, error}. `now` is the
  *  clock in seconds. Fails when the secret is shorter than 16 characters. */
-export function slackServer(secret: string, o: { now?: () => number } = {}): Server {
+export function slackServer(secret: string, o: InteractionOptions = {}): Server {
   if (secret.length < 16) fail("SLACK_SIGNING_SECRET must contain at least 16 characters");
-  const now = o.now ?? (() => Math.floor(Date.now() / 1000));
   const server = createServer((req, res) => {
     const reply = (status: number, value: unknown) => {
       if (res.headersSent) return;
@@ -224,21 +272,9 @@ export function slackServer(secret: string, o: { now?: () => number } = {}): Ser
     });
     req.on("end", () => {
       if (res.headersSent) return;
-      const body = Buffer.concat(chunks);
-      try {
-        const timestamp = req.headers["x-slack-request-timestamp"], signature = req.headers["x-slack-signature"];
-        const ts = typeof timestamp === "string" ? timestamp : undefined, sig = typeof signature === "string" ? signature : undefined;
-        const at = now();
-        verifySignature(secret, ts, sig, body, at);
-        const a = parseAction(body);
-        remember(sig!, at);
-        const line = perform(a, { kind: "slack", team: a.team, user: a.user, timestamp: ts!, signedBody: body.toString("utf8"), signature: sig! });
-        reply(200, { ok: true, text: line });
-      } catch (e) {
-        const status = STATUS(e);
-        reply(status, { ok: false, error: status === 500 ? "decision failed" : (e as Error).message });
-        if (status === 500) process.stderr.write(`slack: ${nowIso()} ${(e as Error).stack ?? String(e)}\n`);
-      }
+      const timestamp = req.headers["x-slack-request-timestamp"], signature = req.headers["x-slack-signature"];
+      void handleInteraction(secret, Buffer.concat(chunks), typeof timestamp === "string" ? timestamp : undefined,
+        typeof signature === "string" ? signature : undefined, o).then(r => reply(r.status, r.value));
     });
     req.on("error", () => reply(400, { ok: false, error: "incomplete request" }));
   });

@@ -112,7 +112,7 @@ signature against the recorded body and timestamp again.
   can forge a request. Keep it readable only by the account that runs `govern slack serve`, and out of reach of agent
   sessions.
 - Slack authenticates the user. govern trusts that identity and the `people.<id>.slack` mapping the process owner wrote.
-- A clicked message is updated by the next `govern slack notify` run, not at once; the clicker gets no reply in Slack.
+- After recording a decision, `serve` immediately replaces the clicked message through its signed payload’s `response_url`. Refusals explain why in an ephemeral reply to the clicker. Only HTTPS `hooks.slack.com` URLs without credentials or nondefault ports are accepted; redirects are refused. A failed callback never undoes a decision; `notify` still reconciles on its next run. Payloads without a response URL retain HTTP-only feedback.
 
 ## Reading a channel and sending messages
 

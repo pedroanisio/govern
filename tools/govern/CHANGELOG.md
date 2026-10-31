@@ -11,6 +11,8 @@ All notable changes to govern are documented here, following Keep a Changelog.
 
 ### Added
 
+- Slack clicks report recorded decisions immediately through a validated response URL; refusals explain why to the clicker, and callback failures leave decisions intact for notify reconciliation.
+
 - `govern slack upload` constrains resolved media paths to configured roots and a byte limit, uploads through the external upload API, resolves thread parents and journals file receipts with durable send keys.
 
 - Configured Slack requester requests, briefs and non-command mentions route once per timestamp through sealed read-only queue profiles, with quoted untrusted input, mandatory file-reference checks and owner-only replies with explicit verification status. Hourly overflow remains in the durable inbox, alerts independently and drains on later runs. Automatic `seen:` receipts name the queued task.

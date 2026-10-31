@@ -16,7 +16,8 @@ DESCRIPTION
     a loop changed is refused. slack notify posts to slack.channel what the lanes wait on from people (active human tasks,
     gates that can be decided now, each gate option as its own button), their open timer alerts and the stages govern
     drive left to the operator, once each; it updates a message without its buttons once its decision is made or the case
-    changes.
+    changes. Recorded clicks also update immediately through an HTTPS hooks.slack.com response_url; refusals explain
+    why to the clicker. Failed feedback never rolls back a decision; notify still reconciles.
     slack listen records new posts in slack.inbox using the poller-compatible state.json and inbox.jsonl. First run
     marks existing posts seen; subsequent runs follow at most twenty changed threads. Only configured requesters can
     ask a fixed command after an exact bot mention: status, pending, lane <slug>, help. No post executes code.
