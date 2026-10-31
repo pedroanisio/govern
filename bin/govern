@@ -2,6 +2,8 @@
 # MANPAGE >>>
 # NAME
 #     govern — run lanes of agent work (videos, software, ops, any process) through checked stages, with few tokens
+# NEEDS
+#     binary: Node 24+; configured harnesses for agent commands; credential: harness credentials for agent commands; service: none for lanes; configured services for integrations.
 # SYNOPSIS
 #     govern version [--json]  |  govern --version [--json]
 #     govern init [DIR] [--nested]
