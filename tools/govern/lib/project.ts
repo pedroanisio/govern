@@ -201,7 +201,7 @@ export function create(given: string, o: { kind?: string; process?: string; titl
       kind = o.kind!;
     } else kind = pr.name;
   } else {
-    if (!o.kind || !(KINDS as readonly string[]).includes(o.kind)) usage("--kind must be long, short or ops (or name a --process)");
+    if (!o.kind || !(KINDS as readonly string[]).includes(o.kind)) usage(`choose a process: ${[...processes().keys()].sort((a, b) => a === "dev" ? -1 : b === "dev" ? 1 : a.localeCompare(b)).map((n) => `--process ${n}`).join(", ")} (govern process list)`);
     kind = o.kind!;
     proc = kind === "ops" ? "ops" : "video";
   }
