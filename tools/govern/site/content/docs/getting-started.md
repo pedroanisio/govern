@@ -1,74 +1,57 @@
 ---
 title: Getting started
-description: Install govern from the repository and move a software lane through its checks.
+description: Install govern and move your first software lane through a check.
 section: docs
 ---
 
-This guide uses the repository checkout to create a workspace and a first lane on the built-in `dev` process. Commands run from the repository root unless a step says otherwise.
+Use Node 24 or later and a POSIX shell. No package installation or contributor setup is needed to run govern.
 
-## Install from the repository
+## Put govern on your path
 
-Use Node 24 or newer. Install the package's development dependencies and put the repository's `bin` directory on your shell's path:
+Either unpack a govern release archive or check out super-tools. In the unpacked archive's top folder, or the super-tools checkout's top folder, run:
 
 ```sh
-npm ci --prefix tools/govern
 export PATH="$PWD/bin:$PATH"
 govern version
-govern install-skill
 ```
 
-The launcher is `bin/govern`. TypeScript runs directly through Node type stripping. `govern install-skill` creates a symbolic link from the default skills directory to the tracked `tools/govern` folder. It prints the session hook lines to add. An existing real file or directory is refused unless replacement is explicitly requested.
+Keep that folder: the launcher reads `tools/govern` beside `bin`. Add its absolute `bin` path to your shell's PATH configuration to keep using it in new terminals. The checkout's `setup.sh` is optional for govern; `setup.sh --path-only` adds that PATH entry without creating the contributor venv.
 
-## Create the workspace and lane
+## Create a workspace and a lane
 
-Run `govern init` in the folder you want as the workspace root. It creates `.govern/`. It refuses an existing workspace and, unless `--nested` is explicit, a folder inside another workspace. Skip initialization when the folder is already a workspace.
+The remaining commands run in a new `my-work` folder in your home directory. Choose a different new folder name if it already exists. `govern init` creates `.govern/`; `--nested` explicitly permits this new workspace even if the chosen parent already belongs to one.
 
 ```sh
-govern init
-govern new ops/govern --process dev
-govern work ops/govern plan
+cd "$HOME"
+mkdir my-work
+cd my-work
+govern init --nested
+govern new first-change --process dev --title 'Create a greeting'
+govern work first-change plan
+govern note first-change 'Plan: create greeting.txt containing hello; check its contents with Node; risk: wrong text'
+govern advance first-change --note 'The change, check and risk are recorded'
 ```
 
-The brief gives the stage's exit condition, approvals, commands, files, last jobs and recent decisions. Record the change, its tests and risks before leaving `plan`.
-
-## Name the test command
-
-In this repository, the overview's example names the govern suite:
+Your lane is now in `build`. Its files live in `.govern/projects/first-change`. The built-in `dev` process uses a command named `test` as the exit check for its `test` stage. This small example needs only Node:
 
 ```sh
-govern cmd ops/govern test -- node --test 'tools/govern/test/*.test.ts'
+govern cmd first-change test -- node -e 'const fs = require("node:fs"); require("node:assert/strict").equal(fs.readFileSync("greeting.txt", "utf8"), "hello\n")'
+if govern run first-change test; then
+  echo 'Expected the check to fail before greeting.txt exists' >&2
+  exit 1
+fi
+printf 'hello\n' > .govern/projects/first-change/greeting.txt
+govern run first-change test
+govern advance first-change --note 'The check failed before the file existed and passes with the greeting'
+govern check first-change
+govern advance first-change
+govern brief first-change
 ```
 
-For another repository, name its actual suite instead. `dev` uses the named `test` command as the check for its `test` stage. Do not replace a failing check with an easier command.
+The lane is now in `review`. The last advance reran the check: a failing check holds the lane. For real work, name your project's actual test command and record evidence you have verified. Review the result before moving to `done`; see [lanes and processes](/docs/lanes-and-processes/) for gates and dependencies.
 
-## Work and advance
+## Optional: Claude Code integration
 
-After documenting the plan, move into implementation. Write failing tests before the code that makes them pass.
+For Claude Code, `govern install-skill` is optional. Run it in the workspace to link its `.claude/skills/govern` to the installation and print the hook lines you can add. It is unnecessary for the commands above. An existing real skill directory is refused unless you explicitly request replacement.
 
-```sh
-govern advance ops/govern --note 'The change, tests and risks are written down'
-govern work ops/govern build
-```
-
-After implementation satisfies the build stage's exit condition, advance to `test` and run its check:
-
-```sh
-govern advance ops/govern --note 'Failing tests were written first and the implementation makes them pass'
-govern work ops/govern test
-govern check ops/govern
-govern advance ops/govern
-```
-
-The evidence notes above describe conditions you must actually meet before running those commands. `govern advance` reruns the stage check. Failure holds the lane. Checks, pending gates and dependencies can also refuse a move to a later stage through `govern work`.
-
-The next stage is `review`: a second agent or the owner reads the diff, and findings are fixed or answered. The final `done` stage requires a commit; pushing still requires the owner's go. See [lanes and processes](/docs/lanes-and-processes/) for the full rules.
-
-## Watch the work
-
-```sh
-govern desk
-govern brief ops/govern
-govern usage ops/govern
-```
-
-The desk is the owner's overview of lanes, inbox, queue and today's tokens. The brief resumes one lane. Usage connects recorded work to its cost. Read [the queue guide](/docs/queue/) before handing work to a runner.
+Use `govern desk` for an overview and `govern brief first-change` to resume this lane. Read [the queue guide](/docs/queue/) before handing work to a runner.
