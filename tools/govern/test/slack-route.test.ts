@@ -1,5 +1,6 @@
 // Durable channel routing, independent alerts and daily digests; no model output reaches Slack.
 import { test } from "node:test";
+import { slackBody } from "./slack-api.ts";
 import assert from "node:assert/strict";
 import { join } from "node:path";
 import { readFileSync, existsSync, rmSync, statSync } from "node:fs";
@@ -131,7 +132,7 @@ test("CLI handlers route after polling, replay backlog without new posts, and re
   t.mock.method(process.stderr, "write", (s: string) => { warnings.push(s); return true; });
   t.mock.method(globalThis, "fetch", async (url: unknown, opts: RequestInit) => {
     assert.equal((opts.headers as Record<string, string>).Authorization, "Bearer test-secret");
-    bodies.push(JSON.parse(String(opts.body))); return Response.json(String(url).endsWith("history") ? { ok: true, messages: history } : { ok: true, channel: "C1", ts: "99.000001" });
+    bodies.push(slackBody(String(url).split("/").at(-1)!, new Headers(opts.headers).get("content-type") ?? "", String(opts.body))!); return Response.json(String(url).endsWith("history") ? { ok: true, messages: history } : { ok: true, channel: "C1", ts: "99.000001" });
   });
   const listen = commands[0]!.subs!.listen!, daily = commands[0]!.subs!.digest!;
   const once = () => listen.run!(parseArgs(["--once"], listen.flags!, "slack listen"));

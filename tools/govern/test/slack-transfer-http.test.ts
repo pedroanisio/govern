@@ -1,5 +1,6 @@
 // Real fake-server transports for external upload and signed immediate feedback; requires loopback permission.
 import { test } from "node:test";
+import { slackBody } from "./slack-api.ts";
 import assert from "node:assert/strict";
 import { createServer, type Server } from "node:http";
 import { createHmac } from "node:crypto";
@@ -25,9 +26,13 @@ test("fake Web API receives upload URL request, raw PUT, completion and no token
         assert.equal(Buffer.concat(chunks).toString(), "image bytes"); res.end("ok"); return;
       }
       assert.equal(req.headers.authorization, "Bearer test-token");
-      const body = JSON.parse(Buffer.concat(chunks).toString());
+      const body = slackBody(req.url!.split("/").at(-1)!, String(req.headers["content-type"]), Buffer.concat(chunks).toString());
+      if (!body) { res.end(JSON.stringify({ ok: false, error: "invalid_arguments" })); return; }
       if (req.url === "/api/conversations.replies") res.end(JSON.stringify({ ok: true, messages: [{ ts: "2.000002", thread_ts: "1.000001" }] }));
-      else if (req.url === "/api/files.getUploadURLExternal") res.end(JSON.stringify({ ok: true, upload_url: "https://files.slack.com/upload/test", file_id: "F123" }));
+      else if (req.url === "/api/files.getUploadURLExternal") {
+        assert.deepEqual(body, { filename: "image.png", length: "11" });
+        res.end(JSON.stringify({ ok: true, upload_url: "https://files.slack.com/upload/test", file_id: "F123" }));
+      }
       else { assert.equal(body.thread_ts, "1.000001"); res.end(JSON.stringify({ ok: true, files: [{ id: "F123" }] })); }
     });
   });

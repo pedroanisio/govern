@@ -1,5 +1,6 @@
 // Channel contracts, including the Python poller's on-disk compatibility, against deterministic calls and local HTTP.
 import { test } from "node:test";
+import { slackBody } from "./slack-api.ts";
 import assert from "node:assert/strict";
 import { readFileSync, existsSync, statSync, chmodSync } from "node:fs";
 import { join } from "node:path";
@@ -147,7 +148,9 @@ test("CLI local API: custom dotenv token, listen reports lines and failures, pos
   setConfig(e, { slack: { team: "T1", ...cfg, envFile: "slack.env", botTokenVar: "BOT_TOKEN", inbox: "generated/slack" } });
   write(join(e.root, "slack.env"), 'BOT_TOKEN="test-secret"\n');
   const server = createServer((req, res) => { let body = ""; req.on("data", b => { body += b; }); req.on("end", () => {
-    assert.equal(req.headers.authorization, "Bearer test-secret"); const b = JSON.parse(body); bodies.push(b);
+    assert.equal(req.headers.authorization, "Bearer test-secret"); const b = slackBody(req.url!.split("/").at(-1)!, String(req.headers["content-type"]), body);
+    if (!b) { res.setHeader("Content-Type", "application/json"); res.end(JSON.stringify({ ok: false, error: "invalid_arguments" })); return; }
+    bodies.push(b);
     res.setHeader("Content-Type", "application/json"); res.end(JSON.stringify(refused ? { ok: false, error: "test-secret" } : req.url?.endsWith("history") ? { ok: true, messages: history } : req.url?.endsWith("replies") ? { ok: true, messages: [msg(String(b.ts))] } : { ok: true, ts: "9.000009" }));
   }); });
   await new Promise<void>(r => server.listen(0, "127.0.0.1", r)); const address = server.address(); assert.ok(address && typeof address === "object");
@@ -158,7 +161,7 @@ test("CLI local API: custom dotenv token, listen reports lines and failures, pos
     const r = await cli(e, ["slack", "listen", "--once"], env); assert.equal(r.code, 0, r.err); assert.match(r.out, /1 new/);
     assert.ok(bodies.some(b => String(b.text).includes("pending"))); assert.ok(bodies.some(b => b.thread_ts === "2.000002"));
     const file = write(join(e.root, "message.txt"), "done");
-    assert.equal((await cli(e, ["slack", "post", "--kind", "delivered", "--file", file, "--key", "done"], env)).code, 0);
+    assert.equal((await cli(e, ["slack", "post", "--kind", "delivered", "--file", file, "--key", "done", "--thread", "1.000001"], env)).code, 0);
     refused = true; const failed = await cli(e, ["slack", "listen", "--once"], env); assert.equal(failed.code, 1); assert.doesNotMatch(failed.err, /test-secret/);
   } finally { server.closeAllConnections(); await new Promise<void>(r => server.close(() => r())); }
 });
@@ -219,7 +222,9 @@ test("CLI handlers use custom dotenv token, record and answer commands, read fil
   t.mock.method(process.stdout, "write", (s: string) => { output.push(s); return true; });
   t.mock.method(globalThis, "fetch", async (url: string | URL | Request, options?: RequestInit) => {
     assert.equal((options!.headers as Record<string, string>).Authorization, "Bearer test-secret");
-    const b = JSON.parse(String(options!.body)); bodies.push(b); methods.push(String(url));
+    const b = slackBody(String(url).split("/").at(-1)!, new Headers(options!.headers).get("content-type") ?? "", String(options!.body));
+    if (!b) return Response.json({ ok: false, error: "invalid_arguments" });
+    bodies.push(b); methods.push(String(url));
     if (failure) return Response.json({ ok: false, error: "test-secret" });
     return Response.json(String(url).endsWith("history") ? { ok: true, messages: history } : String(url).endsWith("replies") ? { ok: true, messages: [msg(String(b.ts))] } : { ok: true, ts: "9.000009" });
   });
@@ -233,8 +238,11 @@ test("CLI handlers use custom dotenv token, record and answer commands, read fil
     assert.ok(bodies.some(b => b.thread_ts === "2.000002"));
     assert.equal(methods.filter(m => m.endsWith("replies")).length, 0);
     const file = write(join(e.root, "message.txt"), "done");
-    await post.run!(parseArgs(["--kind", "delivered", "--file", file, "--key", "done"], post.flags!, "slack post"));
+    await post.run!(parseArgs(["--kind", "delivered", "--file", file, "--key", "done", "--thread", "1.000001"], post.flags!, "slack post"));
     assert.equal(jsonl(join(e.root, "generated/slack/sent.jsonl")).length, 2);
+    history = [msg("1.000001", "parent", "U1", { latest_reply: "3.000003" })];
+    await once();
+    assert.equal(methods.filter(m => m.endsWith("replies")).length, 2);
     failure = true;
     await assert.rejects(async () => once(), error => error instanceof Error && !error.message.includes("test-secret") && error.message.includes("conversations.history"));
   } finally { process.env = back; }
