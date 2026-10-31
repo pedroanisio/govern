@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { installSystemUnit } from "./lib/dispatch-service.ts";
+import { workingDirectory } from "./lib/systemd.ts";
 import * as lifecycle from './lib/lifecycle.ts';
 import { enterRuntime } from './lib/lifecycle-runtime.ts';
 import { withLaneLock } from './lib/lane-lock.ts';
@@ -994,11 +995,12 @@ function cmdBpmn(a: Args): void {
 
 /** The text of the user service: every Environment= and the ExecStart binary quoted, and the state folders of this shell passed on. */
 export function serviceUnit(bin: string, interval: string, reapEvery: number | undefined, system = false, parallel = 1): string {
+  const directory = workingDirectory(repo());
   const env: [string, string][] = [["PATH", process.env.PATH ?? ""], ["GOVERN_REPO", repo()], ["GOVERN_QUEUE", queue.QUEUE()]];
   for (const k of ["GOVERN_STATE", "GOVERN_PROJECTS"]) if (process.env[k]) env.push([k, process.env[k]!]);
   return [
     "[Unit]", "Description=govern task dispatcher (one fresh codex/claude/grok session per queued message)", "",
-    "[Service]", ...(system ? [`User=${userInfo().username}`] : []), `WorkingDirectory=${repo().replace(/%/g, "%%")}`,
+    "[Service]", ...(system ? [`User=${userInfo().username}`] : []), `WorkingDirectory=${directory}`,
     `ExecStart=${unitWord(bin, true)} task dispatch --loop --interval ${interval}${reapEvery ? ` --reap-every ${reapEvery}` : ""}${parallel > 1 ? ` --parallel ${parallel}` : ""}`,
     ...env.map(([k, v]) => `Environment=${unitWord(`${k}=${v}`)}`), "Restart=on-failure", "RestartSec=30", "",
     "[Install]", `WantedBy=${system ? "multi-user.target" : "default.target"}`, "",
