@@ -49,6 +49,7 @@ OPTIONS
     --lane S                slack notify: only this lane (repeatable)
     --dry-run               slack notify: send and record nothing
 ENVIRONMENT
+    XDG_CONFIG_HOME (default ~/.config): slack install-service writes systemd/user units here.
     Slack (slack): SLACK_SIGNING_SECRET (the Slack app's signing secret, at least 16 characters) and SLACK_BOT_TOKEN
     (xoxb-, scopes chat:write and files:write for upload; slack.botTokenVar overrides the variable name), else the config's slack.envFile · GOVERN_SLACK_API (https://slack.com/api).
 EXAMPLES
