@@ -47,7 +47,7 @@ import { processSvg, viewOf, type Overlay } from "./lib/processview.ts";
 import { sceneOf, canvasFor } from "./lib/processscene.ts";
 import { readLane, readLanes } from "./lib/lanestate.ts";
 import * as artifacts from "./lib/artifacts.ts";
-import { checkRecipient, requireAs, resolveAs } from "./lib/sessions.ts";
+import { checkRecipient, requireAs, resolveAs, resolveCaller } from "./lib/sessions.ts";
 import { installSkill, skillDrift, sha256File, approxTokens, BYTES_PER_TOKEN } from "./lib/skill.ts";
 import { HELP_RULES, TOPICS } from "./lib/helprules.ts";
 import { writeFileSync, existsSync, unlinkSync, statSync } from "node:fs";
@@ -733,7 +733,7 @@ function recipient(to: string, host?: (peer: string) => void): { to: string; rou
     host!(address.peer);
     return { to, routed: false };
   }
-  checkRecipient(to, queue.runners());
+  checkRecipient(to, queue.runners(), queue.formerNames);
   if (to !== "auto") return { to, routed: false };
   const c = chooseRunner(queue.all().filter((x) => x.m.routed).length);
   out(`auto → ${c.runner} (${c.reason})`);
@@ -772,18 +772,19 @@ function cmdInbox(a: Args): void {
   if (flag(a, "hook")) {
     // For a UserPromptSubmit/SessionStart hook: silent unless there is something to say, and it never fails.
     try {
-      const name = resolveAs({ as: opt(a, "as") });
-      if (!name) return;
-      const rows = queue.all().filter((x) => x.state === "open" && x.m.to === name);
+      const caller = resolveCaller({ as: opt(a, "as") });
+      if (!caller) return;
+      const msgs = queue.all(), mine = queue.mailFor(caller, msgs), rows = msgs.filter((x) => x.state === "open" && mine(x.m));
       if (!rows.length) return;
-      out(`govern queue: ${rows.length} open message(s) for ${name}:`);
+      out(`govern queue: ${rows.length} open message(s) for ${caller.name}:`);
       rows.slice(0, 5).forEach(({ m }) => out(`  ${m.id} [${m.kind}] ${clip(m.summary, 80)}`));
       if (rows.length > 5) out(`  +${rows.length - 5} more`);
     } catch { /* a hook must not break the session */ }
     return;
   }
-  const name = requireAs(opt(a, "as"));
-  const rows = queue.all().filter((x) => x.m.to === name && (flag(a, "all") || x.state === "open"));
+  const caller = resolveCaller({ as: opt(a, "as") }) ?? { name: requireAs(opt(a, "as")) };
+  const msgs = queue.all(), mine = queue.mailFor(caller, msgs);
+  const rows = msgs.filter((x) => mine(x.m) && (flag(a, "all") || x.state === "open"));
   if (!rows.length) return out("(no messages)");
   rows.forEach((r) => out(rowLine(r)));
 }

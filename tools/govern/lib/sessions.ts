@@ -60,17 +60,28 @@ export function resolveAs(o: { as?: string; env?: NodeJS.ProcessEnv; dir?: strin
   const live = liveSessions(o.dir);
   return (o.chain ?? (() => pidChain()))().map((p) => live.find((s) => s.pid === p)).find(Boolean)?.name;
 }
+export interface Caller { name: string; session?: string }
+/** Who is calling, with the session id behind the name when one is known: the id does not change when the session is renamed. */
+export function resolveCaller(o: { as?: string; env?: NodeJS.ProcessEnv; dir?: string; chain?: () => number[] } = {}): Caller | undefined {
+  const name = resolveAs(o);
+  if (name === undefined) return undefined;
+  const live = liveSessions(o.dir);
+  const self = o.as || (o.env ?? process.env).GOVERN_AS ? live.filter((s) => s.name === name) : (o.chain ?? (() => pidChain()))().flatMap((p) => live.filter((s) => s.pid === p)).slice(0, 1);
+  return { name, ...(self.length === 1 && self[0]!.sessionId ? { session: self[0]!.sessionId } : {}) };
+}
+
 /** Who is calling, as resolveAs finds it from `as`, GOVERN_AS or the parent process chain; a GovernError when none of them names a session. */
 export const requireAs = (as?: string): string =>
   resolveAs({ as }) ?? fail("cannot tell which session this is (no parent process is a registered Claude Code session): pass --as NAME or set GOVERN_AS");
 
-/** The recipient check of `task send`/`forward`: a runner, auto, owner, configured mailbox or a live session. Returns whether it is a session. */
-export function checkRecipient(to: string, runners: readonly string[]): { session: boolean } {
+/** The recipient check of `task send`/`forward`: a runner, auto, owner, configured mailbox, a live session or a former name of
+ *  one (`former` reads the queue, so only a name nothing else accepts pays for it). Returns whether it is a session. */
+export function checkRecipient(to: string, runners: readonly string[], former: () => string[] = () => []): { session: boolean } {
   if (!/^[a-z0-9][a-z0-9.-]*$/.test(to)) usage(`--to must be lowercase letters, digits, dots and dashes: ${to}`);
   const mailboxes = findRepo() ? config().mailboxes ?? [] : [];
   if ([...runners, "auto", "owner", ...mailboxes].includes(to)) return { session: false };
   const live = liveSessions();
-  if (live.some((s) => s.name === to)) return { session: true };
+  if (live.some((s) => s.name === to) || former().includes(to)) return { session: true };
   if ((LEGACY_PROFILES as readonly string[]).includes(to)) {
     const engine = to.slice(0, to.lastIndexOf("-"));
     return fail(`--to ${to}: ${to} is a profile, not a --to target; use --to ${engine}${to.endsWith("-write") ? " --write" : ""} (or --to ${engine} --profile ${to})`);

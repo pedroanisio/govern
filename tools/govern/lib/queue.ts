@@ -100,6 +100,8 @@ type State = (typeof STATES)[number];
 export interface Message {
   id: string; project: string; task: string; kind: string; from: string; to: string;
   summary: string; body: string; files: string[]; replyTo?: string; created: string;
+  /** The Claude Code session ids behind `from` and `to`, when known. A name changes when a session is renamed; the id does not, so mail follows the id. */
+  fromSession?: string; toSession?: string;
   /** read-only (default) or write: the runner may change files in the project folder. */
   access: "read-only" | "write";
   /** The capability profile the session runs under (govern caps); absent for an owner, a session or a config.json runner. */
@@ -153,7 +155,7 @@ const VERIFICATION: Shape<Verification> = obj({ state: literal("checked", "unver
 const MESSAGE: Shape<Message> = obj({
   id: str, project: str, task: str, kind: literal(...KINDS), from: str, to: str, summary: str, body: str, files: arr(str), created: str, access: literal("read-only", "write"),
 }, {
-  replyTo: str, profile: str, readOnlyConfirmed: bool, lane: str, estimateUsd: number, routed: bool, forwardedFrom: str, timeoutSec: posInt,
+  fromSession: str, toSession: str, replyTo: str, profile: str, readOnlyConfirmed: bool, lane: str, estimateUsd: number, routed: bool, forwardedFrom: str, timeoutSec: posInt,
   retryOf: str, retryNote: str, retries: arr(obj({ id: str, note: str, at: str })), verification: VERIFICATION, check: arr(str), verify: arr(str), repaired: yes,
   claim: obj({ by: str, pid: posInt }, { start: str, at: str }), remote: obj({ peer: str, id: str }), relay: obj({ attempts: number, lastError: str, nextAt: str }),
   result: obj({ agent: str, ok: bool, seconds: number }, {
@@ -191,6 +193,56 @@ function defaultProfile(m: Pick<Message, "to" | "access">, reg: Registry): strin
 /** The lane that authorises a message's profile: --lane, else the project when it is a lane. */
 const laneOf = (m: Pick<Message, "lane" | "project">): string | undefined => m.lane ?? (existsSync(join(projectsDir(), m.project, "govern.json")) ? m.project : undefined);
 
+/** Who never is a session, so a stamp is not looked for. */
+const notSession = (name: string): boolean => name.includes("@") || name === "owner" || name === "auto" || name === "govern" || name === "dispatcher" || (BUILTIN_RUNNERS as readonly string[]).includes(name);
+
+/** The id behind a name: the one live session holding it, else the newest message that stamped it. Two live sessions of one
+ *  name give none: an id is never guessed. A queue that cannot be read costs only the stamp, never the send. */
+function sessionFor(name: string): string | undefined {
+  if (notSession(name)) return undefined;
+  const live = liveSessions().filter((s) => s.name === name);
+  if (live.length) return live.length === 1 ? live[0]!.sessionId : undefined;
+  try {
+    for (const { m } of all().reverse()) {
+      if (m.from === name && m.fromSession) return m.fromSession;
+      if (m.to === name && m.toSession) return m.toSession;
+    }
+  } catch { /* no stamp */ }
+  return undefined;
+}
+
+/** Every name a stamp ties to session `id`, this one's current name included. */
+const namesOf = (id: string, msgs: { m: Message }[]): Set<string> => new Set(msgs.flatMap(({ m }) => [...(m.fromSession === id ? [m.from] : []), ...(m.toSession === id ? [m.to] : [])]));
+
+/** Whether a message is for `c`. The stamp decides when both sides have one. Otherwise the name does: the caller's own, or a name
+ *  stamped for its session that no other live session holds now, so a newcomer keeps what is sent to the name it took. */
+export function mailFor(c: { name: string; session?: string }, msgs: { m: Message }[] = all()): (m: Message) => boolean {
+  const former = c.session ? namesOf(c.session, msgs) : new Set<string>();
+  const others = new Set(liveSessions().filter((s) => s.sessionId !== c.session).map((s) => s.name));
+  return (m) => (c.session && m.toSession ? m.toSession === c.session : m.to === c.name || (former.has(m.to) && !others.has(m.to)));
+}
+
+/** The former names of the live sessions: `--to` accepts them, and the stamp then carries the message to the session. */
+export function formerNames(): string[] {
+  const live = liveSessions(), holding = new Set(live.map((s) => s.name)), msgs = all();
+  return [...new Set(live.flatMap((s) => (s.sessionId ? [...namesOf(s.sessionId, msgs)] : [])))].filter((n) => !holding.has(n));
+}
+
+/** Whether a message's recipient can read it: stamped, its session is alive; else its name is someone's, or was a live session's. */
+function reachable(now: number): (m: Pick<Message, "to" | "toSession">) => boolean {
+  const cfg = workspaceConfig(), live = liveSessions(), ids = new Set(live.flatMap((s) => (s.sessionId ? [s.sessionId] : [])));
+  const known = new Set([...runners(), ...registry().profiles.keys(), "owner", ...(cfg.mailboxes ?? []),
+    ...agents.live(now).flatMap(agents.names), ...live.map((s) => s.name), ...formerNames()]);
+  return (m) => m.to.includes("@") || (m.toSession ? ids.has(m.toSession) : known.has(m.to));
+}
+
+/** Open local messages no inbox will show, grouped by the name they went to. */
+export function undelivered(now = Date.now()): { to: string; count: number }[] {
+  const canRead = reachable(now), counts = new Map<string, number>();
+  for (const { state, m } of all()) if (state === "open" && !canRead(m)) counts.set(m.to, (counts.get(m.to) ?? 0) + 1);
+  return [...counts].sort(([a], [b]) => a.localeCompare(b)).map(([to, count]) => ({ to, count }));
+}
+
 /** Validate a new message (names, project slug, kind, summary, profile guard for its lane, reply-to and files) and write
  *  it as an open message with a fresh id and creation time; fails on the first invalid part. */
 export function send(m: Omit<Message, "id" | "created">): Message {
@@ -218,7 +270,10 @@ export function send(m: Omit<Message, "id" | "created">): Message {
   if (m.verify !== undefined && (!Array.isArray(m.verify) || !m.verify.length || m.verify.some((a) => typeof a !== "string") || !m.verify[0]!.trim())) usage("--verify needs a command: --verify -- ARGV…");
   if (m.replyTo && !find(m.replyTo)) fail(`--reply-to ${m.replyTo}: no such message`);
   for (const f of m.files) if (!existsSync(resolve(repo(), f))) fail(`--file not found (paths are relative to ${repo()}): ${f}`);
-  const msg: Message = { ...m, id: `${stamp()}-${m.to}-${Math.random().toString(36).slice(2, 6)}`, created: nowIso() };
+  const parent = m.replyTo ? find(m.replyTo)?.m : undefined;
+  const fromSession = m.fromSession ?? sessionFor(m.from);
+  const toSession = m.toSession ?? (parent?.from === m.to ? parent.fromSession : undefined) ?? sessionFor(m.to);
+  const msg: Message = { ...m, ...(fromSession ? { fromSession } : {}), ...(toSession ? { toSession } : {}), id: `${stamp()}-${m.to}-${Math.random().toString(36).slice(2, 6)}`, created: nowIso() };
   writeJson(join(dir("open"), `${msg.id}.json`), msg); // a temporary file renamed into place: a parallel reader never sees a half-written message
   return msg;
 }
@@ -285,7 +340,7 @@ export function forward(ref: string, by: string, to: string, routed = false): Me
     const o = openMessage(ref);
     const keep = o.profile && getProfile(o.profile).engine === to ? o.profile : undefined;
     const t = resolveTarget(to, { write: o.access === "write", ...(keep ? { profile: keep } : {}) });
-    const copy = send({ project: o.project, task: o.task, kind: o.kind, from: o.from, to, summary: o.summary, body: o.body, files: o.files, access: t.access, ...(t.profile ? { profile: t.profile } : {}), ...(o.lane ? { lane: o.lane } : {}), ...(o.verification ? { verification: o.verification } : {}), ...(o.check ? { check: o.check } : {}), ...(o.verify ? { verify: o.verify } : {}), forwardedFrom: o.id, ...(routed ? { routed: true } : {}) });
+    const copy = send({ project: o.project, task: o.task, kind: o.kind, from: o.from, ...(o.fromSession ? { fromSession: o.fromSession } : {}), to, summary: o.summary, body: o.body, files: o.files, access: t.access, ...(t.profile ? { profile: t.profile } : {}), ...(o.lane ? { lane: o.lane } : {}), ...(o.verification ? { verification: o.verification } : {}), ...(o.check ? { check: o.check } : {}), ...(o.verify ? { verify: o.verify } : {}), forwardedFrom: o.id, ...(routed ? { routed: true } : {}) });
     closeOpen(o, by, `forwarded to ${to} as ${copy.id}`);
     return copy;
   });
@@ -412,21 +467,18 @@ export function reclaim(ref: string, by: string, note: string): Message {
 
 /** Expire only old local mail whose recipient has no live identity or durable mailbox; no model runs. */
 export function expireMail(now = Date.now()): string[] {
-  const cfg = workspaceConfig(), ttl = cfg.mailTtlHours ?? 72;
-  const known = new Set([...runners(), ...registry().profiles.keys(), "owner", ...(cfg.mailboxes ?? []),
-    ...agents.live(now).flatMap(agents.names), ...liveSessions().map(s => s.name)]);
-  const dead = (name: string) => !name.includes("@") && !known.has(name);
+  const ttl = workspaceConfig().mailTtlHours ?? 72, canRead = reachable(now);
   return claimGuard(() => {
     const lines: string[] = [];
     for (const { state, m } of all()) {
-      if (state !== "open" || !dead(m.to) || !(now - Date.parse(m.created) > ttl * 3600_000)) continue;
+      if (state !== "open" || canRead(m) || !(now - Date.parse(m.created) > ttl * 3600_000)) continue;
       // Take the file before recording the resolution: another dispatcher cannot run it.
       if (!move(m, "open", "claimed")) continue;
       const note = `expired: ${m.to} is no live session or mailbox after ${ttl} h`;
       m.result = { agent: "govern", ok: false, seconds: 0, closedBy: "govern", note };
       save(m, "claimed");
       if (!move(m, "claimed", "failed")) fail(`message ${m.id} could not be moved to failed`);
-      if (!dead(m.from)) {
+      if (canRead({ to: m.from, ...(m.fromSession ? { toSession: m.fromSession } : {}) })) {
         const notice = send({ project: m.project, task: m.task, kind: "NOTICE", from: "govern", to: m.from,
           summary: clip(note, 200), body: `${m.id}: ${note}`, files: [], replyTo: m.id, access: "read-only" });
         m.result.reply = notice.id;

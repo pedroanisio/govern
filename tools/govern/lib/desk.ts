@@ -18,6 +18,7 @@ import { deskLines } from "./reap.ts";
 import { deskLines as sliceLines } from "./slice.ts";
 import { deskUsage, unattributedLines, type Stray } from "./usage.ts";
 import { serviceLines } from "./services.ts";
+import { resolveCaller } from "./sessions.ts";
 
 const ago = (iso: string) => {
   const m = Math.round((Date.now() - Date.parse(iso)) / 60000);
@@ -94,9 +95,13 @@ export function desk(extensionLines: readonly string[] = []): { text: string; fa
   if(alerts.length)L.push('',`TIMER ALERTS (${alerts.length})`,...alerts);
   // ---- owner inbox
   const msgs = queue.all();
-  const inbox = msgs.filter((x) => x.state === "open" && x.m.to === "owner");
+  const caller = resolveCaller(), mine = caller ? queue.mailFor(caller, msgs) : () => false;
+  const inbox = msgs.filter((x) => x.state === "open" && (x.m.to === "owner" || mine(x.m)));
   L.push("", `YOUR INBOX (${inbox.length})${inbox.length ? "  · read: govern task show <id>" : ""}`);
   for (const { m } of inbox.slice(-10)) L.push(`  ${m.id} ${m.kind.padEnd(8)} from ${m.from} [${m.project}] ${clip(m.summary, 80)}${m.verification ? ` ${tag(m.verification)}` : ""}`);
+  let lost: { to: string; count: number }[] = [];
+  try { lost = queue.undelivered(); } catch { /* a bad config is reported below */ }
+  if (lost.length) L.push("", `UNDELIVERED (${lost.reduce((n, x) => n + x.count, 0)})  · open, and no inbox will show them: govern task forward <id> --to NAME`, `  ${lost.map((x) => `${x.to} ×${x.count}`).join(" · ")}`);
   // ---- queue
   const count = (state: string, to?: string) => msgs.filter((x) => x.state === state && (!to || x.m.to === to)).length;
   const bad = msgs.filter((x) => x.m.verification?.state === "unverified" && x.state !== "done").length;

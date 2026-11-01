@@ -238,6 +238,8 @@ text that does not parse is re-sent to the same engine, sealed to `read`, to be 
 content (`queue.ts`). The sender can add checks with `--check NAME` and a command with `--verify`; `replycheck.ts`
 resolves the names and `checks/` holds the built-ins (file-refs, commit-refs, claims-cited). A thread that reaches `maxRuns` (default 4) goes to the owner.
 
+A name is a label a session can change; the registry's session id is the identity. `send` stamps the id behind each name, a reply takes its parent's sender's stamp, and reading compares ids when both sides have one. There is no name history to keep: former names are read from the stamps, which also means a message with no stamp reaches a former name only once some stamped message records it.
+
 ## Decisions and their trade-offs
 
 | Decision | Rejected alternative | Why |
