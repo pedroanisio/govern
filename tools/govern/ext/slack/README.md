@@ -12,7 +12,7 @@ disclaimer:
 
 Part of [super-tools](../../../../README.md); one of the [govern extensions](../README.md).
 
-Command: `govern slack` (`serve`, `notify`, `listen`, `post`, `upload`, `digest`, `install-service`). Document: [SLACK.md](../../SLACK.md).
+Command: `govern slack` (`serve`, `notify`, `listen`, `post`, `upload`, `resolve`, `digest`, `install-service`). Document: [SLACK.md](../../SLACK.md).
 
 It records decisions people make with buttons in Slack (a gate approved or rejected, a human task completed) as the mapped
 person's own, after checking Slack's request signature, the clock, replays, the team, the person and the case's version.

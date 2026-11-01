@@ -32,7 +32,20 @@ export class SlackError extends GovernError {
 }
 const apiError = (s: string, uncertain = false): never => { throw new SlackError(s, uncertain); };
 
-/** API errors carry method and a sanitized reason, never response bodies, request data or native network exceptions. */
+/** What can safely be said of a transport failure: a system or library code, a timeout, or an error class. Native messages
+ *  hold URLs (an upload URL is a credential until it expires), so a message is never read. */
+export function networkReason(e: unknown): string {
+  const chain: { name?: unknown; code?: unknown; cause?: unknown }[] = [];
+  for (let x = e; typeof x === "object" && x !== null && chain.length < 5 && !chain.includes(x); x = (x as { cause?: unknown }).cause) chain.push(x);
+  if (chain.some((x) => x.name === "TimeoutError")) return "timed out";
+  if (chain.some((x) => x.name === "AbortError")) return "aborted";
+  const code = chain.map((x) => x.code).findLast((c) => typeof c === "string" && /^[A-Z][A-Z0-9_]{1,40}$/.test(c));
+  if (code) return code as string;
+  const name = chain.map((x) => x.name).findLast((n) => typeof n === "string" && /^[A-Za-z]{1,40}Error$/.test(n) || n === "Error");
+  return (name as string | undefined) ?? "unknown cause";
+}
+
+/** API errors carry method and a sanitized reason, never response bodies, request data or native network messages. */
 export function slackCall(api: string, token: string, request: typeof fetch = fetch,
   sleep: (ms: number) => Promise<void> = ms => new Promise(r => setTimeout(r, ms))): Call {
   return async (method, body) => {
@@ -51,7 +64,7 @@ export function slackCall(api: string, token: string, request: typeof fetch = fe
       let response: Response;
       try { response = await request(`${api.replace(/\/$/, "")}/${method}`, { method: "POST", body: payload,
         headers: { Authorization: `Bearer ${token}`, "Content-Type": contentType }, signal: AbortSignal.timeout(30000) }); }
-      catch { return apiError(`${method}: network failure`, true); }
+      catch (e) { return apiError(`${method}: network failure (${networkReason(e)})`, true); }
       if (response.status === 429 && (method === "chat.postMessage" || method === "chat.update") && attempt < 2) {
         const raw = response.headers.get("retry-after") ?? "1", delay = Number(raw);
         // Never retry earlier than requested; excessive or malformed waits fail for the next run to retry.
@@ -184,8 +197,75 @@ function intents(d: string): Record<string, string> {
   const f = join(d, "send-intents.json");
   return existsSync(f) ? parseFile(f, readFileSync(f, "utf8"), record(str)) : Object.create(null) as Record<string, string>;
 }
+function reserve(d: string, key: string, stage: string): void { const pending = intents(d); pending[key] = stage; save(d, "send-intents.json", pending); }
+function release(d: string, key: string): void { const pending = intents(d); delete pending[key]; save(d, "send-intents.json", pending); }
+
+/** An upload still moving bytes: completion was not issued, and only completion shares a file, so nothing can be in the channel. */
+const STAGING = "staging";
+/** Completion issued, its outcome unknown: the file id and thread say where to look, the time says when it can have settled. */
+const completing = (file: string, thread: string): string => `completing ${file} ${thread} ${new Date().toISOString()}`;
+const COMPLETING = /^completing (F[A-Z0-9]+) (\d{1,12}\.\d{6}) (\S+)$/;
+/** How long after completion was issued a file can still appear in its thread (Slack does not say; sharing follows a scan). */
+export const SETTLE_MS = 300_000;
+
+const uncertainSend = (key: string): string => `key has an uncertain send; inspect Slack, then run govern slack resolve --key ${key}`;
 /** A pending send may already exist at Slack. Never send it again automatically after a crash or lost response. */
-export function wasAttempted(d: string, key: string): boolean { return Object.hasOwn(intents(d), key); }
+export function wasAttempted(d: string, key: string): boolean { return Object.hasOwn(intents(d), key) && intents(d)[key] !== STAGING; }
+
+const PAGE_LIMIT = 20;
+/** Every message of a thread, or nothing when it cannot all be read in PAGE_LIMIT pages: absence is only ever proven by a whole read. */
+async function wholeThread(call: Call, channel: string, ts: string): Promise<Record<string, unknown>[] | undefined> {
+  const all: Record<string, unknown>[] = [];
+  let cursor = "";
+  for (let page = 0; page < PAGE_LIMIT; page++) {
+    const answer = await call("conversations.replies", { channel, ts, limit: 200, ...(cursor ? { cursor } : {}) });
+    all.push(...messages(answer));
+    if (answer.has_more !== true) return all;
+    const next = object(answer.response_metadata) ? answer.response_metadata.next_cursor : undefined;
+    if (typeof next !== "string" || !next) return undefined;
+    cursor = next;
+  }
+  return undefined;
+}
+
+export interface Resolve { key: string; delivered?: boolean; notDelivered?: boolean; ts?: string }
+const MANUAL = "settle it by what the channel shows: --delivered --ts TS, or --not-delivered";
+
+/** Settle an uncertain send without posting anything. An upload whose completion was never issued releases at once. One
+ *  whose completion was issued is looked up in its thread: found, it is journaled; absent, the key is released only on
+ *  --not-delivered, after a whole thread read and the settle window. A mark that names no file (`sending`, the `uploading`
+ *  of earlier versions, or a damaged one) cannot be looked up, so only the explicit flag settles it. */
+export async function resolveSend(call: Call, d: string, channel: string, o: Resolve): Promise<string> {
+  if (!o.key) return error("--key is required and must not be empty");
+  if (o.delivered && o.notDelivered) return error("pass one of --delivered and --not-delivered");
+  if (o.ts !== undefined && !o.delivered) return error("--ts goes with --delivered");
+  const mark = intents(d)[o.key];
+  if (mark === undefined || !Object.hasOwn(intents(d), o.key)) return error(`no uncertain send under key ${o.key}`);
+  const done = (row: Sent): string => {
+    append(d, "sent.jsonl", [row]); release(d, o.key);
+    return `${o.key}: delivered, journaled as ${row.ts}`;
+  };
+  const free = (why: string): string => { release(d, o.key); return `${o.key}: released, ${why}`; };
+  if (mark === STAGING) return free("completion was never issued");
+  const m = COMPLETING.exec(mark), at = m ? Date.parse(m[3]!) : NaN;
+  if (!m || !Number.isFinite(at)) {
+    if (o.notDelivered) return free("on the operator's word");
+    if (!o.delivered) return error(`${o.key}: the mark names no file to look up; ${MANUAL}`);
+    if (!o.ts) return error("this mark names no file: --delivered needs --ts");
+    return done({ ts: o.ts, thread: null, kind: mark === "sending" ? "post" : "upload", key: o.key });
+  }
+  const [, file, thread] = m as unknown as [string, string, string];
+  const receipt: Sent = { ts: o.ts ?? file, thread, kind: "upload", key: o.key };
+  if (o.delivered) return done(receipt);
+  const seen = await wholeThread(call, channel, thread);
+  const present = seen?.some(x => Array.isArray(x.files) && x.files.some(f => object(f) && f.id === file)) === true;
+  if (present && o.notDelivered) return error(`${o.key}: ${file} is in the thread; run resolve without --not-delivered`);
+  if (present) return done(receipt);
+  if (!o.notDelivered) return error(`${o.key}: ${file} is not in thread ${thread}; if it never appears, run resolve --not-delivered`);
+  if (!seen) return error(`${o.key}: could not read the whole thread, so absence is not proven; the key stays`);
+  if (Date.now() - at < SETTLE_MS) return error(`${o.key}: too early, completion was issued under ${SETTLE_MS / 1000} s ago and the file may still appear`);
+  return free(`${file} is not in the thread and completion settled`);
+}
 
 /** Resolve Slack's reply timestamp to the parent, refusing an unrelated or ambiguous response. */
 export async function parentThread(call: Call, channel: string, ts: string): Promise<string> {
@@ -216,27 +296,28 @@ async function sendMessage(call: Call, d: string, channel: string, o: Send): Pro
   if (o.thread !== undefined && !stamp(o.thread)) return error("--thread must be seconds.micros");
   directory(d);
   if (o.key !== undefined && (!o.key || wasSent(d, o.key))) return error("key is empty or already sent");
-  if (o.key && wasAttempted(d, o.key)) return error("key has an uncertain send; inspect Slack before reconciling send-intents.json");
+  if (o.key && wasAttempted(d, o.key)) return error(uncertainSend(o.key));
   const thread = o.thread ? o.threadIsParent ? o.thread : await parentThread(call, channel, o.thread) : null;
-  if (o.key) { const pending = intents(d); pending[o.key] = "sending"; save(d, "send-intents.json", pending); }
+  if (o.key) reserve(d, o.key, "sending");
   try {
     const result = await call("chat.postMessage", { channel, text, ...(thread ? { thread_ts: thread } : {}),
       ...(o.key ? { client_msg_id: createHash("sha256").update(`${channel}:${o.key}`).digest("hex").slice(0, 32).replace(/^(........)(....)(....)(....)(............)$/, "$1-$2-$3-$4-$5") } : {}) });
     if (!stamp(result.ts)) throw new SlackError("chat.postMessage: no valid ts", true);
     const row = { ts: result.ts, thread, kind: o.kind, key: o.key ?? null };
     append(d, "sent.jsonl", [row]);
-    if (o.key) { const pending = intents(d); delete pending[o.key]; save(d, "send-intents.json", pending); }
+    if (o.key) release(d, o.key);
     return row;
   } catch (e) {
-    if (o.key && e instanceof SlackError && !e.uncertain) { const pending = intents(d); delete pending[o.key]; save(d, "send-intents.json", pending); }
+    if (o.key && e instanceof SlackError && !e.uncertain) release(d, o.key);
     throw e;
   }
 }
 
 
 export interface Upload { file: string; thread: string; title?: string; text?: string; key?: string }
-const MEDIA: Record<string, string> = { ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".gif": "image/gif",
-  ".webp": "image/webp", ".mp4": "video/mp4", ".mov": "video/quicktime", ".webm": "video/webm", ".m4v": "video/mp4" };
+const MEDIA = new Set([".png", ".jpg", ".jpeg", ".gif", ".webp", ".mp4", ".mov", ".webm", ".m4v"]);
+/** The transfer's limit: the 30 s every API call gets, plus a second per 256 KB (a floor of about 2 Mbit/s). */
+export const transferMs = (bytes: number): number => 30_000 + Math.ceil(bytes / 262_144) * 1000;
 
 /** Upload an allowed local image/video using Slack's external upload protocol. One writer owns this inbox.
  * The upload receipt uses Slack's file id as ts; it does not assume a chat message timestamp. */
@@ -258,31 +339,36 @@ export async function uploadFile(call: Call, d: string, channel: string, policy:
     bytes = readFileSync(fd);
     if (bytes.length > policy.maxBytes) return error("upload exceeds maxBytes");
   } finally { closeSync(fd); }
-  const mime = MEDIA[extname(path).toLowerCase()];
-  if (!mime) return error("upload must be a common image or video type (png, jpg, gif, webp, mp4, mov, webm, m4v)");
+  if (!MEDIA.has(extname(path).toLowerCase())) return error("upload must be a common image or video type (png, jpg, gif, webp, mp4, mov, webm, m4v)");
   directory(d);
   if (o.key !== undefined && (!o.key || wasSent(d, o.key))) return error("key is empty or already sent");
-  if (o.key && wasAttempted(d, o.key)) return error("key has an uncertain send; inspect Slack before reconciling send-intents.json");
+  if (o.key && wasAttempted(d, o.key)) return error(uncertainSend(o.key));
   const thread = await parentThread(call, channel, o.thread);
-  if (o.key) { const pending = intents(d); pending[o.key] = "uploading"; save(d, "send-intents.json", pending); }
+  if (o.key) reserve(d, o.key, STAGING);
+  let issued = false;
   try {
     const upload = await call("files.getUploadURLExternal", { filename: basename(path), length: bytes.length });
     let url: URL;
     try { url = new URL(String(upload.upload_url)); } catch { throw new SlackError("invalid upload URL", false); }
     if (url.protocol !== "https:" || url.hostname !== "files.slack.com" || url.username || url.password || url.port || url.hash) throw new SlackError("invalid upload URL", false);
     if (typeof upload.file_id !== "string" || !/^F[A-Z0-9]+$/.test(upload.file_id)) throw new SlackError("invalid upload file id", false);
+    // Manual redirects: a 3xx is reported as itself, and the bytes never follow it to another host.
     let response: Response;
-    try { response = await request(url.href, { method: "PUT", body: new Uint8Array(bytes), headers: { "Content-Type": mime }, redirect: "error", signal: AbortSignal.timeout(30000) }); }
-    catch { throw new SlackError("file upload: network failure", true); }
-    if (!response.ok) throw new SlackError(`file upload: HTTP ${response.status}`, true);
+    try { response = await request(url.href, { method: "POST", body: new Uint8Array(bytes), headers: { "Content-Type": "application/octet-stream" }, redirect: "manual", signal: AbortSignal.timeout(transferMs(bytes.length)) }); }
+    catch (e) { throw new SlackError(`file upload: network failure (${networkReason(e)})`, false); }
+    await response.body?.cancel().catch(() => undefined);
+    if (!response.ok) throw new SlackError(`file upload: HTTP ${response.status}`, false);
+    if (o.key) reserve(d, o.key, completing(upload.file_id, thread));
+    issued = true;
     const result = await call("files.completeUploadExternal", { files: [{ id: upload.file_id, ...(o.title ? { title: o.title } : {}) }], channel_id: channel, thread_ts: thread, ...(o.text ? { initial_comment: o.text } : {}) });
     if (!Array.isArray(result.files) || !result.files.some(f => object(f) && f.id === upload.file_id)) throw new SlackError("invalid upload completion", true);
     const row: Sent = { ts: upload.file_id, thread, kind: "upload", key: o.key ?? null };
     append(d, "sent.jsonl", [row]);
-    if (o.key) { const pending = intents(d); delete pending[o.key]; save(d, "send-intents.json", pending); }
+    if (o.key) release(d, o.key);
     return row;
   } catch (e) {
-    if (o.key && e instanceof SlackError && !e.uncertain) { const pending = intents(d); delete pending[o.key]; save(d, "send-intents.json", pending); }
+    // Before completion nothing was shared, whatever failed: the file stays private and the next attempt starts a new one.
+    if (o.key && (!issued || (e instanceof SlackError && !e.uncertain))) release(d, o.key);
     throw e;
   }
 }

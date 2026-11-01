@@ -16,13 +16,13 @@ async function listen(server: Server) {
 }
 async function close(server: Server) { server.closeAllConnections(); await new Promise<void>(r => server.close(() => r())); }
 
-test("fake Web API receives upload URL request, raw PUT, completion and no token on PUT", async () => {
+test("fake Web API receives upload URL request, raw POST, completion and no token on the transfer", async () => {
   const d = tempDir("upload-http"), file = write(join(d, "image.png"), "image bytes"), received: string[] = [];
   const server = createServer((req, res) => {
     const chunks: Buffer[] = []; req.on("data", c => chunks.push(c)); req.on("end", () => {
       received.push(req.url!); res.setHeader("Content-Type", "application/json");
       if (req.url === "/bytes") {
-        assert.equal(req.method, "PUT"); assert.equal(req.headers.authorization, undefined);
+        assert.equal(req.method, "POST"); assert.equal(req.headers.authorization, undefined);
         assert.equal(Buffer.concat(chunks).toString(), "image bytes"); res.end("ok"); return;
       }
       assert.equal(req.headers.authorization, "Bearer test-token");

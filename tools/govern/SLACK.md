@@ -161,11 +161,23 @@ is resolved through `conversations.replies` to its parent. Successful sends appe
 `key` (null when omitted) to `sent.jsonl`; a previously sent key is refused. Use one writer per inbox. A keyed send also
 uses a stable `client_msg_id`. A private `send-intents.json` is written before a keyed send: a crash or an ambiguous
 network result leaves the key reserved and prevents an automatic duplicate, including command replies. A proven Slack
-refusal releases that reservation for retry. For an uncertain send, inspect the Slack thread, add the confirmed receipt
-to `sent.jsonl` if delivered, then clear that key from `send-intents.json`; clear only after confirming the outcome.
+refusal releases that reservation for retry. An uncertain send is settled with `govern slack resolve`, below; do not edit
+either file by hand.
 An unkeyed send has no such protection. Message sends retry HTTP 429 at most twice, honoring numeric `Retry-After` up to 300 seconds;
-a longer or malformed delay fails for a later invocation to retry. Native network exceptions and response bodies are
-never included in API errors.
+a longer or malformed delay fails for a later invocation to retry. A network failure names its cause as a system code,
+`timed out`, `aborted` or an error class; native messages, which hold URLs, and response bodies are never included in
+API errors.
+
+`govern slack resolve --key K [--delivered [--ts TS] | --not-delivered]` settles a reserved key. It may read Slack and
+it posts nothing.
+
+| Mark in `send-intents.json` | Meaning | What resolve does |
+|---|---|---|
+| `staging` | Upload stopped before completion: nothing was shared | Releases the key; a later upload also proceeds by itself |
+| `completing FILE THREAD TIME` | Completion was issued, outcome unknown | Reads the thread: the file there is journaled as delivered. Absent, the key stays unless `--not-delivered` is given; that needs a whole thread read and five minutes since `TIME`, because sharing is not immediate. `--delivered` journals without reading |
+| `sending`, `uploading`, or any other text | No file to look up (`uploading` is the mark of earlier versions, which set it before the transfer and never cleared it on failure) | Refuses until you have looked at the channel, then `--delivered --ts TS` journals it and `--not-delivered` releases it |
+
+A failed read of the thread refuses and keeps the key: absence is only ever concluded from a whole read.
 
 A requester may write exactly `<@UBOT> status`, `<@UBOT> pending`, `<@UBOT> lane <slug>` or `<@UBOT> help`. The bot mention
 must match `slack.bot`. The code parses this fixed grammar, reads the shared status/brief and pending-decision views,
@@ -230,7 +242,7 @@ govern slack upload --thread 1793000000.000100 --file generated/clip.mp4 --title
 
 Upload requires `slack.channel`, `slack.inbox`, a bot token with `files:write`, and `slack.upload`. The file must resolve, including symlinks, inside an allowed root and be a nonempty regular file no larger than `maxBytes`. Allowed extensions are PNG, JPG/JPEG, GIF, WebP, MP4/M4V, MOV and WebM. These are extension restrictions, not content inspection. `--thread` is required and resolves a reply timestamp to its parent, just like `post`. Optional text must be nonempty and at most 40000 characters; titles are 1..255 characters.
 
-The command calls `files.getUploadURLExternal`, PUTs the bytes without the bot token to an HTTPS `files.slack.com` upload URL, then calls `files.completeUploadExternal` to share the file in the thread. Redirects are refused. The private `sent.jsonl` receipt has `kind: "upload"`, the resolved thread and key; its `ts` is the Slack file id rather than an assumed chat message timestamp. Keyed uploads use the same send-intent reservation and manual reconciliation as posts; uncertain results never retry automatically. No upload URL, token or file bytes are journaled.
+The command calls `files.getUploadURLExternal`, POSTs the raw bytes without the bot token to an HTTPS `files.slack.com` upload URL, then calls `files.completeUploadExternal` to share the file in the thread. A redirect is never followed and fails as `file upload: HTTP 3xx`. The transfer's limit is 30 seconds plus one per 256 KB. The private `sent.jsonl` receipt has `kind: "upload"`, the resolved thread and key; its `ts` is the Slack file id rather than an assumed chat message timestamp. Keyed uploads use the same send-intent reservation as posts. A failure before completion frees the key, because only completion shares a file and each attempt gets a new file id; the unshared file is never posted. After completion is issued an uncertain result never retries automatically and `govern slack resolve` settles it. No upload URL, token or file bytes are journaled.
 
 
 ## User services

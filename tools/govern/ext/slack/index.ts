@@ -8,7 +8,7 @@ import { fail, usage, opt, flag, many } from "../../lib/util.ts";
 import type { Args } from "../../lib/util.ts";
 import { out, type Cmd } from "../../lib/cli.ts";
 import type { ExtDoc } from "../../lib/ext-registry.ts";
-import { poll, slackCall, postMessage, uploadFile, wasSent, wasAttempted } from "./channel.ts";
+import { poll, slackCall, postMessage, uploadFile, resolveSend, wasSent, wasAttempted } from "./channel.ts";
 import { routePending, startLine } from "./route.ts";
 import { digest } from "./digest.ts";
 import { commandText } from "./commands.ts";
@@ -91,7 +91,7 @@ async function cmdListen(a: Args): Promise<void> {
     const count = await poll(call, inbox, cfg, async (post, command) => {
       const key = `command:${post.ts}`;
       if (wasSent(inbox, key)) return;
-      if (wasAttempted(inbox, key)) { process.stderr.write(`slack listen: command ${post.ts} has an uncertain send; inspect send-intents.json\n`); return; }
+      if (wasAttempted(inbox, key)) { process.stderr.write(`slack listen: command ${post.ts} has an uncertain send; settle it with govern slack resolve --key ${key}\n`); return; }
       await postMessage(call, inbox, cfg.channel, { kind: "note", text: commandText(command), thread: post.thread_ts ?? post.ts, threadIsParent: true, key });
     });
     const routed = await routePending(call, inbox, cfg);
@@ -124,6 +124,13 @@ async function cmdUpload(a: Args): Promise<void> {
   out(`slack upload: ${receipt.ts}`);
 }
 
+/** Settle an uncertain send: reads Slack, journals or releases the key, and posts nothing. */
+async function cmdResolve(a: Args): Promise<void> {
+  const key = opt(a, "key") ?? usage("resolve requires --key");
+  const { cfg, inbox, call } = channelSettings();
+  out(`slack resolve: ${await resolveSend(call, inbox, cfg.channel, { key, delivered: flag(a, "delivered"), notDelivered: flag(a, "not-delivered"), ts: opt(a, "ts") })}`);
+}
+
 /** Explicit daily summary, using the same credentials and durable send keys as post. */
 async function cmdDigest(): Promise<void> {
   const { cfg, inbox, call } = channelSettings();
@@ -136,11 +143,13 @@ export const docs: ExtDoc[] = [{ title: "Slack: decisions from Slack buttons, si
 export const manpage = MANPAGE;
 
 export const commands: Cmd[] = [
-  { name: "slack", section: 7, noSub: "govern slack serve|notify|listen|post|upload|digest|install-service (the protocol: tools/govern/SLACK.md)",
+  { name: "slack", section: 7, noSub: "govern slack serve|notify|listen|post|upload|resolve|digest|install-service (the protocol: tools/govern/SLACK.md)",
     subs: {
       "install-service": { lines: [["", "write user units for listen, notify and a daily digest timer; print enable instructions without starting them"]], run: () => out(installServices()) },
       upload: { flags: { value: ["thread", "file", "title", "text", "key"] },
         lines: [["--thread TS --file PATH [--title T] [--text T] [--key K]", "upload an allowed image or video inside slack.upload.roots and maxBytes; resolve the thread and journal the file id"]], run: cmdUpload },
+      resolve: { flags: { value: ["key", "ts"], bool: ["delivered", "not-delivered"] },
+        lines: [["--key K [--delivered [--ts TS] | --not-delivered]", "settle an uncertain send: an upload never completed is released, one completed is looked up in its thread; posts nothing"]], run: cmdResolve },
       digest: { lines: [["", "post waiting people, failed tasks and open alerts once per local day; stay silent when empty"]], run: cmdDigest },
       listen: { flags: { bool: ["once", "loop"], value: ["interval"] },
         lines: [["[--once | --loop --interval 60]", "record new channel posts in slack.inbox; first run marks existing posts seen; answer configured requesters' fixed commands"]], run: cmdListen },

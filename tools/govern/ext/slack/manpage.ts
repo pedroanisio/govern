@@ -4,6 +4,7 @@
 export const MANPAGE = `SYNOPSIS
     govern slack serve [--port 5003]  |  slack notify [--lane S]... [--loop --interval 30] [--dry-run]
     govern slack upload --thread TS --file PATH [--title T] [--text T] [--key K]
+    govern slack resolve --key K [--delivered [--ts TS] | --not-delivered]
     govern slack install-service
     govern slack digest
     govern slack listen [--once | --loop --interval 60]
@@ -32,8 +33,11 @@ DESCRIPTION
     calendar day; an empty summary sends nothing. Preserve routes.json, bot-replies.json and the send journals.
     First activation of routing or alerts initializes start-line.json even during a notify dry run.
     One history page is read per run. has_more warns on stderr and in the heartbeat; older posts may be missed.
-    slack upload PUTs common images and videos through the external upload API. Resolved paths, including symlinks,
+    slack upload POSTs common images and videos through the external upload API. Resolved paths, including symlinks,
     must stay inside slack.upload.roots and maxBytes. It journals a file id with kind upload and resolves thread parents.
+    A failed transfer frees its key: nothing is shared until completion. Once completion was issued an unknown outcome
+    keeps the key, and only slack resolve settles it. Resolve reads the thread, journals the file when it is there, and
+    releases the key on --not-delivered after a whole thread read and five minutes. It posts nothing.
     slack install-service writes user units for listen and notify loops plus a daily digest timer, without starting
     them. Stop the old poller before explicitly enabling them. Use slack.envFile for credentials; tokens are not copied.
 OPTIONS
@@ -44,8 +48,11 @@ OPTIONS
     --text T                slack post, slack upload: nonempty message text, at most 40000 characters with prefix
     --file F                slack post, slack upload: message text file for post; binary image/video for upload
     --thread TS             slack post, slack upload: reply in this thread (a reply timestamp is resolved to its parent)
-    --key K                 slack post, slack upload: refuse a previously sent key
+    --key K                 slack post, slack upload, slack resolve: refuse a previously sent key (resolve: the key to settle)
     --title T               slack upload: optional title, 1..255 characters
+    --delivered             slack resolve: the channel shows it; journal the key (--ts gives the timestamp or file id)
+    --not-delivered         slack resolve: the channel does not show it; release the key
+    --ts TS                 slack resolve: with --delivered, what the receipt records
     --port N                slack serve: the loopback port (default 5003)
     --lane S                slack notify: only this lane (repeatable)
     --dry-run               slack notify: send nothing and leave notification receipts unchanged

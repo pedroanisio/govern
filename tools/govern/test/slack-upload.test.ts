@@ -19,12 +19,12 @@ function fixture() {
   return { d, root, file, calls, puts, call, request, policy: { roots: [root], maxBytes: 100 } };
 }
 
-test("upload obtains URL, PUTs bytes without token, completes in parent thread and journals key", async () => {
+test("upload obtains URL, POSTs bytes without token, completes in parent thread and journals key", async () => {
   const f = fixture();
   const receipt = await uploadFile(f.call, f.d, "C1", f.policy, { file: f.file, thread: "2.000002", title: "Clip", text: "Delivered", key: "clip" }, f.request);
   assert.deepEqual(f.calls.map(c => c.method), ["conversations.replies", "files.getUploadURLExternal", "files.completeUploadExternal"]);
   assert.deepEqual(f.calls[1]!.body, { filename: "clip.mp4", length: 11 });
-  assert.equal(f.puts[0]!.method, "PUT"); assert.equal(f.puts[0]!.redirect, "error");
+  assert.equal(f.puts[0]!.method, "POST"); assert.equal(f.puts[0]!.redirect, "manual");
   assert.deepEqual(Buffer.from(f.puts[0]!.body as Uint8Array), Buffer.from("video bytes"));
   assert.equal((f.puts[0]!.headers as Record<string, string>).Authorization, undefined);
   assert.deepEqual(f.calls[2]!.body, { files: [{ id: "F123", title: "Clip" }], channel_id: "C1", thread_ts: "1.000001", initial_comment: "Delivered" });
@@ -43,9 +43,12 @@ test("upload refuses missing configuration, symlink escape, directory, oversize,
   assert.equal(f.calls.length, 0); assert.equal(f.puts.length, 0);
 });
 
-test("upload reserves uncertain completion and sanitizes transport failures; proven refusal can retry", async () => {
+test("upload sanitizes transport failures, frees a key before completion and keeps it after; proven refusal can retry", async () => {
   const f = fixture(), o = { file: f.file, thread: "2.000002", key: "retry" };
   await assert.rejects(uploadFile(f.call, f.d, "C1", f.policy, o, (async () => { throw Error("secret-token"); }) as typeof fetch), e => !String(e).includes("secret-token"));
+  assert.equal(sent(f.d).length, 0);
+  const lost: Call = async (m, b) => { if (m === "files.completeUploadExternal") throw new SlackError("lost", true); return f.call(m, b); };
+  await assert.rejects(uploadFile(lost, f.d, "C1", f.policy, o, f.request), /lost/);
   await assert.rejects(uploadFile(f.call, f.d, "C1", f.policy, o, f.request), /uncertain/);
   assert.equal(sent(f.d).length, 0);
   const g = fixture(); let refuse = true;
