@@ -11,6 +11,7 @@ All notable changes to govern are documented here, following Keep a Changelog.
 
 ### Added
 
+- The `watch` config names systemd units: `govern desk` shows their state and time since last success, `govern slack digest` lists failing ones, and `govern slack notify` alerts once per failure episode. A missing unit or a host without systemd is reported plainly.
 - `govern slack install-service` writes user units for independent listen and notify loops plus a persistent daily digest timer, without starting them or copying credentials.
 
 - Slack clicks report recorded decisions immediately through a validated response URL; refusals explain why to the clicker, and callback failures leave decisions intact for notify reconciliation.

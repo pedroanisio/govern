@@ -2,7 +2,8 @@
 import { GovernError } from "../../lib/util.ts";
 import { laneSlugs, load } from "../../lib/project.ts";
 import * as queue from "../../lib/queue.ts";
-import { pending, driveFailures } from "./notify.ts";
+import { pending, driveFailures, openAlerts } from "./notify.ts";
+import { watched, serviceAlerts } from "../../lib/services.ts";
 import { channelAlerts, type SlackConfig } from "./route.ts";
 import { postMessage, wasSent, LIMIT, type Call } from "./channel.ts";
 
@@ -10,7 +11,9 @@ import { postMessage, wasSent, LIMIT, type Call } from "./channel.ts";
 export async function digest(call: Call, d: string, cfg: SlackConfig & { channel: string }, now = new Date()): Promise<boolean> {
   const key = `digest:${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
   if (wasSent(d, key)) return false;
-  const people = new Map<string, string[]>(), alerts = channelAlerts(cfg, now.getTime()).map(a => a.text);
+  const services = serviceAlerts(watched(now.getTime())), open = openAlerts();
+  const people = new Map<string, string[]>(), alerts = [...channelAlerts(cfg, now.getTime()).map(a => a.text), ...services.alerts.map(a => a.text),
+    ...[...services.held].filter(([key]) => open.has(key)).map(([, text]) => text)];
   for (const slug of laneSlugs()) {
     const p = load(slug);
     for (const item of pending(p)) for (const person of item.people.length ? item.people : ["unassigned"]) {

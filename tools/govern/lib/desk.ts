@@ -1,6 +1,7 @@
 import { gateApproved } from './business.ts';
-// The owner's one screen: every lane, the owner's inbox, the queue and today's tokens. Reads files only: no model,
-// transcript scan beyond today's transcripts, which an index keeps parsed (the full report is `govern usage`).
+// The owner's one screen: every lane, the owner's inbox, the queue, today's tokens and the watched services. Reads files
+// and asks systemd about the units in `watch`: no model, transcript scan beyond today's transcripts, which an index keeps
+// parsed (the full report is `govern usage`).
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { readJsonl, kTok, clip } from "./util.ts";
@@ -16,6 +17,7 @@ import { machineSummary, machineEntries, stateDir } from "./resources.ts";
 import { deskLines } from "./reap.ts";
 import { deskLines as sliceLines } from "./slice.ts";
 import { deskUsage, unattributedLines, type Stray } from "./usage.ts";
+import { serviceLines } from "./services.ts";
 
 const ago = (iso: string) => {
   const m = Math.round((Date.now() - Date.parse(iso)) / 60000);
@@ -154,6 +156,7 @@ export function desk(extensionLines: readonly string[] = []): { text: string; fa
   try { L.push(...deskLines()); } catch (e) { L.push(`  instance scan unreadable: ${(e as Error).message}`); }
   const allow = allowances.shown();
   if (allow.length) L.push("", "ALLOWANCES (used, reserved, left; raise one with govern allow)", ...allow.map((l) => `  ${l}`));
+  L.push(...serviceLines());
   L.push(...extensionLines);
   return { text: L.join("\n"), failed, lanes: slugs.length };
 }

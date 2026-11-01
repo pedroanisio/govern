@@ -12,6 +12,7 @@ import { stateDir, slackConfig } from "../../lib/workspace.ts";
 import { withLaneLock } from "../../lib/lane-lock.ts";
 import { GovernError, fail } from "../../lib/util.ts";
 import { channelAlerts } from "./route.ts";
+import { watched, serviceAlerts } from "../../lib/services.ts";
 import { slackCall } from "./channel.ts";
 import { ACTION_ID, caseDigest, decisionValue, optionSet, type Decision, type Target } from "./slack.ts";
 import type { Scalar } from "../../lib/business-schema.ts";
@@ -61,6 +62,8 @@ function readState(): State {
   if (!existsSync(file())) return { posted: {}, alerts: {} };
   try { return JSON.parse(readFileSync(file(), "utf8")) as State; } catch (e) { return fail(`${file()} is not valid JSON (${(e as Error).message})`, 1); }
 }
+/** The alerts the notifier has open: what the digest needs to keep listing a unit that is mid-rerun. */
+export const openAlerts = (): Set<string> => new Set(Object.keys(readState().alerts));
 function writeState(s: State): void {
   mkdirSync(dir(), { recursive: true, mode: 0o700 });
   withLaneLock(join(dir(), "lock"), () => {
@@ -187,8 +190,10 @@ export async function notify(o: NotifyOptions): Promise<NotifyReport> {
     }
   }
   const channelCfg = slackConfig();
-  const channelConditions = channelCfg ? channelAlerts(channelCfg) : [];
-  const activeChannelKeys = new Set(channelConditions.map(a => a.key));
+  const services = serviceAlerts(watched());
+  const channelConditions = [...(channelCfg ? channelAlerts(channelCfg) : []), ...services.alerts];
+  // A held unit's outcome is not known yet: its open alert stays open, so one failure episode is one post.
+  const activeChannelKeys = new Set([...channelConditions.map(a => a.key), ...services.held.keys()]);
   for (const [key, ts] of Object.entries(state.alerts)) {
     if (!key.startsWith("channel:") || activeChannelKeys.has(key)) continue;
     if (await send(key, "chat.update", { channel: o.channel, ts, ...closing(key, "condition cleared") })) {

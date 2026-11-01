@@ -186,6 +186,10 @@ state and uses a send key per command. Everyone else's posts and anything outsid
 
 ## Routing requests, independent alerts and a daily digest
 
+Outside services are watched from the workspace config, not from `slack`, because the desk reports them too. See
+**Watched services** in REFERENCE.md. A failing unit raises one alert per failure episode: a rerun in progress neither
+closes it nor posts again, a success closes it, and a later failure is a new post. The digest lists it under open alerts.
+
 All settings are optional. Nothing routes until `slack.route` is configured:
 
 ```json

@@ -1266,7 +1266,7 @@ export const COMMANDS: readonly Cmd[] = [
       out(name ? showText(reg, qdir, getProfile(name, reg)) : listText(reg, qdir, ws ? queue.shadowing() : []));
     } },
 
-  { name: "desk", section: 7, lines: [["", "every lane, your inbox, the queue, today's tokens (reads files only; an enabled extension adds its own lines)"]], run: async () => {
+  { name: "desk", section: 7, lines: [["", "every lane, your inbox, the queue, today's tokens, the units in `watch` (no model runs; an enabled extension adds its own lines)"]], run: async () => {
     const d = desk(await extensions.deskLines());
     out(d.text);
     if (d.failed) unreadable(d.failed, d.lanes);

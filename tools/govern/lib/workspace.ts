@@ -36,6 +36,8 @@ export interface WorkspaceConfig {
   allowances?: unknown;
   /** Where locks and other shared run state live (default: govern-state beside the lanes' folder). */
   state?: string;
+  /** The systemd units `govern desk`, `slack digest` and `slack notify` report on (lib/services.ts), by systemctl scope. */
+  watch?: { user?: string[]; system?: string[] };
   /** Trusted local NDJSON conversation adapters; task runners remain separate. */
   conversationAdapters?: Record<string, { argv: string[] }>;
   /** Jev decisions (ext/decide/decide.ts): shadow asks about every TASK sent; envFile is a dotenv file holding TYPESAFE_API_KEY. */
@@ -60,7 +62,13 @@ export const extensionsShape: Shape<string[]> = (v, p) => {
   });
   return names;
 };
+/** A full systemd unit name: never read as an option, and always with its type, so a key names one unit. */
+const unitName: Shape<string> = (v, p) => {
+  if (typeof v !== "string" || !/^[A-Za-z0-9_][A-Za-z0-9:_.\\@-]*\.(service|socket|timer|path|mount|automount|target|swap|slice|scope|device)$/.test(v)) reject(p, `must be a systemd unit name with its type, such as backup.service`);
+  return v as string;
+};
 const CONFIG = obj({}, {
+  watch: obj({}, { user: arr(unitName), system: arr(unitName) }),
   extensions: extensionsShape,
   mailboxes: arr(str), mailTtlHours: posInt,
   projects: str, queue: str, processes: str, workflow: str, tuningLog: str, packages: str, prompts: str, paths: record(str),
