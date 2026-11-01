@@ -7,6 +7,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createHash } from 'node:crypto';
+import './helpers.ts'; // every test file runs in the sandbox
 
 const home = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const root = resolve(home, '../..');

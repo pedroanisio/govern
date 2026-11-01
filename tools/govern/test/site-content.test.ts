@@ -6,6 +6,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { buildSite } from "../site/lib/site.ts";
+import "./helpers.ts"; // every test file runs in the sandbox
 
 const SITE = join(import.meta.dirname, "..", "site");
 

@@ -7,6 +7,7 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { encode, render, type Level } from "../ext/remote/qr.ts";
 import { GovernError } from "../lib/util.ts";
+import "./helpers.ts"; // every test file runs in the sandbox
 
 const rows = (m: boolean[][]) => m.map((r) => r.map((d) => (d ? "1" : "0")).join("")).join("\n");
 const digest = (m: boolean[][]) => createHash("sha256").update(rows(m)).digest("hex");

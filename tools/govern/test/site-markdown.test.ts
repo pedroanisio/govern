@@ -3,6 +3,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { MarkdownError, renderMarkdown } from "../site/lib/markdown.ts";
+import "./helpers.ts"; // every test file runs in the sandbox
 
 const md = (s: string) => renderMarkdown(s, { file: "t.md" }).html;
 const bad = (s: string, line: number, re: RegExp, firstLine = 1) =>

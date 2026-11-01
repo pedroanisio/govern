@@ -5,11 +5,11 @@
 //   3. the session's working directory is the lane's folder or below it, or a folder the lane's govern.json names
 //      under {repo} in a command's argv or a file;
 //   4. for a queue run, the message's project (the window of the queue ledger's run).
-import { existsSync, readFileSync, statSync, globSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import { dirname, join, resolve, sep } from "node:path";
 import { readJsonl, writeJson, nowIso } from "./util.ts";
-import { argvOf, laneSlugs, ledgerFile, load, projectDir } from "./project.ts";
-import { projectsDir, repo, queueDir, stateDir } from "./workspace.ts";
+import { argvOf, laneSlugs, ledgerFile, ledgerSlugs, load, projectDir, stateFile } from "./project.ts";
+import { repo, queueDir, stateDir } from "./workspace.ts";
 import { obj, record, literal, name, str, parseFile } from "./shape.ts";
 
 export type Basis = "segment" | "GOVERN_LANE" | "cwd" | "queue";
@@ -93,8 +93,7 @@ type Index = ReturnType<typeof INDEX>["sessions"];
 /** The index rebuilt from the ledgers: a hook-opened work entry (`openedBy: "hook"`) that says it went by GOVERN_LANE. */
 function rebuild(): Index {
   const out: Index = Object.create(null);
-  for (const f of globSync("**/govern/ledger.jsonl", { cwd: projectsDir() })) {
-    const slug = dirname(dirname(f));
+  for (const slug of ledgerSlugs()) {
     for (const e of readJsonl(ledgerFile(slug))) {
       if (e.kind === "work" && e.openedBy === "hook" && e.via === "GOVERN_LANE" && typeof e.session === "string" && e.session && typeof e.t === "string") out[e.session] = { lane: slug, at: e.t };
     }
@@ -114,12 +113,15 @@ function readIndex(): Index {
   return built;
 }
 
+/** The entries whose lane still has its folder: an entry for a folder that is gone names no lane, whoever wrote it. */
+const standing = (ix: Index): [string, Index[string]][] => Object.entries(ix).filter(([, x]) => existsSync(stateFile(x.lane)));
+
 /** Session id → the lane GOVERN_LANE named for it. */
-export const recordedLanes = (): Map<string, string> => new Map(Object.entries(readIndex()).map(([s, x]) => [s, x.lane]));
+export const recordedLanes = (): Map<string, string> => new Map(standing(readIndex()).map(([s, x]) => [s, x.lane]));
 
 /** Record that `session` runs with GOVERN_LANE=`lane`. */
 export function recordLane(session: string, lane: string): void {
-  const sessions = readIndex();
+  const sessions: Index = Object.assign(Object.create(null), Object.fromEntries(standing(readIndex())));
   sessions[session] = { lane, at: nowIso() };
   writeJson(indexFile(), { version: 1, sessions });
 }

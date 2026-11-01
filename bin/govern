@@ -250,7 +250,8 @@
 #     verification · 4 refused by the workspace's state (no such lane, a gate or check holds, a bad govern.json or
 #     config, a disabled extension) · a job's exit code for run/wait · 124 wait timed out
 # ENVIRONMENT
-#     Workspace: GOVERN_REPO (the workspace; else the nearest .govern/ or govern.config.json above the cwd).
+#     Workspace: GOVERN_REPO (the workspace; else the nearest .govern/ or govern.config.json above the cwd, and below
+#     GOVERN_CEILING when set: that folder and those above it are not searched).
 #     Each overrides its config key: GOVERN_PROJECTS · GOVERN_QUEUE · GOVERN_TUNING_LOG · GOVERN_PROCESSES · GOVERN_WORKFLOW
 #     · GOVERN_CAPABILITIES (must exist when set) · GOVERN_STATE (locks and reap state; default .govern/state in a
 #     .govern/ workspace, else govern-state beside the projects folder) · GOVERN_PROMPTS (replaces every prompts

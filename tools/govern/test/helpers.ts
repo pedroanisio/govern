@@ -49,6 +49,26 @@ export function tempDir(name: string): string {
   return d;
 }
 
+/** Runs once, before any test of a file importing this module: the test process itself gets a throwaway workspace,
+ *  HOME and working directory, so code run in-process and any child resolve to a temp folder even when they set nothing.
+ *  Whatever GOVERN_* a shell or a service exported is dropped first (GOVERN_TEST_* is the suite's own input), and GOVERN_CEILING keeps a search for a workspace
+ *  from leaving the temp folder when that folder sits inside a real workspace. */
+function isolate(): void {
+  for (const k of Object.keys(process.env)) if (k.startsWith("GOVERN_") && !k.startsWith("GOVERN_TEST_")) delete process.env[k];
+  process.env.GOVERN_CEILING = tmpdir();
+  const root = tempDir("sandbox"), home = join(root, "home"), projects = join(root, "projects");
+  mkdirSync(home); mkdirSync(projects);
+  writeFileSync(join(root, "govern.config.json"), JSON.stringify({ projects: "projects", queue: "queue", processes: "processes", state: "state" }));
+  Object.assign(process.env, {
+    GOVERN_REPO: root, GOVERN_CLAUDE_PROJECTS: join(root, "claude"), GOVERN_CODEX_SESSIONS: join(root, "codex-sessions"),
+    GOVERN_SESSIONS_DIR: join(home, ".claude", "sessions"), GOVERN_CLAUDE_SETTINGS: join(home, ".claude", "settings.json"),
+    HOME: home, XDG_CONFIG_HOME: join(home, ".config"), XDG_DATA_HOME: join(home, ".local", "share"),
+    XDG_STATE_HOME: join(home, ".local", "state"), XDG_CACHE_HOME: join(home, ".cache"),
+  });
+  process.chdir(root);
+}
+isolate();
+
 /** A throwaway repo: PALS-Notes/projects, packages, a WORKFLOW.md with the stage table, empty transcript dirs, and a
  *  HOME (with XDG dirs) of its own, so nothing reads or writes the developer's ~/.claude, ~/.codex or ~/.config. */
 export function makeEnv(name = "test"): Env {
@@ -90,11 +110,11 @@ export function makeEnv(name = "test"): Env {
   };
 }
 
-/** The parent's environment without any GOVERN_* and without the compaction window: those come from the test, never
- *  from the session running it (Claude Code exports its settings env). */
+/** The parent's environment without any GOVERN_* (GOVERN_CEILING stays: see isolate) and without the compaction window:
+ *  those come from the test, never from the session running it (Claude Code exports its settings env). */
 export function parentEnv(): NodeJS.ProcessEnv {
   const { CLAUDE_CODE_AUTO_COMPACT_WINDOW: _, ...inherited } = process.env;
-  for (const k of Object.keys(inherited)) if (k.startsWith("GOVERN_") || k.startsWith("CLAUDE_CODE_") || k === "CLAUDECODE" || AGENT_MARKERS.includes(k)) delete inherited[k];
+  for (const k of Object.keys(inherited)) if ((k.startsWith("GOVERN_") && k !== "GOVERN_CEILING") || k.startsWith("CLAUDE_CODE_") || k === "CLAUDECODE" || AGENT_MARKERS.includes(k)) delete inherited[k];
   return inherited;
 }
 

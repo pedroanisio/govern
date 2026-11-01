@@ -83,12 +83,15 @@ function marker(dir: string): "config" | "dot" | undefined {
   if (cfg && dot) fail(`${dir} has both ${DOT_DIR}/ and ${CONFIG_FILE}: keep one (move the config's keys to ${DOT_DIR}/config.json, or remove ${DOT_DIR}/)`);
   return cfg ? "config" : dot ? "dot" : undefined;
 }
-/** The nearest folder at or above `dir` that holds a govern.config.json or a .govern/ folder, or undefined. */
+/** The nearest folder at or above `dir` that holds a govern.config.json or a .govern/ folder, or undefined. GOVERN_CEILING
+ *  ends the search: that folder and everything above it are not looked at, as git's GIT_CEILING_DIRECTORIES. */
 function above(dir: string): string | undefined {
-  for (let d = resolve(dir); ; d = dirname(d)) {
+  const ceiling = process.env.GOVERN_CEILING ? resolve(process.env.GOVERN_CEILING) : undefined;
+  for (let d = resolve(dir); d !== ceiling; d = dirname(d)) {
     if (marker(d)) return d;
     if (dirname(d) === d) return undefined;
   }
+  return undefined;
 }
 /** The workspace folder, or undefined when there is none (GOVERN_REPO unset and no config above the cwd). */
 export const findRepo = (): string | undefined => (process.env.GOVERN_REPO ? resolve(process.env.GOVERN_REPO) : above(process.cwd()));

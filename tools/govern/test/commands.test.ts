@@ -3,7 +3,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
-import { makeEnv, govern, jsonl, childEnv, HERE, tempDir, fullTable } from "./helpers.ts";
+import { makeEnv, govern, jsonl, childEnv, parentEnv, HERE, tempDir, fullTable } from "./helpers.ts";
 import { spawnSync } from "node:child_process";
 import { parseArgs, opt, flag, many } from "../lib/util.ts";
 import { COMMANDS as CORE, HELP, commandHelp } from "../govern.ts";
@@ -226,7 +226,7 @@ test("parseArgs: strict, typed accessors refuse a flag the spec does not declare
 
 test("govern init makes the cwd a .govern/ workspace that the next command finds with no config and no GOVERN_REPO", () => {
   const dir = tempDir("init-cli");
-  const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith("GOVERN_"))) as NodeJS.ProcessEnv;
+  const env = parentEnv();
   const run = (args: string[]) => spawnSync(BIN, args, { cwd: dir, env, encoding: "utf8", timeout: 60000 });
   const first = run(["init"]);
   assert.equal(first.status, 0, first.stderr);

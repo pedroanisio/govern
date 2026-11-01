@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { LinkError, checkLinks, resolveTarget } from "../site/lib/links.ts";
 import { renderMarkdown } from "../site/lib/markdown.ts";
+import "./helpers.ts"; // every test file runs in the sandbox
 
 function withStatic(run: (staticDir: string) => void) {
   const dir = mkdtempSync(join(tmpdir(), "govern-site-links-"));

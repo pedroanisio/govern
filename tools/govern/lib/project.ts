@@ -1,6 +1,6 @@
 // A lane: its folder, its govern.json (state, commands, process) and its brief. A lane follows a process (lib/process.ts).
-import { existsSync, readFileSync, appendFileSync, mkdirSync, globSync } from "node:fs";
-import { join, dirname, basename, resolve, relative } from "node:path";
+import { existsSync, readFileSync, appendFileSync, mkdirSync, readdirSync } from "node:fs";
+import { join, dirname, resolve, relative } from "node:path";
 import { WORKFLOW, HUMAN_TASKS, VOTES, value, type Value, type Workflow, type HumanTask, type Vote } from './business-schema.ts';
 import { initializeBusiness, validateCase, gateApproved, setData } from './business.ts';
 import { GovernError, fail, usage, readJson, writeJson, nowIso, latest, plain, clip, readJsonl } from "./util.ts";
@@ -249,14 +249,29 @@ export function checkOf(p: Project, stage = p.stage): string | undefined {
   return p.checks?.[stage] ?? processOf(p).stages.find((s) => s.name === stage)?.check;
 }
 
-/** Every lane's slug under the lanes folder, sorted, without entering checkouts or runtime dependencies. */
-export function laneSlugs(): string[] {
-  const root = projectsDir();
-  return globSync("**/govern.json", {
-    cwd: root,
-    exclude: (path) => ["_tmp", "node_modules", ".git"].includes(basename(path)) || existsSync(join(root, path, ".git")),
-  }).map((f) => dirname(f)).sort();
+/** Folder names below the lanes folder that never hold a lane: scratch, dependencies and a checkout's own metadata. */
+const NOT_LANES = new Set(["_tmp", "node_modules", ".git"]);
+
+/** The folders under the lanes folder holding `file`, sorted, without entering scratch, runtime dependencies or a
+ *  checkout (a folder with a .git). A test fixture left in a clone kept inside a lane is not a lane, however deep. Symbolic
+ *  links are not followed. */
+function foldersHolding(file: string): string[] {
+  const root = projectsDir(), out: string[] = [];
+  const walk = (rel: string): void => {
+    let entries;
+    try { entries = readdirSync(join(root, rel), { withFileTypes: true }); } catch { return; }
+    if (rel && entries.some((d) => d.name === ".git")) return;
+    if (existsSync(join(root, rel, file))) out.push(rel || ".");
+    for (const d of entries) if (d.isDirectory() && !NOT_LANES.has(d.name)) walk(join(rel, d.name));
+  };
+  walk("");
+  return out.sort();
 }
+
+/** Every lane's slug. */
+export const laneSlugs = (): string[] => foldersHolding("govern.json");
+/** Every folder under the lanes folder with a ledger, which a lane whose govern.json was archived away keeps. */
+export const ledgerSlugs = (): string[] => foldersHolding(join("govern", "ledger.jsonl"));
 
 /** The rows of a command that lists every lane (status, desk): `row` formats a lane that loads; a lane whose
  *  govern.json (or a lane its row reads, through `after`) fails its parse becomes one row, `<slug> ✖ <file>: <path>:

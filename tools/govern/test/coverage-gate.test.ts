@@ -2,6 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { coverageGate, measuredSource } from "../scripts/coverage-gate.ts";
 import { mergeCoverage, type FileCoverage } from "../scripts/coverage-merge.ts";
+import "./helpers.ts"; // every test file runs in the sandbox
 
 const row = (file: string, covered: number, total: number, observed = true): FileCoverage => ({
   file, observed, lines: { covered: 1, total: 1, percent: 100 },

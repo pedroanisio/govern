@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { installSystemUnit } from "../lib/dispatch-service.ts";
+import "./helpers.ts"; // every test file runs in the sandbox
 
 test("non-root system service write is refused and prints the complete unit without writing", () => {
   let writes = 0;

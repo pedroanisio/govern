@@ -468,8 +468,7 @@ function cmdProcess(a: Args): void {
  *  (the latest such entry when several lanes qualify). `hookOpened`: that entry says the SessionStart hook opened it. */
 function openSegment(sid: string): { slug: string; at: number; t: string; stage: string; hookOpened: boolean; entries: Record<string, unknown>[] } | undefined {
   let hit: ReturnType<typeof openSegment>;
-  for (const f of globSync("**/govern.json", { cwd: projectsDir() })) {
-    const slug = dirname(f);
+  for (const slug of laneSlugs()) {
     const entries = readJsonl(ledgerFile(slug));
     let at = -1;
     entries.forEach((e, i) => { if ((e.kind === "work" || e.kind === "done") && e.session === sid) at = i; });

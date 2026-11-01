@@ -8,6 +8,7 @@ import { dirname, join } from "node:path";
 import { ContentError } from "../site/lib/content.ts";
 import { LinkError } from "../site/lib/links.ts";
 import { buildSite, readVersion } from "../site/lib/site.ts";
+import "./helpers.ts"; // every test file runs in the sandbox
 
 const BUILD = join(import.meta.dirname, "..", "site", "build.ts");
 const page = (front: string, body: string) => `---\n${front}\n---\n${body}`;

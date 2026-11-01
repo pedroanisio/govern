@@ -10,8 +10,8 @@ import { join, dirname, resolve, basename } from "node:path";
 import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { readJsonl, kTok, writeJson } from "./util.ts";
-import { ledgerFile, laneSlugs, load } from "./project.ts";
-import { projectsDir, baseline, stateDir } from "./workspace.ts";
+import { ledgerFile, laneSlugs, ledgerSlugs, load } from "./project.ts";
+import { baseline, stateDir } from "./workspace.ts";
 import { lanes, laneByCwd, laneOf, recordedLanes, queueWindows, basisLabel, type Basis, type Ctx } from "./attribution.ts";
 import { sessions as registrySessions } from "./sessions.ts";
 import { obj, arr, record, literal, str, reject, parseFile, type Shape } from "./shape.ts";
@@ -43,11 +43,10 @@ type Data = { calls: Call[]; owner: number[]; tools: Tool[] };
 /** The work segments of lanes `slugs` (default every lane): each ledger "work" entry, from its time until the next "work"
  *  or "done" of the same engine and session in any lane (open-ended when there is none). Calls are not filled in yet. */
 export function segments(slugs?: string[]): Segment[] {
-  const all = slugs ?? globSync("**/govern.json", { cwd: projectsDir() }).map((f) => dirname(f));
+  const all = slugs ?? laneSlugs();
   const marks: { slug: string; kind: string; stage?: string; engine?: string; session?: string; t: number }[] = [];
   // Read every ledger so a session's next segment (in any video) ends the current one.
-  const every = globSync("**/govern/ledger.jsonl", { cwd: projectsDir() }).map((f) => dirname(dirname(f)));
-  for (const s of new Set([...every, ...all])) {
+  for (const s of new Set([...ledgerSlugs(), ...all])) {
     for (const e of readJsonl(ledgerFile(s))) if (e.kind === "work" || e.kind === "done") marks.push({ ...e, slug: s, t: Date.parse(e.t) });
   }
   marks.sort((a, b) => a.t - b.t);
@@ -483,7 +482,7 @@ export function report(slugs: string[] | undefined, since?: number): string {
   const segs = attribute(segments(slugs)).filter((s) => !since || s.start >= since);
   // machine time and money (jobs run on resources) come from the lane's ledger, beside the tokens
   const machine = (v: string) => machineLines(machineEntries(ledgerFile(v)).filter((e) => !since || Date.parse(String(e["t"])) >= since));
-  const ranOn = slugs ? [] : globSync("**/govern/ledger.jsonl", { cwd: projectsDir() }).map((f) => dirname(dirname(f))).filter((v) => machine(v).length);
+  const ranOn = slugs ? [] : ledgerSlugs().filter((v) => machine(v).length);
   // calls that went by GOVERN_LANE, folder or queue run, outside any segment; with no slug, also the strays of today
   const dayStart = Date.parse(new Date().toISOString().slice(0, 10));
   const su = sessionUsage({ since: since ?? 0, ...(slugs ? {} : { strayFrom: dayStart }) });

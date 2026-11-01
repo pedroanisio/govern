@@ -3,6 +3,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { slackCall, SlackError } from "../ext/slack/channel.ts";
 import { slackBody } from "./slack-api.ts";
+import "./helpers.ts"; // every test file runs in the sandbox
 
 for (const [method, args] of [
   ["conversations.history", { channel: "C1", limit: 100 }],

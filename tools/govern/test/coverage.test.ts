@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mergeCoverage, readCoverageProfiles, type CoverageProfile, type FunctionCoverage } from "../scripts/coverage-merge.ts";
+import "./helpers.ts"; // every test file runs in the sandbox
 
 const source = "first();\nleft();\nright();\nlast();\n";
 const root = { startOffset: 0, endOffset: source.length, count: 1 };

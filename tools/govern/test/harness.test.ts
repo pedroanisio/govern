@@ -2,6 +2,7 @@
 // and which files the `test/*.test.ts` glob runs.
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { tmpdir } from "node:os";
 import { readFileSync, readdirSync, statSync, existsSync } from "node:fs";
 import { join, sep } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -26,13 +27,14 @@ test("a govern child sees none of the parent's GOVERN_* variables and a HOME ins
   }
 });
 
-test("parentEnv drops every GOVERN_* and the compaction window the session running the tests exported", () => {
+test("parentEnv drops every GOVERN_* but the sandbox's ceiling, and the compaction window the session running the tests exported", () => {
   const set = { GOVERN_SESSIONS_DIR: "/leak", CLAUDE_CODE_AUTO_COMPACT_WINDOW: "1" };
   const was = Object.fromEntries(Object.keys(set).map((k) => [k, process.env[k]]));
   Object.assign(process.env, set);
   try {
     const p = parentEnv();
-    assert.deepEqual(Object.keys(p).filter((k) => k.startsWith("GOVERN_") || k === "CLAUDE_CODE_AUTO_COMPACT_WINDOW"), []);
+    assert.deepEqual(Object.keys(p).filter((k) => k.startsWith("GOVERN_") || k === "CLAUDE_CODE_AUTO_COMPACT_WINDOW"), ["GOVERN_CEILING"]);
+    assert.equal(p.GOVERN_CEILING, tmpdir());
     assert.equal(p.PATH, process.env.PATH);
   } finally {
     for (const [k, v] of Object.entries(was)) if (v === undefined) delete process.env[k]; else process.env[k] = v;

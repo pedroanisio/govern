@@ -25,6 +25,8 @@ All notable changes to govern are documented here, following Keep a Changelog.
 
 ### Fixed
 
+- Lane discovery no longer takes a ledger or `govern.json` inside `_tmp`, `node_modules` or a checkout at any depth. `laneSlugs` missed a nested `.git`, and the session-lane index, `govern usage` and the hooks' open-segment search walked the lanes folder with no exclusion at all, so a fixture left by a test run in a clone kept under a lane reached `<state>/session-lanes.json`. A recorded session lane whose folder is gone is ignored and dropped on the next write.
+- Every test file runs in a sandbox: importing `test/helpers.ts` drops inherited `GOVERN_*`, gives the process a temp workspace, HOME and working directory, and sets `GOVERN_CEILING` so a search for a workspace cannot leave the temp folder.
 - First activation of Slack routing or alerts captures a durable start line before polling. Migrated inbox posts no longer trigger routed tasks, `seen:` replies or unanswered alerts; the boundary survives restarts and never advances automatically.
 
 ### Changed
