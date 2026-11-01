@@ -273,6 +273,30 @@ export const laneSlugs = (): string[] => foldersHolding("govern.json");
 /** Every folder under the lanes folder with a ledger, which a lane whose govern.json was archived away keeps. */
 export const ledgerSlugs = (): string[] => foldersHolding(join("govern", "ledger.jsonl"));
 
+export interface OpenSegment { engine: string; session?: string; t: string }
+/** The session id every ledger entry of a session shares; work with no id is only comparable within its lane. */
+const segmentKey = (slug: string, engine: string, session: unknown): string => (typeof session === "string" && session ? `${engine}:${session}` : `${slug}\0${engine}`);
+
+/** The lanes someone is working on now, each with its newest open segment. Derived, never written: a ledger records what
+ *  happened, and a frozen lane's refuses new entries. A segment ends when its session opens one anywhere (a session is in one
+ *  place), when it is closed, or when its lane reaches `done` or finishes. A process's last stage named otherwise is real
+ *  work (video's `deliver`), so only those two count. `usage.ts` ends segments its own way: this decides no attribution. */
+export function openSegments(): Map<string, OpenSegment> {
+  const marks = ledgerSlugs().flatMap((slug) => readJsonl(ledgerFile(slug)).filter((e) => e.kind === "work" || e.kind === "done" || (e.kind === "advance" && (e.to === "done" || e.to === "finished"))).map((e) => ({ e, slug, at: Date.parse(e.t) })));
+  const open = new Map<string, OpenSegment & { slug: string }>();
+  const closeWhere = (hit: (x: OpenSegment & { slug: string }) => boolean) => { for (const [k, x] of open) if (hit(x)) open.delete(k); };
+  for (const { e, slug } of marks.filter((m) => Number.isFinite(m.at)).sort((a, b) => a.at - b.at)) {
+    if (e.kind === "advance") { closeWhere((x) => x.slug === slug); continue; }
+    const engine = String(e.engine ?? "claude"), key = segmentKey(slug, engine, e.session);
+    if (e.kind === "work") { open.delete(key); open.set(key, { slug, engine, ...(typeof e.session === "string" && e.session ? { session: e.session } : {}), t: e.t }); continue; }
+    if (typeof e.session === "string" && e.session) open.delete(key);
+    else closeWhere((x) => x.slug === slug); // `govern done` from a plain terminal names no session: the lane closes
+  }
+  const lanes = new Map<string, OpenSegment>();
+  for (const { slug, ...x } of open.values()) lanes.set(slug, x); // insertion order is time order: the newest stays
+  return lanes;
+}
+
 /** The rows of a command that lists every lane (status, desk): `row` formats a lane that loads; a lane whose
  *  govern.json (or a lane its row reads, through `after`) fails its parse becomes one row, `<slug> ✖ <file>: <path>:
  *  <message>`, and the other lanes still show. `failed` counts those rows; the caller exits 1 after printing them.

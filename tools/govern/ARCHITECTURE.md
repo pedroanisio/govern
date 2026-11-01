@@ -217,6 +217,7 @@ The measurement side:
 - `govern usage` reports calls, tokens, context per call, cache share, tool calls, repeated calls and `sleep` polls per
   work segment, against the chat baseline the workspace records.
 - `services.ts` asks systemd about the units in the `watch` config for the desk, the digest and the notifier. It never fails: a missing unit or an absent systemd is a reported state.
+- `openSegments` in `project.ts` derives who is working where for the desk, the lane state and the remote view. It reads every ledger, since a session is in one place and only another lane's ledger says it left. It writes nothing, because a ledger records events, a frozen lane refuses new ones, and `usage.ts` would otherwise see new segment ends.
 - `attribution.ts` decides which lane a Claude Code call belongs to, first match wins: an open work segment, the
   `GOVERN_LANE` recorded for the session (`<state>/session-lanes.json`), the session's working directory, a queue run's
   project. `usage.ts` applies it to the transcripts, keeping each recent transcript's parsed calls in

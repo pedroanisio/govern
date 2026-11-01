@@ -4,7 +4,7 @@
 // what a host sends to the command center (ext/peer/peer.ts, "govern-lanes/1"), so its shape is closed and parsed.
 import { GovernError, readJsonl, clip } from "./util.ts";
 import { obj, arr, bool, literal, reject, type Shape } from "./shape.ts";
-import { load, laneSlugs, ledgerFile, stagesOf, type Project } from "./project.ts";
+import { load, laneSlugs, ledgerFile, stagesOf, openSegments, type OpenSegment, type Project } from "./project.ts";
 import { processOf, freezeProcess } from "./process.ts";
 import { gateApproved, activeStages } from "./business.ts";
 import * as jobs from "./jobs.ts";
@@ -77,8 +77,8 @@ function refOf(p: Project): ProcessRef {
 /** How long an open `work` segment with no job counts as someone working on the lane (ms). */
 export const WORK_FRESH_MS = 2 * 3600_000;
 
-/** The summary of lane `p` at `now` (ms). `msgs` is the queue's messages (read once for many lanes). */
-export function summarize(p: Project, o: { now: number; msgs?: ReturnType<typeof queue.all> }): LaneState {
+/** The summary of lane `p` at `now` (ms). `msgs` and `open` are the queue's messages and the open segments (read once for many lanes). */
+export function summarize(p: Project, o: { now: number; msgs?: ReturnType<typeof queue.all>; open?: Map<string, OpenSegment> }): LaneState {
   const pr = processOf(p), list = stagesOf(p), led = readJsonl(ledgerFile(p.slug));
   const active = activeStages(p);
   const idx = list.indexOf(p.stage);
@@ -122,8 +122,8 @@ export function summarize(p: Project, o: { now: number; msgs?: ReturnType<typeof
   });
   const pending = gates.filter((g) => g.decision === "pending");
   const waitingOn = [...new Set([...pending.map((g) => g.owner), ...blocked.map((m) => m.to)])].sort();
-  const lastWork = [...led].reverse().find((e) => e.kind === "work" || e.kind === "done");
-  const working = lastWork?.kind === "work" && o.now - Date.parse(lastWork.t) < WORK_FRESH_MS;
+  const seg = (o.open ?? openSegments()).get(p.slug);
+  const working = seg !== undefined && o.now - Date.parse(seg.t) < WORK_FRESH_MS;
   const side = (who: string): Status => (who === "owner" ? "waiting-on-owner" : "waiting-on-coordinator");
   const status: Status = p.finished ? "done" : running.length || working ? "running" : failedHere ? "blocked-by-check"
     : waitingOn.length ? side(waitingOn.includes("owner") ? "owner" : "coordinator") : "idle";
@@ -143,8 +143,9 @@ export function readLanes(o: { now?: number } = {}): { lanes: LaneState[]; unrea
   const now = o.now ?? Date.now(), lanes: LaneState[] = [], unreadable: { slug: string; error: string }[] = [];
   let msgs: ReturnType<typeof queue.all> = [];
   try { msgs = queue.all(); } catch { /* no queue folder: no messages */ }
+  const open = openSegments();
   for (const slug of laneSlugs()) {
-    try { lanes.push(summarize(load(slug), { now, msgs })); } catch (e) {
+    try { lanes.push(summarize(load(slug), { now, msgs, open })); } catch (e) {
       if (!(e instanceof GovernError)) throw e;
       unreadable.push({ slug, error: clip(e.message, 300) });
     }

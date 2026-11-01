@@ -5,7 +5,7 @@ import { gateApproved } from './business.ts';
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { readJsonl, kTok, clip } from "./util.ts";
-import { load, ledgerFile, stagesOf, laneState, driftWarning, laneSlugs, laneRows } from "./project.ts";
+import { load, ledgerFile, stagesOf, laneState, driftWarning, laneSlugs, laneRows, openSegments } from "./project.ts";
 import { processOf } from "./process.ts";
 import * as queue from "./queue.ts";
 import { tag } from "./replycheck.ts";
@@ -78,10 +78,10 @@ export function desk(extensionLines: readonly string[] = []): { text: string; fa
   const day = today();
   // ---- lanes
   L.push(`LANES (${slugs.length})`);
+  const working = openSegments();
   const { rows, failed } = laneRows(slugs, (s, p) => {
     const led = readJsonl(ledgerFile(s));
-    const lastWork = [...led].reverse().find((e) => e.kind === "work" || e.kind === "done");
-    const open = lastWork?.kind === "work" ? `● ${lastWork.engine} ${ago(lastWork.t)}` : "";
+    const seg = working.get(s), open = seg ? `● ${seg.engine} ${ago(seg.t)}` : "";
     const gates = processOf(p).gates;
     const gate = !gates.length ? "" : (() => { const g = gates.find((x) => !gateApproved(p, x)); return g ? `needs ${g.name}` : "all approved"; })();
     const note = p.notes.at(-1);

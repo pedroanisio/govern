@@ -11,7 +11,7 @@ import { governDir } from "../../lib/project.ts";
 import type { ArtifactRef, ArtifactView } from "../../lib/artifacts.ts";
 import { join } from "node:path";
 import { readJsonl, clip } from "../../lib/util.ts";
-import { load, ledgerFile, stagesOf, laneSlugs, blockedBy, exitCondition, checkOf, type Project } from "../../lib/project.ts";
+import { load, ledgerFile, stagesOf, laneSlugs, blockedBy, exitCondition, checkOf, openSegments, type Project } from "../../lib/project.ts";
 import { processOf } from "../../lib/process.ts";
 import { gateApproved, activeStages } from "../../lib/business.ts";
 import { GovernError } from "../../lib/util.ts";
@@ -87,9 +87,9 @@ const gateViews = (p: Project): GateView[] => processOf(p).gates.map((g) => {
 
 /** A lane's desk row as data: title, process, current and active stages, state (finished, blocked, ready or open), what
  *  blocks it, its gates, open alerts, and the last work, note and job from its ledger. */
-export function laneSummary(p: Project): LaneSummary {
+export function laneSummary(p: Project, open = openSegments()): LaneSummary {
   const list = stagesOf(p), led = readJsonl(ledgerFile(p.slug));
-  const lastWork = [...led].reverse().find((e) => e.kind === "work" || e.kind === "done");
+  const seg = open.get(p.slug);
   const lastJob = [...led].reverse().find((e) => e.kind === "job");
   const blocked = p.finished ? [] : blockedBy(p);
   const note = p.notes.at(-1);
@@ -99,7 +99,7 @@ export function laneSummary(p: Project): LaneSummary {
     stage: p.stage, stageIndex: list.indexOf(p.stage), stageCount: list.length, active: activeStages(p),
     state: p.finished ? "finished" : blocked.length ? "blocked" : p.after?.length ? "ready" : "open",
     blockedBy: blocked, gates: gateViews(p), openAlerts: (p.alerts ?? []).filter((a) => !a.acknowledgedAt).length,
-    working: lastWork?.kind === "work" ? { engine: String(lastWork.engine ?? "?"), since: String(lastWork.t) } : null,
+    working: seg ? { engine: seg.engine, since: seg.t } : null,
     lastNote: note ? { at: note.at, text: clip(note.text, 240) } : null,
     lastJob: lastJob ? { name: String(lastJob.name), status: String(lastJob.status), at: String(lastJob.t) } : null,
     frozen: p.frozen ? { at: p.frozen.at, quote: p.frozen.quote, continuedAs: p.frozen.continuedAs ?? null } : null,
@@ -239,9 +239,9 @@ export const engines = (): string[] => [...new Set([...registry().profiles.value
 
 /** Every lane as a summary (a lane that cannot be read is listed under `unreadable` with its error) and today's telemetry. */
 export function deskView(): Omit<Desk, "viewer"> {
-  const slugs = laneSlugs(), lanes: LaneSummary[] = [], unreadable: LaneError[] = [];
+  const slugs = laneSlugs(), lanes: LaneSummary[] = [], unreadable: LaneError[] = [], open = openSegments();
   for (const s of slugs) {
-    try { lanes.push(laneSummary(load(s))); } catch (e) {
+    try { lanes.push(laneSummary(load(s), open)); } catch (e) {
       if (!(e instanceof GovernError)) throw e;
       unreadable.push({ slug: s, error: e.message });
     }
