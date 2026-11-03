@@ -3,7 +3,7 @@
 // on stderr); 2: a usage or configuration error. Credentials come from the environment, never argv.
 //
 //   checks.ts jira-issue KEY [--done]        JIRA_BASE_URL, JIRA_EMAIL, JIRA_API_TOKEN
-//   checks.ts zendesk-ticket ID [--solved]   ZENDESK_BASE_URL (https://SUBDOMAIN.zendesk.com), ZENDESK_EMAIL, ZENDESK_API_TOKEN
+//   checks.ts zendesk-ticket ID [--solved]   ZENDESK_BASE_URL (https://SUBDOMAIN.zendesk.com), ZENDESK_CLIENT_ID, ZENDESK_CLIENT_SECRET (OAuth, scope tickets:read)
 //   checks.ts slack-message CHANNEL TS       SLACK_BOT_TOKEN (scope channels:history), GOVERN_SLACK_API (default https://slack.com/api)
 //   checks.ts suggestions FILE               the SUP-09a suggestions: 1 to 3 distinct replies, each with a confidence in 0..1
 //
@@ -44,9 +44,25 @@ async function jiraIssue(key: string, done: boolean): Promise<string> {
   return `${key} exists${done ? " and is done" : ""}`;
 }
 
+/** A bearer token from the Zendesk OAuth client's client_credentials grant, read scope only. A refusal names Zendesk's
+ *  error code, never the secret. */
+async function zendeskToken(base: string): Promise<string> {
+  const grant = { grant_type: "client_credentials", client_id: env("ZENDESK_CLIENT_ID"), client_secret: env("ZENDESK_CLIENT_SECRET"), scope: "tickets:read" };
+  let r: Response;
+  try {
+    r = await fetch(`${base}/oauth/tokens`, { method: "POST", headers: { "Content-Type": "application/json", Accept: "application/json" },
+      body: JSON.stringify(grant), signal: AbortSignal.timeout(15_000) });
+  } catch (e) { throw new Failed(`Zendesk OAuth token: ${(e as Error).message}`); }
+  let j: unknown;
+  try { j = await r.json(); } catch { throw new Failed(`Zendesk OAuth token: ${r.status} without JSON`); }
+  if (!r.ok) throw new Failed(`Zendesk OAuth token: ${r.status} ${record(j) && typeof j.error === "string" ? j.error : "refused"}`);
+  if (!record(j) || typeof j.access_token !== "string" || !j.access_token) throw new Failed("Zendesk OAuth token: the answer has no access_token");
+  return `Bearer ${j.access_token}`;
+}
+
 async function zendeskTicket(id: string, solved: boolean): Promise<string> {
   if (!/^\d+$/.test(id)) throw new Usage(`${id} is not a Zendesk ticket id`);
-  const base = env("ZENDESK_BASE_URL").replace(/\/$/, ""), auth = basic(`${env("ZENDESK_EMAIL")}/token`, env("ZENDESK_API_TOKEN"));
+  const base = env("ZENDESK_BASE_URL").replace(/\/$/, ""), auth = await zendeskToken(base);
   const j = await getJson("Zendesk", `${base}/api/v2/tickets/${id}.json`, auth, `Zendesk ticket ${id}`);
   const status = record(j) && record(j.ticket) ? j.ticket.status : undefined;
   if (typeof status !== "string") throw new Failed(`Zendesk ticket ${id}: the answer has no status`);

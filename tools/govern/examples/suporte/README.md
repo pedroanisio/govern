@@ -61,8 +61,13 @@ nothing, and every later response goes out only after the operator picks it.
 4. Set the environment of the services below (an env file read by systemd, never a tracked file):
    `SLACK_BOT_TOKEN` (scopes `chat:write`, `channels:history`), `SLACK_SUPPORT_CHANNEL`; `JIRA_BASE_URL`, `JIRA_EMAIL`,
    `JIRA_API_TOKEN`, `JIRA_PROJECT`, `JIRA_DONE_TRANSITION` (the transition id to Done); `ZENDESK_BASE_URL`,
-   `ZENDESK_EMAIL`, `ZENDESK_API_TOKEN`, `ZENDESK_KB_SECTION`, `ZENDESK_KB_PERMISSION_GROUP`;
+   `ZENDESK_CLIENT_ID`, `ZENDESK_CLIENT_SECRET`, `ZENDESK_KB_SECTION`, `ZENDESK_KB_PERMISSION_GROUP`;
    `GOVERN_WEBHOOK_TOKEN` (16 characters or more).
+5. Zendesk authenticates by OAuth (Zendesk retires API tokens): in Admin Center → Apps and integrations → APIs → OAuth
+   clients, add a **confidential** client with scopes `tickets:read`, `tickets:write`, `hc:write`. Create it signed in as
+   the service agent that replies to clients: each command's `client_credentials` token acts as the user who made the
+   client, so that user must be able to comment on and solve tickets and manage the help center. The redirect URL is
+   required by the form but unused; the secret is shown once, so put it straight into the env file.
 
 ## Run
 
