@@ -32,12 +32,19 @@ test("upload obtains URL, POSTs bytes without token, completes in parent thread 
   await assert.rejects(uploadFile(f.call, f.d, "C1", f.policy, { file: f.file, thread: "2.000002", key: "clip" }, f.request), /already sent/);
 });
 
+test("upload shares a PDF document (a report) like an image or video", async () => {
+  const f = fixture(), pdf = write(join(f.root, "relatorio.pdf"), "%PDF-1.4 x");
+  const receipt = await uploadFile(f.call, f.d, "C1", f.policy, { file: pdf, thread: "2.000002", title: "Relatório", key: "report" }, f.request);
+  assert.deepEqual(f.calls[1]!.body, { filename: "relatorio.pdf", length: 10 });
+  assert.equal(receipt.ts, "F123"); assert.equal(receipt.kind, "upload");
+});
+
 test("upload refuses missing configuration, symlink escape, directory, oversize, unsupported type and invalid thread before sending", async () => {
   const f = fixture(), outside = write(join(f.d, "outside.png"), "image"), link = join(f.root, "escape.png"); symlinkSync(outside, link);
   for (const [file, policy, thread, reason] of [
     [f.file, undefined, "2.000002", /slack.upload/], [link, f.policy, "2.000002", /roots/],
     [f.root, f.policy, "2.000002", /regular file/], [f.file, { ...f.policy, maxBytes: 1 }, "2.000002", /maxBytes/],
-    [write(join(f.root, "secret.txt"), "secret"), f.policy, "2.000002", /image or video/],
+    [write(join(f.root, "secret.txt"), "secret"), f.policy, "2.000002", /image, video or PDF/],
     [f.file, f.policy, "invalid", /thread/], [join(f.root, "missing.png"), f.policy, "2.000002", /resolve/],
   ] as const) await assert.rejects(uploadFile(f.call, f.d, "C1", policy, { file, thread }, f.request), reason);
   assert.equal(f.calls.length, 0); assert.equal(f.puts.length, 0);
