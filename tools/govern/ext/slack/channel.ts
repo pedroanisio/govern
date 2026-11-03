@@ -315,11 +315,11 @@ async function sendMessage(call: Call, d: string, channel: string, o: Send): Pro
 
 
 export interface Upload { file: string; thread: string; title?: string; text?: string; key?: string }
-const MEDIA = new Set([".png", ".jpg", ".jpeg", ".gif", ".webp", ".mp4", ".mov", ".webm", ".m4v"]);
+const MEDIA = new Set([".png", ".jpg", ".jpeg", ".gif", ".webp", ".mp4", ".mov", ".webm", ".m4v", ".pdf"]);
 /** The transfer's limit: the 30 s every API call gets, plus a second per 256 KB (a floor of about 2 Mbit/s). */
 export const transferMs = (bytes: number): number => 30_000 + Math.ceil(bytes / 262_144) * 1000;
 
-/** Upload an allowed local image/video using Slack's external upload protocol. One writer owns this inbox.
+/** Upload an allowed local image, video or PDF using Slack's external upload protocol. One writer owns this inbox.
  * The upload receipt uses Slack's file id as ts; it does not assume a chat message timestamp. */
 export async function uploadFile(call: Call, d: string, channel: string, policy: SlackConfigUpload | undefined,
   o: Upload, request: typeof fetch = fetch): Promise<Sent> {
@@ -339,7 +339,7 @@ export async function uploadFile(call: Call, d: string, channel: string, policy:
     bytes = readFileSync(fd);
     if (bytes.length > policy.maxBytes) return error("upload exceeds maxBytes");
   } finally { closeSync(fd); }
-  if (!MEDIA.has(extname(path).toLowerCase())) return error("upload must be a common image or video type (png, jpg, gif, webp, mp4, mov, webm, m4v)");
+  if (!MEDIA.has(extname(path).toLowerCase())) return error("upload must be a common image, video or PDF type (png, jpg, gif, webp, mp4, mov, webm, m4v, pdf)");
   directory(d);
   if (o.key !== undefined && (!o.key || wasSent(d, o.key))) return error("key is empty or already sent");
   if (o.key && wasAttempted(d, o.key)) return error(uncertainSend(o.key));

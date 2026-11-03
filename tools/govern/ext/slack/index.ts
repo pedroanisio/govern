@@ -147,7 +147,7 @@ export const commands: Cmd[] = [
     subs: {
       "install-service": { lines: [["", "write user units for listen, notify and a daily digest timer; print enable instructions without starting them"]], run: () => out(installServices()) },
       upload: { flags: { value: ["thread", "file", "title", "text", "key"] },
-        lines: [["--thread TS --file PATH [--title T] [--text T] [--key K]", "upload an allowed image or video inside slack.upload.roots and maxBytes; resolve the thread and journal the file id"]], run: cmdUpload },
+        lines: [["--thread TS --file PATH [--title T] [--text T] [--key K]", "upload an allowed image, video or PDF inside slack.upload.roots and maxBytes; resolve the thread and journal the file id"]], run: cmdUpload },
       resolve: { flags: { value: ["key", "ts"], bool: ["delivered", "not-delivered"] },
         lines: [["--key K [--delivered [--ts TS] | --not-delivered]", "settle an uncertain send: an upload never completed is released, one completed is looked up in its thread; posts nothing"]], run: cmdResolve },
       digest: { lines: [["", "post waiting people, failed tasks and open alerts once per local day; stay silent when empty"]], run: cmdDigest },
