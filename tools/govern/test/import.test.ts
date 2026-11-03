@@ -436,6 +436,21 @@ test("brief lists every command a quarantined lane carries, including a stage's 
   assert.doesNotMatch(b2, /imported lane, not accepted/);
 });
 
+test("the quarantine listing shows each {paths.NAME} a command uses resolved on this workspace, or missing", () => {
+  const e = makeEnv("import-quarantine-paths");
+  setConfig(e, { paths: { tools: "vendor/tools" } });
+  ok(e, ["new", "p", "--kind", "ops"]);
+  ok(e, ["cmd", "p", "build", "--", "{paths.tools}/build.sh", "{paths.absent}/x"]);
+
+  const out = join(e.root, "bundle.json");
+  ok(e, ["export", "p", "--out", out]);
+  ok(e, ["import", out, "--as", "p2"]);
+
+  const b = ok(e, ["brief", "p2"]);
+  assert.ok(b.includes(`paths.tools = ${join(e.root, "vendor/tools")}`), b);
+  assert.match(b, /paths\.absent = \(not in govern\.config\.json\)/);
+});
+
 test("import refuses dependencies on lanes the workspace does not have unless --drop-deps", () => {
   const a = makeEnv("import-deps-source");
   ok(a, ["new", "q", "--kind", "ops"]);
