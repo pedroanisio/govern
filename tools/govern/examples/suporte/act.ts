@@ -6,7 +6,8 @@
 //   act.ts slack-announce DIR        -> {slackTs}   SLACK_BOT_TOKEN, SLACK_SUPPORT_CHANNEL, GOVERN_SLACK_API
 //   act.ts jira-create DIR           -> {jiraKey}   JIRA_BASE_URL, JIRA_EMAIL, JIRA_API_TOKEN, JIRA_PROJECT, JIRA_ISSUE_TYPE (Task)
 //   act.ts jira-create-cards DIR     -> {cards, cardsOrigem}  the same; one issue per title in novosCards
-//   act.ts zendesk-reply DIR FIELD   -> {}          ZENDESK_BASE_URL, ZENDESK_EMAIL, ZENDESK_API_TOKEN; FIELD's text as a public comment
+//   act.ts zendesk-reply DIR FIELD   -> {}          ZENDESK_BASE_URL, ZENDESK_CLIENT_ID, ZENDESK_CLIENT_SECRET (a confidential OAuth
+//                                                   client with scopes tickets:write, hc:write); FIELD's text as a public comment
 //   act.ts close DIR                 -> {}          the Zendesk settings and JIRA_DONE_TRANSITION: ticket solved, issue moved
 //   act.ts kb-article DIR            -> {kbUrl}     the Zendesk settings, ZENDESK_KB_SECTION, ZENDESK_KB_PERMISSION_GROUP
 //
@@ -46,7 +47,24 @@ async function call(system: string, method: string, url: string, auth: string, b
   return j;
 }
 const jira = () => ({ base: env("JIRA_BASE_URL").replace(/\/$/, ""), auth: basic(env("JIRA_EMAIL"), env("JIRA_API_TOKEN")) });
-const zendesk = () => ({ base: env("ZENDESK_BASE_URL").replace(/\/$/, ""), auth: basic(`${env("ZENDESK_EMAIL")}/token`, env("ZENDESK_API_TOKEN")) });
+
+/** Zendesk's base URL and a bearer token from the OAuth client's client_credentials grant (Zendesk retires API tokens).
+ *  One token per command: each runs as its own short process, well inside the token's 30 minutes. The token acts as the
+ *  user who created the client. A refusal names Zendesk's error code, never the secret. */
+async function zendesk(): Promise<{ base: string; auth: string }> {
+  const base = env("ZENDESK_BASE_URL").replace(/\/$/, "");
+  const grant = { grant_type: "client_credentials", client_id: env("ZENDESK_CLIENT_ID"), client_secret: env("ZENDESK_CLIENT_SECRET"), scope: "tickets:write hc:write" };
+  let r: Response;
+  try {
+    r = await fetch(`${base}/oauth/tokens`, { method: "POST", headers: { "Content-Type": "application/json", Accept: "application/json" },
+      body: JSON.stringify(grant), signal: AbortSignal.timeout(20_000) });
+  } catch (e) { throw new Failed(`Zendesk OAuth token: ${(e as Error).message}`); }
+  let j: unknown;
+  try { j = await r.json(); } catch { throw new Failed(`Zendesk OAuth token: ${r.status} without JSON`); }
+  if (!r.ok) throw new Failed(`Zendesk OAuth token: ${r.status} ${record(j) && typeof j.error === "string" ? j.error : "refused"}`);
+  if (!record(j) || typeof j.access_token !== "string" || !j.access_token) throw new Failed("Zendesk OAuth token: the answer has no access_token");
+  return { base, auth: `Bearer ${j.access_token}` };
+}
 
 async function jiraIssue(summary: string, description: string): Promise<string> {
   const j = jira();
@@ -83,12 +101,12 @@ async function act(cmd: string, d: Data, title: string, arg: string | undefined)
     }
     case "zendesk-reply": {
       if (!arg) throw new Usage("zendesk-reply needs the FIELD holding the reply");
-      const z = zendesk();
+      const z = await zendesk();
       await call("Zendesk", "PUT", `${z.base}/api/v2/tickets/${ticket}.json`, z.auth, { ticket: { comment: { body: text(d, arg), public: true } } });
       return {};
     }
     case "close": {
-      const z = zendesk();
+      const z = await zendesk();
       await call("Zendesk", "PUT", `${z.base}/api/v2/tickets/${ticket}.json`, z.auth, { ticket: { status: "solved" } });
       if (typeof d.jiraKey === "string") {
         const j = jira();
@@ -98,7 +116,7 @@ async function act(cmd: string, d: Data, title: string, arg: string | undefined)
     }
     case "kb-article": {
       if (typeof d.kbUrl === "string") return { kbUrl: d.kbUrl };
-      const z = zendesk();
+      const z = await zendesk();
       const j = await call("Zendesk", "POST", `${z.base}/api/v2/help_center/sections/${env("ZENDESK_KB_SECTION")}/articles.json`, z.auth,
         { article: { title: String(d.assunto ?? title), body: text(d, "kbRascunho"), draft: true, permission_group_id: Number(env("ZENDESK_KB_PERMISSION_GROUP")), user_segment_id: null } });
       const url = record(j) && record(j.article) ? j.article.html_url : undefined;

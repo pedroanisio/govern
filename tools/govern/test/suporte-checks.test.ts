@@ -11,15 +11,19 @@ import { HERE, tempDir } from "./helpers.ts";
 
 const CHECKS = join(HERE, "..", "examples", "suporte", "checks.ts");
 
-interface Seen { url: string; auth: string | undefined }
+interface Seen { method: string; url: string; auth: string | undefined; body: string }
 /** A fake API: `routes` maps a path (with query) to [status, JSON]; anything else is 404. */
 async function api(routes: Record<string, [number, unknown]>, f: (base: string, seen: Seen[]) => Promise<void>): Promise<void> {
   const seen: Seen[] = [];
   const server: Server = createServer((req, res) => {
-    seen.push({ url: req.url ?? "", auth: req.headers.authorization });
-    const [status, body] = routes[req.url ?? ""] ?? [404, { error: "not found" }];
-    res.writeHead(status, { "Content-Type": "application/json" });
-    res.end(JSON.stringify(body));
+    let raw = "";
+    req.on("data", (c) => { raw += c; });
+    req.on("end", () => {
+      seen.push({ method: req.method ?? "", url: req.url ?? "", auth: req.headers.authorization, body: raw });
+      const [status, body] = routes[req.url ?? ""] ?? [404, { error: "not found" }];
+      res.writeHead(status, { "Content-Type": "application/json" });
+      res.end(JSON.stringify(body));
+    });
   });
   await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
   const addr = server.address();
@@ -57,15 +61,32 @@ test("jira-issue passes when the issue exists, and with --done only when its sta
 });
 
 test("zendesk-ticket passes with --solved only for a solved or closed ticket", async () => {
-  const env = (base: string) => ({ ZENDESK_BASE_URL: base, ZENDESK_EMAIL: "bot@acme.test", ZENDESK_API_TOKEN: "zd-token" });
-  await api({ "/api/v2/tickets/1001.json": [200, { ticket: { id: 1001, status: "solved" } }], "/api/v2/tickets/1002.json": [200, { ticket: { id: 1002, status: "open" } }] }, async (base, seen) => {
+  const env = (base: string) => ({ ZENDESK_BASE_URL: base, ZENDESK_CLIENT_ID: "ginga-govern", ZENDESK_CLIENT_SECRET: "zd-secret" });
+  await api({ "/oauth/tokens": [200, { access_token: "zd-access", token_type: "bearer", scope: "tickets:read" }],
+    "/api/v2/tickets/1001.json": [200, { ticket: { id: 1001, status: "solved" } }], "/api/v2/tickets/1002.json": [200, { ticket: { id: 1002, status: "open" } }] }, async (base, seen) => {
     assert.equal((await run(["zendesk-ticket", "1001", "--solved"], env(base))).code, 0);
-    assert.equal(seen[0]!.auth, "Basic " + Buffer.from("bot@acme.test/token:zd-token").toString("base64"));
+    assert.deepEqual([seen[0]!.method, seen[0]!.url], ["POST", "/oauth/tokens"]);
+    assert.deepEqual(JSON.parse(seen[0]!.body), { grant_type: "client_credentials", client_id: "ginga-govern", client_secret: "zd-secret", scope: "tickets:read" });
+    assert.deepEqual([seen[1]!.url, seen[1]!.auth], ["/api/v2/tickets/1001.json", "Bearer zd-access"]);
     const open = await run(["zendesk-ticket", "1002", "--solved"], env(base));
     assert.equal(open.code, 1);
     assert.match(open.out, /1002 is open, not solved/);
     assert.equal((await run(["zendesk-ticket", "1002"], env(base))).code, 0);
   });
+});
+
+test("zendesk-ticket fails when Zendesk refuses the token, without echoing the secret; no client is exit 2", async () => {
+  const env = (base: string) => ({ ZENDESK_BASE_URL: base, ZENDESK_CLIENT_ID: "ginga-govern", ZENDESK_CLIENT_SECRET: "zd-secret" });
+  await api({ "/oauth/tokens": [401, { error: "invalid_client", error_description: "Client authentication failed." }] }, async (base, seen) => {
+    const r = await run(["zendesk-ticket", "1001"], env(base));
+    assert.equal(r.code, 1);
+    assert.match(r.out, /Zendesk OAuth token: 401 invalid_client/);
+    assert.doesNotMatch(r.out, /zd-secret/);
+    assert.equal(seen.length, 1, "no ticket call without a token");
+  });
+  const r = await run(["zendesk-ticket", "1001"], { ZENDESK_BASE_URL: "http://127.0.0.1:9", ZENDESK_CLIENT_SECRET: "zd-secret" });
+  assert.equal(r.code, 2);
+  assert.match(r.out, /ZENDESK_CLIENT_ID is not set/);
 });
 
 test("slack-message passes when the channel holds a message with that ts", async () => {
