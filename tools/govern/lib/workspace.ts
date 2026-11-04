@@ -48,7 +48,9 @@ export interface WorkspaceConfig {
     botTokenVar?: string; bot?: string[]; requesters?: Record<string, string>; tags?: string[]; inbox?: string;
     route?: { to: string; profile: string; maxPerHour: number };
     alerts?: { listenStaleSec: number; unansweredSec: number };
-    upload?: { roots: string[]; maxBytes: number } };
+    upload?: { roots: string[]; maxBytes: number };
+    /** One card per case in the channel, updated in place, with what the case waits on and its alerts in its thread. */
+    threads?: boolean };
 }
 /** A file path, or the list shape lib/resources.ts checks (kept as written: resources() builds the registry). */
 const resourcesShape: Shape<unknown> = (v, p) => (typeof v === "string" ? v : (RESOURCES(v, p), v));
@@ -80,6 +82,7 @@ const CONFIG = obj({}, {
     route: obj({ to: str, profile: str, maxPerHour: posInt }),
     alerts: obj({ listenStaleSec: posInt, unansweredSec: posInt }),
     upload: obj({ roots: arr(str, { nonEmpty: true }), maxBytes: posInt }),
+    threads: bool,
   }),
   conversationAdapters: record(obj({argv: arr(str, {nonEmpty: true})})),
 });

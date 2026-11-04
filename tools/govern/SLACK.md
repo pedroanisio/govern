@@ -76,6 +76,13 @@ decided: `Done by @ana`, `Approved by @ana, @gil`, `Sent back by @gil`. `posted.
 this; a message posted before blocks were kept closes as one line of text. What was posted is kept under the state folder's `slack/`. A failed Slack call is reported (exit
 1) and tried again on the next run. `--dry-run` sends nothing and leaves notification receipts unchanged. Run one notifier per workspace.
 
+With `"threads": true` in `slack`, each case gets one card in the channel: its title, its stage (or that it finished)
+and each thing it waits on with who may decide it. The card is posted when the case first needs someone or has an alert,
+and is updated in place as the case moves on. Decision messages and the case's alerts are posted as replies in the
+card's thread; people mentioned there are still notified. A card that cannot be posted holds the case's messages back
+until a later run, so they never land outside the thread. Without `threads`, every message is posted to the channel
+itself.
+
 Button labels come from `slack.labels` (`complete`, `approve`, `reject`; default Done, Approve, Send back).
 
 ## What a request must prove

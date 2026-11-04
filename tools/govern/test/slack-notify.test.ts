@@ -7,7 +7,8 @@ import { createServer, type Server } from "node:http";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { userInfo } from "node:os";
-import { makeEnv, govern, write, type Env } from "./helpers.ts";
+import { makeEnv, govern, write, childEnv, GOVERN, type Env } from "./helpers.ts";
+import { execFile } from "node:child_process";
 import { pending, notify, type NotifyReport } from "../ext/slack/notify.ts";
 import { parseAction, caseDigest } from "../ext/slack/slack.ts";
 import { humanAction, policyVote } from "../lib/business.ts";
@@ -77,7 +78,7 @@ async function inWorkspace<T>(e: Env, f: () => Promise<T> | T): Promise<T> {
   process.env.GOVERN_REPO = e.root;
   try { return await f(); } finally { if (old === undefined) delete process.env.GOVERN_REPO; else process.env.GOVERN_REPO = old; }
 }
-const run = (e: Env, api: string, o: { dryRun?: boolean } = {}): Promise<NotifyReport> =>
+const run = (e: Env, api: string, o: { dryRun?: boolean; threads?: boolean } = {}): Promise<NotifyReport> =>
   inWorkspace(e, () => notify({ api, token: "xoxb-test-token", channel: "C0SUP", ...o }));
 const buttonsOf = (c: Call) => ((c.body.blocks as { type: string; elements?: { action_id: string; value: string; text: { text: string } }[] }[]) ?? [])
   .filter((b) => b.type === "actions").flatMap((b) => b.elements ?? []);
@@ -282,4 +283,96 @@ test("a stage govern drive left to the operator is posted once, with its reason"
     assert.equal(buttonsOf(post).length, 0);
     assert.deepEqual((await run(e, api)).alerts, []);
   });
+});
+
+// slack.threads: one card per case, kept up to date in place; what the case waits on and its alerts go in its thread.
+const posts = (calls: Call[]) => calls.filter((c) => c.method === "chat.postMessage");
+const cardOf = (calls: Call[]) => posts(calls).find((c) => c.body.thread_ts === undefined)!;
+
+test("with threads, a case gets one card and its decisions are posted in the card's thread", async () => {
+  const e = setup();
+  await fakeSlack(async (api, calls) => {
+    const r = await run(e, api, { threads: true });
+    assert.deepEqual(r.posted, ["t1:card", "t1:task:draft"]);
+    const card = cardOf(calls), ask = posts(calls)[1]!;
+    assert.match(String(card.body.text), /Ticket one/);
+    assert.match(JSON.stringify(card.body.blocks), /draft/, "the card names the stage");
+    assert.match(JSON.stringify(card.body.blocks), /Waiting on.*task \*draft\*/s);
+    assert.equal(buttonsOf(card).length, 0, "the card itself has no buttons");
+    assert.equal(ask.body.thread_ts, "1793000000.000001", "the decision is a reply to the card");
+    assert.equal(buttonsOf(ask).length, 1);
+    assert.deepEqual((await run(e, api, { threads: true })).posted, [], "nothing changed: nothing is posted again");
+    assert.equal(calls.length, 2);
+  });
+});
+
+test("with threads, the card is updated in place as the case moves on, and the next decision joins its thread", async () => {
+  const e = setup();
+  await fakeSlack(async (api, calls) => {
+    await run(e, api, { threads: true });
+    await inWorkspace(e, () => {
+      const p = load("t1");
+      humanAction(p, "draft", "claim", "ana", "mine");
+      humanAction(p, "draft", "complete", "ana", "Rascunho pronto");
+      save(p);
+    });
+    assert.equal(govern(e, ["advance", "t1", "--note", "draft done"]).code, 0);
+    const r = await run(e, api, { threads: true });
+    assert.deepEqual(r.posted, ["t1:gate:validacao"]);
+    assert.deepEqual(r.closed, ["t1:task:draft"]);
+    assert.equal(posts(calls).filter((c) => c.body.thread_ts === undefined).length, 1, "still one card");
+    const cardUpdate = calls.find((c) => c.method === "chat.update" && c.body.ts === "1793000000.000001")!;
+    assert.ok(cardUpdate, "the card is updated in place");
+    assert.match(JSON.stringify(cardUpdate.body.blocks), /review/);
+    assert.match(JSON.stringify(cardUpdate.body.blocks), /decision \*validacao\*/);
+    assert.equal(posts(calls).at(-1)!.body.thread_ts, "1793000000.000001");
+  });
+});
+
+test("with threads, a case's timer alert goes in its thread, and a finished case's card says so", async () => {
+  const e = setup(1);
+  await new Promise((r) => setTimeout(r, 1100));
+  assert.equal(govern(e, ["tick", "t1"]).code, 0);
+  await fakeSlack(async (api, calls) => {
+    const r = await run(e, api, { threads: true });
+    assert.equal(r.alerts.length, 1);
+    const alert = posts(calls).find((c) => /due|draft/.test(String(c.body.text)) && buttonsOf(c).length === 0 && c.body.thread_ts !== undefined);
+    assert.ok(alert, "the alert is a reply to the card");
+    await inWorkspace(e, () => { const p = load("t1"); p.finished = "2026-11-04T00:00:00.000Z"; p.workflow = { ...p.workflow!, active: [], waiting: [] }; save(p); });
+    await run(e, api, { threads: true });
+    const last = calls.filter((c) => c.method === "chat.update" && c.body.ts === "1793000000.000001").at(-1)!;
+    assert.match(JSON.stringify(last.body.blocks), /[Ff]inished/);
+  });
+});
+
+test("with threads, a lane with nothing waiting gets no card, and a failed card post holds the lane's replies back", async () => {
+  const e = setup();
+  await inWorkspace(e, () => { const p = load("t1"); p.finished = "2026-11-04T00:00:00.000Z"; p.workflow = { ...p.workflow!, active: [], waiting: [] }; save(p); });
+  await fakeSlack(async (api, calls) => {
+    assert.deepEqual((await run(e, api, { threads: true })).posted, []);
+    assert.equal(calls.length, 0);
+  });
+  const f = setup();
+  let refuse = true;
+  await fakeSlack(async (api, calls) => {
+    const r = await run(f, api, { threads: true });
+    assert.deepEqual(r.posted, []); assert.equal(r.failed.length, 1);
+    assert.equal(calls.length, 1, "no top-level fallback for the decision");
+    refuse = false;
+    assert.deepEqual((await run(f, api, { threads: true })).posted, ["t1:card", "t1:task:draft"]);
+  }, (_m, body) => (refuse && body.thread_ts === undefined ? "channel_not_found" : undefined));
+});
+
+test("govern slack notify posts cards when the config sets slack.threads", async () => {
+  const e = setup();
+  const cfg = JSON.parse(readFileSync(join(e.root, "govern.config.json"), "utf8"));
+  write(join(e.root, "govern.config.json"), JSON.stringify({ ...cfg, slack: { ...cfg.slack, threads: true } }));
+  await fakeSlack(async (api, calls) => {
+    const out = await new Promise<string>((resolve, reject) => execFile(process.execPath, ["--disable-warning=ExperimentalWarning", GOVERN, "slack", "notify"],
+      { env: childEnv(e, { GOVERN_SLACK_API: api, SLACK_BOT_TOKEN: "xoxb-cli" }), encoding: "utf8" }, (err, stdout, stderr) => (err ? reject(new Error(stderr)) : resolve(stdout))));
+    assert.match(out, /posted t1:card/);
+    assert.equal(posts(calls)[1]!.body.thread_ts, posts(calls)[0]!.body.ts ?? "1793000000.000001");
+  });
+  write(join(e.root, "govern.config.json"), JSON.stringify({ ...cfg, slack: { ...cfg.slack, threads: "yes" } }));
+  assert.notEqual(govern(e, ["slack", "notify", "--dry-run"], { SLACK_BOT_TOKEN: "xoxb-cli" }).code, 0, "threads must be a boolean");
 });

@@ -60,7 +60,7 @@ async function cmdNotify(a: Args): Promise<void> {
   if (!Number.isInteger(interval) || interval < 5) usage("--interval must be a whole number of seconds, 5 or more");
   const once = async () => {
     const r = await notify({ api: process.env.GOVERN_SLACK_API ?? SLACK_API, token, channel, dryRun: flag(a, "dry-run"),
-      ...(lanes.length ? { lanes } : {}), ...(cfg.labels ? { labels: cfg.labels } : {}) });
+      ...(lanes.length ? { lanes } : {}), ...(cfg.labels ? { labels: cfg.labels } : {}), ...(cfg.threads ? { threads: true } : {}) });
     out(summary(r));
     return r.failed.length === 0;
   };

@@ -11,6 +11,7 @@ All notable changes to govern are documented here, following Keep a Changelog.
 
 ### Added
 
+- `slack.threads` gives each case one card in the Slack channel, updated in place with its stage and what it waits on from whom. The case's decision messages and alerts are posted in the card's thread instead of the channel itself.
 - The `watch` config names systemd units: `govern desk` shows their state and time since last success, `govern slack digest` lists failing ones, and `govern slack notify` alerts once per failure episode. A missing unit or a host without systemd is reported plainly.
 - `govern slack install-service` writes user units for independent listen and notify loops plus a persistent daily digest timer, without starting them or copying credentials.
 

@@ -20,7 +20,9 @@ import type { Scalar } from "../../lib/business-schema.ts";
 export { pending, type Pending };
 
 export interface NotifyOptions { api?: string; token: string; channel: string; lanes?: string[]; dryRun?: boolean;
-  labels?: Partial<Record<Decision, string>> }
+  labels?: Partial<Record<Decision, string>>;
+  /** One card per case, updated in place; what the case waits on and its alerts are posted in the card's thread. */
+  threads?: boolean }
 /** What one run did, by key (`lane:task:stage`, `lane:gate:name`, `lane:alert:id`); failed lines name the key and the reason. */
 export interface NotifyReport { posted: string[]; closed: string[]; superseded: string[]; alerts: string[]; failed: string[] }
 
@@ -30,7 +32,9 @@ const LABELS: Record<Decision, string> = { complete: "Done", approve: "Approve",
 /** A posted decision message: where it is, the case version its buttons are bound to, and its text and blocks as posted
  *  (records from before blocks were kept have none, and close as text). */
 interface Posted { lane: string; channel: string; ts: string; digest: string; text: string; blocks?: unknown[] }
-interface State { posted: Record<string, Posted>; alerts: Record<string, string> }
+/** A case's card (slack.threads): where it is and the text it shows now. */
+interface Card { channel: string; ts: string; text: string }
+interface State { posted: Record<string, Posted>; alerts: Record<string, string>; cards?: Record<string, Card> }
 const dir = () => join(stateDir(), "slack");
 const file = () => join(dir(), "posted.json");
 function readState(): State {
@@ -96,6 +100,16 @@ function message(p: Project, item: Pending, labels: Record<Decision, string>): {
   };
 }
 
+/** A case's card: its title and stage (or that it finished), and each thing it waits on with who may decide it. */
+function card(p: Project, items: Pending[]): { text: string; blocks: unknown[] } {
+  const pr = processOf(p), who = (ids: string[]) => ids.map((id) => (pr.people?.[id]?.slack ? `<@${pr.people[id]!.slack}>` : id)).join(" ");
+  const where = p.finished ? "Finished" : `stage *${p.stage}*`;
+  const waiting = items.map((i) => `• ${what(i.target)} — ${i.people.length ? who(i.people) : "_nobody may decide this_"}`);
+  const body = p.finished ? "" : waiting.length ? `\nWaiting on:\n${waiting.join("\n")}` : "\nNothing waits on people now.";
+  const text = `${heading(p)} · ${where}${body}`;
+  return { text: `${p.title} (${p.slug}): ${p.finished ? "finished" : p.stage}`, blocks: [{ type: "section", text: { type: "mrkdwn", text: text.slice(0, 2900) } }] };
+}
+
 /** A posted message once its buttons are gone: what it asked, as posted, then one line saying who decided (when `p` says)
  *  and why it closed. A record without its blocks closes as one line of text. */
 function closing(rec: Posted, key: string, why: string, p?: Project): { text: string; blocks: unknown[] } {
@@ -129,6 +143,24 @@ export async function notify(o: NotifyOptions): Promise<NotifyReport> {
         if (!o.dryRun) delete state.posted[key];
       }
     }
+    // slack.threads: the case's card, posted once the case needs someone (or has an alert), then kept up to date. A card
+    // that cannot be posted holds the lane's posts back, so they never land outside its thread.
+    let thread: string | undefined;
+    if (o.threads) {
+      const cards = (state.cards ??= {}), c = card(p, items), had = cards[slug];
+      const alerting = failures.some((f) => f.lane === slug && !state.alerts[f.key]) || (p.alerts ?? []).some((a) => !a.acknowledgedAt && !state.alerts[`${slug}:alert:${a.id}`]);
+      if (had) {
+        if (had.text !== JSON.stringify(c.blocks) && await send(`${slug}:card`, "chat.update", { channel: had.channel, ts: had.ts, ...c }) && !o.dryRun) cards[slug] = { ...had, text: JSON.stringify(c.blocks) };
+        thread = had.ts;
+      } else if (items.length || alerting) {
+        const sent = await send(`${slug}:card`, "chat.postMessage", { channel: o.channel, ...c });
+        if (!sent) continue;
+        report.posted.push(`${slug}:card`);
+        if (!o.dryRun) cards[slug] = { channel: sent.channel, ts: sent.ts, text: JSON.stringify(c.blocks) };
+        thread = sent.ts;
+      }
+    }
+    const inThread = thread ? { thread_ts: thread } : {};
     for (const item of items) {
       const rec = state.posted[item.key];
       if (rec?.digest === digest) continue;
@@ -138,7 +170,7 @@ export async function notify(o: NotifyOptions): Promise<NotifyReport> {
         if (!o.dryRun) delete state.posted[item.key];
       }
       const m = message(p, item, labels);
-      const sent = await send(item.key, "chat.postMessage", { channel: o.channel, ...m });
+      const sent = await send(item.key, "chat.postMessage", { channel: o.channel, ...inThread, ...m });
       if (!sent) continue;
       report.posted.push(item.key);
       if (!o.dryRun) state.posted[item.key] = { lane: slug, channel: sent.channel, ts: sent.ts, digest, text: m.text, blocks: m.blocks };
@@ -146,7 +178,7 @@ export async function notify(o: NotifyOptions): Promise<NotifyReport> {
     for (const f of failures.filter((x) => x.lane === slug)) {
       if (state.alerts[f.key]) continue;
       const text = `${p.title} (${slug}): the ${f.stage} stage needs a person — govern drive gave up after ${f.attempt} attempt${f.attempt === 1 ? "" : "s"}: ${f.reason}`;
-      const sent = await send(f.key, "chat.postMessage", { channel: o.channel, text });
+      const sent = await send(f.key, "chat.postMessage", { channel: o.channel, ...inThread, text });
       if (!sent) continue;
       report.alerts.push(f.key);
       if (!o.dryRun) state.alerts[f.key] = sent.ts;
@@ -155,7 +187,7 @@ export async function notify(o: NotifyOptions): Promise<NotifyReport> {
       const key = `${slug}:alert:${alert.id}`;
       if (alert.acknowledgedAt || state.alerts[key]) continue;
       const text = `${p.title} (${slug}): ${alert.kind} at ${alert.stage} — ${alert.message}`;
-      const sent = await send(key, "chat.postMessage", { channel: o.channel, text });
+      const sent = await send(key, "chat.postMessage", { channel: o.channel, ...inThread, text });
       if (!sent) continue;
       report.alerts.push(key);
       if (!o.dryRun) state.alerts[key] = sent.ts;
@@ -169,6 +201,11 @@ export async function notify(o: NotifyOptions): Promise<NotifyReport> {
         report.closed.push(key);
         if (!o.dryRun) delete state.posted[key];
       }
+    }
+    for (const [lane, c] of Object.entries(state.cards ?? {})) {
+      if (known.has(lane)) continue;
+      const gone = { text: `${lane}: the case no longer exists`, blocks: [{ type: "section", text: { type: "mrkdwn", text: `\`${lane}\` · _the case no longer exists_` } }] };
+      if (await send(`${lane}:card`, "chat.update", { channel: c.channel, ts: c.ts, ...gone }) && !o.dryRun) delete state.cards![lane];
     }
   }
   const channelCfg = slackConfig();
