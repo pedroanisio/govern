@@ -21,6 +21,7 @@ export const PUBLISH_ID = "govern.publish";
  *  so a publisher always sees the whole text they publish. */
 const SECTION = 2900, SECTIONS = 12;
 const KIND = "delivered";
+/** The send key a published reply is journaled under in sent.jsonl, so it is posted once. */
 export const publishKey = (reply: string): string => `publish:${reply}`;
 
 /** A reply that may be offered: the routed request it answers (its ts and thread), its text and the text's digest. */
