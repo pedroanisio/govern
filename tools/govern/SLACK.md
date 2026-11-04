@@ -71,7 +71,9 @@ channel) in the environment or the `slack.envFile`. `govern slack notify` (or `-
 - each open timer alert, and each stage `govern drive` left to the operator, once, as text.
 
 When the decision is made, or the case changes under a message, the message is updated without its buttons; a changed
-case gets a new message. What was posted is kept under the state folder's `slack/`. A failed Slack call is reported (exit
+case gets a new message. A closed message keeps what it asked and gains one line (block `govern.outcome`) saying who
+decided: `Done by @ana`, `Approved by @ana, @gil`, `Sent back by @gil`. `posted.json` keeps each message's blocks for
+this; a message posted before blocks were kept closes as one line of text. What was posted is kept under the state folder's `slack/`. A failed Slack call is reported (exit
 1) and tried again on the next run. `--dry-run` sends nothing and leaves notification receipts unchanged. Run one notifier per workspace.
 
 Button labels come from `slack.labels` (`complete`, `approve`, `reject`; default Done, Approve, Send back).
@@ -112,7 +114,11 @@ signature against the recorded body and timestamp again.
   can forge a request. Keep it readable only by the account that runs `govern slack serve`, and out of reach of agent
   sessions.
 - Slack authenticates the user. govern trusts that identity and the `people.<id>.slack` mapping the process owner wrote.
-- After recording a decision, `serve` immediately replaces the clicked message through its signed payload’s `response_url`. Refusals explain why in an ephemeral reply to the clicker. Only HTTPS `hooks.slack.com` URLs without credentials or nondefault ports are accepted; redirects are refused. A failed callback never undoes a decision; `notify` still reconciles on its next run. Payloads without a response URL retain HTTP-only feedback.
+- After recording a decision, `serve` immediately replaces the clicked message through its signed payload’s `response_url`.
+  It rebuilds the message from the copy Slack sends with the click: what it asked stays, and one line says where the
+  decision stands. A policy gate short of its quorum keeps its buttons, with progress above them (`1/2 approvals: @ana`),
+  while the case is still the version the buttons are bound to; otherwise the buttons go. Without that copy the bare
+  outcome line replaces the message. Refusals explain why in an ephemeral reply to the clicker. Only HTTPS `hooks.slack.com` URLs without credentials or nondefault ports are accepted; redirects are refused. A failed callback never undoes a decision; `notify` still reconciles on its next run. Payloads without a response URL retain HTTP-only feedback.
 
 ## Reading a channel and sending messages
 

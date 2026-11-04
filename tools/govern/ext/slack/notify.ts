@@ -7,20 +7,18 @@ import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "
 import { join } from "node:path";
 import { load, laneSlugs, type Project } from "../../lib/project.ts";
 import { processOf } from "../../lib/process.ts";
-import { activeStages, eligibleHuman, eligibleApprover, gateApproved } from "../../lib/business.ts";
 import { stateDir, slackConfig } from "../../lib/workspace.ts";
 import { withLaneLock } from "../../lib/lane-lock.ts";
 import { GovernError, fail } from "../../lib/util.ts";
 import { channelAlerts } from "./route.ts";
 import { watched, serviceAlerts } from "../../lib/services.ts";
 import { slackCall } from "./channel.ts";
-import { ACTION_ID, caseDigest, decisionValue, optionSet, type Decision, type Target } from "./slack.ts";
+import { ACTION_ID, caseDigest, decisionValue, type Decision, type Target } from "./slack.ts";
+import { pending, settled, standing, targetOf, ACTIONS_BLOCK, type Pending } from "./pending.ts";
 import type { Scalar } from "../../lib/business-schema.ts";
 
-/** One thing a lane waits on from people: a human task or a gate, who may decide it, and how. */
-export interface Pending { key: string; lane: string; target: Target; decisions: Decision[]; people: string[];
-  /** A gate's approve options as they stand on the case: each its label and the fields it sets. */
-  options?: { label: string; set: Record<string, Scalar> }[] }
+export { pending, type Pending };
+
 export interface NotifyOptions { api?: string; token: string; channel: string; lanes?: string[]; dryRun?: boolean;
   labels?: Partial<Record<Decision, string>> }
 /** What one run did, by key (`lane:task:stage`, `lane:gate:name`, `lane:alert:id`); failed lines name the key and the reason. */
@@ -29,32 +27,9 @@ export interface NotifyReport { posted: string[]; closed: string[]; superseded: 
 export const SLACK_API = "https://slack.com/api";
 const LABELS: Record<Decision, string> = { complete: "Done", approve: "Approve", reject: "Send back" };
 
-/** What `p` waits on from people now: its active human tasks not completed (for the assignee, else everyone eligible),
- *  and its gates at an active stage (or with no stage) whose needed gates are approved and which are not approved yet. */
-export function pending(p: Project): Pending[] {
-  if (p.finished) return [];
-  const pr = processOf(p), people = Object.keys(pr.people ?? {}), active = activeStages(p), out: Pending[] = [];
-  for (const stage of active) {
-    if (!pr.stages.find((s) => s.name === stage)?.human) continue;
-    const task = p.humanTasks?.[stage];
-    if (task?.completedAt) continue;
-    out.push({ key: `${p.slug}:task:${stage}`, lane: p.slug, target: { task: stage }, decisions: ["complete"],
-      people: task?.assignee ? [task.assignee] : people.filter((id) => eligibleHuman(pr, stage, id)) });
-  }
-  for (const g of pr.gates) {
-    if ((g.stage && !active.includes(g.stage)) || gateApproved(p, g)) continue;
-    if ((g.needs ?? []).some((n) => !gateApproved(p, pr.gates.find((x) => x.name === n)))) continue;
-    const excluded = new Set((g.policy?.excludeFields ?? []).map((f) => String(p.data?.[f])));
-    const owner = g.owner ?? "owner";
-    out.push({ key: `${p.slug}:gate:${g.name}`, lane: p.slug, target: { gate: g.name },
-      decisions: g.policy ? ["approve", "reject"] : ["approve"],
-      ...(g.options ? { options: g.options.map((o) => ({ label: o.label, set: optionSet(o, p) })) } : {}),
-      people: g.policy ? people.filter((id) => eligibleApprover(pr, g, id) && !excluded.has(id)) : people.includes(owner) ? [owner] : [] });
-  }
-  return out;
-}
-
-interface Posted { lane: string; channel: string; ts: string; digest: string; text: string }
+/** A posted decision message: where it is, the case version its buttons are bound to, and its text and blocks as posted
+ *  (records from before blocks were kept have none, and close as text). */
+interface Posted { lane: string; channel: string; ts: string; digest: string; text: string; blocks?: unknown[] }
 interface State { posted: Record<string, Posted>; alerts: Record<string, string> }
 const dir = () => join(stateDir(), "slack");
 const file = () => join(dir(), "posted.json");
@@ -116,13 +91,20 @@ function message(p: Project, item: Pending, labels: Record<Decision, string>): {
     blocks: [
       { type: "section", text: { type: "mrkdwn", text: `${heading(p)} · ${what(item.target)}${detail ? `\n${detail}` : ""}\n${slack.length ? slack.map((u) => `<@${u}>`).join(" ") : "_nobody with a Slack id may decide this_"}` } },
       ...options.map((t) => ({ type: "section", text: { type: "mrkdwn", text: t.slice(0, 2900) } })),
-      { type: "actions", block_id: "govern", elements: buttons },
+      { type: "actions", block_id: ACTIONS_BLOCK, elements: buttons },
     ],
   };
 }
 
-/** The text a message keeps once its buttons are gone. */
-const closing = (text: string, why: string) => ({ text: `${text} — ${why}`, blocks: [{ type: "section", text: { type: "mrkdwn", text: `${text} — _${why}_` } }] });
+/** A posted message once its buttons are gone: what it asked, as posted, then one line saying who decided (when `p` says)
+ *  and why it closed. A record without its blocks closes as one line of text. */
+function closing(rec: Posted, key: string, why: string, p?: Project): { text: string; blocks: unknown[] } {
+  const target = p && targetOf(key, rec.lane), decided = p && target ? standing(p, target) : undefined;
+  const blocks = settled(rec.blocks, decided ? `${decided} · _${why}_` : `_${why}_`, false);
+  return { text: `${rec.text} — ${why}`, blocks: blocks ?? [{ type: "section", text: { type: "mrkdwn", text: `${rec.text} — _${why}_` } }] };
+}
+/** An alert's message once its condition cleared. */
+const cleared = (text: string, why: string) => ({ text: `${text} — ${why}`, blocks: [{ type: "section", text: { type: "mrkdwn", text: `${text} — _${why}_` } }] });
 
 /** Bring the channel up to date with the lanes (all, or `o.lanes`): post what is newly pending, update what was decided
  *  or changed, post each open alert once. A failed call is reported and retried on the next run; with dryRun nothing is
@@ -142,7 +124,7 @@ export async function notify(o: NotifyOptions): Promise<NotifyReport> {
     for (const [key, rec] of Object.entries(state.posted)) {
       if (rec.lane !== slug || keys.has(key)) continue;
       const why = p.finished ? "decided; the case is finished" : `decided; no longer waiting (now at ${p.stage})`;
-      if (await send(key, "chat.update", { channel: rec.channel, ts: rec.ts, ...closing(rec.text, why) })) {
+      if (await send(key, "chat.update", { channel: rec.channel, ts: rec.ts, ...closing(rec, key, why, p) })) {
         report.closed.push(key);
         if (!o.dryRun) delete state.posted[key];
       }
@@ -151,7 +133,7 @@ export async function notify(o: NotifyOptions): Promise<NotifyReport> {
       const rec = state.posted[item.key];
       if (rec?.digest === digest) continue;
       if (rec) {
-        if (!(await send(item.key, "chat.update", { channel: rec.channel, ts: rec.ts, ...closing(rec.text, "the case changed: see the newer message") }))) continue;
+        if (!(await send(item.key, "chat.update", { channel: rec.channel, ts: rec.ts, ...closing(rec, item.key, "the case changed: see the newer message") }))) continue;
         report.superseded.push(item.key);
         if (!o.dryRun) delete state.posted[item.key];
       }
@@ -159,7 +141,7 @@ export async function notify(o: NotifyOptions): Promise<NotifyReport> {
       const sent = await send(item.key, "chat.postMessage", { channel: o.channel, ...m });
       if (!sent) continue;
       report.posted.push(item.key);
-      if (!o.dryRun) state.posted[item.key] = { lane: slug, channel: sent.channel, ts: sent.ts, digest, text: m.text };
+      if (!o.dryRun) state.posted[item.key] = { lane: slug, channel: sent.channel, ts: sent.ts, digest, text: m.text, blocks: m.blocks };
     }
     for (const f of failures.filter((x) => x.lane === slug)) {
       if (state.alerts[f.key]) continue;
@@ -183,7 +165,7 @@ export async function notify(o: NotifyOptions): Promise<NotifyReport> {
     const known = new Set(slugs);
     for (const [key, rec] of Object.entries(state.posted)) {
       if (known.has(rec.lane)) continue;
-      if (await send(key, "chat.update", { channel: rec.channel, ts: rec.ts, ...closing(rec.text, "the case no longer exists") })) {
+      if (await send(key, "chat.update", { channel: rec.channel, ts: rec.ts, ...closing(rec, key, "the case no longer exists") })) {
         report.closed.push(key);
         if (!o.dryRun) delete state.posted[key];
       }
@@ -196,7 +178,7 @@ export async function notify(o: NotifyOptions): Promise<NotifyReport> {
   const activeChannelKeys = new Set([...channelConditions.map(a => a.key), ...services.held.keys()]);
   for (const [key, ts] of Object.entries(state.alerts)) {
     if (!key.startsWith("channel:") || activeChannelKeys.has(key)) continue;
-    if (await send(key, "chat.update", { channel: o.channel, ts, ...closing(key, "condition cleared") })) {
+    if (await send(key, "chat.update", { channel: o.channel, ts, ...cleared(key, "condition cleared") })) {
       report.closed.push(key); if (!o.dryRun) delete state.alerts[key];
     }
   }
