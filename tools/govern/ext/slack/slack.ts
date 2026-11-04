@@ -19,7 +19,9 @@ import { GovernError, fail, nowIso } from "../../lib/util.ts";
 import type { Source } from "../../lib/approval.ts";
 import { setData } from "../../lib/business.ts";
 import type { Scalar } from "../../lib/business-schema.ts";
-import type { GateOption } from "../../lib/business-schema.ts";
+import { optionSet, pending, settled, standing } from "./pending.ts";
+
+export { optionSet };
 
 /** How far a request's timestamp may be from the server's clock (Slack's own recommendation), in seconds. */
 export const SKEW_SECONDS = 300;
@@ -111,12 +113,6 @@ export function decisionValue(p: Project, target: Target, decision: Decision, se
   return JSON.stringify({ v: 1, lane: p.slug, ...target, decision, digest: caseDigest(p), ...(set ? { set } : {}) });
 }
 
-/** A gate option's case data as it stands on `p`: {data.FIELD} in a string value filled from the case ("" when absent). */
-export function optionSet(o: GateOption, p: Pick<Project, "data">): Record<string, Scalar> {
-  return Object.fromEntries(Object.entries(o.set).map(([k, v]) => [k, typeof v === "string"
-    ? v.replace(/\{data\.([^{}]+)\}/g, (_m, f: string) => { const x = p.data?.[f]; return x === undefined ? "" : String(x); }) : v]));
-}
-
 const seenDir = () => join(stateDir(), "slack");
 /** Remember `signature` until it can no longer pass the clock check; fails (Unauthorized) when it was already received. */
 function remember(signature: string, now: number): void {
@@ -200,9 +196,11 @@ const STATUS = (e: unknown): number =>
 interface InteractionOptions { now?: () => number; request?: typeof fetch }
 interface InteractionResult { status: number; value: { ok: boolean; text?: string; error?: string } }
 
+const payloadOf = (body: Buffer): unknown => JSON.parse(new URLSearchParams(body.toString("utf8")).get("payload") ?? "null");
+
 /** Only an authenticated payload can provide a response capability. Never follow redirects or send an API token. */
 function responseUrl(body: Buffer): string | undefined {
-  const raw: unknown = JSON.parse(new URLSearchParams(body.toString("utf8")).get("payload") ?? "null");
+  const raw = payloadOf(body);
   if (!record(raw) || raw.response_url === undefined) return undefined;
   let url: URL;
   try { url = new URL(typeof raw.response_url === "string" ? raw.response_url : ""); }
@@ -212,10 +210,21 @@ function responseUrl(body: Buffer): string | undefined {
   return url.href;
 }
 
+/** The clicked message once `a` is recorded: what it asked, as Slack sent it with the click, with one line saying where the
+ *  decision stands. Its buttons stay while the same target still waits on others (a gate short of its quorum) on the case
+ *  version they are bound to; otherwise they go. Without the clicked message's blocks, the bare `line` replaces it. */
+function decided(body: Buffer, a: SlackAction, line: string): { text: string; blocks: unknown[] } {
+  const raw = payloadOf(body), message = record(raw) && record(raw.message) ? raw.message : undefined;
+  const p = load(checkSlug(a.lane)), key = "task" in a.target ? `task:${a.target.task}` : `gate:${a.target.gate}`;
+  const open = caseDigest(p) === a.digest && pending(p).some((i) => i.key === `${p.slug}:${key}`);
+  const blocks = settled(message?.blocks, standing(p, a.target) ?? line, open);
+  return blocks ? { text: typeof message?.text === "string" && message.text ? message.text : line, blocks } : { text: line, blocks: [] };
+}
+
 /** Verify, record, then report the outcome through Slack's response URL. Failed feedback never reverses a decision. */
 export async function handleInteraction(secret: string, body: Buffer, ts: string | undefined, sig: string | undefined,
   o: InteractionOptions = {}): Promise<InteractionResult> {
-  let url: string | undefined, result: InteractionResult;
+  let url: string | undefined, action: SlackAction | undefined, result: InteractionResult;
   try {
     const at = (o.now ?? (() => Math.floor(Date.now() / 1000)))();
     verifySignature(secret, ts, sig, body, at);
@@ -224,7 +233,7 @@ export async function handleInteraction(secret: string, body: Buffer, ts: string
       if (e instanceof SyntaxError) throw new BadRequest("the payload is not JSON");
       throw e;
     }
-    const a = parseAction(body);
+    const a = action = parseAction(body);
     remember(sig!, at);
     const line = perform(a, { kind: "slack", team: a.team, user: a.user, timestamp: ts!, signedBody: body.toString("utf8"), signature: sig! });
     result = { status: 200, value: { ok: true, text: line } };
@@ -237,8 +246,8 @@ export async function handleInteraction(secret: string, body: Buffer, ts: string
     try {
       const response = await (o.request ?? fetch)(url, { method: "POST", redirect: "error", signal: AbortSignal.timeout(2000),
         headers: { "Content-Type": "application/json; charset=utf-8" },
-        body: JSON.stringify(result.value.ok
-          ? { replace_original: true, response_type: "in_channel", text: result.value.text, blocks: [] }
+        body: JSON.stringify(result.value.ok && action
+          ? { replace_original: true, response_type: "in_channel", ...decided(body, action, result.value.text!) }
           : { replace_original: false, response_type: "ephemeral", text: `Refused: ${result.value.error}` }) });
       if (!response.ok) throw new Error("refused");
     } catch { process.stderr.write("slack: response update failed; decision outcome retained; notify will reconcile\n"); }

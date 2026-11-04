@@ -153,6 +153,27 @@ test("a decided item's message is updated without buttons, and the next decision
   });
 });
 
+test("a decided item's message keeps what it asked and says who decided", async () => {
+  const e = setup();
+  await fakeSlack(async (api, calls) => {
+    await run(e, api);
+    await inWorkspace(e, () => {
+      const p = load("t1");
+      humanAction(p, "draft", "claim", "ana", "mine");
+      humanAction(p, "draft", "complete", "ana", "Rascunho pronto");
+      save(p);
+    });
+    assert.equal(govern(e, ["advance", "t1", "--note", "draft done"]).code, 0);
+    await run(e, api);
+    const update = calls.find((c) => c.method === "chat.update")!;
+    const blocks = update.body.blocks as { type: string; block_id?: string }[];
+    assert.deepEqual(blocks[0], (calls[0]!.body.blocks as unknown[])[0], "the asking section stays as posted");
+    assert.ok(!blocks.some((b) => b.type === "actions"));
+    const line = JSON.stringify(blocks.filter((b) => b.block_id === "govern.outcome"));
+    assert.match(line, /Done by <@U0ANA>/); assert.match(line, /no longer waiting/);
+  });
+});
+
 test("a case that changed under a posted message gets its message superseded and a new one posted", async () => {
   const e = setup();
   await fakeSlack(async (api, calls) => {
