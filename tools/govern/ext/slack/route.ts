@@ -13,7 +13,8 @@ import { obj, str, record, parseFile, bool } from "../../lib/shape.ts";
 import { GovernError } from "../../lib/util.ts";
 import * as queue from "../../lib/queue.ts";
 import { registry, getProfile, capsOf } from "../../lib/caps.ts";
-import { directory, save, sent, seenMessage, parseCommand, type Post, type Call, type ChannelConfig } from "./channel.ts";
+import { triage } from "./triage.ts";
+import { directory, save, seenMessage, parseCommand, type Post, type Call, type ChannelConfig } from "./channel.ts";
 
 export type SlackConfig = NonNullable<WorkspaceConfig["slack"]>;
 interface Route { task: string; at: string }
@@ -29,7 +30,8 @@ function read<T>(d: string, name: string, shape: (v: unknown, p: string) => T, f
 
 // Inbox objects keep the Python format. Reparse raw author/text/tag against today's config: stored eligibility cannot
 // grant a revoked requester new access. An unreadable row is deliberately ignored; other malformed rows fail closed.
-function posts(d: string, cfg: ChannelConfig): Post[] {
+/** The durable inbox's posts, first version per ts, oldest first, reparsed against today's config. */
+export function posts(d: string, cfg: ChannelConfig): Post[] {
   const f = join(d, "inbox.jsonl");
   if (!existsSync(f)) return [];
   const byTs = new Map<string, Post>();
@@ -139,10 +141,14 @@ export function channelAlerts(cfg: SlackConfig, now = Date.now()): ChannelAlert[
   if (cfg.alerts) {
     const beat = read(d, "heartbeat.json", obj({ lastSuccess: str }, { hasMore: bool }), undefined);
     if (!beat || !Number.isFinite(Date.parse(beat.lastSuccess)) || now - Date.parse(beat.lastSuccess) > cfg.alerts.listenStaleSec * 1000) out.push({ key: "channel:listen-stale", text: "Slack listener heartbeat is missing or stale" });
-    const receipts = sent(d), bots = read<Record<string, string>>(d, "bot-replies.json", record(str), {});
-    for (const p of newPosts(d, c).filter(p => eligible(p, c))) {
-      const thread = p.thread_ts ?? p.ts;
-      if (now / 1000 - Number(p.ts) > cfg.alerts.unansweredSec && !receipts.some(r => r.thread === thread || r.ts === thread) && !Object.hasOwn(bots, thread)) out.push({ key: `channel:unanswered:${p.ts}`, text: `Slack request ${p.ts} from ${cfg.requesters![p.user]} has no reply in thread ${thread}` });
+    const late = (ts: string) => now / 1000 - Number(ts) > cfg.alerts!.unansweredSec;
+    const items = triage({ ...c, inbox: d });
+    for (const i of items.filter(i => i.state === "request" && late(i.ts))) {
+      const p = newPosts(d, c).find(p => p.ts === i.ts)!;
+      if (eligible(p, c)) out.push({ key: `channel:unanswered:${i.ts}`, text: `Slack request ${i.ts} from ${cfg.requesters![i.user]} has no reply in thread ${i.thread} after it` });
+    }
+    if (cfg.triage) for (const i of items.filter(i => i.state === "review" && late(i.ts))) {
+      out.push({ key: `channel:review:${i.ts}`, text: `Slack post ${i.ts} from ${i.who ?? i.user} has no mapping and no review decision (govern slack triage)` });
     }
   }
   if (cfg.route) {

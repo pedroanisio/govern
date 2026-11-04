@@ -242,6 +242,29 @@ and channel alerts. With nothing to report it sends nothing. A `digest:YYYY-MM-D
 and prevents repeats that day. It uses the configured channel credentials and private send journal. An oversized digest
 is refused instead of silently omitting work. An ambiguous send requires the keyed-send reconciliation above. Use `install-service` below to write a daily timer explicitly.
 
+## Triage: every post gets a disposition
+
+`govern slack triage` reads only the local journals and gives every inbox post after the start line exactly one state:
+
+| state | meaning |
+|---|---|
+| `answered` | a send in `sent.jsonl` or a bot reply in `bot-replies.json`, in the post's thread, **later than the post**. The send that opened a thread, or a reply before the post, does not count. |
+| `dismissed` | `govern slack dismiss --ts TS --reason R` recorded, in `triage.jsonl`, that the post needs nothing further and why. |
+| `mapped` | a `slack.triage.rules` pattern matches its text, its thread parent is mapped, or it is an empty post in a thread (a file attached to that conversation). |
+| `request` | it mentions the bot, or is a requester's `[request]`/`[brief]`: owed a reply. |
+| `review` | none of the above: owed a manual review. |
+
+A post that mentions the bot is never mapped by a rule. `--check` exits 1 while any `request` or `review` is open, so a
+hook or a timer can stop on it; `--all` lists every state; `--json` prints the items. Rules are named regular
+expressions, refused at config load when invalid:
+
+```json
+"triage": {"rules": [{"name": "stats", "pattern": "^\\[stats\\]"}, {"name": "addressed-elsewhere", "pattern": "^\\s*<@(?!UBOT\\b)U[A-Z0-9]+>"}]}
+```
+
+With `slack.triage` and `slack.alerts` configured, `notify` raises `channel:review:TS` for a `review` item older than
+`alerts.unansweredSec`, as it raises `channel:unanswered:TS` for a request. Keep `triage.jsonl` with the other journals.
+
 ## Uploading media
 
 Configure `upload: {"roots": ["generated"], "maxBytes": 100000000}` inside `slack`. Roots resolve relative to the workspace config base, as does `inbox`. Numeric limits must be positive integers and roots a nonempty list.
