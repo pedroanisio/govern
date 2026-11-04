@@ -50,7 +50,9 @@ export interface WorkspaceConfig {
     alerts?: { listenStaleSec: number; unansweredSec: number };
     upload?: { roots: string[]; maxBytes: number };
     /** One card per case in the channel, updated in place, with what the case waits on and its alerts in its thread. */
-    threads?: boolean };
+    threads?: boolean;
+    /** Send back asks for a reason and editable gate options get an Edit button, both as Slack forms (serve needs the bot token). */
+    forms?: boolean };
 }
 /** A file path, or the list shape lib/resources.ts checks (kept as written: resources() builds the registry). */
 const resourcesShape: Shape<unknown> = (v, p) => (typeof v === "string" ? v : (RESOURCES(v, p), v));
@@ -83,6 +85,7 @@ const CONFIG = obj({}, {
     alerts: obj({ listenStaleSec: posInt, unansweredSec: posInt }),
     upload: obj({ roots: arr(str, { nonEmpty: true }), maxBytes: posInt }),
     threads: bool,
+    forms: bool,
   }),
   conversationAdapters: record(obj({argv: arr(str, {nonEmpty: true})})),
 });

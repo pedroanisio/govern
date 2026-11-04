@@ -13,7 +13,7 @@ import { GovernError, fail } from "../../lib/util.ts";
 import { channelAlerts } from "./route.ts";
 import { watched, serviceAlerts } from "../../lib/services.ts";
 import { slackCall } from "./channel.ts";
-import { ACTION_ID, caseDigest, decisionValue, type Decision, type Target } from "./slack.ts";
+import { ACTION_ID, caseDigest, decisionValue, type Decision, type Form, type Target } from "./slack.ts";
 import { pending, settled, standing, targetOf, ACTIONS_BLOCK, type Pending } from "./pending.ts";
 import { alertButtons, driveButtons, mention } from "./controls.ts";
 import { ledgerFile } from "../../lib/project.ts";
@@ -25,7 +25,9 @@ export { pending, type Pending };
 export interface NotifyOptions { api?: string; token: string; channel: string; lanes?: string[]; dryRun?: boolean;
   labels?: Partial<Record<Decision, string>>;
   /** One card per case, updated in place; what the case waits on and its alerts are posted in the card's thread. */
-  threads?: boolean }
+  threads?: boolean;
+  /** Send back asks for a reason, and an option with `edit` fields gets an Edit button (Slack forms, forms.ts). */
+  forms?: boolean }
 /** What one run did, by key (`lane:task:stage`, `lane:gate:name`, `lane:alert:id`); failed lines name the key and the reason. */
 export interface NotifyReport { posted: string[]; closed: string[]; superseded: string[]; alerts: string[]; failed: string[] }
 
@@ -85,15 +87,19 @@ const plain = (t: Target) => ("task" in t ? `task ${t.task}` : `decision ${t.gat
 const heading = (p: Project) => `*${p.title}* (\`${p.slug}\`)`;
 
 /** The message asking for `item`: who decides, what the stage or gate says, and one button per decision. */
-function message(p: Project, item: Pending, labels: Record<Decision, string>): { text: string; blocks: unknown[] } {
+function message(p: Project, item: Pending, labels: Record<Decision, string>, forms = false): { text: string; blocks: unknown[] } {
   const pr = processOf(p), slack = item.people.map((id) => pr.people?.[id]?.slack).filter((u): u is string => !!u);
   const detail = "task" in item.target ? pr.stages.find((s) => s.name === (item.target as { task: string }).task)?.exit
     : pr.gates.find((g) => g.name === (item.target as { gate: string }).gate)?.message;
-  const button = (id: string, label: string, d: Decision, set?: Record<string, Scalar>) => ({ type: "button", action_id: `${ACTION_ID}.${id}`,
-    text: { type: "plain_text", text: label.slice(0, 75) }, style: d === "reject" ? "danger" : "primary", value: decisionValue(p, item.target, d, set) });
+  const button = (id: string, label: string, d: Decision, set?: Record<string, Scalar>, form?: Form) => ({ type: "button", action_id: `${ACTION_ID}.${id}`,
+    text: { type: "plain_text", text: label.slice(0, 75) }, ...(form === "edit" ? {} : { style: d === "reject" ? "danger" : "primary" }),
+    value: decisionValue(p, item.target, d, set, form) });
+  const reject = (d: Decision) => button(d, labels[d], d, undefined, forms && d === "reject" ? "reason" : undefined);
   const buttons = item.options
-    ? [...item.options.map((o, i) => button(`option${i + 1}`, o.label, "approve", o.set)), ...item.decisions.filter((d) => d === "reject").map((d) => button(d, labels[d], d))]
-    : item.decisions.map((d) => button(d, labels[d], d));
+    ? [...item.options.flatMap((o, i) => [button(`option${i + 1}`, o.label, "approve", o.set),
+      ...(forms && o.edit ? [button(`edit${i + 1}`, `Edit: ${o.label}`, "approve", o.set, "edit")] : [])]),
+      ...item.decisions.filter((d) => d === "reject").map(reject)]
+    : item.decisions.map(reject);
   const options = (item.options ?? []).map((o) => `*${o.label}*\n${Object.values(o.set).map((v) => `> ${String(v).replace(/\n/g, "\n> ")}`).join("\n")}`);
   return {
     text: `${p.title} (${p.slug}): ${plain(item.target)}`,
@@ -174,7 +180,7 @@ export async function notify(o: NotifyOptions): Promise<NotifyReport> {
         report.superseded.push(item.key);
         if (!o.dryRun) delete state.posted[item.key];
       }
-      const m = message(p, item, labels);
+      const m = message(p, item, labels, !!o.forms);
       const sent = await send(item.key, "chat.postMessage", { channel: o.channel, ...inThread, ...m });
       if (!sent) continue;
       report.posted.push(item.key);

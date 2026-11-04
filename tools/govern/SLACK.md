@@ -104,6 +104,24 @@ no longer failed at that round, are refused (409). The clicked message loses its
 was done. When an alert is acknowledged at the terminal, or a failure goes away by itself, the notifier closes its
 message the same way; a later failure of the same stage is a new message.
 
+### Forms: a reason, an edited draft
+
+With `"forms": true` in `slack`, two buttons open a Slack form (a modal) instead of deciding at once:
+
+- **Send back** asks *Why is it sent back?* (2 to 2000 characters). The reason, not the button label, is the rejection's
+  quote.
+- A gate option with `edit` fields ([BUSINESS.md](BUSINESS.md)) gets a second button, **Edit: <label>**, opening those
+  fields prefilled with the option's values as the case stands. Submitting approves the option with the edited text; the
+  ledger's `approve` entry lists the changed fields as `edited`. A value longer than a Slack text input holds (3000
+  characters) is not offered for editing: the click is refused, so a draft is never cut short.
+
+The click is checked first (signature, clock, replay, team, the person, the case digest, and that the person may decide
+the gate now) and records nothing; `serve` then opens the form with `views.open`, so it needs the bot token
+(`SLACK_BOT_TOKEN` or `slack.botTokenVar`, no extra scope) and refuses to start without it. The decision is recorded only
+when the signed `view_submission` arrives. It is checked the same way, and is refused when someone else submits the form
+or the case changed after it was opened. A refusal is shown in the form itself. Once recorded, the clicked message is
+updated through the click's response URL, using the blocks `notify` kept for it.
+
 Button labels come from `slack.labels` (`complete`, `approve`, `reject`; default Done, Approve, Send back).
 
 ## What a request must prove
@@ -115,7 +133,7 @@ Button labels come from `slack.labels` (`complete`, `approve`, `reject`; default
 | Body at most 64 KiB | 413 |
 | `X-Slack-Signature` is `v0=` HMAC-SHA256 of `v0:<timestamp>:<body>` under the signing secret | 401 |
 | `X-Slack-Request-Timestamp` within 300 s of the server's clock | 401 |
-| A `block_actions` payload with exactly one `govern.decide` (or alert) button and a valid value | 400 |
+| A `block_actions` payload with exactly one `govern.decide` (or alert) button and a valid value, or a `view_submission` of a govern form | 400 |
 | The signature was never received before (remembered for 600 s, under the state folder's `slack/`) | 401 |
 | The payload's team is the config's `slack.team` | 403 |
 | The lane exists | 404 |
