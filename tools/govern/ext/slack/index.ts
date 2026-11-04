@@ -10,6 +10,7 @@ import { out, type Cmd } from "../../lib/cli.ts";
 import type { ExtDoc } from "../../lib/ext-registry.ts";
 import { poll, slackCall, postMessage, uploadFile, resolveSend, wasSent, wasAttempted } from "./channel.ts";
 import { routePending, startLine } from "./route.ts";
+import { publishApproved } from "./publish.ts";
 import { digest } from "./digest.ts";
 import { commandText } from "./commands.ts";
 import { installServices } from "./service.ts";
@@ -97,6 +98,7 @@ async function cmdListen(a: Args): Promise<void> {
       await postMessage(call, inbox, cfg.channel, { kind: "note", text: commandText(command), thread: post.thread_ts ?? post.ts, threadIsParent: true, key });
     });
     const routed = await routePending(call, inbox, cfg);
+    for (const id of await publishApproved(call, inbox, cfg.channel)) out(`slack listen: published ${id}`);
     if (routed.waiting.length) process.stderr.write(`slack listen: route limit; ${routed.waiting.length} request(s) remain in inbox\n`);
     if (count) out(`slack listen: ${count} new`);
   };

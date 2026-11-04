@@ -268,6 +268,28 @@ available. A queued task gets one keyed `seen: queued task <id>` receipt in its 
 without queuing another task. An ambiguous receipt retains its send intent and needs the same operator reconciliation
 as an explicit keyed post. No model reply is ever posted to Slack automatically.
 
+### Publishing a checked reply
+
+A reply can reach the request's thread only through a person. Name who may publish, and a review channel the
+requesters are not in:
+
+```json
+"route": { "to": "codex", "profile": "codex-read", "maxPerHour": 6, "publishers": ["U0…"], "review": "C0…" }
+```
+
+`govern slack notify` offers each reply to a routed request whose content check passed (`checked`) once in the review
+channel: what it answers, its whole text (plain text, so nothing in it mentions or links), and **Publish to thread**.
+Replies that are unverified, carry no check (`shape only` or none), are BLOCKED, or are too long to show in full (34800
+characters) are never offered. Read those with `govern task inbox --as owner`.
+
+A click by a publisher passes the decision server's checks (signature, clock, replay, team) and is refused unless the
+reply is still offered as the same text (its SHA-256 is in the button). It records the approval, with the signed click
+as its source, in the inbox's `publish.json`, and posts nothing itself. `govern slack listen`, the inbox's one writer,
+then checks the reply again and posts it once as `delivered: <text>` in the request's thread. The text has Slack's
+`<`, `>` and `&` escaped, and the send key is `publish:<reply id>`. An uncertain send is settled with
+`govern slack resolve`. The offer closes with *Published to the thread* once the send is journaled. The content check
+proves the cited `file:line` references exist, not that the analysis is right: the publisher's approval is the review.
+
 The queue dispatcher validates output with `parseReply` against `queue-reply.json`, rejects unknown fields and malformed,
 incomplete or adversarial envelopes, and sends a BLOCKED queue reply on failure. Every routed task also requests the
 `file-refs` content check: the model must cite workspace `file:line` evidence. Missing or invalid references mark the

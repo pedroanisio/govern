@@ -46,7 +46,8 @@ export interface WorkspaceConfig {
    *  SLACK_BOT_TOKEN; channel is where `govern slack notify` posts; labels name the decision buttons. */
   slack?: { team: string; envFile?: string; channel?: string; labels?: { complete?: string; approve?: string; reject?: string };
     botTokenVar?: string; bot?: string[]; requesters?: Record<string, string>; tags?: string[]; inbox?: string;
-    route?: { to: string; profile: string; maxPerHour: number };
+    /** publishers (Slack user ids) may publish a checked routed reply offered in the review channel (publish.ts). */
+    route?: { to: string; profile: string; maxPerHour: number; publishers?: string[]; review?: string };
     alerts?: { listenStaleSec: number; unansweredSec: number };
     upload?: { roots: string[]; maxBytes: number };
     /** One card per case in the channel, updated in place, with what the case waits on and its alerts in its thread. */
@@ -81,7 +82,7 @@ const CONFIG = obj({}, {
   slack: obj({ team: str }, { envFile: str, channel: str, labels: obj({}, { complete: str, approve: str, reject: str }),
     botTokenVar: (v: unknown, p: string) => { const n = str(v, p); if (/^[A-Za-z_][A-Za-z0-9_]*$/.exec(n)?.[0] !== n) reject(p, "must name an environment variable"); return n; },
     bot: arr(str), requesters: record(str), tags: arr(str), inbox: str,
-    route: obj({ to: str, profile: str, maxPerHour: posInt }),
+    route: obj({ to: str, profile: str, maxPerHour: posInt }, { publishers: arr(str, { nonEmpty: true }), review: str }),
     alerts: obj({ listenStaleSec: posInt, unansweredSec: posInt }),
     upload: obj({ roots: arr(str, { nonEmpty: true }), maxBytes: posInt }),
     threads: bool,

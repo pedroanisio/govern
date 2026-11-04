@@ -4,7 +4,8 @@
 // This call site queues work through the task-send library; the dispatcher owns parseReply (strict queue-reply.json),
 // semantic/content verification, typed refusal and BLOCKED recovery, one repair and bounded run/timeout limits.
 // Mandatory file-refs checks assert referential validity for every reply kind; failures are marked unverified for owner review.
-// Replies go to owner, never to Slack. No model chooses recipients, profiles, limits, timestamps or follow-up sends.
+// Replies go to owner, never to Slack automatically: only a checked reply a configured publisher approves is posted
+// (publish.ts). No model chooses recipients, profiles, limits, timestamps or follow-up sends.
 import { existsSync, readFileSync, writeFileSync, linkSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import { createHash, randomUUID } from "node:crypto";

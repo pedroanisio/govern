@@ -23,6 +23,7 @@ import { optionSet, pending, settled, standing } from "./pending.ts";
 import { isControl, parseControl, performControl, type Control } from "./controls.ts";
 import { FormRefusal, editedSet, firstBlock, formView, parseSubmission, postedMessage, reasonOf, type FormMeta, type Submission } from "./forms.ts";
 import type { Call } from "./channel.ts";
+import { PUBLISH_ID, approvePublish, parsePublish } from "./publish.ts";
 
 export { optionSet };
 
@@ -291,6 +292,14 @@ function closed(body: Buffer, line: string): { text: string; blocks: unknown[] }
   return blocks ? { text: typeof message?.text === "string" && message.text ? message.text : line, blocks } : { text: line, blocks: [] };
 }
 
+/** A Publish to thread click (publish.ts): its team, user and button value; undefined for any other click. */
+function publishOf(p: unknown): { team: string; user: string; value: unknown } | undefined {
+  if (!record(p) || p.type !== "block_actions" || !Array.isArray(p.actions) || !p.actions.some((x) => record(x) && x.action_id === PUBLISH_ID)) return undefined;
+  if (p.actions.length !== 1) bad("a click is exactly one action");
+  const team = text(record(p.team) ? p.team.id : undefined, "team.id"), user = text(record(p.user) ? p.user.id : undefined, "user.id");
+  return { team, user, value: (p.actions[0] as Record<string, unknown>).value };
+}
+
 /** An alert or drive button click (controls.ts), or undefined when the click is something else (a decision). */
 function controlOf(body: Buffer): { team: string; user: string; control: Control; quote: string } | undefined {
   const p = payloadOf(body);
@@ -328,6 +337,17 @@ export async function handleInteraction(secret: string, body: Buffer, ts: string
       try { url = s.meta.url ? safeUrl(s.meta.url) : undefined; } catch { url = undefined; }
       update = () => decidedMessage(postedMessage(`${a.lane}:gate:${s.meta.gate}`, s.meta.ts), a, line);
       form = undefined;
+    } else if (publishOf(raw)) {
+      const { team, user, value } = publishOf(raw)!;
+      remember(sig!, at);
+      const cfg = slackConfig() ?? (() => { throw new Forbidden("the workspace config names no slack.team"); })();
+      if (team !== cfg.team) throw new Forbidden(`the request comes from Slack team ${team}, not ${cfg.team}`);
+      if (!cfg.route?.publishers?.includes(user) || !cfg.inbox) throw new Forbidden(`Slack user ${user} is not one of slack.route.publishers`);
+      const { reply, digest } = parsePublish(value);
+      approvePublish(cfg.inbox, reply, digest, user, { kind: "slack", team, user, timestamp: ts!, signedBody: body.toString("utf8"), signature: sig! });
+      const line = `Approved by <@${user}> · govern slack listen posts it in the request's thread`;
+      result = { status: 200, value: { ok: true, text: line } };
+      update = () => closed(body, line);
     } else if (c) {
       remember(sig!, at);
       const team = slackConfig()?.team ?? (() => { throw new Forbidden("the workspace config names no slack.team"); })();

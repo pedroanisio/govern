@@ -16,6 +16,7 @@ import { slackCall } from "./channel.ts";
 import { ACTION_ID, caseDigest, decisionValue, type Decision, type Form, type Target } from "./slack.ts";
 import { pending, settled, standing, targetOf, ACTIONS_BLOCK, type Pending } from "./pending.ts";
 import { alertButtons, driveButtons, mention } from "./controls.ts";
+import { offers, offerMessage, published } from "./publish.ts";
 import { ledgerFile } from "../../lib/project.ts";
 import { readJsonl } from "../../lib/util.ts";
 import type { Scalar } from "../../lib/business-schema.ts";
@@ -41,7 +42,10 @@ interface Posted { lane: string; channel: string; ts: string; digest: string; te
 interface Card { channel: string; ts: string; text: string }
 /** An alert's message while it can still close (its buttons gone once the alert is settled anywhere). */
 interface AlertPost { channel: string; ts: string; text: string; blocks: unknown[] }
-interface State { posted: Record<string, Posted>; alerts: Record<string, string>; cards?: Record<string, Card>; alertPosts?: Record<string, AlertPost> }
+/** An offer of a routed reply to the publishers (publish.ts), until it is published. */
+interface Review { channel: string; ts: string; blocks: unknown[] }
+interface State { posted: Record<string, Posted>; alerts: Record<string, string>; cards?: Record<string, Card>; alertPosts?: Record<string, AlertPost>;
+  reviews?: Record<string, Review> }
 const dir = () => join(stateDir(), "slack");
 const file = () => join(dir(), "posted.json");
 function readState(): State {
@@ -268,6 +272,25 @@ export async function notify(o: NotifyOptions): Promise<NotifyReport> {
     if (state.alerts[a.key]) continue;
     const result = await send(a.key, "chat.postMessage", { channel: o.channel, text: a.text });
     if (result) { report.alerts.push(a.key); if (!o.dryRun) state.alerts[a.key] = result.ts; }
+  }
+  // Routed replies whose content check passed, offered to the publishers in the review channel (publish.ts), and the
+  // offer closed once the listener has published the reply.
+  const route = channelCfg?.route;
+  if (route?.publishers && !route.review) report.failed.push("slack.route.publishers: name the review channel as slack.route.review");
+  if (route?.publishers && route.review && channelCfg?.inbox) {
+    const inbox = channelCfg.inbox, reviews = (state.reviews ??= {});
+    for (const [id, r] of Object.entries(reviews)) {
+      if (!published(inbox, id)) continue;
+      const blocks = settled(r.blocks, "Published to the thread", false) ?? [];
+      if (await send(`review:${id}`, "chat.update", { channel: r.channel, ts: r.ts, text: "Published to the thread", blocks })) {
+        report.closed.push(`review:${id}`); if (!o.dryRun) delete reviews[id];
+      }
+    }
+    for (const offer of offers(inbox)) {
+      if (reviews[offer.reply.id] || published(inbox, offer.reply.id)) continue;
+      const m = offerMessage(offer), sent = await send(`review:${offer.reply.id}`, "chat.postMessage", { channel: route.review, ...m });
+      if (sent) { report.posted.push(`review:${offer.reply.id}`); if (!o.dryRun) reviews[offer.reply.id] = { channel: sent.channel, ts: sent.ts, blocks: m.blocks }; }
+    }
   }
   if (!o.dryRun) writeState(state);
   return report;
