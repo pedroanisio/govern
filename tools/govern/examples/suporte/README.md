@@ -105,10 +105,34 @@ Two triggers, each notifying a webhook to `https://…/cases` or `https://…/ev
 
 A return that arrives while the case is not waiting for one is refused (409) and changes nothing.
 
+## Unanswered-message alerts
+
+[watch.ts](watch.ts) polls Zendesk (run it every 5 minutes from a timer). For each new or open ticket whose last public
+message is the client's (the requester or a cc'd address) and has waited `ZENDESK_WATCH_AFTER_MIN` minutes (30) without
+an agent's reply, it posts one alert to `SLACK_SUPPORT_CHANNEL`. The alert has the ticket link, the client's message and
+up to three reply suggestions marked as AI drafts. Nothing is sent to the client.
+
+- The first run only records the start, so the existing backlog is never alerted.
+- A new client message on the same ticket is a new alert.
+- The suggestions come from `ZENDESK_WATCH_SUGGEST`, which reads the prompt on stdin and prints
+  `{"suggestions": [{"text", "confidence"}]}`. [suggest-claude.sh](suggest-claude.sh) does this with Claude Code headless:
+  no tools, no MCP servers, no saved session.
+- The output is checked: 1 to 3 distinct, non-empty replies, with confidence from 0 to 1 and no other fields. When the
+  check fails, the alert is posted without the suggestions and the reason goes to stderr.
+- If Slack refuses an alert, the run exits 1 and the alert is tried again on the next run.
+
+Settings:
+
+- Zendesk OAuth: `ZENDESK_BASE_URL`, `ZENDESK_CLIENT_ID`, `ZENDESK_CLIENT_SECRET` (scope `tickets:read`).
+- Slack: `SLACK_BOT_TOKEN`, `SLACK_SUPPORT_CHANNEL`.
+- `ZENDESK_WATCH_STATE`: the directory for `watch.json`.
+- `ZENDESK_WATCH_SUGGEST`, plus `ZENDESK_WATCH_MODEL` for the wrapper (default `sonnet`).
+
 ## Files
 
 - [suporte.json](suporte.json), [suporte-card.json](suporte-card.json): the processes.
 - [act.ts](act.ts): the commands that act on Slack, Jira and Zendesk; each writes its outputs to `$GOVERN_OUTPUTS`.
 - [checks.ts](checks.ts): the stage checks that ask Jira and Zendesk whether the work is really done.
+- [watch.ts](watch.ts), [suggest-claude.sh](suggest-claude.sh): the unanswered-message alerts.
 
-Tests: `test/suporte-flow.test.ts` (a ticket end to end), `test/suporte-act.test.ts`, `test/suporte-checks.test.ts`.
+Tests: `test/suporte-flow.test.ts` (a ticket end to end), `test/suporte-act.test.ts`, `test/suporte-checks.test.ts`, `test/suporte-watch.test.ts`.
