@@ -283,7 +283,7 @@ async function digest(g: Grafana): Promise<void> {
   process.stdout.write(`digest: ${rows.length} app(s), ${alerts.length} alert(s), ${down.length} down, coverage ${coverage}%\n`);
 }
 
-const change = (n: number, p: number, hasPrev: boolean) => !hasPrev ? "sem anterior" : p ? `${n >= p ? "+" : ""}${Math.round(((n - p) / p) * 100)}%` : n ? "novo" : "0%";
+const change = (n: number, p: number, hasPrev: boolean) => !hasPrev ? "—" : p ? `${n >= p ? "+" : ""}${Math.round(((n - p) / p) * 100)}%` : n ? "novo" : "0%";
 const sumRuns = (runs: Run[]) => { const m = new Map<string, number>(); for (const r of runs) for (const [k, n] of Object.entries(r.counts)) m.set(k, (m.get(k) ?? 0) + n); return m; };
 
 function render(cmd: string, scene: string, dir: string): Promise<Buffer> {
@@ -361,8 +361,8 @@ async function report(g: Grafana): Promise<void> {
   const found = await insights(facts, lines, "Resuma as últimas 2h de produção: o que mudou, o que preocupa e o que verificar primeiro. Cada insight cabe em 200 caracteres.");
   const summary = [
     `:bar_chart: *Relatório de produção (2h)* — ${window} · status *${status}*`,
-    `• ${fmt(total)} erros (${totalChange} vs. 2h anteriores) · ${spiking.size} app(s) em pico · ${alerts.length} alerta(s) · ${down.length} target(s) fora do ar${coverage < 90 ? ` · cobertura ${coverage}%` : ""}`,
-    ...(rows.length ? [`• Mais erros: ${rows.slice(0, 3).map((r) => `${r.app} ${fmt(r.errors2h)} (${r.change})`).join(", ")}`] : []),
+    `• ${fmt(total)} erros (${totalChange === "—" ? "sem dado das 2h anteriores" : `${totalChange} vs. 2h anteriores`}) · ${spiking.size} app(s) em pico · ${alerts.length} alerta(s) · ${down.length} target(s) fora do ar${coverage < 90 ? ` · cobertura ${coverage}%` : ""}`,
+    ...(rows.length ? [`• Mais erros: ${rows.slice(0, 3).map((r) => `${r.app} ${fmt(r.errors2h)}${r.change === "—" ? "" : ` (${r.change})`}`).join(", ")}`] : []),
     ...(found.length ? ["*Insights (IA, verifique antes de agir):*", ...found.map((t) => `• ${t}`)] : []),
   ].join("\n");
   const scene = reportScene({ window, status, coverage, total, totalChange, spikes: spiking.size, alerts: alerts.length, down: down.length,

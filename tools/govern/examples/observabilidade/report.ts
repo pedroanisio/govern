@@ -45,7 +45,7 @@ export function reportScene(d: ReportData): string {
 
   // Four figures
   const tiles: [string, string, string?][] = [
-    ["Erros (2h)", fmt(d.total), `${d.totalChange} vs. 2h anteriores`],
+    ["Erros (2h)", fmt(d.total), d.totalChange === "—" ? "sem dado das 2h anteriores" : `${d.totalChange} vs. 2h anteriores`],
     ["Apps em pico", String(d.spikes)], ["Alertas ativos", String(d.alerts)], ["Targets fora do ar", String(d.down)],
   ];
   tiles.forEach(([label, value, sub], i) => {
@@ -76,7 +76,7 @@ export function reportScene(d: ReportData): string {
   const bmax = Math.max(1, ...d.buckets.map((b) => b.value ?? 0));
   d.buckets.forEach((b, i) => {
     const x = 994 + i * 46, h = b.value === null ? 6 : Math.round((b.value / bmax) * 140);
-    rect(x, 550 - h, 34, h, b.value === null ? C.empty : i === d.buckets.length - 1 ? C.spike : C.bar, 4);
+    rect(x, 550 - h, 34, h, b.value === null ? C.empty : i === d.buckets.length - 1 ? C.text : C.bar, 4);
     if (i % 3 === 2 || i === d.buckets.length - 1) text(b.label, x - 12, 558, 60, 24, 16, { color: C.faint, align: "center" });
   });
 
