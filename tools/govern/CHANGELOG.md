@@ -11,6 +11,7 @@ All notable changes to govern are documented here, following Keep a Changelog.
 
 ### Added
 
+- `slack.heartbeat` watches an agent session's heartbeat file by mtime: `govern slack notify` posts one keyed `blocked:` when it is older than `staleSeconds` (default 1800) and one `note:` when it moves again, keeping the open alert in `session-heartbeat.json` and rebuilding a damaged one from `sent.jsonl`; a never-written file alerts nothing. `govern slack heartbeat` prints the beat's state and exits 1 unless it is fresh.
 - The `watch` config names systemd units: `govern desk` shows their state and time since last success, `govern slack digest` lists failing ones, and `govern slack notify` alerts once per failure episode. A missing unit or a host without systemd is reported plainly.
 - `govern slack install-service` writes user units for independent listen and notify loops plus a persistent daily digest timer, without starting them or copying credentials.
 

@@ -242,6 +242,63 @@ and channel alerts. With nothing to report it sends nothing. A `digest:YYYY-MM-D
 and prevents repeats that day. It uses the configured channel credentials and private send journal. An oversized digest
 is refused instead of silently omitting work. An ambiguous send requires the keyed-send reconciliation above. Use `install-service` below to write a daily timer explicitly.
 
+## Session heartbeat
+
+An agent session that answers the channel can say it is alive by touching a file: a Claude Code hook, the channel watcher
+or anything else updates its mtime. With `slack.heartbeat` configured, every `notify` run reads that mtime and tells the
+channel when the session goes quiet and when it is back:
+
+```json
+"slack": { "...": "...", "inbox": "generated/slack",
+  "heartbeat": { "file": "generated/session.beat", "staleSeconds": 1800, "name": "creation-bot" } }
+```
+
+`file` is required and resolves against the config file, like the other slack paths. `staleSeconds` is a whole number of
+seconds, 1 or more (default 1800). `name` is who the messages call the session's owner (default `the agent`). An empty
+path or name, a zero, negative or fractional `staleSeconds`, and an unknown key are refused at config load. Without
+`heartbeat` nothing changes. The alert needs `slack.inbox` and `slack.channel`; when either is missing, `notify` reports
+`failed heartbeat: …` and does the rest of its run.
+
+- When the beat is older than `staleSeconds` and no alert is open, `notify` posts once
+  `blocked: <name>'s session has sent no heartbeat since HH:MM (UTC-3); requests wait until it returns or the headless shift answers`.
+- While it stays stale, nothing more is posted.
+- When the mtime moves past the beat the alert named, `notify` posts once
+  `note: <name>'s session is back (silent HH:MM–HH:MM UTC-3)`. If the new beat is already stale, the same run opens a new alert.
+- A heartbeat file that was never written alerts nothing, so installing the alert before the writers exist is silent.
+  A file removed while an alert is open neither closes it nor opens another.
+
+Times are the host's local clock and offset; a time on another day carries its date. Both sends are keyed
+(`heartbeat:blocked:<last beat>`, `heartbeat:note:<last beat>`) and journaled in `sent.jsonl`, so `triage` and the
+uncertain-send reconciliation treat them like any keyed post. A refused send is reported as `failed` and retried on the
+next run; a key the journal already holds is recorded without sending it again.
+
+The open alert is kept in `session-heartbeat.json` in `slack.inbox` (mode 600): `{}` or
+`{"alert": {"since": "<ISO last beat>", "ts": "<blocked: ts>"}}`. A restart reads it, so it neither repeats a `blocked:`
+nor loses the `note:` it owes. A file that is not that shape (not JSON, an unknown key, a time that is not ISO, a ts that
+is not Slack's) is a `HeartbeatStateError`. `notify` then rebuilds the state from `sent.jsonl` (the latest `blocked:`
+key without its `note:`), writes it back and prints `heartbeat <file>: …; rebuilt from sent.jsonl: …`. `--dry-run` reports
+what it would post and the repair it would make, and sends and writes nothing.
+
+`govern slack heartbeat [--json]` prints the beat's age, `fresh`, `stale` or `missing`, and the open alert, from local
+files only. It exits 0 only when the beat is fresh, so a headless shift can run it to decide whether the session is
+answering. A damaged state file is shown, not repaired.
+
+Decision and rejected alternatives:
+
+- **The mtime of a file another program touches is the heartbeat; govern only reads it.** Rejected: a heartbeat govern
+  writes, such as a `govern slack beat` command. That would add a writer to the inbox and a token-free command that
+  every hook must find on PATH; `touch` works from any hook with no govern dependency.
+- **The alert is a `blocked:` and a later `note:`, two keyed sends.** Rejected: one of `notify`'s channel alerts (a
+  `channel:` key updated to "condition cleared"). An edited message notifies nobody; the return is news people need to
+  see. The two posts also use the `blocked:`/`note:` vocabulary the channel already reads.
+- **A missing file is not stale.** Rejected: alerting on a missing file. The first install, before the hook has run once,
+  would post `blocked:` at once.
+- **Its own state file, with the send journal as the source to rebuild from.** Rejected: keeping the alert in
+  `notify`'s `posted.json`, whose readers expect one shape per key and fail on anything else; and deriving the state
+  only from `sent.jsonl`, which a dry run could not stage and which would grow every check with the journal. Rejected
+  for a damaged state file: stopping every check until the operator removes it (the alert would go silent exactly
+  when it matters) or treating it as "no alert" (it would repeat a `blocked:` already posted).
+
 ## Triage: every post gets a disposition
 
 `govern slack triage` reads only the local journals and gives every inbox post after the start line exactly one state:

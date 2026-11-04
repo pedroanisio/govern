@@ -13,6 +13,7 @@ import { GovernError, fail } from "../../lib/util.ts";
 import { channelAlerts } from "./route.ts";
 import { watched, serviceAlerts } from "../../lib/services.ts";
 import { slackCall } from "./channel.ts";
+import { checkHeartbeat, heartbeatSettings } from "./heartbeat.ts";
 import { ACTION_ID, caseDigest, decisionValue, type Decision, type Target } from "./slack.ts";
 import { pending, settled, standing, targetOf, ACTIONS_BLOCK, type Pending } from "./pending.ts";
 import type { Scalar } from "../../lib/business-schema.ts";
@@ -21,8 +22,9 @@ export { pending, type Pending };
 
 export interface NotifyOptions { api?: string; token: string; channel: string; lanes?: string[]; dryRun?: boolean;
   labels?: Partial<Record<Decision, string>> }
-/** What one run did, by key (`lane:task:stage`, `lane:gate:name`, `lane:alert:id`); failed lines name the key and the reason. */
-export interface NotifyReport { posted: string[]; closed: string[]; superseded: string[]; alerts: string[]; failed: string[] }
+/** What one run did, by key (`lane:task:stage`, `lane:gate:name`, `lane:alert:id`); failed lines name the key and the reason;
+ *  heartbeat lines say what the session heartbeat check posted (heartbeat.ts) and any state it rebuilt. */
+export interface NotifyReport { posted: string[]; closed: string[]; superseded: string[]; alerts: string[]; failed: string[]; heartbeat: string[] }
 
 export const SLACK_API = "https://slack.com/api";
 const LABELS: Record<Decision, string> = { complete: "Done", approve: "Approve", reject: "Send back" };
@@ -111,7 +113,7 @@ const cleared = (text: string, why: string) => ({ text: `${text} — ${why}`, bl
  *  sent or recorded. */
 export async function notify(o: NotifyOptions): Promise<NotifyReport> {
   const api = o.api ?? SLACK_API, labels = { ...LABELS, ...o.labels };
-  const report: NotifyReport = { posted: [], closed: [], superseded: [], alerts: [], failed: [] };
+  const report: NotifyReport = { posted: [], closed: [], superseded: [], alerts: [], failed: [], heartbeat: [] };
   const state = readState(), slugs = o.lanes ?? laneSlugs(), failures = driveFailures();
   const send = async (key: string, method: string, body: Record<string, unknown>) => {
     if (o.dryRun) return { ts: "dry-run", channel: o.channel };
@@ -188,5 +190,13 @@ export async function notify(o: NotifyOptions): Promise<NotifyReport> {
     if (result) { report.alerts.push(a.key); if (!o.dryRun) state.alerts[a.key] = result.ts; }
   }
   if (!o.dryRun) writeState(state);
+  // The session heartbeat keeps its own state (heartbeat.ts); a check that cannot run is reported and the rest stands.
+  try {
+    const beat = channelCfg && heartbeatSettings(channelCfg);
+    if (beat) {
+      const r = await checkHeartbeat(slackCall(api, o.token), { ...beat, channel: o.channel }, { dryRun: o.dryRun });
+      report.heartbeat.push(...r.notes, ...r.posted.map((k) => `posted ${k}`)); report.failed.push(...r.failed);
+    }
+  } catch (e) { report.failed.push(`heartbeat: ${(e as Error).message}`); }
   return report;
 }

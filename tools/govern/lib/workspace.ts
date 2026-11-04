@@ -50,6 +50,9 @@ export interface WorkspaceConfig {
     alerts?: { listenStaleSec: number; unansweredSec: number };
     /** Every post gets a disposition (ext/slack/triage.ts); rules map posts that need no reply, by name and pattern. */
     triage?: { rules: { name: string; pattern: string }[] };
+    /** An agent session's heartbeat file (ext/slack/heartbeat.ts): `notify` posts `blocked:` when its mtime is older than
+     *  staleSeconds (default 1800) and `note:` when it moves again; name is who the messages call the session's owner. */
+    heartbeat?: { file: string; staleSeconds?: number; name?: string };
     upload?: { roots: string[]; maxBytes: number } };
 }
 /** A file path, or the list shape lib/resources.ts checks (kept as written: resources() builds the registry). */
@@ -69,6 +72,8 @@ const unitName: Shape<string> = (v, p) => {
   if (typeof v !== "string" || !/^[A-Za-z0-9_][A-Za-z0-9:_.\\@-]*\.(service|socket|timer|path|mount|automount|target|swap|slice|scope|device)$/.test(v)) reject(p, `must be a systemd unit name with its type, such as backup.service`);
   return v as string;
 };
+/** A string with something besides white space in it; `what` names it in the error. */
+const nonEmpty = (what: string): Shape<string> => (v, p) => { const s = str(v, p); if (!s.trim()) reject(p, `must be ${what}`); return s; };
 const CONFIG = obj({}, {
   watch: obj({}, { user: arr(unitName), system: arr(unitName) }),
   extensions: extensionsShape,
@@ -84,6 +89,7 @@ const CONFIG = obj({}, {
     triage: obj({ rules: arr(obj({ name: str, pattern: (v: unknown, p: string) => {
       const s = str(v, p); try { new RegExp(s); } catch { reject(p, "must be a valid regular expression"); } return s; } })) }),
     upload: obj({ roots: arr(str, { nonEmpty: true }), maxBytes: posInt }),
+    heartbeat: obj({ file: nonEmpty("a non-empty path") }, { staleSeconds: posInt, name: nonEmpty("a non-empty name") }),
   }),
   conversationAdapters: record(obj({argv: arr(str, {nonEmpty: true})})),
 });
@@ -175,11 +181,12 @@ export const workflowFile = (): string | undefined => optional("workflow", "GOVE
 export const promptsDir = (): string | undefined => optional("prompts", "GOVERN_PROMPTS");
 /** The config's chat baseline for `govern usage`, or undefined when it gives none. */
 export const baseline = (): Baseline | undefined => config().baseline;
-/** The config's slack settings, envFile absolute; undefined when the workspace has none. */
+/** The config's slack settings, envFile, inbox, heartbeat file and upload roots absolute; undefined when the workspace has none. */
 export const slackConfig = (): NonNullable<WorkspaceConfig["slack"]> | undefined => {
   const c = findRepo() ? config().slack : undefined;
   return c && { ...c, ...(c.envFile ? { envFile: resolve(base(), c.envFile) } : {}),
     ...(c.inbox ? { inbox: resolve(base(), c.inbox) } : {}),
+    ...(c.heartbeat ? { heartbeat: { ...c.heartbeat, file: resolve(base(), c.heartbeat.file) } } : {}),
     ...(c.upload ? { upload: { ...c.upload, roots: c.upload.roots.map(r => resolve(base(), r)) } } : {}) };
 };
 /** The config's decide settings, envFile absolute. */
