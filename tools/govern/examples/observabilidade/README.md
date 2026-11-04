@@ -19,6 +19,20 @@ A timer runs it. It posts to a Slack channel; nothing else is written anywhere.
     to ask: Grafana's proxy gives up after 30 s.
   - The message gives the coverage when fewer than 90% of the day's runs are recorded.
 
+- **`--report` (every 2 hours):** a visual report of the last 2 h, uploaded to the channel as an image. It has:
+  - the window (BRT) and a status: Crítico when a target is down or a critical alert fires; Atenção for an error spike,
+    any alert, or errors above 1.5 times the 2 h before; Normal otherwise;
+  - errors, apps in a spike, alerts and down targets;
+  - errors per app against the 2 h before;
+  - the last 24 h in 2 h columns;
+  - the checked insights.
+
+  [report.ts](report.ts) builds it as a scene-render document. `GRAFANA_WATCH_RENDER` renders it:
+  [render-scene.sh](render-scene.sh) validates and renders it with the scene-render Docker image, with no network. The
+  output must be a PNG. The PNG is uploaded through Slack's external upload: the bytes go only to `files.slack.com`,
+  without the token. The summary and insights go as the image's comment. If rendering fails, the summary is posted as
+  text and the run exits 1.
+
 Insights come from `GRAFANA_WATCH_INSIGHT`. [insight-claude.sh](insight-claude.sh) uses Claude Code headless with no tools.
 The model gets the facts, each with an id, and the sample lines. Its answer is checked before it is posted:
 
@@ -40,5 +54,7 @@ Settings:
 
 The default error filter is `\bERROR\b|Exception`. It is case-sensitive, so `INFO … Error details saved` lines are not
 counted.
+
+The bot needs `files:write` for the report.
 
 Tests: `test/grafana-watch.test.ts`.

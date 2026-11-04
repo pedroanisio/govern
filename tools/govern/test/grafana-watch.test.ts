@@ -21,7 +21,7 @@ interface World {
   lines: Record<string, string[]>;
   slackOk?: boolean;
 }
-interface Seen { url: string; auth: string | undefined; body: string }
+interface Seen { url: string; auth: string | undefined; body: string; bytes: Buffer }
 
 const vector = (rows: [Record<string, string>, number][]) => ({ status: "success", data: { resultType: "vector", result: rows.map(([metric, v]) => ({ metric, value: [1793000000, String(v)] })) } });
 const split = (k: string) => { const [namespace, app] = k.split("/"); return { namespace: namespace!, app: app! }; };
@@ -29,11 +29,11 @@ const split = (k: string) => { const [namespace, app] = k.split("/"); return { n
 async function grafana(w: World, f: (base: string, seen: Seen[]) => Promise<void>): Promise<void> {
   const seen: Seen[] = [];
   const server: Server = createServer((req, res) => {
-    let raw = "";
-    req.on("data", (c) => { raw += c; });
+    const chunks: Buffer[] = [];
+    req.on("data", (c: Buffer) => { chunks.push(c); });
     req.on("end", () => {
-      const url = new URL(req.url ?? "", "http://x");
-      seen.push({ url: req.url ?? "", auth: req.headers.authorization, body: raw });
+      const url = new URL(req.url ?? "", "http://x"), bytes = Buffer.concat(chunks);
+      seen.push({ url: req.url ?? "", auth: req.headers.authorization, body: bytes.toString("utf8"), bytes });
       const send = (status: number, body: unknown) => { res.writeHead(status, { "Content-Type": "application/json" }); res.end(JSON.stringify(body)); };
       const q = url.searchParams.get("query") ?? "";
       if (url.pathname === `${PX}/am/api/v2/alerts`) return send(200, w.alerts.map((a) => ({ ...a, status: { state: "active" } })));
@@ -47,6 +47,9 @@ async function grafana(w: World, f: (base: string, seen: Seen[]) => Promise<void
         return send(200, { status: "success", data: { result: [{ stream: { app }, values: (w.lines[app] ?? []).map((l, i) => [String(1793000000000000000 + i), l]) }] } });
       }
       if (url.pathname === "/chat.postMessage") return send(200, w.slackOk === false ? { ok: false, error: "not_in_channel" } : { ok: true, ts: `1793000000.00${seen.length}` });
+      if (url.pathname === "/files.getUploadURLExternal") return send(200, { ok: true, upload_url: `http://${req.headers.host}/upload/F0REPORT1`, file_id: "F0REPORT1" });
+      if (url.pathname === "/upload/F0REPORT1") { res.writeHead(200); return res.end("OK"); }
+      if (url.pathname === "/files.completeUploadExternal") return send(200, { ok: true, files: [{ id: "F0REPORT1" }] });
       send(404, { message: "not found" });
     });
   });
@@ -216,4 +219,70 @@ test("a Slack refusal fails the run and the change is posted next time; a missin
   assert.equal(r.code, 2);
   assert.match(r.out, /is not set/);
   assert.equal(existsSync(join(empty, "grafana.json")), false);
+});
+
+/** A renderer: keeps the scene it was given and writes `png` (bytes) as the image. */
+function renderer(dir: string, png: string, code = 0): { cmd: string; scene: string } {
+  const scene = join(dir, "seen.scene.xml"), cmd = join(dir, "render.sh");
+  write(cmd, `#!/bin/sh\ncp "$1" '${scene}'\nprintf '${png}' > "$2"\nexit ${code}\n`);
+  chmodSync(cmd, 0o755);
+  return { cmd, scene };
+}
+const REPORT_NOW = "2026-11-04T12:00:00Z", ago = (hours: number) => new Date(Date.parse(REPORT_NOW) - hours * 3_600_000).toISOString();
+const reportState = { active: { "errors:prd/payment-app": "prd/payment-app" }, history: [
+  { t: ago(0.5), counts: { "prd/payment-app": 3000, "prd/account-app": 200 } }, { t: ago(1.5), counts: { "prd/payment-app": 1000, "prd/account-app": 100 } },
+  { t: ago(3), counts: { "prd/payment-app": 1000, "prd/account-app": 500 } }, { t: ago(10), counts: { "prd/payment-app": 50 } },
+] };
+const PNG = "\\211PNG\\r\\n\\032\\nfake";
+
+test("--report renders the last 2 h as a scene and uploads the image to the channel, with the summary and checked insights as its comment", async () => {
+  const dir = tempDir("grafana-watch"), w = quiet(), r = renderer(dir, PNG);
+  w.alerts.push({ labels: { alertname: "HighLatency", severity: "critical" }, annotations: { summary: "p99 acima de 2s" } });
+  const ai = insighter(dir, { insights: [{ text: "payment-app subiu de 1000 para 4000 erros & merece atenção.", evidence: ["E1"] }] });
+  write(join(dir, "grafana.json"), JSON.stringify(reportState));
+  await grafana(w, async (base, seen) => {
+    const out = await run({ ...env(base, dir, ai.cmd), GRAFANA_WATCH_NOW: REPORT_NOW, GRAFANA_WATCH_RENDER: r.cmd }, ["--report"]);
+    assert.equal(out.code, 0, out.out);
+    const scene = readFileSync(r.scene, "utf8");
+    assert.match(scene, /^<\?xml/);
+    assert.match(scene, /Saúde de produção/);
+    assert.match(scene, /04\/11 · 07:00–09:00 \(BRT\)/);
+    assert.match(scene, /Crítico/, "a critical alert makes the status critical");
+    assert.match(scene, /text="payment-app"/, "the namespace is in the title, not on every row");
+    assert.match(scene, /4\.000/);
+    assert.match(scene, /4\.300/, "the total of the 2 h");
+    assert.match(scene, /\+187%/);
+    assert.match(scene, /-40%/);
+    assert.match(scene, /cobertura 25%/);
+    assert.match(scene, /erros &amp; merece atenção/, "text is escaped for XML");
+    assert.ok(scene.indexOf('"payment-app"') < scene.indexOf('"account-app"'), "largest first");
+    const methods = seen.map((s) => new URL(s.url, "http://x").pathname);
+    assert.deepEqual(methods.filter((m) => !m.startsWith("/api/")), ["/files.getUploadURLExternal", "/upload/F0REPORT1", "/files.completeUploadExternal"]);
+    const get = new URLSearchParams(seen.find((s) => s.url === "/files.getUploadURLExternal")!.body);
+    assert.match(get.get("filename") ?? "", /^grafana-report-.*\.png$/);
+    assert.deepEqual([...seen.find((s) => s.url === "/upload/F0REPORT1")!.bytes.subarray(0, 4)], [0x89, 0x50, 0x4e, 0x47]);
+    assert.equal(seen.find((s) => s.url === "/upload/F0REPORT1")!.auth, undefined, "the bytes go without the token");
+    const done = JSON.parse(seen.find((s) => s.url === "/files.completeUploadExternal")!.body);
+    assert.equal(done.channel_id, "C0OBS");
+    assert.match(done.initial_comment, /Relatório de produção/);
+    assert.match(done.initial_comment, /Crítico/);
+    assert.match(done.initial_comment, /merece atenção/);
+    assert.equal(JSON.parse(readFileSync(join(dir, "grafana.json"), "utf8")).history.length, 4, "the report changes no watch state");
+  });
+});
+
+test("--report posts the summary as text and fails when the image cannot be rendered", async () => {
+  for (const [png, code, why] of [["x", 1, /render: exit 1/], ["not a png", 0, /not a PNG/]] as const) {
+    const dir = tempDir("grafana-watch"), w = quiet(), r = renderer(dir, png, code), ai = insighter(dir, "{}");
+    write(join(dir, "grafana.json"), JSON.stringify(reportState));
+    await grafana(w, async (base, seen) => {
+      const out = await run({ ...env(base, dir, ai.cmd), GRAFANA_WATCH_NOW: REPORT_NOW, GRAFANA_WATCH_RENDER: r.cmd }, ["--report"]);
+      assert.equal(out.code, 1);
+      assert.match(out.out, why);
+      const [p] = posts(seen);
+      assert.match(p!.text, /Relatório de produção/);
+      assert.match(p!.text, /report visual indisponível/);
+      assert.equal(seen.filter((s) => s.url.startsWith("/files.")).length, 0);
+    });
+  }
 });
