@@ -15,6 +15,7 @@ import { digest } from "./digest.ts";
 import { commandText } from "./commands.ts";
 import { installServices } from "./service.ts";
 import { MANPAGE } from "./manpage.ts";
+import { triage, open, dismiss, type Item } from "./triage.ts";
 
 /** `fromEnv` (the variable `name` as the environment has it), else that variable from the config's slack.envFile;
  *  undefined when neither has it. */
@@ -141,19 +142,47 @@ async function cmdDigest(): Promise<void> {
   out(await digest(call, inbox, cfg) ? "slack digest: posted" : "slack digest: nothing to post");
 }
 
+/** Triage reads only the local journals: no token, no Slack call. */
+function triageSettings() {
+  const cfg = slackConfig() ?? fail(`${configFile()} names no slack configuration`);
+  const channel = cfg.channel || fail(`${configFile()} names no slack.channel`);
+  const inbox = cfg.inbox || fail(`${configFile()} names no slack.inbox`);
+  return { ...cfg, channel, inbox };
+}
+const line = (i: Item) => `${i.ts}  ${i.state}${i.rule ? `:${i.rule}` : ""}  ${i.who ?? i.user}  thread ${i.thread}  ${i.text.replace(/\s+/g, " ").slice(0, 100)}`;
+
+/** `govern slack triage`: every post owed a reply or a manual review; --all lists every disposition; --check exits 1 when any is open. */
+function cmdTriage(a: Args): void {
+  const items = triage(triageSettings()), shown = flag(a, "all") ? items : open(items);
+  if (flag(a, "json")) out(JSON.stringify(shown));
+  else out(shown.map(line).join("\n") || "slack triage: nothing open");
+  if (flag(a, "check") && open(items).length) process.exitCode = 1;
+}
+
+/** `govern slack dismiss`: record that one post needs nothing further, with the reason. */
+function cmdDismiss(a: Args): void {
+  const ts = opt(a, "ts") ?? usage("dismiss requires --ts");
+  dismiss(triageSettings(), ts, opt(a, "reason") ?? usage("dismiss requires --reason"));
+  out(`slack dismiss: ${ts}`);
+}
+
 export const name = "slack";
 export const description = "Slack: decisions people make with buttons in Slack, verified by Slack's signature";
 export const docs: ExtDoc[] = [{ title: "Slack: decisions from Slack buttons, signature checks, people mapping", path: "SLACK.md" }];
 export const manpage = MANPAGE;
 
 export const commands: Cmd[] = [
-  { name: "slack", section: 7, noSub: "govern slack serve|notify|listen|post|upload|resolve|digest|install-service (the protocol: tools/govern/SLACK.md)",
+  { name: "slack", section: 7, noSub: "govern slack serve|notify|listen|post|upload|resolve|digest|triage|dismiss|install-service (the protocol: tools/govern/SLACK.md)",
     subs: {
       "install-service": { lines: [["", "write user units for listen, notify and a daily digest timer; print enable instructions without starting them"]], run: () => out(installServices()) },
       upload: { flags: { value: ["thread", "file", "title", "text", "key"] },
         lines: [["--thread TS --file PATH [--title T] [--text T] [--key K]", "upload an allowed image, video or PDF inside slack.upload.roots and maxBytes; resolve the thread and journal the file id"]], run: cmdUpload },
       resolve: { flags: { value: ["key", "ts"], bool: ["delivered", "not-delivered"] },
         lines: [["--key K [--delivered [--ts TS] | --not-delivered]", "settle an uncertain send: an upload never completed is released, one completed is looked up in its thread; posts nothing"]], run: cmdResolve },
+      triage: { flags: { bool: ["json", "check", "all"] },
+        lines: [["[--all] [--json] [--check]", "list posts owed a reply (request) or a manual review (review): answered means a send or bot reply in the\nthread later than the post; slack.triage.rules map posts that need none; --check exits 1 while any is open"]], run: cmdTriage },
+      dismiss: { flags: { value: ["ts", "reason"] },
+        lines: [["--ts TS --reason R", "record in slack.inbox/triage.jsonl that a post needs nothing further, and why; posts nothing"]], run: cmdDismiss },
       digest: { lines: [["", "post waiting people, failed tasks and open alerts once per local day; stay silent when empty"]], run: cmdDigest },
       listen: { flags: { bool: ["once", "loop"], value: ["interval"] },
         lines: [["[--once | --loop --interval 60]", "record new channel posts in slack.inbox; first run marks existing posts seen; answer configured requesters' fixed commands"]], run: cmdListen },

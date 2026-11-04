@@ -49,6 +49,8 @@ export interface WorkspaceConfig {
     /** publishers (Slack user ids) may publish a checked routed reply offered in the review channel (publish.ts). */
     route?: { to: string; profile: string; maxPerHour: number; publishers?: string[]; review?: string };
     alerts?: { listenStaleSec: number; unansweredSec: number };
+    /** Every post gets a disposition (ext/slack/triage.ts); rules map posts that need no reply, by name and pattern. */
+    triage?: { rules: { name: string; pattern: string }[] };
     upload?: { roots: string[]; maxBytes: number };
     /** One card per case in the channel, updated in place, with what the case waits on and its alerts in its thread. */
     threads?: boolean;
@@ -84,6 +86,8 @@ const CONFIG = obj({}, {
     bot: arr(str), requesters: record(str), tags: arr(str), inbox: str,
     route: obj({ to: str, profile: str, maxPerHour: posInt }, { publishers: arr(str, { nonEmpty: true }), review: str }),
     alerts: obj({ listenStaleSec: posInt, unansweredSec: posInt }),
+    triage: obj({ rules: arr(obj({ name: str, pattern: (v: unknown, p: string) => {
+      const s = str(v, p); try { new RegExp(s); } catch { reject(p, "must be a valid regular expression"); } return s; } })) }),
     upload: obj({ roots: arr(str, { nonEmpty: true }), maxBytes: posInt }),
     threads: bool,
     forms: bool,
