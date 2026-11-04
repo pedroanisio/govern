@@ -20,6 +20,10 @@ import type { Source } from "../../lib/approval.ts";
 import { setData } from "../../lib/business.ts";
 import type { Scalar } from "../../lib/business-schema.ts";
 import { optionSet, pending, settled, standing } from "./pending.ts";
+import { isControl, parseControl, performControl, type Control } from "./controls.ts";
+import { FormRefusal, editedSet, firstBlock, formView, parseSubmission, postedMessage, reasonOf, type FormMeta, type Submission } from "./forms.ts";
+import type { Call } from "./channel.ts";
+import { PUBLISH_ID, approvePublish, parsePublish } from "./publish.ts";
 
 export { optionSet };
 
@@ -38,10 +42,16 @@ export class Unauthorized extends GovernError {}
 /** What a decision applies to: a gate of the lane, or the human task of one of its stages. */
 export type Target = { gate: string } | { task: string };
 export type Decision = "approve" | "reject" | "complete";
+/** The Slack form a button opens instead of deciding: a reason for a rejection, or an option's editable fields. */
+export type Form = "reason" | "edit";
 /** One verified button click: who clicked it, in which team, the button's typed value and its label (the person's words). */
 export interface SlackAction { team: string; user: string; lane: string; target: Target; decision: Decision; digest: string; quote: string;
   /** An approval that also sets case fields: it must be one of the gate's options, rendered from the case as it stands. */
-  set?: Record<string, Scalar> }
+  set?: Record<string, Scalar>;
+  /** The click opens this form instead of deciding (forms.ts). */
+  form?: Form;
+  /** A submitted edit form: the option (an index into the gate's options) whose `edit` fields `set` may change. */
+  edit?: number }
 
 /** Fails (Unauthorized) unless `signature` is Slack's v0 HMAC-SHA256 of `v0:<timestamp>:<body>` under `secret` and
  *  `timestamp` (seconds) is within SKEW_SECONDS of `now`. */
@@ -60,7 +70,7 @@ function bad(msg: string): never { throw new BadRequest(msg); }
 const stageName = (v: unknown, what: string): string => {
   try { return nameShape(v, what); } catch (e) { return bad((e as Error).message); }
 };
-const VALUE_KEYS = new Set(["v", "lane", "gate", "task", "decision", "digest", "set"]);
+const VALUE_KEYS = new Set(["v", "lane", "gate", "task", "decision", "digest", "set", "form"]);
 
 /** The decision in a Slack interactivity request body (`payload=<JSON>`): a block_actions payload with exactly one
  *  govern.decide button, whose value is the typed decision govern made it with. Every refusal is a BadRequest. */
@@ -94,9 +104,11 @@ export function parseAction(body: Buffer): SlackAction {
     if (!record(v.set) || Object.values(v.set).some((x) => !["string", "number", "boolean"].includes(typeof x))) bad("the button value's set must map fields to scalars");
     set = v.set as Record<string, Scalar>;
   }
+  if (v.form !== undefined && !(v.form === "reason" ? decision === "reject" && "gate" in target && !set : v.form === "edit" && !!set))
+    bad("a reason form is a gate's rejection, an edit form an approval with an option");
   const label = record(action.text) && typeof action.text.text === "string" ? action.text.text.trim() : "";
   if (label.length < 2 || label.length > 2000) bad("the button's label must be the person's words (2..2000 characters)");
-  return { team, user, lane, target, decision: decision as Decision, digest, quote: label, ...(set ? { set } : {}) };
+  return { team, user, lane, target, decision: decision as Decision, digest, quote: label, ...(set ? { set } : {}), ...(v.form ? { form: v.form as Form } : {}) };
 }
 
 /** The version of `p` a decision is made for: its case data and its loop counters, as a SHA-256 hex digest. A change to
@@ -108,9 +120,10 @@ export function caseDigest(p: Pick<Project, "data" | "workflow">): string {
 }
 
 /** The value of a govern.decide button deciding `target` of lane `p` with `decision` (an approval may also `set` case
- *  fields: one of the gate's options), bound to the case as it is now. */
-export function decisionValue(p: Project, target: Target, decision: Decision, set?: Record<string, Scalar>): string {
-  return JSON.stringify({ v: 1, lane: p.slug, ...target, decision, digest: caseDigest(p), ...(set ? { set } : {}) });
+ *  fields: one of the gate's options), bound to the case as it is now. A `form` makes the click open a Slack form
+ *  (forms.ts) instead of deciding: `reason` for a rejection, `edit` for an option with editable fields. */
+export function decisionValue(p: Project, target: Target, decision: Decision, set?: Record<string, Scalar>, form?: Form): string {
+  return JSON.stringify({ v: 1, lane: p.slug, ...target, decision, digest: caseDigest(p), ...(set ? { set } : {}), ...(form ? { form } : {}) });
 }
 
 const seenDir = () => join(stateDir(), "slack");
@@ -134,7 +147,7 @@ function remember(signature: string, now: number): void {
 }
 
 /** The process person whose Slack user id is `user`; Forbidden when none is. */
-function personOf(p: Project, user: string): string {
+export function personOf(p: Project, user: string): string {
   const people = processOf(p).people ?? {};
   return Object.keys(people).find((id) => people[id]!.slack === user)
     ?? (() => { throw new Forbidden(`Slack user ${user} is no person of ${p.slug}'s process (map it as people.<id>.slack)`); })();
@@ -144,11 +157,7 @@ function personOf(p: Project, user: string): string {
  *  policy's rejectTo), the owner's approval of a gate without a policy, or the completion of a human task (claimed first
  *  when nobody holds it). Returns the line the server replies with. */
 export function perform(a: SlackAction, source: Extract<Source, { kind: "slack" }>): string {
-  const team = slackConfig()?.team ?? (() => { throw new Forbidden("the workspace config names no slack.team"); })();
-  if (a.team !== team) throw new Forbidden(`the request comes from Slack team ${a.team}, not ${team}`);
-  let slug: string;
-  try { slug = checkSlug(a.lane); } catch (e) { return bad((e as Error).message); }
-  if (!existsSync(stateFile(slug))) throw new NotFound(`no lane ${slug}`);
+  const slug = laneOf(a);
   return transaction(slug, () => {
     const p = load(slug), person = personOf(p, a.user);
     if (caseDigest(p) !== a.digest) fail(`${slug} has changed since this button was made (its data or a loop): decide on a new message`);
@@ -164,13 +173,18 @@ export function perform(a: SlackAction, source: Extract<Source, { kind: "slack" 
     }
     const gates = processOf(p).gates, name = a.target.gate;
     const g = gates.find((x) => x.name === name) ?? fail(`gate must be one of ${gates.map((x) => x.name).join(", ") || "(none: this process has no gates)"}`);
+    let edited: string[] | undefined;
     if (a.set) {
-      const want = JSON.stringify(Object.entries(a.set).sort(([x], [y]) => (x < y ? -1 : 1)));
-      if (!(g.options ?? []).some((o) => JSON.stringify(Object.entries(optionSet(o, p)).sort(([x], [y]) => (x < y ? -1 : 1))) === want))
+      if (a.edit !== undefined) {
+        const o = g.options?.[a.edit] ?? fail(`${g.name} has no option ${a.edit + 1}`), base = optionSet(o, p), may = new Set(o.edit ?? []);
+        if (!sameKeys(a.set, base) || Object.keys(base).some((k) => !may.has(k) && a.set![k] !== base[k]))
+          fail(`the form's data is not ${g.name}'s option "${o.label}" with only its editable fields changed`);
+        edited = Object.keys(base).filter((k) => a.set![k] !== base[k]);
+      } else if (!(g.options ?? []).some((o) => sameSet(optionSet(o, p), a.set!)))
         fail(`the button's data is not one of ${g.name}'s options as the case stands`);
       setData(p, a.set);
     }
-    const set = a.set ? { set: a.set } : {};
+    const set = a.set ? { set: a.set, ...(edited ? { edited } : {}) } : {};
     if (g.policy) {
       const decision = a.decision === "reject" ? "reject" : "approve";
       const vote = policyVote(p, g, person, decision, a.quote);
@@ -189,21 +203,68 @@ export function perform(a: SlackAction, source: Extract<Source, { kind: "slack" 
   });
 }
 
+const sorted = (s: Record<string, Scalar>) => JSON.stringify(Object.entries(s).sort(([x], [y]) => (x < y ? -1 : 1)));
+const sameSet = (a: Record<string, Scalar>, b: Record<string, Scalar>) => sorted(a) === sorted(b);
+const sameKeys = (a: Record<string, Scalar>, b: Record<string, Scalar>) => JSON.stringify(Object.keys(a).sort()) === JSON.stringify(Object.keys(b).sort());
+
+/** The lane `a` names, once its team is the config's and the lane exists. */
+function laneOf(a: { team: string; lane: string }): string {
+  const team = slackConfig()?.team ?? (() => { throw new Forbidden("the workspace config names no slack.team"); })();
+  if (a.team !== team) throw new Forbidden(`the request comes from Slack team ${a.team}, not ${team}`);
+  let slug: string;
+  try { slug = checkSlug(a.lane); } catch (e) { return bad((e as Error).message); }
+  if (!existsSync(stateFile(slug))) throw new NotFound(`no lane ${slug}`);
+  return slug;
+}
+
+/** Open the form a `form` button names, for the person who clicked, once they may decide the gate now on the case
+ *  version the button is bound to. Records nothing. */
+async function openForm(a: SlackAction, raw: Record<string, unknown>, url: string | undefined, call: Call | undefined): Promise<string> {
+  const slug = laneOf(a), p = load(slug), person = personOf(p, a.user), gate = "gate" in a.target ? a.target.gate : bad("a form is for a gate");
+  if (caseDigest(p) !== a.digest) fail(`${slug} has changed since this button was made (its data or a loop): decide on a new message`);
+  const item = pending(p).find((i) => i.key === `${slug}:gate:${gate}`) ?? fail(`${slug}'s ${gate} does not wait on a decision now`);
+  if (!item.people.includes(person)) fail(`${person} may not decide ${gate}`);
+  const option = a.form === "edit" ? (item.options ?? []).findIndex((o) => !!o.edit && sameSet(o.set, a.set!)) : undefined;
+  if (option === -1) fail(`the button's data is not an editable option of ${gate} as the case stands`);
+  if (!call) fail("govern slack serve has no bot token, so it cannot open the form: give it SLACK_BOT_TOKEN (slack.forms)");
+  const trigger = typeof raw.trigger_id === "string" && raw.trigger_id ? raw.trigger_id : bad("the click has no trigger_id");
+  const message = record(raw.message) ? raw.message : undefined, container = record(raw.container) ? raw.container : undefined;
+  const ts = typeof container?.message_ts === "string" ? container.message_ts : typeof message?.ts === "string" ? message.ts : undefined;
+  const meta: FormMeta = { v: 1, lane: slug, gate, digest: a.digest, form: a.form!, quote: a.quote, user: a.user,
+    ...(option !== undefined ? { option } : {}), ...(url ? { url } : {}), ...(ts ? { ts } : {}) };
+  await call("views.open", { trigger_id: trigger, view: formView(p, meta, option !== undefined ? item.options![option] : undefined) });
+  return `${slug}: ${gate} ${a.form} form opened for ${person}`;
+}
+
+/** The decision a submitted form makes: a rejection quoting the reason, or the option's approval with its fields edited. */
+function submitted(s: Submission): SlackAction {
+  const base = { team: s.team, user: s.user, lane: s.meta.lane, target: { gate: s.meta.gate }, digest: s.meta.digest };
+  if (s.meta.form === "reason") return { ...base, decision: "reject", quote: reasonOf(s) };
+  const p = load(laneOf(base));
+  const o = processOf(p).gates.find((g) => g.name === s.meta.gate)?.options?.[s.meta.option!] ?? fail(`${s.meta.gate} has no option ${s.meta.option! + 1}`);
+  return { ...base, decision: "approve", quote: s.meta.quote, set: editedSet(s, optionSet(o, p), o.edit ?? []), edit: s.meta.option! };
+}
+
 const STATUS = (e: unknown): number =>
   e instanceof Unauthorized ? 401 : e instanceof BadRequest ? 400 : e instanceof Forbidden ? 403 : e instanceof NotFound ? 404
     : e instanceof TooLarge ? 413 : e instanceof GovernError ? 409 : 500;
 
-interface InteractionOptions { now?: () => number; request?: typeof fetch }
-interface InteractionResult { status: number; value: { ok: boolean; text?: string; error?: string } }
+interface InteractionOptions { now?: () => number; request?: typeof fetch;
+  /** The Slack Web API under the bot token, to open forms (views.open); without it a form button is refused. */
+  call?: Call }
+/** `reply`, when set, is what the server answers Slack instead of `value` (a form submission's response_action). */
+interface InteractionResult { status: number; value: { ok: boolean; text?: string; error?: string }; reply?: unknown }
 
 const payloadOf = (body: Buffer): unknown => JSON.parse(new URLSearchParams(body.toString("utf8")).get("payload") ?? "null");
 
 /** Only an authenticated payload can provide a response capability. Never follow redirects or send an API token. */
 function responseUrl(body: Buffer): string | undefined {
   const raw = payloadOf(body);
-  if (!record(raw) || raw.response_url === undefined) return undefined;
+  return record(raw) && raw.response_url !== undefined ? safeUrl(raw.response_url) : undefined;
+}
+function safeUrl(v: unknown): string {
   let url: URL;
-  try { url = new URL(typeof raw.response_url === "string" ? raw.response_url : ""); }
+  try { url = new URL(typeof v === "string" ? v : ""); }
   catch { throw new BadRequest("response_url must be an https://hooks.slack.com/ URL"); }
   if (url.protocol !== "https:" || url.hostname !== "hooks.slack.com" || url.username || url.password || url.port || url.hash)
     throw new BadRequest("response_url must be an https://hooks.slack.com/ URL");
@@ -214,17 +275,49 @@ function responseUrl(body: Buffer): string | undefined {
  *  decision stands. Its buttons stay while the same target still waits on others (a gate short of its quorum) on the case
  *  version they are bound to; otherwise they go. Without the clicked message's blocks, the bare `line` replaces it. */
 function decided(body: Buffer, a: SlackAction, line: string): { text: string; blocks: unknown[] } {
-  const raw = payloadOf(body), message = record(raw) && record(raw.message) ? raw.message : undefined;
+  const raw = payloadOf(body);
+  return decidedMessage(record(raw) && record(raw.message) ? raw.message : undefined, a, line);
+}
+function decidedMessage(message: { text?: unknown; blocks?: unknown } | undefined, a: SlackAction, line: string): { text: string; blocks: unknown[] } {
   const p = load(checkSlug(a.lane)), key = "task" in a.target ? `task:${a.target.task}` : `gate:${a.target.gate}`;
   const open = caseDigest(p) === a.digest && pending(p).some((i) => i.key === `${p.slug}:${key}`);
   const blocks = settled(message?.blocks, standing(p, a.target) ?? line, open);
   return blocks ? { text: typeof message?.text === "string" && message.text ? message.text : line, blocks } : { text: line, blocks: [] };
 }
 
+/** The clicked message with its buttons gone and `line` saying what was done; the bare line without the message's blocks. */
+function closed(body: Buffer, line: string): { text: string; blocks: unknown[] } {
+  const raw = payloadOf(body), message = record(raw) && record(raw.message) ? raw.message : undefined;
+  const blocks = settled(message?.blocks, line, false);
+  return blocks ? { text: typeof message?.text === "string" && message.text ? message.text : line, blocks } : { text: line, blocks: [] };
+}
+
+/** A Publish to thread click (publish.ts): its team, user and button value; undefined for any other click. */
+function publishOf(p: unknown): { team: string; user: string; value: unknown } | undefined {
+  if (!record(p) || p.type !== "block_actions" || !Array.isArray(p.actions) || !p.actions.some((x) => record(x) && x.action_id === PUBLISH_ID)) return undefined;
+  if (p.actions.length !== 1) bad("a click is exactly one action");
+  const team = text(record(p.team) ? p.team.id : undefined, "team.id"), user = text(record(p.user) ? p.user.id : undefined, "user.id");
+  return { team, user, value: (p.actions[0] as Record<string, unknown>).value };
+}
+
+/** An alert or drive button click (controls.ts), or undefined when the click is something else (a decision). */
+function controlOf(body: Buffer): { team: string; user: string; control: Control; quote: string } | undefined {
+  const p = payloadOf(body);
+  if (!record(p) || p.type !== "block_actions" || !Array.isArray(p.actions) || !p.actions.some((x) => record(x) && isControl(x.action_id))) return undefined;
+  if (p.actions.length !== 1) bad("a click is exactly one action");
+  const a = p.actions[0] as Record<string, unknown>;
+  const team = text(record(p.team) ? p.team.id : undefined, "team.id"), user = text(record(p.user) ? p.user.id : undefined, "user.id");
+  const quote = record(a.text) && typeof a.text.text === "string" ? a.text.text.trim() : "";
+  if (quote.length < 2 || quote.length > 2000) bad("the button's label must be the person's words (2..2000 characters)");
+  return { team, user, control: parseControl(a.action_id as string, a.value), quote };
+}
+
 /** Verify, record, then report the outcome through Slack's response URL. Failed feedback never reverses a decision. */
 export async function handleInteraction(secret: string, body: Buffer, ts: string | undefined, sig: string | undefined,
   o: InteractionOptions = {}): Promise<InteractionResult> {
-  let url: string | undefined, action: SlackAction | undefined, result: InteractionResult;
+  let url: string | undefined, update: (() => { text: string; blocks: unknown[] }) | undefined, result: InteractionResult;
+  /** Set while a form submission is being decided: a refusal is then shown in the form (under this input). */
+  let form: string | undefined;
   try {
     const at = (o.now ?? (() => Math.floor(Date.now() / 1000)))();
     verifySignature(secret, ts, sig, body, at);
@@ -233,21 +326,64 @@ export async function handleInteraction(secret: string, body: Buffer, ts: string
       if (e instanceof SyntaxError) throw new BadRequest("the payload is not JSON");
       throw e;
     }
-    const a = action = parseAction(body);
-    remember(sig!, at);
-    const line = perform(a, { kind: "slack", team: a.team, user: a.user, timestamp: ts!, signedBody: body.toString("utf8"), signature: sig! });
-    result = { status: 200, value: { ok: true, text: line } };
+    const raw = payloadOf(body), c = controlOf(body);
+    if (record(raw) && raw.type === "view_submission") {
+      remember(sig!, at);
+      const s = parseSubmission(raw);
+      form = firstBlock(raw) ?? "";
+      const a = submitted(s);
+      const line = perform(a, { kind: "slack", team: a.team, user: a.user, timestamp: ts!, signedBody: body.toString("utf8"), signature: sig! });
+      result = { status: 200, value: { ok: true, text: line }, reply: { response_action: "clear" } };
+      try { url = s.meta.url ? safeUrl(s.meta.url) : undefined; } catch { url = undefined; }
+      update = () => decidedMessage(postedMessage(`${a.lane}:gate:${s.meta.gate}`, s.meta.ts), a, line);
+      form = undefined;
+    } else if (publishOf(raw)) {
+      const { team, user, value } = publishOf(raw)!;
+      remember(sig!, at);
+      const cfg = slackConfig() ?? (() => { throw new Forbidden("the workspace config names no slack.team"); })();
+      if (team !== cfg.team) throw new Forbidden(`the request comes from Slack team ${team}, not ${cfg.team}`);
+      if (!cfg.route?.publishers?.includes(user) || !cfg.inbox) throw new Forbidden(`Slack user ${user} is not one of slack.route.publishers`);
+      const { reply, digest } = parsePublish(value);
+      approvePublish(cfg.inbox, reply, digest, user, { kind: "slack", team, user, timestamp: ts!, signedBody: body.toString("utf8"), signature: sig! });
+      const line = `Approved by <@${user}> · govern slack listen posts it in the request's thread`;
+      result = { status: 200, value: { ok: true, text: line } };
+      update = () => closed(body, line);
+    } else if (c) {
+      remember(sig!, at);
+      const team = slackConfig()?.team ?? (() => { throw new Forbidden("the workspace config names no slack.team"); })();
+      if (c.team !== team) throw new Forbidden(`the request comes from Slack team ${c.team}, not ${team}`);
+      const line = performControl(c.control, (p) => personOf(p, c.user), { kind: "slack", team: c.team, user: c.user, timestamp: ts!, signedBody: body.toString("utf8"), signature: sig! }, c.quote, at);
+      result = { status: 200, value: { ok: true, text: line } };
+      update = () => closed(body, line);
+    } else {
+      const a = parseAction(body);
+      remember(sig!, at);
+      if (a.form) {
+        result = { status: 200, value: { ok: true, text: await openForm(a, raw as Record<string, unknown>, url, o.call) } };
+        url = undefined;
+        return result;
+      }
+      const line = perform(a, { kind: "slack", team: a.team, user: a.user, timestamp: ts!, signedBody: body.toString("utf8"), signature: sig! });
+      result = { status: 200, value: { ok: true, text: line } };
+      update = () => decided(body, a, line);
+    }
   } catch (e) {
-    const status = STATUS(e);
-    result = { status, value: { ok: false, error: status === 500 ? "decision failed" : (e as Error).message } };
+    const status = STATUS(e), error = status === 500 ? "decision failed" : (e as Error).message;
+    result = { status, value: { ok: false, error } };
     if (status === 500) process.stderr.write(`slack: ${nowIso()} decision failed; inspect the lane ledger\n`);
+    if (form !== undefined) {
+      // Slack shows a form's errors only on a 200 answer naming an input.
+      const block = e instanceof FormRefusal ? e.block : form;
+      result = { status: 200, value: { ok: false, error }, reply: { response_action: "errors", errors: { [block]: error.slice(0, 300) } } };
+      url = undefined;
+    }
   }
   if (url) {
     try {
       const response = await (o.request ?? fetch)(url, { method: "POST", redirect: "error", signal: AbortSignal.timeout(2000),
         headers: { "Content-Type": "application/json; charset=utf-8" },
-        body: JSON.stringify(result.value.ok && action
-          ? { replace_original: true, response_type: "in_channel", ...decided(body, action, result.value.text!) }
+        body: JSON.stringify(result.value.ok && update
+          ? { replace_original: true, response_type: "in_channel", ...update() }
           : { replace_original: false, response_type: "ephemeral", text: `Refused: ${result.value.error}` }) });
       if (!response.ok) throw new Error("refused");
     } catch { process.stderr.write("slack: response update failed; decision outcome retained; notify will reconcile\n"); }
@@ -283,7 +419,7 @@ export function slackServer(secret: string, o: InteractionOptions = {}): Server 
       if (res.headersSent) return;
       const timestamp = req.headers["x-slack-request-timestamp"], signature = req.headers["x-slack-signature"];
       void handleInteraction(secret, Buffer.concat(chunks), typeof timestamp === "string" ? timestamp : undefined,
-        typeof signature === "string" ? signature : undefined, o).then(r => reply(r.status, r.value));
+        typeof signature === "string" ? signature : undefined, o).then(r => reply(r.status, r.reply ?? r.value));
     });
     req.on("error", () => reply(400, { ok: false, error: "incomplete request" }));
   });

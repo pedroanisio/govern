@@ -10,6 +10,7 @@ import { out, type Cmd } from "../../lib/cli.ts";
 import type { ExtDoc } from "../../lib/ext-registry.ts";
 import { poll, slackCall, postMessage, uploadFile, resolveSend, wasSent, wasAttempted } from "./channel.ts";
 import { routePending, startLine } from "./route.ts";
+import { publishApproved } from "./publish.ts";
 import { digest } from "./digest.ts";
 import { commandText } from "./commands.ts";
 import { installServices } from "./service.ts";
@@ -40,7 +41,9 @@ function cmdServe(a: Args): void {
   const cfg = slackConfig() ?? fail(`${configFile()} names no slack.team: the Slack team whose requests count`);
   const signing = secret("SLACK_SIGNING_SECRET", process.env.SLACK_SIGNING_SECRET, cfg.envFile)
     ?? fail(`SLACK_SIGNING_SECRET is not set: export it, or name a dotenv file holding it as slack.envFile in ${configFile()}`);
-  const server = slackServer(signing);
+  // Forms (slack.forms) open a modal with views.open under the bot token, within the click's 3 s trigger window.
+  const call = cfg.forms ? slackCall(process.env.GOVERN_SLACK_API ?? SLACK_API, botToken(cfg)) : undefined;
+  const server = slackServer(signing, call ? { call } : {});
   const port = Number(opt(a, "port") ?? 5003);
   if (!Number.isInteger(port) || port < 0 || port > 65535) usage("--port must be 0..65535");
   server.on("error", (e) => { process.stderr.write(`slack: ${e.message}\n`); process.exitCode = 1; });
@@ -60,7 +63,7 @@ async function cmdNotify(a: Args): Promise<void> {
   if (!Number.isInteger(interval) || interval < 5) usage("--interval must be a whole number of seconds, 5 or more");
   const once = async () => {
     const r = await notify({ api: process.env.GOVERN_SLACK_API ?? SLACK_API, token, channel, dryRun: flag(a, "dry-run"),
-      ...(lanes.length ? { lanes } : {}), ...(cfg.labels ? { labels: cfg.labels } : {}) });
+      ...(lanes.length ? { lanes } : {}), ...(cfg.labels ? { labels: cfg.labels } : {}), ...(cfg.threads ? { threads: true } : {}), ...(cfg.forms ? { forms: true } : {}) });
     out(summary(r));
     return r.failed.length === 0;
   };
@@ -95,6 +98,7 @@ async function cmdListen(a: Args): Promise<void> {
       await postMessage(call, inbox, cfg.channel, { kind: "note", text: commandText(command), thread: post.thread_ts ?? post.ts, threadIsParent: true, key });
     });
     const routed = await routePending(call, inbox, cfg);
+    for (const id of await publishApproved(call, inbox, cfg.channel)) out(`slack listen: published ${id}`);
     if (routed.waiting.length) process.stderr.write(`slack listen: route limit; ${routed.waiting.length} request(s) remain in inbox\n`);
     if (count) out(`slack listen: ${count} new`);
   };

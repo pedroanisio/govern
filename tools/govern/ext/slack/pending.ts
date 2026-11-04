@@ -10,7 +10,7 @@ import type { Decision, Target } from "./slack.ts";
 /** One thing a lane waits on from people: a human task or a gate, who may decide it, and how. */
 export interface Pending { key: string; lane: string; target: Target; decisions: Decision[]; people: string[];
   /** A gate's approve options as they stand on the case: each its label and the fields it sets. */
-  options?: { label: string; set: Record<string, Scalar> }[] }
+  options?: { label: string; set: Record<string, Scalar>; edit?: string[] }[] }
 
 /** A gate option's case data as it stands on `p`: {data.FIELD} in a string value filled from the case ("" when absent). */
 export function optionSet(o: GateOption, p: Pick<Project, "data">): Record<string, Scalar> {
@@ -37,7 +37,7 @@ export function pending(p: Project): Pending[] {
     const owner = g.owner ?? "owner";
     out.push({ key: `${p.slug}:gate:${g.name}`, lane: p.slug, target: { gate: g.name },
       decisions: g.policy ? ["approve", "reject"] : ["approve"],
-      ...(g.options ? { options: g.options.map((o) => ({ label: o.label, set: optionSet(o, p) })) } : {}),
+      ...(g.options ? { options: g.options.map((o) => ({ label: o.label, set: optionSet(o, p), ...(o.edit ? { edit: o.edit } : {}) })) } : {}),
       people: g.policy ? people.filter((id) => eligibleApprover(pr, g, id) && !excluded.has(id)) : people.includes(owner) ? [owner] : [] });
   }
   return out;
