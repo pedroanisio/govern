@@ -15,6 +15,9 @@ import { watched, serviceAlerts } from "../../lib/services.ts";
 import { slackCall } from "./channel.ts";
 import { ACTION_ID, caseDigest, decisionValue, type Decision, type Target } from "./slack.ts";
 import { pending, settled, standing, targetOf, ACTIONS_BLOCK, type Pending } from "./pending.ts";
+import { alertButtons, driveButtons, mention } from "./controls.ts";
+import { ledgerFile } from "../../lib/project.ts";
+import { readJsonl } from "../../lib/util.ts";
 import type { Scalar } from "../../lib/business-schema.ts";
 
 export { pending, type Pending };
@@ -34,7 +37,9 @@ const LABELS: Record<Decision, string> = { complete: "Done", approve: "Approve",
 interface Posted { lane: string; channel: string; ts: string; digest: string; text: string; blocks?: unknown[] }
 /** A case's card (slack.threads): where it is and the text it shows now. */
 interface Card { channel: string; ts: string; text: string }
-interface State { posted: Record<string, Posted>; alerts: Record<string, string>; cards?: Record<string, Card> }
+/** An alert's message while it can still close (its buttons gone once the alert is settled anywhere). */
+interface AlertPost { channel: string; ts: string; text: string; blocks: unknown[] }
+interface State { posted: Record<string, Posted>; alerts: Record<string, string>; cards?: Record<string, Card>; alertPosts?: Record<string, AlertPost> }
 const dir = () => join(stateDir(), "slack");
 const file = () => join(dir(), "posted.json");
 function readState(): State {
@@ -175,22 +180,56 @@ export async function notify(o: NotifyOptions): Promise<NotifyReport> {
       report.posted.push(item.key);
       if (!o.dryRun) state.posted[item.key] = { lane: slug, channel: sent.channel, ts: sent.ts, digest, text: m.text, blocks: m.blocks };
     }
-    for (const f of failures.filter((x) => x.lane === slug)) {
+    /** Post an alert with its buttons, once under `key`; `open` is the key its message is kept under while it can close. */
+    const postAlert = async (key: string, open: string, text: string, actions: unknown) => {
+      const blocks = [{ type: "section", text: { type: "mrkdwn", text: text.slice(0, 2900) } }, actions];
+      const sent = await send(key, "chat.postMessage", { channel: o.channel, ...inThread, text, blocks });
+      if (!sent) return;
+      report.alerts.push(key);
+      if (!o.dryRun) { state.alerts[key] = sent.ts; (state.alertPosts ??= {})[open] = { channel: sent.channel, ts: sent.ts, text, blocks }; }
+    };
+    /** Close the message kept under `open` with `line`, when there is one. */
+    const closeAlert = async (open: string, line: string) => {
+      const rec = state.alertPosts?.[open];
+      if (!rec) return;
+      const blocks = settled(rec.blocks, line, false);
+      if (await send(open, "chat.update", { channel: rec.channel, ts: rec.ts, text: `${rec.text} — ${line}`, ...(blocks ? { blocks } : {}) })) {
+        report.closed.push(open);
+        if (!o.dryRun) delete state.alertPosts![open];
+      }
+    };
+    const ledger = () => readJsonl(ledgerFile(slug));
+    const laneFailures = failures.filter((x) => x.lane === slug);
+    for (const f of laneFailures) {
       if (state.alerts[f.key]) continue;
       const text = `${p.title} (${slug}): the ${f.stage} stage needs a person — govern drive gave up after ${f.attempt} attempt${f.attempt === 1 ? "" : "s"}: ${f.reason}`;
-      const sent = await send(f.key, "chat.postMessage", { channel: o.channel, ...inThread, text });
-      if (!sent) continue;
-      report.alerts.push(f.key);
-      if (!o.dryRun) state.alerts[f.key] = sent.ts;
+      await postAlert(f.key, f.key, text, driveButtons(slug, f.stage, f.round));
+    }
+    // A failure drive no longer reports was retried (here or at the terminal): its message closes, and a later failure of
+    // the same stage is a new post.
+    for (const key of Object.keys(state.alertPosts ?? {})) {
+      if (!key.startsWith(`${slug}:drive:`) || laneFailures.some((f) => f.key === key)) continue;
+      const stage = key.slice(slug.length + ":drive:".length).replace(/:\d+$/, "");
+      const by = ledger().findLast((x) => x.kind === "drive-retry" && x.stage === stage)?.by;
+      await closeAlert(key, `${typeof by === "string" ? `Retry by ${mention(p, by)} · ` : ""}_no longer failed_`);
+      if (!o.dryRun && !state.alertPosts?.[key]) delete state.alerts[key];
     }
     for (const alert of p.alerts ?? []) {
       const key = `${slug}:alert:${alert.id}`;
-      if (alert.acknowledgedAt || state.alerts[key]) continue;
+      if (alert.acknowledgedAt) {
+        const by = ledger().findLast((x) => x.kind === "alert-ack" && x.id === alert.id)?.by;
+        await closeAlert(key, `Acknowledged${typeof by === "string" ? ` by ${mention(p, by)}` : ""}`);
+        continue;
+      }
       const text = `${p.title} (${slug}): ${alert.kind} at ${alert.stage} — ${alert.message}`;
-      const sent = await send(key, "chat.postMessage", { channel: o.channel, ...inThread, text });
-      if (!sent) continue;
-      report.alerts.push(key);
-      if (!o.dryRun) state.alerts[key] = sent.ts;
+      if (alert.snoozedUntil) {
+        // Snoozed: nothing until the snooze ends, then one new post, under a key the snooze names.
+        if (Date.parse(alert.snoozedUntil) > Date.now()) continue;
+        const again = `${key}:${alert.snoozedUntil}`;
+        if (!state.alerts[again]) await postAlert(again, key, `${text} (still open after a snooze)`, alertButtons(p, alert));
+        continue;
+      }
+      if (!state.alerts[key]) await postAlert(key, key, text, alertButtons(p, alert));
     }
   }
   if (!o.lanes) {

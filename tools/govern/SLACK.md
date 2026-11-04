@@ -68,7 +68,9 @@ channel) in the environment or the `slack.envFile`. `govern slack notify` (or `-
 
 - each active human task and each gate that can be decided now, once, mentioning the people who may decide it, with one
   button per decision (a gate's options are one approve button each, the values they set shown above them);
-- each open timer alert, and each stage `govern drive` left to the operator, once, as text.
+- each open timer alert, once, with buttons **Acknowledge**, **Snooze 1h** and, while the alert's stage has a human task
+  nobody holds, **Take it**;
+- each stage `govern drive` left to the operator, once, with its reason and a **Retry stage** button.
 
 When the decision is made, or the case changes under a message, the message is updated without its buttons; a changed
 case gets a new message. A closed message keeps what it asked and gains one line (block `govern.outcome`) saying who
@@ -83,6 +85,25 @@ card's thread; people mentioned there are still notified. A card that cannot be 
 until a later run, so they never land outside the thread. Without `threads`, every message is posted to the channel
 itself.
 
+### Alert buttons
+
+An alert button (`action_id` `govern.alert.ack`, `govern.alert.snooze`, `govern.alert.take`, `govern.drive.retry`) passes
+the same checks as a decision (below: signature, clock, replay, team, a person of the lane's process) and is recorded as
+that person's, with the signed request as `source`. None of them approves a gate or completes a task.
+
+| Button | What it does | Ledger |
+|---|---|---|
+| Acknowledge | sets the alert's `acknowledgedAt`, as `govern alerts --ack` does | `alert-ack` |
+| Snooze 1h | sets `snoozedUntil` an hour ahead; the notifier skips the alert until then, then posts it once more ("still open after a snooze") | `alert-snooze` |
+| Take it | claims the stage's human task for the person, who must be eligible for it | `human-claim` |
+| Retry stage | clears the failed run in `govern drive`'s state, so the next drive run sends the stage again (attempt counting starts over) | `drive-retry` |
+
+The value names the lane and the alert (`{"v":1,"lane","alert","action"}`) or the lane, stage and round
+(`{"v":1,"lane","stage","round","action":"retry"}`); unknown fields are refused. An alert already acknowledged, and a stage
+no longer failed at that round, are refused (409). The clicked message loses its buttons and gains one line saying what
+was done. When an alert is acknowledged at the terminal, or a failure goes away by itself, the notifier closes its
+message the same way; a later failure of the same stage is a new message.
+
 Button labels come from `slack.labels` (`complete`, `approve`, `reject`; default Done, Approve, Send back).
 
 ## What a request must prove
@@ -94,7 +115,7 @@ Button labels come from `slack.labels` (`complete`, `approve`, `reject`; default
 | Body at most 64 KiB | 413 |
 | `X-Slack-Signature` is `v0=` HMAC-SHA256 of `v0:<timestamp>:<body>` under the signing secret | 401 |
 | `X-Slack-Request-Timestamp` within 300 s of the server's clock | 401 |
-| A `block_actions` payload with exactly one `govern.decide` button and a valid value | 400 |
+| A `block_actions` payload with exactly one `govern.decide` (or alert) button and a valid value | 400 |
 | The signature was never received before (remembered for 600 s, under the state folder's `slack/`) | 401 |
 | The payload's team is the config's `slack.team` | 403 |
 | The lane exists | 404 |

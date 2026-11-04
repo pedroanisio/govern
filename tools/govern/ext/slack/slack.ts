@@ -20,6 +20,7 @@ import type { Source } from "../../lib/approval.ts";
 import { setData } from "../../lib/business.ts";
 import type { Scalar } from "../../lib/business-schema.ts";
 import { optionSet, pending, settled, standing } from "./pending.ts";
+import { isControl, parseControl, performControl, type Control } from "./controls.ts";
 
 export { optionSet };
 
@@ -134,7 +135,7 @@ function remember(signature: string, now: number): void {
 }
 
 /** The process person whose Slack user id is `user`; Forbidden when none is. */
-function personOf(p: Project, user: string): string {
+export function personOf(p: Project, user: string): string {
   const people = processOf(p).people ?? {};
   return Object.keys(people).find((id) => people[id]!.slack === user)
     ?? (() => { throw new Forbidden(`Slack user ${user} is no person of ${p.slug}'s process (map it as people.<id>.slack)`); })();
@@ -221,10 +222,29 @@ function decided(body: Buffer, a: SlackAction, line: string): { text: string; bl
   return blocks ? { text: typeof message?.text === "string" && message.text ? message.text : line, blocks } : { text: line, blocks: [] };
 }
 
+/** The clicked message with its buttons gone and `line` saying what was done; the bare line without the message's blocks. */
+function closed(body: Buffer, line: string): { text: string; blocks: unknown[] } {
+  const raw = payloadOf(body), message = record(raw) && record(raw.message) ? raw.message : undefined;
+  const blocks = settled(message?.blocks, line, false);
+  return blocks ? { text: typeof message?.text === "string" && message.text ? message.text : line, blocks } : { text: line, blocks: [] };
+}
+
+/** An alert or drive button click (controls.ts), or undefined when the click is something else (a decision). */
+function controlOf(body: Buffer): { team: string; user: string; control: Control; quote: string } | undefined {
+  const p = payloadOf(body);
+  if (!record(p) || p.type !== "block_actions" || !Array.isArray(p.actions) || !p.actions.some((x) => record(x) && isControl(x.action_id))) return undefined;
+  if (p.actions.length !== 1) bad("a click is exactly one action");
+  const a = p.actions[0] as Record<string, unknown>;
+  const team = text(record(p.team) ? p.team.id : undefined, "team.id"), user = text(record(p.user) ? p.user.id : undefined, "user.id");
+  const quote = record(a.text) && typeof a.text.text === "string" ? a.text.text.trim() : "";
+  if (quote.length < 2 || quote.length > 2000) bad("the button's label must be the person's words (2..2000 characters)");
+  return { team, user, control: parseControl(a.action_id as string, a.value), quote };
+}
+
 /** Verify, record, then report the outcome through Slack's response URL. Failed feedback never reverses a decision. */
 export async function handleInteraction(secret: string, body: Buffer, ts: string | undefined, sig: string | undefined,
   o: InteractionOptions = {}): Promise<InteractionResult> {
-  let url: string | undefined, action: SlackAction | undefined, result: InteractionResult;
+  let url: string | undefined, update: (() => { text: string; blocks: unknown[] }) | undefined, result: InteractionResult;
   try {
     const at = (o.now ?? (() => Math.floor(Date.now() / 1000)))();
     verifySignature(secret, ts, sig, body, at);
@@ -233,10 +253,21 @@ export async function handleInteraction(secret: string, body: Buffer, ts: string
       if (e instanceof SyntaxError) throw new BadRequest("the payload is not JSON");
       throw e;
     }
-    const a = action = parseAction(body);
-    remember(sig!, at);
-    const line = perform(a, { kind: "slack", team: a.team, user: a.user, timestamp: ts!, signedBody: body.toString("utf8"), signature: sig! });
-    result = { status: 200, value: { ok: true, text: line } };
+    const c = controlOf(body);
+    if (c) {
+      remember(sig!, at);
+      const team = slackConfig()?.team ?? (() => { throw new Forbidden("the workspace config names no slack.team"); })();
+      if (c.team !== team) throw new Forbidden(`the request comes from Slack team ${c.team}, not ${team}`);
+      const line = performControl(c.control, (p) => personOf(p, c.user), { kind: "slack", team: c.team, user: c.user, timestamp: ts!, signedBody: body.toString("utf8"), signature: sig! }, c.quote, at);
+      result = { status: 200, value: { ok: true, text: line } };
+      update = () => closed(body, line);
+    } else {
+      const a = parseAction(body);
+      remember(sig!, at);
+      const line = perform(a, { kind: "slack", team: a.team, user: a.user, timestamp: ts!, signedBody: body.toString("utf8"), signature: sig! });
+      result = { status: 200, value: { ok: true, text: line } };
+      update = () => decided(body, a, line);
+    }
   } catch (e) {
     const status = STATUS(e);
     result = { status, value: { ok: false, error: status === 500 ? "decision failed" : (e as Error).message } };
@@ -246,8 +277,8 @@ export async function handleInteraction(secret: string, body: Buffer, ts: string
     try {
       const response = await (o.request ?? fetch)(url, { method: "POST", redirect: "error", signal: AbortSignal.timeout(2000),
         headers: { "Content-Type": "application/json; charset=utf-8" },
-        body: JSON.stringify(result.value.ok && action
-          ? { replace_original: true, response_type: "in_channel", ...decided(body, action, result.value.text!) }
+        body: JSON.stringify(result.value.ok && update
+          ? { replace_original: true, response_type: "in_channel", ...update() }
           : { replace_original: false, response_type: "ephemeral", text: `Refused: ${result.value.error}` }) });
       if (!response.ok) throw new Error("refused");
     } catch { process.stderr.write("slack: response update failed; decision outcome retained; notify will reconcile\n"); }

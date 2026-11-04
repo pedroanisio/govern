@@ -121,11 +121,13 @@ export interface Alert {
   at: string;
   message: string;
   acknowledgedAt?: string;
+  /** Until when a person snoozed the alert (Slack's Snooze): the notifier posts it again after this, if still open. */
+  snoozedUntil?: string;
 }
 export const ALERTS = arr(
   obj(
     { id: name, stage: name, kind: literal("due", "reminder", "escalation"), at: timestamp, message: str },
-    { acknowledgedAt: timestamp }
+    { acknowledgedAt: timestamp, snoozedUntil: timestamp }
   )
 );
 export interface Snapshot {

@@ -46,6 +46,18 @@ function writeRuns(runs: Record<string, Run>): void {
   renameSync(tmp, file());
 }
 
+/** Let `govern drive` try a stage it left to the operator again: the failed run of `slug`'s `stage` for entry `round` is
+ *  forgotten, so the next drive sends the stage's task afresh (attempt 1). Fails when that run is not the failed one. */
+export function retryFailed(slug: string, stage: string, round: number): void {
+  mkdirSync(dir(), { recursive: true, mode: 0o700 });
+  withLaneLock(join(dir(), "lock"), () => {
+    const runs = readRuns(), key = `${slug}:${stage}`, run = runs[key];
+    if (!run || run.state !== "failed" || run.round !== round) fail(`${slug} ${stage} is not a stage govern drive left to the operator (entry ${round})`);
+    delete runs[key];
+    writeRuns(runs);
+  });
+}
+
 /** How many times the lane has advanced out of `stage`: a new entry into the stage has a higher round than the last task. */
 const roundOf = (slug: string, stage: string): number => readJsonl(ledgerFile(slug)).filter((e) => e.kind === "advance" && e.from === stage).length;
 

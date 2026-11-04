@@ -190,14 +190,14 @@ test("a case that changed under a posted message gets its message superseded and
   });
 });
 
-test("an open timer alert is posted once, as text", async () => {
+test("an open timer alert is posted once, with its alert buttons", async () => {
   const e = setup(1);
   await new Promise((r) => setTimeout(r, 1100));
   assert.equal(govern(e, ["tick", "t1"]).code, 0);
   await fakeSlack(async (api, calls) => {
     const r = await run(e, api);
     assert.equal(r.alerts.length, 1);
-    const alert = calls.find((c) => buttonsOf(c).length === 0 && c.method === "chat.postMessage")!;
+    const alert = calls.find((c) => c.method === "chat.postMessage" && buttonsOf(c).some((b) => b.action_id.startsWith("govern.alert.")))!;
     assert.match(String(alert.body.text), /t1/);
     assert.match(String(alert.body.text), /due|draft/);
     const again = await run(e, api);
@@ -280,7 +280,7 @@ test("a stage govern drive left to the operator is posted once, with its reason"
     assert.deepEqual(r.alerts, ["t1:drive:draft:0"]);
     const post = calls.find((c) => String(c.body.text).includes("Jira is down"))!;
     assert.match(String(post.body.text), /Ticket one \(t1\).*draft.*after 2 attempts/);
-    assert.equal(buttonsOf(post).length, 0);
+    assert.deepEqual(buttonsOf(post).map((b) => b.action_id), ["govern.drive.retry"]);
     assert.deepEqual((await run(e, api)).alerts, []);
   });
 });
@@ -336,7 +336,7 @@ test("with threads, a case's timer alert goes in its thread, and a finished case
   await fakeSlack(async (api, calls) => {
     const r = await run(e, api, { threads: true });
     assert.equal(r.alerts.length, 1);
-    const alert = posts(calls).find((c) => /due|draft/.test(String(c.body.text)) && buttonsOf(c).length === 0 && c.body.thread_ts !== undefined);
+    const alert = posts(calls).find((c) => buttonsOf(c).some((b) => b.action_id.startsWith("govern.alert.")) && c.body.thread_ts !== undefined);
     assert.ok(alert, "the alert is a reply to the card");
     await inWorkspace(e, () => { const p = load("t1"); p.finished = "2026-11-04T00:00:00.000Z"; p.workflow = { ...p.workflow!, active: [], waiting: [] }; save(p); });
     await run(e, api, { threads: true });
