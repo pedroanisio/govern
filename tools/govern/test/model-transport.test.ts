@@ -108,6 +108,14 @@ test("terminal measurements preserve explicit zero and unknown spend", () => {
   }
 });
 
+test("a Claude Code 2.1.318 result that names its origin still decodes", () => {
+  const lines = readFileSync(join(HERE, "fixtures/claude-code-2.1.318.jsonl"), "utf8").trim().split("\n");
+  const last = { ...JSON.parse(lines.at(-1)!), origin: { kind: "task-notification" } };
+  const out = claudeResult(JSON.stringify(last), 0, "");
+  assert.equal(out.error, undefined);
+  assert.equal(out.text, "ok");
+});
+
 // Captured `claude -p --output-format stream-json --verbose` runs (system events dropped, paths and signatures scrubbed).
 for (const version of ["2.1.219", "2.1.312", "2.1.318"]) {
   test(`Claude Code ${version} stream and result decode`, { timeout: 10000 }, () => {

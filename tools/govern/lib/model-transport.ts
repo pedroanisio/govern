@@ -59,6 +59,8 @@ const resultShape = (policy: UsagePolicy) => obj({}, {
   credential_expires_at: opaque, time_to_request_phases_ms: opaque, time_to_request_loop_lag_ms: opaque, time_to_request_cpu_ms: opaque,
   time_to_request_major_faults: opaque, turn_start_resume_kind: opaque, process_turn_index: opaque, input_attachments_detail: opaque,
   tool_schema_build_detail: opaque, message_normalization_detail: opaque, request_build_detail: opaque,
+  // A later 2.1.318 result, after a turn the session started on its own (a background task's notice), names its origin.
+  origin: opaque,
   ...metadata,
 });
 const RESULT = { refuse: resultShape("refuse"), unknown: resultShape("unknown") };
