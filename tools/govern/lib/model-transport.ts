@@ -55,6 +55,10 @@ const resultShape = (policy: UsagePolicy) => obj({}, {
   terminal_reason: opaque, api_error_status: opaque, fast_mode_state: opaque, fast_mode_disabled_reason: opaque,
   time_to_request_ms: opaque, ttft_ms: opaque, ttft_stream_ms: opaque, first_content_frame_ms: opaque, queued_turn_count: opaque,
   result_index: opaque, safety_stops: opaque, subagent_stats: opaque, model_usage_since_last_result: opaque,
+  // Claude Code 2.1.318 adds request timing, build detail and the login's expiry; none is read.
+  credential_expires_at: opaque, time_to_request_phases_ms: opaque, time_to_request_loop_lag_ms: opaque, time_to_request_cpu_ms: opaque,
+  time_to_request_major_faults: opaque, turn_start_resume_kind: opaque, process_turn_index: opaque, input_attachments_detail: opaque,
+  tool_schema_build_detail: opaque, message_normalization_detail: opaque, request_build_detail: opaque,
   ...metadata,
 });
 const RESULT = { refuse: resultShape("refuse"), unknown: resultShape("unknown") };
@@ -120,7 +124,8 @@ export function transportEvent(engine: "codex" | "claude" | "grok", raw: unknown
     if (type === "assistant" || type === "user") return obj({ type: text, message: obj({ content: arr(content) }, {
       id: text, type: text, role: text, model: text, stop_reason: nullable(text), stop_sequence: nullable(text), usage: usageShape(policy),
       container: opaque, context_management: opaque, diagnostics: opaque, stop_details: opaque, input_transformations: opaque,
-    }) }, { ...metadata, request_id: opaque, timestamp: opaque, tool_use_result: opaque, tool_result_meta: opaque, wire_tool_inputs: opaque })(raw, "$");
+    }) }, { ...metadata, request_id: opaque, timestamp: opaque, tool_use_result: opaque, tool_result_meta: opaque, wire_tool_inputs: opaque,
+      thinking_display: opaque, thinking_duration_ms: opaque })(raw, "$");
     if (type === "stream_event") {
       const delta: Shape<{ type: string; text?: string }> = (v, p) => {
         const t = eventType(v, p);
