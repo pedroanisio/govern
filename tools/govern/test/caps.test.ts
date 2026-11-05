@@ -137,6 +137,33 @@ test("codex profiles keep the old sandbox mapping; a profile's -c settings and a
   assert.match(present(prompts[2], "cx prompt"), new RegExp(`You may change files under ${join(e.projects, "film")} and /tmp/scratch only\\.`));
 });
 
+test("a claude capability's add-dirs reach claude -p as --add-dir, and the prompt names them", () => {
+  const e = env();
+  mkdirSync(join(e.projects, "film"), { recursive: true });
+  write(join(e.root, "caps", "b.json"), JSON.stringify({ version: 1,
+    capabilities: [{ name: "worktrees", description: "the repo's worktrees", call: "Edit, Write", claude: { allow: ["Edit", "Write"], permissionMode: "acceptEdits", addDirs: ["/tmp/wt-a", "/tmp/wt-b"] }, effect: "write" }],
+    profiles: [{ name: "cb", engine: "claude", capabilities: ["read", "worktrees"], selfTest: "optional" }] }));
+  send(e, ["--to", "cb"]);
+  send(e, ["--to", "claude", "--write"]);
+  const r = govern(e, ["task", "dispatch"], { FAKE_CLAUDE_RESULT: ANSWER });
+  assert.equal(r.code, 0, r.err);
+  const [cb, plain] = jsonl(join(e.root, "claude.log"));
+  const argv = present(cb, "cb call").argv as string[];
+  const at = argv.indexOf("--add-dir");
+  assert.ok(at > 0, "cb gets --add-dir");
+  assert.deepEqual(argv.slice(at + 1, at + 3), ["/tmp/wt-a", "/tmp/wt-b"]);
+  assert.ok((argv[at + 3] ?? "").startsWith("--"), "the variadic --add-dir is closed by the next flag");
+  assert.ok(!(present(plain, "plain call").argv as string[]).includes("--add-dir"), "a profile without add-dirs gets none");
+  assert.match(present(cb, "cb call").input, new RegExp(`You may change files under ${join(e.projects, "film")} and /tmp/wt-a and /tmp/wt-b only\\.`));
+});
+
+test("a claude capability's addDirs must be absolute paths", () => {
+  const e = env();
+  write(join(e.root, "caps", "b.json"), JSON.stringify({ version: 1,
+    capabilities: [{ name: "rel", description: "d", call: "c", claude: { allow: ["Edit"], addDirs: ["wt"] }, effect: "write" }] }));
+  assert.match(govern(e, ["caps"]).err, /addDirs.*absolute/);
+});
+
 // ---------------------------------------------------------------- profiles on tasks
 
 test("a task records its profile: task send resolves it, task show and desk display it, access follows the capabilities", () => {
