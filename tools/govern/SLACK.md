@@ -68,13 +68,59 @@ channel) in the environment or the `slack.envFile`. `govern slack notify` (or `-
 
 - each active human task and each gate that can be decided now, once, mentioning the people who may decide it, with one
   button per decision (a gate's options are one approve button each, the values they set shown above them);
-- each open timer alert, and each stage `govern drive` left to the operator, once, as text.
+- each open timer alert, once, with buttons **Acknowledge**, **Snooze 1h** and, while the alert's stage has a human task
+  nobody holds, **Take it**;
+- each stage `govern drive` left to the operator, once, with its reason and a **Retry stage** button.
 
 When the decision is made, or the case changes under a message, the message is updated without its buttons; a changed
 case gets a new message. A closed message keeps what it asked and gains one line (block `govern.outcome`) saying who
 decided: `Done by @ana`, `Approved by @ana, @gil`, `Sent back by @gil`. `posted.json` keeps each message's blocks for
 this; a message posted before blocks were kept closes as one line of text. What was posted is kept under the state folder's `slack/`. A failed Slack call is reported (exit
 1) and tried again on the next run. `--dry-run` sends nothing and leaves notification receipts unchanged. Run one notifier per workspace.
+
+With `"threads": true` in `slack`, each case gets one card in the channel: its title, its stage (or that it finished)
+and each thing it waits on with who may decide it. The card is posted when the case first needs someone or has an alert,
+and is updated in place as the case moves on. Decision messages and the case's alerts are posted as replies in the
+card's thread; people mentioned there are still notified. A card that cannot be posted holds the case's messages back
+until a later run, so they never land outside the thread. Without `threads`, every message is posted to the channel
+itself.
+
+### Alert buttons
+
+An alert button (`action_id` `govern.alert.ack`, `govern.alert.snooze`, `govern.alert.take`, `govern.drive.retry`) passes
+the same checks as a decision (below: signature, clock, replay, team, a person of the lane's process) and is recorded as
+that person's, with the signed request as `source`. None of them approves a gate or completes a task.
+
+| Button | What it does | Ledger |
+|---|---|---|
+| Acknowledge | sets the alert's `acknowledgedAt`, as `govern alerts --ack` does | `alert-ack` |
+| Snooze 1h | sets `snoozedUntil` an hour ahead; the notifier skips the alert until then, then posts it once more ("still open after a snooze") | `alert-snooze` |
+| Take it | claims the stage's human task for the person, who must be eligible for it | `human-claim` |
+| Retry stage | clears the failed run in `govern drive`'s state, so the next drive run sends the stage again (attempt counting starts over) | `drive-retry` |
+
+The value names the lane and the alert (`{"v":1,"lane","alert","action"}`) or the lane, stage and round
+(`{"v":1,"lane","stage","round","action":"retry"}`); unknown fields are refused. An alert already acknowledged, and a stage
+no longer failed at that round, are refused (409). The clicked message loses its buttons and gains one line saying what
+was done. When an alert is acknowledged at the terminal, or a failure goes away by itself, the notifier closes its
+message the same way; a later failure of the same stage is a new message.
+
+### Forms: a reason, an edited draft
+
+With `"forms": true` in `slack`, two buttons open a Slack form (a modal) instead of deciding at once:
+
+- **Send back** asks *Why is it sent back?* (2 to 2000 characters). The reason, not the button label, is the rejection's
+  quote.
+- A gate option with `edit` fields ([BUSINESS.md](BUSINESS.md)) gets a second button, **Edit: <label>**, opening those
+  fields prefilled with the option's values as the case stands. Submitting approves the option with the edited text; the
+  ledger's `approve` entry lists the changed fields as `edited`. A value longer than a Slack text input holds (3000
+  characters) is not offered for editing: the click is refused, so a draft is never cut short.
+
+The click is checked first (signature, clock, replay, team, the person, the case digest, and that the person may decide
+the gate now) and records nothing; `serve` then opens the form with `views.open`, so it needs the bot token
+(`SLACK_BOT_TOKEN` or `slack.botTokenVar`, no extra scope) and refuses to start without it. The decision is recorded only
+when the signed `view_submission` arrives. It is checked the same way, and is refused when someone else submits the form
+or the case changed after it was opened. A refusal is shown in the form itself. Once recorded, the clicked message is
+updated through the click's response URL, using the blocks `notify` kept for it.
 
 Button labels come from `slack.labels` (`complete`, `approve`, `reject`; default Done, Approve, Send back).
 
@@ -87,7 +133,7 @@ Button labels come from `slack.labels` (`complete`, `approve`, `reject`; default
 | Body at most 64 KiB | 413 |
 | `X-Slack-Signature` is `v0=` HMAC-SHA256 of `v0:<timestamp>:<body>` under the signing secret | 401 |
 | `X-Slack-Request-Timestamp` within 300 s of the server's clock | 401 |
-| A `block_actions` payload with exactly one `govern.decide` button and a valid value | 400 |
+| A `block_actions` payload with exactly one `govern.decide` (or alert) button and a valid value, or a `view_submission` of a govern form | 400 |
 | The signature was never received before (remembered for 600 s, under the state folder's `slack/`) | 401 |
 | The payload's team is the config's `slack.team` | 403 |
 | The lane exists | 404 |
@@ -221,6 +267,28 @@ The rolling hourly quota counts queued tasks, regardless of their later result. 
 available. A queued task gets one keyed `seen: queued task <id>` receipt in its parent thread. A refused receipt retries
 without queuing another task. An ambiguous receipt retains its send intent and needs the same operator reconciliation
 as an explicit keyed post. No model reply is ever posted to Slack automatically.
+
+### Publishing a checked reply
+
+A reply can reach the request's thread only through a person. Name who may publish, and a review channel the
+requesters are not in:
+
+```json
+"route": { "to": "codex", "profile": "codex-read", "maxPerHour": 6, "publishers": ["U0…"], "review": "C0…" }
+```
+
+`govern slack notify` offers each reply to a routed request whose content check passed (`checked`) once in the review
+channel: what it answers, its whole text (plain text, so nothing in it mentions or links), and **Publish to thread**.
+Replies that are unverified, carry no check (`shape only` or none), are BLOCKED, or are too long to show in full (34800
+characters) are never offered. Read those with `govern task inbox --as owner`.
+
+A click by a publisher passes the decision server's checks (signature, clock, replay, team) and is refused unless the
+reply is still offered as the same text (its SHA-256 is in the button). It records the approval, with the signed click
+as its source, in the inbox's `publish.json`, and posts nothing itself. `govern slack listen`, the inbox's one writer,
+then checks the reply again and posts it once as `delivered: <text>` in the request's thread. The text has Slack's
+`<`, `>` and `&` escaped, and the send key is `publish:<reply id>`. An uncertain send is settled with
+`govern slack resolve`. The offer closes with *Published to the thread* once the send is journaled. The content check
+proves the cited `file:line` references exist, not that the analysis is right: the publisher's approval is the review.
 
 The queue dispatcher validates output with `parseReply` against `queue-reply.json`, rejects unknown fields and malformed,
 incomplete or adversarial envelopes, and sends a BLOCKED queue reply on failure. Every routed task also requests the

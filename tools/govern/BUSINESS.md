@@ -179,8 +179,12 @@ option is its own approve button ([SLACK.md](SLACK.md)):
 
 ```json
 { "name": "envio", "stage": "responder", "policy": { "role": "suporte", "quorum": 1, "rejectTo": "analisar" },
-  "options": [{ "label": "Send suggestion 1", "set": { "respostaFinal": "{data.sugestao1}" } }] }
+  "options": [{ "label": "Send suggestion 1", "set": { "respostaFinal": "{data.sugestao1}" }, "edit": ["respostaFinal"] }] }
 ```
+
+An option's `edit` names string fields of its `set` an approver may change before approving (with `slack.forms`, an
+Edit button opens them prefilled). The other fields are set as the case has them; the ledger's approval lists the fields
+that were changed as `edited`.
 
 ## Persistence and validation
 
