@@ -1052,10 +1052,17 @@ export async function dispatchParallel(o: DispatchOpts & { parallel: number; wor
       active.add(job);
     }
     if (!active.size) break;
-    await Promise.race(active);
+    // Wake when a run ends or after REFRESH_MS, and look again at open/: a message sent while runs are under way is
+    // taken as soon as its runner has a free slot, not when the whole pass ends (which could be hours).
+    let timer: NodeJS.Timeout | undefined;
+    await Promise.race([...active, new Promise<void>((done) => { timer = setTimeout(done, REFRESH_MS); })]);
+    clearTimeout(timer);
+    if (started < (o.max ?? Infinity)) for (const m of candidates(o)) if (!waiting.some((w) => w.id === m.id)) waiting.push(m);
   }
   return lines;
 }
+/** How often a --parallel pass with runs under way looks for newly sent messages. */
+const REFRESH_MS = 1000;
 
 /** One worker for the claimed message `m`: its output lines, and a failed claim when it died before the message left claimed/. */
 function runWorker(m: Message, worker: string[]): Promise<string[]> {
