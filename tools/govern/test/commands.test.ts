@@ -34,7 +34,7 @@ test("an unknown flag names the flag and the command's valid flags", () => {
   const r = govern(e, ["approve", "lane", "x", "--qoute", "yes"]);
   assert.equal(r.code, 2);
   assert.match(r.err, /approve: unknown flag --qoute/);
-  assert.match(r.err, /valid: --quote, --by, --help/);
+  assert.match(r.err, /valid: --quote, --by, --note, --help/);
 });
 
 test("a flag another command takes is refused where it is not declared", () => {

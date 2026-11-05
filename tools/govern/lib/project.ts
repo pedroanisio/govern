@@ -1,3 +1,5 @@
+import { SOURCE } from "./approval.ts";
+import { DELEGATION, type Delegation } from "./delegation.ts";
 // A lane: its folder, its govern.json (state, commands, process) and its brief. A lane follows a process (lib/process.ts).
 import { existsSync, readFileSync, appendFileSync, mkdirSync, readdirSync } from "node:fs";
 import { join, dirname, resolve, relative, basename } from "node:path";
@@ -26,7 +28,7 @@ export const commandLine = (c: string[] | Command): string => {
 };
 
 /** `by`: whose words (the gate's decision owner); `source`: where they were found (lib/approval.ts). Both absent on approvals recorded before they existed. */
-export interface Approval { at: string; quote: string; by?: string; source?: Source }
+export interface Approval { at: string; quote: string; by?: string; source?: Source; note?: string; delegation?: Delegation }
 export interface Note { at: string; stage: string; text: string }
 /** A lane's freeze: when, who (always "owner": freezing is the owner's decision), their words and where they came from
  *  (lib/approval.ts), and, once named, a free-text pointer to where the work continued. */
@@ -107,21 +109,14 @@ const COMMAND_OBJ = obj({ argv: ARGV }, { timeout: posInt, resource: name });
 const COMMAND: Shape<string[] | Command> = (v, at) =>
   (Array.isArray(v) ? ARGV(v, at) : typeof v === "object" && v !== null ? COMMAND_OBJ(v, at)
     : reject(at, `must be an argv array or {argv, timeout?} (got ${JSON.stringify(v)})`));
-const SOURCE: Shape<Source> = (v, at) => {
-  const k = typeof v === "object" && v !== null ? (v as { kind?: unknown }).kind : undefined;
-  return k === "terminal" ? obj({ kind: literal("terminal"), user: str })(v, at) : k === "session" ? obj({ kind: literal("session"), sessionId: str, message: str, messageAt: str })(v, at)
-    : k === "device" ? obj({ kind: literal("device"), device: str, signedBody: str, signature: str })(v, at)
-    : k === "slack" ? obj({ kind: literal("slack"), team: str, user: str, timestamp: str, signedBody: str, signature: str })(v, at)
-    : reject(at, `must be {kind: "terminal", user}, {kind: "session", sessionId, message, messageAt}, {kind: "device", device, signedBody, signature} or {kind: "slack", team, user, timestamp, signedBody, signature}`);
-};
 const FROZEN: Shape<Frozen> = obj({ at: iso, by: name, quote: str, source: SOURCE }, { continuedAs: str });
 /** A whole number, 0 or more: ledgerOffset carries no sign and may be 0 (nothing exported yet). */
 const nat: Shape<number> = (v, p) => (Number.isInteger(v) && (v as number) >= 0 ? (v as number) : reject(p, "must be a whole number, 0 or more"));
 const IMPORTED_FROM: Shape<ImportedFrom> = obj({ slug: name, workspace: str, exportedAt: iso, ledgerOffset: nat, bundleSha256: str, mode: literal("full", "template") });
-const IMPORTED_APPROVAL: Shape<ImportedApproval> = obj({ gate: name, at: iso, quote: str }, { by: name, source: SOURCE });
+const IMPORTED_APPROVAL: Shape<ImportedApproval> = obj({ gate: name, at: iso, quote: str }, { by: name, source: SOURCE, note: str, delegation: DELEGATION });
 const PROJECT = obj(
   { version: literal(1), slug: name, title: str, kind: name, lang: name, stage: name, created: iso,
-    commands: record(COMMAND), files: record(str), approvals: record(obj({ at: iso, quote: str }, { by: name, source: SOURCE })),
+    commands: record(COMMAND), files: record(str), approvals: record(obj({ at: iso, quote: str }, { by: name, source: SOURCE, note: str, delegation: DELEGATION })),
     notes: arr(obj({ at: iso, stage: name, text: str })) },
   {processSnapshot:SNAPSHOT, runtime:RUNTIME, events:EVENTS, alerts:ALERTS, invocation:INVOCATION, data: record(value), workflow: WORKFLOW, humanTasks: HUMAN_TASKS, votes: VOTES, process: name, parent: str, finished: iso, checks: record(name), after: arr(obj({ lane: name }, { stage: name })), frozen: FROZEN,
    importedFrom: IMPORTED_FROM, importedApprovals: arr(IMPORTED_APPROVAL) },
@@ -547,7 +542,7 @@ export function brief(p: Project, o: { notes?: number } = {}): string {
     }
   }
   if (pending.length) L.push(`only the owner accepts a change: govern check ${p.slug} <stage> --accept --quote "<the owner's words>"`);
-  if (pr.gates.length) L.push(`approvals: ${pr.gates.map((g) => { const a = p.approvals[g.name]; return gateApproved(p, g) && a ? `${g.name} ✓ ${a.at.slice(0, 10)}` : `${g.name} –`; }).join(" · ")}`);
+  if (pr.gates.length) L.push(`approvals: ${pr.gates.map((g) => { const a = p.approvals[g.name]; return gateApproved(p, g) && a ? `${g.name} ✓ ${a.at.slice(0, 10)}${approvalAuthority(a)}` : `${g.name} –`; }).join(" · ")}`);
   if (p.after?.length) L.push(`after: ${p.after.map(afterMet).map((x) => `${x.label} (${x.met ? "done" : "waiting"})`).join(" · ")}`);
   const files = Object.keys(p.files).map((k) => { const f = resolveFile(p, k); return `${k}=${f ? rel(f) : "(none)"}`; });
   if (files.length) L.push(`files: ${files.join(" · ")}`);
@@ -561,4 +556,10 @@ export function brief(p: Project, o: { notes?: number } = {}): string {
     for (const x of notes) L.push(`- ${x.at.slice(0, 16).replace("T", " ")} [${x.stage}] ${clip(x.text, 240)}`);
   }
   return L.join("\n");
+}
+
+/** The authority and evidence behind a delegated decision, for status and brief. */
+export function approvalAuthority(a: Approval): string {
+  const d = a.delegation;
+  return d ? ` by ${a.by} under delegation by ${d.by} at ${d.at} (${JSON.stringify(d.source)}): "${d.quote}" · ${a.note}` : "";
 }

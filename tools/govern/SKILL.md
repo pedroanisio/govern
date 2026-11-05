@@ -1,44 +1,40 @@
 ---
 name: govern
-description: Work on a lane of agent work (a video, software, ops, an audit, govern itself) that follows a process, through the govern CLI at a fraction of the tokens. Use whenever the conversation is about making, changing, checking or finishing a specific piece of such work, or about moving a govern lane through its stages.
+description: Use the govern CLI for process-based agent work: videos, software, ops, audits or govern itself. Use when making, changing, checking or finishing such work, or moving a lane through its stages.
 ---
 
 # Working with govern
 
-govern keeps work in files. Each lane follows a **process** with stages, exit checks and owner gates. The rules below reduce four costs:
-- re-reading a huge context on every call;
-- polling long jobs from inside the model;
-- review and fix agent cascades;
-- sessions messaging each other.
+govern keeps work in files. Each lane follows a **process** with stages, exit checks and owner gates. Read narrowly, wait on jobs outside the model, and keep decisions in files.
 
-This is the core manual. Everything else is one command away: `govern help <command>` prints a command's flags and rules, `govern help --topics` lists the reference documents.
+This is the core manual. `govern help <command>` prints flags and rules; `govern help --topics` lists references.
 
 ## Start
 
 1. `govern desk` is the owner's one screen (lanes, inbox, queue, today's tokens); `govern status` lists the lanes. One session works one lane.
 2. No lane yet: `govern new <slug> --process <name> --title "…"` (`govern process list` shows the processes).
-3. `govern work <slug> <stage>` opens a measured work segment and prints the **brief**: stage and exit condition, approvals, named files, commands, last jobs, recent decisions. `govern brief <slug>` prints it again. Work from the brief; do not read long process documents in full. If it names `manual: govern manual <process>`, read that once. A session started in a lane's folder, or with `GOVERN_LANE=<slug>`, gets its segment from the `govern hook session-start` hook.
-4. Name the lane's commands and files once: `govern cmd <slug> build -- {python} build.py`, `govern file <slug> report summary.json`.
+3. `govern work <slug> <stage>` opens a measured work segment and prints the **brief**: stage, exit condition, approvals, files, commands, jobs and decisions. `govern brief <slug>` prints it again. Work from the brief, not whole process documents. If it names `manual: govern manual <process>`, read that once. In a lane's folder, or with `GOVERN_LANE=<slug>`, `govern hook session-start` opens the segment.
+4. Name commands and files once: `govern cmd <slug> build -- {python} build.py`, `govern file <slug> report summary.json`.
 
 ## The loop
 
 The owner says what to change. Then:
 
-1. **Read narrowly.** Open only the file and the part the change touches. Don't re-read what is in this conversation.
+1. **Read narrowly.** Open only the part the change touches. Don't re-read this conversation.
 2. **Edit the source**, never the generated file.
 3. **Build without waiting in the model.** `govern run <slug> <command> --bg`, then `govern wait <slug>` as one Bash call with `run_in_background: true`. You are told when it ends. Never write sleep or poll loops. `wait` stops at 540 s with exit 124: wait again. `govern jobs <slug>` lists jobs; `govern log <slug> --grep RE` only if the last lines don't explain a failure.
-4. **Show the result.** Give the owner the path to open. Read an image only to judge it. Say what you measured and what you could not judge.
-5. **Record the decision** at once: `govern note <slug> "chose the second supplier file; first had no totals"`. The next session starts from the notes.
+4. **Show the result.** Give its path. Read images only to judge them. Say what you measured and could not judge.
+5. **Record the decision** at once: `govern note <slug> "chose the second supplier file; first had no totals"`. Notes inform the next session.
 
-Keep replies short: what changed, what to look at, the open question. `govern advance <slug>` runs the stage's check and moves on only if it passes; never edit govern.json to skip a stage, and never swap a failing check for one that passes.
+Reply briefly: changes, result path, open question. `govern advance <slug>` runs the stage's check and moves on only if it passes; never edit govern.json to skip a stage, and never swap a failing check for one that passes.
 
 ## Steps to Codex
 
-A step is a prompt run as one verified Codex call: `govern ask <slug> <step> [--file F]… [--var K=V]…` (`govern prompts` lists the steps). The output is JSON, checked against a schema and rules, with one repair. **Exit 3 means unverified**: say so, never patch the output by hand and present it as verified. Show a few lines and the JSON path.
+A step is a prompt run as one verified Codex call: `govern ask <slug> <step> [--file F]… [--var K=V]…` (`govern prompts` lists the steps). JSON output is checked against a schema and rules, with one repair. **Exit 3 means unverified**: say so, never patch the output by hand and present it as verified. Show a few lines and the JSON path.
 
 ## The task queue
 
-To ask another agent, send a message; the dispatcher starts one fresh headless session per message:
+The dispatcher starts one fresh headless agent session per message:
 
 ```bash
 govern task send --to codex --project <slug> --task <name> --kind TASK --summary "…" --body "…" --file <repo-relative path>
@@ -55,7 +51,9 @@ govern task send --to codex --project <slug> --task <name> --kind TASK --summary
 
 ## The owner's gates
 
-- Approvals come only from the owner's own words, verbatim: `govern approve <slug> <gate> --quote "<exactly what the owner said>"`. Never infer an approval, never approve for the owner, never rephrase a quote until it passes: ask the person. The same holds for `govern check <slug> <stage> --accept --quote "…"` and `govern allow`.
+- Without standing delegation, approvals come only from the owner's own words, verbatim: `govern approve <slug> <gate> --quote "<exactly what the owner said>"`. Never infer an approval, never approve for the owner, never rephrase a quote until it passes: ask the person. The same holds for `govern check <slug> <stage> --accept --quote "…"` and `govern allow`.
+- The owner grants standing gate authority with `govern delegate`; see [README.md](README.md#standing-gate-delegation) for grant, list and revocation commands. Codex and Grok cannot grant or revoke; owner gates and policy votes are excluded.
+- With active authority, `govern approve <slug> <gate> --by PERSON --note "<decision evidence>"` records the delegate's decision. Never infer it. An explicit `--quote` still requires verification.
 - The owner sees complete drafts, not intermediate passes.
 - Setup that grants access (pairing a phone, `peer`, `mesh`, `remote`) is the owner's alone: never run it, never ask for a code.
 - `govern freeze`, `unfreeze` and accepting an import or its flagged checks are the owner's, like a gate; `govern export` without `--freeze` is read-only.

@@ -1,3 +1,4 @@
+import { obj, str, literal, reject } from "./shape.ts";
 // Who is approving, and are the quoted words really the person's? Inside a Claude Code session the quote must appear in a
 // message the person typed in that session's transcript; from a plain terminal the OS user approves for themselves; a Codex
 // shell cannot be verified and is refused. This raises the bar from "any string" to "words in the person's own turn".
@@ -143,4 +144,13 @@ export function verifyQuote(quote: string, o: Parameters<typeof origin>[0] = {})
   if (!hit) return fail(`the quote was not found in the person's typed messages of this session (looked in ${file}); only the person's own typed words count, ` +
     "not tool output, files, pasted content or other sessions' messages", 1);
   return { kind: "session", sessionId: where.sessionId, message: hit.uuid, messageAt: hit.timestamp };
+}
+
+/** Validate the provenance shared by approvals, frozen lanes and standing delegations. */
+export function SOURCE(v: unknown, at: string): Source {
+  const k = typeof v === "object" && v !== null ? (v as { kind?: unknown }).kind : undefined;
+  return k === "terminal" ? obj({ kind: literal("terminal"), user: str })(v, at) : k === "session" ? obj({ kind: literal("session"), sessionId: str, message: str, messageAt: str })(v, at)
+    : k === "device" ? obj({ kind: literal("device"), device: str, signedBody: str, signature: str })(v, at)
+    : k === "slack" ? obj({ kind: literal("slack"), team: str, user: str, timestamp: str, signedBody: str, signature: str })(v, at)
+    : reject(at, `must be {kind: "terminal", user}, {kind: "session", sessionId, message, messageAt}, {kind: "device", device, signedBody, signature} or {kind: "slack", team, user, timestamp, signedBody, signature}`);
 }

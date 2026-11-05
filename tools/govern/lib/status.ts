@@ -1,5 +1,5 @@
 // The status listing shared by the terminal and configured channel commands.
-import { laneSlugs, laneRows, ledgerFile, stagesOf, laneState, driftWarning } from "./project.ts";
+import { approvalAuthority, laneSlugs, laneRows, ledgerFile, stagesOf, laneState, driftWarning } from "./project.ts";
 import { processOf } from "./process.ts";
 import { gateApproved } from "./business.ts";
 import { readJsonl } from "./util.ts";
@@ -15,6 +15,7 @@ export function status(): { text: string; failed: number; lanes: number } {
     const ap = gates.map((g) => (gateApproved(p, g) ? g.name.charAt(0).toUpperCase() : "·")).join("");
     const list = stagesOf(p);
     const parts = [`${s.padEnd(36)} ${p.kind.padEnd(5)} ${list.indexOf(p.stage) + 1}/${list.length} ${p.stage.padEnd(12)}`, gates.length ? `approvals ${ap}` : "",
+      ...gates.flatMap((g) => { const a = p.approvals[g.name]; return a?.delegation && gateApproved(p, g) ? [`${g.name}${approvalAuthority(a)}`] : []; }),
       laneState(p), p.workflow && !p.finished ? `active ${p.workflow.active.join(', ')}` : '', lastJob ? `last job ${lastJob.name} ${lastJob.status}` : ""];
     const drift = driftWarning(p, led);
     return parts.filter(Boolean).join("  ").trimEnd() + (drift ? `\n    ${drift}` : "");

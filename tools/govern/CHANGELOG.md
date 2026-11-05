@@ -11,6 +11,8 @@ All notable changes to govern are documented here, following Keep a Changelog.
 
 ### Added
 
+- Standing gate delegation: `delegate`, `delegate --list` and verified revocation retain workspace history. A named gate owner with active authority can `approve --by --note` without repeating the owner's quote; lane state, ledger, status and brief retain the delegation and evidence.
+
 - A capability's `claude` map takes `addDirs` (absolute paths, refused otherwise): a Claude profile holding it runs `claude -p --add-dir …`, and the task prompt names those folders beside the project folder, as Codex `addDirs` already did. A queued Claude session can then work in a repository's branches outside the lane folder.
 - `slack.heartbeat` watches an agent session's heartbeat file by mtime: `govern slack notify` posts one keyed `blocked:` when it is older than `staleSeconds` (default 1800) and one `note:` when it moves again, keeping the open alert in `session-heartbeat.json` and rebuilding a damaged one from `sent.jsonl`; a never-written file alerts nothing. `govern slack heartbeat` prints the beat's state and exits 1 unless it is fresh.
 - `slack.route.publishers` and `slack.route.review` offer each routed reply whose content check passed to the publishers in a review channel, in full, with Publish to thread. A publisher's signed click records an approval bound to the text's digest. `govern slack listen` then checks the reply again and posts it once, keyed, in the request's thread, escaped so it cannot mention or link. Unverified, unchecked and BLOCKED replies are never offered.

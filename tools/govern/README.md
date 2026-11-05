@@ -186,3 +186,27 @@ govern version
 Keep `bin` and `tools` together inside the extracted directory. The standalone
 package needs Node 24 or newer. It runs without npm installation; `govern -h`
 uses built-in help when the repository's `st-man` tool is absent.
+
+### Standing gate delegation
+
+The process owner can name a gate decider once:
+
+```sh
+govern delegate request '*' --to arc4d3 --quote "arc4d3 decides request gates"
+govern delegate --list
+govern approve ops/example review --by arc4d3 --note "arc4d3 reviewed the evidence and approved"
+govern delegate request '*' --to arc4d3 --revoke --quote "I revoke arc4d3's request gate delegation"
+```
+
+The owner's words are checked once, at delegation: in Claude, against the person's typed
+messages in that session; in a terminal, recording the OS user. Codex and Grok cannot
+create or revoke delegations. The recipient must be in the process's `people` and already
+own each named gate. `*` captures the gates they own at that moment. Delegations never
+cover `owner` gates, another process or policy votes. Supplying `--quote` to approve
+keeps the existing quote verification. Quote-free approval requires decision evidence
+in `--note`; state and ledger retain the delegation's quote, source and timestamp,
+and status and brief display the authority and decision evidence. Never infer a
+delegate's decision. `govern delegate --list` shows the history and active gates. Revocation prevents future approvals and
+preserves earlier decisions. Grants and revocations stay in `.govern/delegations.json`
+(or `delegations.json` beside a legacy `govern.config.json`). Freeze and unfreeze still
+require the owner's verified quote.
