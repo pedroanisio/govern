@@ -48,7 +48,7 @@ export interface Probe { instruction: string; expect?: string; file?: { path: st
   expectCmd?: string[] }
 export interface Capability {
   name: string; description: string; call: string;
-  claude: { allow: string[]; permissionMode?: "acceptEdits" };
+  claude: { allow: string[]; permissionMode?: "acceptEdits"; /** Folders beside the task's folder the session may work in (`--add-dir`), absolute. */ addDirs?: string[] };
   /** Absent: not available on codex. */
   codex?: CodexMap;
   /** Absent: not available on grok. */
@@ -88,11 +88,15 @@ const secretName = (v: unknown, p: string): string => {
   if (typeof v !== "string" || !/^[A-Z][A-Z0-9_]*$/.test(v)) return reject(p, "must be an environment variable NAME (like DEPLOY_TOKEN), never a value");
   return v;
 };
+const absDir = (v: unknown, p: string): string => {
+  if (typeof v !== "string" || !v.startsWith("/")) return reject(p, `must be an absolute path (got ${JSON.stringify(v)})`);
+  return v;
+};
 const CODEX = obj({}, { sandbox: literal("read-only", "workspace-write"), config: arr(str), addDirs: arr(str) });
 const GROK = obj({ tools: arr(str, { nonEmpty: true }) }, { allow: arr(str), deny: arr(str), permissionMode: literal("acceptEdits") });
 const PROBE = obj({ instruction: str }, { expect: str, file: obj({ path: str, contains: str }), expectCmd: arr(str, { nonEmpty: true }) });
 const CAP = obj(
-  { name: ident, description: str, call: str, claude: obj({ allow: arr(str) }, { permissionMode: literal("acceptEdits") }), effect: literal(...EFFECTS) },
+  { name: ident, description: str, call: str, claude: obj({ allow: arr(str) }, { permissionMode: literal("acceptEdits"), addDirs: arr(absDir) }), effect: literal(...EFFECTS) },
   { codex: CODEX, grok: GROK, resource: str, cost: str, secrets: arr(secretName), gate: ident, probe: PROBE });
 const PROFILE = obj({ name: ident, engine: literal("claude", "codex", "grok"), capabilities: arr(ident, { nonEmpty: true }) },
   { description: str, model: str, mcpConfig: str, selfTest: literal("required", "optional"), check: CHECK });
@@ -168,12 +172,13 @@ export const writes = (reg: Registry, p: Profile): boolean => capsOf(reg, p).som
 
 // ---------------------------------------------------------------- the sealed command lines
 
-export interface ClaudeSpec { allow: string[]; acceptEdits: boolean }
+export interface ClaudeSpec { allow: string[]; acceptEdits: boolean; addDirs: string[] }
 /** The Claude permissions of a profile: the union of its capabilities' allow rules, and acceptEdits when any of
  *  them asks for it. */
 export function claudeSpec(reg: Registry, p: Profile): ClaudeSpec {
   const cs = capsOf(reg, p);
-  return { allow: [...new Set(cs.flatMap((c) => c.claude.allow))], acceptEdits: cs.some((c) => c.claude.permissionMode === "acceptEdits") };
+  return { allow: [...new Set(cs.flatMap((c) => c.claude.allow))], acceptEdits: cs.some((c) => c.claude.permissionMode === "acceptEdits"),
+    addDirs: [...new Set(cs.flatMap((c) => c.claude.addDirs ?? []))] };
 }
 /** The Claude argv of a sealed session: only the profile's tools, no user, project or local settings, only its MCP config.
  *  maxBudgetUsd: the model dollars reserved for the run (an allowance), passed as `--max-budget-usd` so the run cannot outspend it.
@@ -182,6 +187,7 @@ export function claudeArgs(reg: Registry, p: Profile, model: string, maxBudgetUs
   const s = claudeSpec(reg, p);
   const tools = claudeTools(s);
   return ["-p", "--output-format", "json", "--model", model, ...(schema ? ["--json-schema", schema] : []), ...(maxBudgetUsd !== undefined ? ["--max-budget-usd", String(maxBudgetUsd)] : []), ...(s.acceptEdits ? ["--permission-mode", "acceptEdits"] : []),
+    ...(s.addDirs.length ? ["--add-dir", ...s.addDirs] : []),
     "--allowedTools", ...s.allow, "--tools", ...tools, "--disallowedTools", ...CLAUDE_BUILTIN.filter((t) => !tools.includes(t)),
     "--setting-sources", "", "--strict-mcp-config", ...(p.mcpConfig ? ["--mcp-config", p.mcpConfig] : [])];
 }

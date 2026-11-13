@@ -75,3 +75,60 @@ test("missing response URL remains compatible; callback HTTP failure preserves t
     assert.equal(load("work").humanTasks?.draft?.completedBy, "operator");
   });
 });
+
+// A clicked message keeps what it asked: the callback rebuilds it from the message Slack sends with the click.
+type Block = { type: string; block_id?: string; elements?: unknown[]; text?: { text: string } };
+const message = (value: string, label = "Complete"): { text: string; blocks: Block[] } => ({ text: "Work (work): task draft", blocks: [
+  { type: "section", block_id: "ask", text: { type: "mrkdwn", text: "*Work* (`work`) · task *draft*\n<@U0USER>" } } as Block,
+  { type: "actions", block_id: "govern", elements: [{ type: "button", action_id: "govern.decide.complete", value, text: { type: "plain_text", text: label } }] }] });
+const outcome = (blocks: Block[]) => blocks.filter((b) => b.block_id === "govern.outcome");
+const outcomeText = (blocks: Block[]) => JSON.stringify(outcome(blocks));
+async function click(value: string, user: string, msg: unknown, label = "Complete") {
+  const body = Buffer.from("payload=" + encodeURIComponent(JSON.stringify({ type: "block_actions", team: { id: "T1" }, user: { id: user }, response_url: "https://hooks.slack.com/actions/T1/test", message: msg, actions: [{ action_id: "govern.decide", value, text: { text: label } }] })));
+  const signature = "v0=" + createHmac("sha256", SECRET).update(`v0:${NOW}:`).update(body).digest("hex"), sent: Record<string, unknown>[] = [];
+  const request = (async (_: unknown, init: RequestInit) => { sent.push(JSON.parse(String(init.body))); return new Response("ok"); }) as typeof fetch;
+  const result = await handleInteraction(SECRET, body, String(NOW), signature, { now: () => NOW, request });
+  return { result, update: sent[0]! as { replace_original: boolean; text: string; blocks: Block[] } };
+}
+
+test("a decided message keeps its content, loses its buttons and says who decided", async () => scenario(async value => {
+  const { result, update } = await click(value, "U0USER", message(value));
+  assert.equal(result.status, 200); assert.equal(update.replace_original, true);
+  assert.equal(update.text, "Work (work): task draft", "the notification text stays");
+  assert.equal(update.blocks[0]!.block_id, "ask", "what was asked stays");
+  assert.ok(!update.blocks.some((b) => b.type === "actions"), "a decided message has no buttons");
+  assert.equal(outcome(update.blocks).length, 1); assert.match(outcomeText(update.blocks), /Done by <@U0USER>/);
+}));
+
+test("a gate that needs two approvals keeps its buttons after the first vote and shows progress", async () => {
+  const e = makeEnv("slack-quorum"), before = process.env;
+  setConfig(e, { slack: { team: "T1" } }); process.env = childEnv(e);
+  try {
+    write(join(e.root, "PALS-Notes/processes/quorum.json"), JSON.stringify({ version: 1, name: "quorum",
+      people: { ana: { user: "ana", roles: ["gestor"], slack: "U0ANA" }, gil: { user: "gil", roles: ["gestor"], slack: "U0GIL" } },
+      stages: [{ name: "review", next: [{ to: ["send"] }] }, { name: "send", next: [] }],
+      gates: [{ name: "validacao", stage: "review", policy: { role: "gestor", quorum: 2 } }] }));
+    create("work", { process: "quorum", title: "Work" });
+    const value = decisionValue(load("work"), { gate: "validacao" }, "approve");
+    const first = await click(value, "U0ANA", message(value, "Approve"), "Approve");
+    assert.equal(first.result.status, 200);
+    const buttons = first.update.blocks.filter((b) => b.type === "actions");
+    assert.equal(buttons.length, 1, "the other approver still has the buttons");
+    assert.deepEqual(buttons[0], message(value, "Approve").blocks[1], "the buttons are unchanged");
+    assert.match(outcomeText(first.update.blocks), /1\/2 approvals: <@U0ANA>/);
+    assert.ok(first.update.blocks.findIndex((b) => b.block_id === "govern.outcome") < first.update.blocks.findIndex((b) => b.type === "actions"), "progress shows above the buttons");
+    const second = await click(value, "U0GIL", first.update, "Approve");
+    assert.equal(second.result.status, 200);
+    assert.ok(!second.update.blocks.some((b) => b.type === "actions"));
+    assert.equal(outcome(second.update.blocks).length, 1, "the progress line is replaced, not repeated");
+    assert.match(outcomeText(second.update.blocks), /Approved by <@U0ANA>, <@U0GIL>/);
+  } finally { process.env = before; }
+});
+
+test("a message Slack does not send back is not invented: the bare outcome line replaces it", async () => {
+  for (const msg of [undefined, { text: "x" }, { blocks: "nope" }, { blocks: [1] }]) await scenario(async value => {
+    const { result, update } = await click(value, "U0USER", msg);
+    assert.equal(result.status, 200);
+    assert.deepEqual(update.blocks, []); assert.match(update.text, /complete by operator/);
+  });
+});

@@ -28,7 +28,7 @@ import { parseEvents, execArgs, validate, validUsage, type Usage } from "./codex
 import { type CheckDef, type ConfigChecks, configChecks, declared, verify, resolveNamed, checkNames, verifyDeclared, type Verification } from "./replycheck.ts";
 import { obj, arr, str, bool, posInt, record, literal, parseFile, keyPath, reject, type Shape } from "./shape.ts";
 import { checkProfile } from "./capcheck.ts";
-import { registry, getProfile, writes, guardProblem, checkProblem, checkState, readCheck, checkFile, failing, profileHash, claudeArgs, codexSpec, grokArgs, LEGACY_PROFILES, type Profile, type Registry } from "./caps.ts";
+import { registry, getProfile, writes, guardProblem, checkProblem, checkState, readCheck, checkFile, failing, profileHash, claudeArgs, claudeSpec, codexSpec, grokArgs, LEGACY_PROFILES, type Profile, type Registry } from "./caps.ts";
 
 import * as agents from "./agents.ts";
 import { liveSessions } from "./sessions.ts";
@@ -567,11 +567,12 @@ export function retry(ref: string, o: { note: string; to?: string; write?: boole
 
 // ---------------------------------------------------------------- the prompt one session gets
 
-/** The folders a codex profile's add-dirs open to writing beside the project folder: the prompt names them, or the model refuses a
- *  task its sandbox allows. */
+/** The folders a profile's add-dirs (codex sandbox or claude --add-dir) open to writing beside the project folder: the prompt
+ *  names them, or the model refuses a task its grant allows. */
 function grantedDirs(m: Message): string[] {
   const reg = m.profile ? registry() : undefined, p = m.profile ? reg?.profiles.get(m.profile) : undefined;
-  return reg && p?.engine === "codex" ? codexSpec(reg, p).addDirs : [];
+  if (!reg || !p) return [];
+  return p.engine === "codex" ? codexSpec(reg, p).addDirs : p.engine === "claude" ? claudeSpec(reg, p).addDirs : [];
 }
 
 /** The most characters of files one queued message inlines (the rest is cut, and marked), unless GOVERN_QUEUE_MAX_INLINE says otherwise. */
@@ -1051,10 +1052,17 @@ export async function dispatchParallel(o: DispatchOpts & { parallel: number; wor
       active.add(job);
     }
     if (!active.size) break;
-    await Promise.race(active);
+    // Wake when a run ends or after REFRESH_MS, and look again at open/: a message sent while runs are under way is
+    // taken as soon as its runner has a free slot, not when the whole pass ends (which could be hours).
+    let timer: NodeJS.Timeout | undefined;
+    await Promise.race([...active, new Promise<void>((done) => { timer = setTimeout(done, REFRESH_MS); })]);
+    clearTimeout(timer);
+    if (started < (o.max ?? Infinity)) for (const m of candidates(o)) if (!waiting.some((w) => w.id === m.id)) waiting.push(m);
   }
   return lines;
 }
+/** How often a --parallel pass with runs under way looks for newly sent messages. */
+const REFRESH_MS = 1000;
 
 /** One worker for the claimed message `m`: its output lines, and a failed claim when it died before the message left claimed/. */
 function runWorker(m: Message, worker: string[]): Promise<string[]> {

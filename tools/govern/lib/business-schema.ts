@@ -115,9 +115,10 @@ export const AGENT = obj({ to: name, task: name, summary: str, body: str },
 export interface ServiceDef { command: string; outputs?: string[]; attempts?: number }
 export const SERVICE = obj({ command: name }, { outputs: arr(name), attempts: posInt });
 /** One approve choice of a gate (ext/slack): its button label and the case fields the choice sets; a string value may
- *  use {data.FIELD}, filled when the choice is offered. */
-export interface GateOption { label: string; set: Record<string, Scalar> }
-export const GATE_OPTION = obj({ label: str, set: record(scalar) });
+ *  use {data.FIELD}, filled when the choice is offered. `edit` names the string fields of `set` an approver may change
+ *  before approving (a Slack form, with `slack.forms`). */
+export interface GateOption { label: string; set: Record<string, Scalar>; edit?: string[] }
+export const GATE_OPTION = obj({ label: str, set: record(scalar) }, { edit: arr(name, { nonEmpty: true }) });
 /** The placeholders an agent's text may use. */
 const AGENT_VARS = ["lane", "stage", "title"];
 export interface Policy {
@@ -446,6 +447,11 @@ export function validateBusinessProcess(p: BusinessProcess): void {
           for (const m of v.matchAll(/\{data\.([^{}]+)\}/g)) hasField(m[1]!, `${at}.set.${f}`);
         } else fieldValue(fields[f]!, v, `${at}.set.${f}`);
       }
+      for (const f of o.edit ?? []) {
+        if (!Object.hasOwn(o.set, f)) reject(`${at}.edit`, `${f} is not a field the option sets`);
+        else if (fields[f]?.type !== "string") reject(`${at}.edit`, `${f} is not a string field`);
+      }
+      if (new Set(o.edit ?? []).size !== (o.edit ?? []).length) reject(`${at}.edit`, "duplicate fields");
     });
     if (!g.policy) return;
     const q = g.policy,

@@ -1,7 +1,7 @@
 // Fixed read-only command views. Post text is never interpreted as argv, a path, a template or executable code.
 import { status } from "../../lib/status.ts";
 import { brief, load, laneSlugs } from "../../lib/project.ts";
-import { pending } from "./notify.ts";
+import { pending } from "./pending.ts";
 import { LIMIT } from "./channel.ts";
 
 /** Render a fixed read-only workspace view, bounded to Slack’s message limit. */

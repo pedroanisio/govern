@@ -10,11 +10,14 @@ import { out, type Cmd } from "../../lib/cli.ts";
 import type { ExtDoc } from "../../lib/ext-registry.ts";
 import { poll, slackCall, postMessage, uploadFile, resolveSend, wasSent, wasAttempted } from "./channel.ts";
 import { routePending, startLine } from "./route.ts";
+import { publishApproved } from "./publish.ts";
 import { digest } from "./digest.ts";
 import { commandText } from "./commands.ts";
 import { runTrigger } from "./triggers.ts";
 import { installServices } from "./service.ts";
 import { MANPAGE } from "./manpage.ts";
+import { triage, open, dismiss, type Item } from "./triage.ts";
+import { heartbeatSettings, heartbeatStatus, clock } from "./heartbeat.ts";
 
 /** `fromEnv` (the variable `name` as the environment has it), else that variable from the config's slack.envFile;
  *  undefined when neither has it. */
@@ -41,7 +44,9 @@ function cmdServe(a: Args): void {
   const cfg = slackConfig() ?? fail(`${configFile()} names no slack.team: the Slack team whose requests count`);
   const signing = secret("SLACK_SIGNING_SECRET", process.env.SLACK_SIGNING_SECRET, cfg.envFile)
     ?? fail(`SLACK_SIGNING_SECRET is not set: export it, or name a dotenv file holding it as slack.envFile in ${configFile()}`);
-  const server = slackServer(signing);
+  // Forms (slack.forms) open a modal with views.open under the bot token, within the click's 3 s trigger window.
+  const call = cfg.forms ? slackCall(process.env.GOVERN_SLACK_API ?? SLACK_API, botToken(cfg)) : undefined;
+  const server = slackServer(signing, call ? { call } : {});
   const port = Number(opt(a, "port") ?? 5003);
   if (!Number.isInteger(port) || port < 0 || port > 65535) usage("--port must be 0..65535");
   server.on("error", (e) => { process.stderr.write(`slack: ${e.message}\n`); process.exitCode = 1; });
@@ -50,7 +55,7 @@ function cmdServe(a: Args): void {
 
 const summary = (r: NotifyReport): string =>
   [...r.posted.map((k) => `posted ${k}`), ...r.superseded.map((k) => `superseded ${k}`), ...r.closed.map((k) => `closed ${k}`),
-    ...r.alerts.map((k) => `alert ${k}`), ...r.failed.map((k) => `failed ${k}`)].join("\n") || "(nothing to post)";
+    ...r.alerts.map((k) => `alert ${k}`), ...r.heartbeat.map((k) => `heartbeat ${k}`), ...r.failed.map((k) => `failed ${k}`)].join("\n") || "(nothing to post)";
 
 /** `govern slack notify`: post what the lanes wait on from people, once, or every --interval seconds with --loop. */
 async function cmdNotify(a: Args): Promise<void> {
@@ -61,7 +66,7 @@ async function cmdNotify(a: Args): Promise<void> {
   if (!Number.isInteger(interval) || interval < 5) usage("--interval must be a whole number of seconds, 5 or more");
   const once = async () => {
     const r = await notify({ api: process.env.GOVERN_SLACK_API ?? SLACK_API, token, channel, alertsChannel: cfg.alertsChannel, dryRun: flag(a, "dry-run"),
-      ...(lanes.length ? { lanes } : {}), ...(cfg.labels ? { labels: cfg.labels } : {}) });
+      ...(lanes.length ? { lanes } : {}), ...(cfg.labels ? { labels: cfg.labels } : {}), ...(cfg.threads ? { threads: true } : {}), ...(cfg.forms ? { forms: true } : {}) });
     out(summary(r));
     return r.failed.length === 0;
   };
@@ -98,6 +103,7 @@ async function cmdListen(a: Args): Promise<void> {
       await postMessage(call, inbox, cfg.channel, { kind: "note", text, thread: post.thread_ts ?? post.ts, threadIsParent: true, key });
     });
     const routed = await routePending(call, inbox, cfg);
+    for (const id of await publishApproved(call, inbox, cfg.channel)) out(`slack listen: published ${id}`);
     if (routed.waiting.length) process.stderr.write(`slack listen: route limit; ${routed.waiting.length} request(s) remain in inbox\n`);
     if (count) out(`slack listen: ${count} new`);
   };
@@ -143,19 +149,63 @@ async function cmdDigest(): Promise<void> {
   out(await digest(call, inbox, cfg) ? "slack digest: posted" : "slack digest: nothing to post");
 }
 
+/** Triage reads only the local journals: no token, no Slack call. */
+function triageSettings() {
+  const cfg = slackConfig() ?? fail(`${configFile()} names no slack configuration`);
+  const channel = cfg.channel || fail(`${configFile()} names no slack.channel`);
+  const inbox = cfg.inbox || fail(`${configFile()} names no slack.inbox`);
+  return { ...cfg, channel, inbox };
+}
+const line = (i: Item) => `${i.ts}  ${i.state}${i.rule ? `:${i.rule}` : ""}  ${i.who ?? i.user}  thread ${i.thread}  ${i.text.replace(/\s+/g, " ").slice(0, 100)}`;
+
+/** `govern slack triage`: every post owed a reply or a manual review; --all lists every disposition; --check exits 1 when any is open. */
+function cmdTriage(a: Args): void {
+  const items = triage(triageSettings()), shown = flag(a, "all") ? items : open(items);
+  if (flag(a, "json")) out(JSON.stringify(shown));
+  else out(shown.map(line).join("\n") || "slack triage: nothing open");
+  if (flag(a, "check") && open(items).length) process.exitCode = 1;
+}
+
+/** `govern slack dismiss`: record that one post needs nothing further, with the reason. */
+function cmdDismiss(a: Args): void {
+  const ts = opt(a, "ts") ?? usage("dismiss requires --ts");
+  dismiss(triageSettings(), ts, opt(a, "reason") ?? usage("dismiss requires --reason"));
+  out(`slack dismiss: ${ts}`);
+}
+
+/** `govern slack heartbeat`: the session heartbeat's age, fresh, stale or missing, and its open alert; reads local files only,
+ *  sends nothing. Exits 1 unless the beat is fresh, so a headless shift can tell that nobody is answering. */
+function cmdHeartbeat(a: Args): void {
+  const cfg = slackConfig() ?? fail(`${configFile()} names no slack configuration`);
+  const s = heartbeatSettings(cfg) ?? fail(`${configFile()} names no slack.heartbeat: the session heartbeat file to watch`);
+  const st = heartbeatStatus(s), now = Date.now();
+  if (st.state !== "fresh") process.exitCode = 1;
+  if (flag(a, "json")) { out(JSON.stringify(st)); return; }
+  const alert = st.error ? `alert state unreadable: ${st.error}; notify rebuilds it from sent.jsonl`
+    : st.alert ? `alert open since ${clock(Date.parse(st.alert.since), now)} (blocked: ${st.alert.ts})` : "no alert open";
+  out(st.state === "missing" ? `missing: ${st.file} has never been written; ${alert}`
+    : `${st.state}: last beat ${st.ageSeconds} s ago (${st.file}), stale after ${st.staleSeconds} s; ${alert}`);
+}
+
 export const name = "slack";
 export const description = "Slack: decisions people make with buttons in Slack, verified by Slack's signature";
 export const docs: ExtDoc[] = [{ title: "Slack: decisions from Slack buttons, signature checks, people mapping", path: "SLACK.md" }];
 export const manpage = MANPAGE;
 
 export const commands: Cmd[] = [
-  { name: "slack", section: 7, noSub: "govern slack serve|notify|listen|post|upload|resolve|digest|install-service (the protocol: tools/govern/SLACK.md)",
+  { name: "slack", section: 7, noSub: "govern slack serve|notify|listen|post|upload|resolve|digest|triage|dismiss|heartbeat|install-service (the protocol: tools/govern/SLACK.md)",
     subs: {
       "install-service": { lines: [["", "write user units for listen, notify and a daily digest timer; print enable instructions without starting them"]], run: () => out(installServices()) },
       upload: { flags: { value: ["thread", "file", "title", "text", "key"] },
         lines: [["--thread TS --file PATH [--title T] [--text T] [--key K]", "upload an allowed image, video or PDF inside slack.upload.roots and maxBytes; resolve the thread and journal the file id"]], run: cmdUpload },
       resolve: { flags: { value: ["key", "ts"], bool: ["delivered", "not-delivered"] },
         lines: [["--key K [--delivered [--ts TS] | --not-delivered]", "settle an uncertain send: an upload never completed is released, one completed is looked up in its thread; posts nothing"]], run: cmdResolve },
+      triage: { flags: { bool: ["json", "check", "all"] },
+        lines: [["[--all] [--json] [--check]", "list posts owed a reply (request) or a manual review (review): answered means a send or bot reply in the\nthread later than the post; slack.triage.rules map posts that need none; --check exits 1 while any is open"]], run: cmdTriage },
+      dismiss: { flags: { value: ["ts", "reason"] },
+        lines: [["--ts TS --reason R", "record in slack.inbox/triage.jsonl that a post needs nothing further, and why; posts nothing"]], run: cmdDismiss },
+      heartbeat: { flags: { bool: ["json"] },
+        lines: [["[--json]", "the session heartbeat (slack.heartbeat.file): its age, fresh, stale or missing, and the open alert; sends\nnothing; exits 1 unless fresh"]], run: cmdHeartbeat },
       digest: { lines: [["", "post waiting people, failed tasks and open alerts once per local day; stay silent when empty"]], run: cmdDigest },
       listen: { flags: { bool: ["once", "loop"], value: ["interval"] },
         lines: [["[--once | --loop --interval 60]", "record new channel posts in slack.inbox; first run marks existing posts seen; answer configured requesters' fixed commands"]], run: cmdListen },
@@ -164,6 +214,6 @@ export const commands: Cmd[] = [
       serve: { flags: { value: ["port"] },
         lines: [["[--port 5003]", "serve Slack's interactivity requests on loopback (POST /slack/actions); the signing secret comes from\nSLACK_SIGNING_SECRET or the config's slack.envFile, the team from slack.team"]], run: cmdServe },
       notify: { flags: { multi: ["lane"], value: ["interval"], bool: ["loop", "dry-run"] },
-        lines: [["[--lane S]... [--loop --interval 30] [--dry-run]", "post to slack.channel what the lanes wait on from people (human tasks, gates) and open timer alerts, once each,\nwith buttons bound to the case; update a message when its decision is made or the case changes. The bot token is\nSLACK_BOT_TOKEN or the config's slack.envFile; --dry-run sends no notifications and leaves notification receipts unchanged"]], run: cmdNotify },
+        lines: [["[--lane S]... [--loop --interval 30] [--dry-run]", "post to slack.channel what the lanes wait on from people (human tasks, gates) and open timer alerts, once each,\nwith buttons bound to the case; update a message when its decision is made or the case changes; with\nslack.heartbeat, post blocked: when the session heartbeat goes stale and note: when it returns. The bot token is\nSLACK_BOT_TOKEN or the config's slack.envFile; --dry-run sends no notifications and leaves notification receipts unchanged"]], run: cmdNotify },
     } },
 ];

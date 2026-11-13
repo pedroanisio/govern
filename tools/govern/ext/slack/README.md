@@ -12,7 +12,7 @@ disclaimer:
 
 Part of [super-tools](../../../../README.md); one of the [govern extensions](../README.md).
 
-Command: `govern slack` (`serve`, `notify`, `listen`, `post`, `upload`, `resolve`, `digest`, `install-service`). Document: [SLACK.md](../../SLACK.md).
+Command: `govern slack` (`serve`, `notify`, `listen`, `post`, `upload`, `resolve`, `digest`, `triage`, `dismiss`, `heartbeat`, `install-service`). Document: [SLACK.md](../../SLACK.md).
 
 It records decisions people make with buttons in Slack (a gate approved or rejected, a human task completed) as the mapped
 person's own, after checking Slack's request signature, the clock, replays, the team, the person and the case's version.
@@ -29,6 +29,7 @@ one reader and one writer per inbox. See [migration and channel commands](../../
 
 - [route.ts](route.ts): durable requester routing through sealed read-only queue profiles, quoted untrusted data, hourly quotas and independent channel alert conditions. Model replies stay in the owner's queue and use its schema and content checks.
 - [digest.ts](digest.ts): one keyed daily summary of waiting people, failed tasks and open alerts.
+- [heartbeat.ts](heartbeat.ts): an agent session's heartbeat file, read by mtime; `notify` posts one keyed `blocked:` when it goes stale and one `note:` when it returns, with the open alert in `session-heartbeat.json`.
 
 Run `notify` independently to detect a dead listener. Configure `slack.route` and `slack.alerts` explicitly; uploading requires explicit `slack.upload` roots and byte limits. First activation records a fixed private start line so migrated posts do not trigger replies or unanswered alerts.
 

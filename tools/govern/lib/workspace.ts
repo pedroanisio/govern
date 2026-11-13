@@ -47,13 +47,23 @@ export interface WorkspaceConfig {
    *  (listener stale, unanswered request, unit failed) so the work channel keeps only decisions; labels name the buttons. */
   slack?: { team: string; envFile?: string; channel?: string; alertsChannel?: string; labels?: { complete?: string; approve?: string; reject?: string };
     botTokenVar?: string; bot?: string[]; requesters?: Record<string, string>; tags?: string[]; inbox?: string;
-    route?: { to: string; profile: string; maxPerHour: number };
+    /** publishers (Slack user ids) may publish a checked routed reply offered in the review channel (publish.ts). */
+    route?: { to: string; profile: string; maxPerHour: number; publishers?: string[]; review?: string };
     alerts?: { listenStaleSec: number; unansweredSec: number };
+    /** Every post gets a disposition (ext/slack/triage.ts); rules map posts that need no reply, by name and pattern. */
+    triage?: { rules: { name: string; pattern: string }[] };
+    /** An agent session's heartbeat file (ext/slack/heartbeat.ts): `notify` posts `blocked:` when its mtime is older than
+     *  staleSeconds (default 1800) and `note:` when it moves again; name is who the messages call the session's owner. */
+    heartbeat?: { file: string; staleSeconds?: number; name?: string };
     upload?: { roots: string[]; maxBytes: number };
     /** Other workspaces whose lanes `slack serve` also decides (one Slack app, one interactivity URL). */
     serveRepos?: string[];
     /** `<@bot> run <name>` from a requester starts this systemd user unit, at most once per minIntervalSec (default 900). */
-    triggers?: Record<string, { unit: string; minIntervalSec?: number }> };
+    triggers?: Record<string, { unit: string; minIntervalSec?: number }>;
+    /** One card per case in the channel, updated in place, with what the case waits on and its alerts in its thread. */
+    threads?: boolean;
+    /** Send back asks for a reason and editable gate options get an Edit button, both as Slack forms (serve needs the bot token). */
+    forms?: boolean };
 }
 /** A file path, or the list shape lib/resources.ts checks (kept as written: resources() builds the registry). */
 const resourcesShape: Shape<unknown> = (v, p) => (typeof v === "string" ? v : (RESOURCES(v, p), v));
@@ -72,6 +82,8 @@ const unitName: Shape<string> = (v, p) => {
   if (typeof v !== "string" || !/^[A-Za-z0-9_][A-Za-z0-9:_.\\@-]*\.(service|socket|timer|path|mount|automount|target|swap|slice|scope|device)$/.test(v)) reject(p, `must be a systemd unit name with its type, such as backup.service`);
   return v as string;
 };
+/** A string with something besides white space in it; `what` names it in the error. */
+const nonEmpty = (what: string): Shape<string> => (v, p) => { const s = str(v, p); if (!s.trim()) reject(p, `must be ${what}`); return s; };
 const CONFIG = obj({}, {
   watch: obj({}, { user: arr(unitName), system: arr(unitName) }),
   extensions: extensionsShape,
@@ -82,8 +94,10 @@ const CONFIG = obj({}, {
   slack: obj({ team: str }, { envFile: str, channel: str, alertsChannel: str, labels: obj({}, { complete: str, approve: str, reject: str }),
     botTokenVar: (v: unknown, p: string) => { const n = str(v, p); if (/^[A-Za-z_][A-Za-z0-9_]*$/.exec(n)?.[0] !== n) reject(p, "must name an environment variable"); return n; },
     bot: arr(str), requesters: record(str), tags: arr(str), inbox: str,
-    route: obj({ to: str, profile: str, maxPerHour: posInt }),
+    route: obj({ to: str, profile: str, maxPerHour: posInt }, { publishers: arr(str, { nonEmpty: true }), review: str }),
     alerts: obj({ listenStaleSec: posInt, unansweredSec: posInt }),
+    triage: obj({ rules: arr(obj({ name: str, pattern: (v: unknown, p: string) => {
+      const s = str(v, p); try { new RegExp(s); } catch { reject(p, "must be a valid regular expression"); } return s; } })) }),
     upload: obj({ roots: arr(str, { nonEmpty: true }), maxBytes: posInt }),
     serveRepos: arr(str),
     triggers: (v: unknown, p: string) => {
@@ -94,6 +108,9 @@ const CONFIG = obj({}, {
       }
       return t;
     },
+    heartbeat: obj({ file: nonEmpty("a non-empty path") }, { staleSeconds: posInt, name: nonEmpty("a non-empty name") }),
+    threads: bool,
+    forms: bool,
   }),
   conversationAdapters: record(obj({argv: arr(str, {nonEmpty: true})})),
 });
@@ -195,11 +212,12 @@ export const workflowFile = (): string | undefined => optional("workflow", "GOVE
 export const promptsDir = (): string | undefined => optional("prompts", "GOVERN_PROMPTS");
 /** The config's chat baseline for `govern usage`, or undefined when it gives none. */
 export const baseline = (): Baseline | undefined => config().baseline;
-/** The config's slack settings, envFile absolute; undefined when the workspace has none. */
+/** The config's slack settings, envFile, inbox, heartbeat file and upload roots absolute; undefined when the workspace has none. */
 export const slackConfig = (): NonNullable<WorkspaceConfig["slack"]> | undefined => {
   const c = findRepo() ? config().slack : undefined;
   return c && { ...c, ...(c.envFile ? { envFile: resolve(base(), c.envFile) } : {}),
     ...(c.inbox ? { inbox: resolve(base(), c.inbox) } : {}),
+    ...(c.heartbeat ? { heartbeat: { ...c.heartbeat, file: resolve(base(), c.heartbeat.file) } } : {}),
     ...(c.upload ? { upload: { ...c.upload, roots: c.upload.roots.map(r => resolve(base(), r)) } } : {}),
     ...(c.serveRepos ? { serveRepos: c.serveRepos.map(r => resolve(base(), r)) } : {}) };
 };

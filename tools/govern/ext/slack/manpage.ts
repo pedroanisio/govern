@@ -7,6 +7,8 @@ export const MANPAGE = `SYNOPSIS
     govern slack resolve --key K [--delivered [--ts TS] | --not-delivered]
     govern slack install-service
     govern slack digest
+    govern slack triage [--all] [--json] [--check]  |  slack dismiss --ts TS --reason R
+    govern slack heartbeat [--json]
     govern slack listen [--once | --loop --interval 60]
     govern slack post --kind ack|blocked|delivered|question|note (--text T | --file F) [--thread TS | --alerts] [--key K]
 DESCRIPTION
@@ -35,7 +37,18 @@ DESCRIPTION
     Independently run slack notify to alert on stale heartbeat, unanswered requests (slack.alerts), and route limits.
     Cleared conditions can alert again. slack digest posts waiting people, failed tasks and open alerts once per local
     calendar day; an empty summary sends nothing. Preserve routes.json, bot-replies.json and the send journals.
+    slack triage gives every post after the start line one disposition: answered (a send or bot reply in its thread
+    later than the post), dismissed (slack dismiss, with a reason), mapped (a slack.triage.rules pattern, or a mapped
+    thread parent), request (a bot mention or tagged request, owed a reply) or review (none of these, owed a manual
+    review). A bot mention is never mapped away. With slack.triage configured, notify alerts on review items older
+    than slack.alerts.unansweredSec, as it does on requests.
     First activation of routing or alerts initializes start-line.json even during a notify dry run.
+    With slack.heartbeat, notify reads the mtime of heartbeat.file, which other programs touch (govern never writes it).
+    Older than staleSeconds (default 1800), it posts one blocked: naming the last beat; when the mtime moves again, one
+    note: with the silent span. Both are keyed sends in sent.jsonl; the open alert is kept in session-heartbeat.json in
+    slack.inbox, so a restart neither repeats nor loses it. A damaged state file is rebuilt from sent.jsonl and
+    reported. A heartbeat file that was never written alerts nothing. slack heartbeat prints the beat's age, fresh,
+    stale or missing, and the open alert; it sends nothing and exits 1 unless the beat is fresh.
     One history page is read per run. has_more warns on stderr and in the heartbeat; older posts may be missed.
     slack upload POSTs common images and videos through the external upload API. Resolved paths, including symlinks,
     must stay inside slack.upload.roots and maxBytes. It journals a file id with kind upload and resolves thread parents.
@@ -57,7 +70,11 @@ OPTIONS
     --title T               slack upload: optional title, 1..255 characters
     --delivered             slack resolve: the channel shows it; journal the key (--ts gives the timestamp or file id)
     --not-delivered         slack resolve: the channel does not show it; release the key
-    --ts TS                 slack resolve: with --delivered, what the receipt records
+    --ts TS                 slack resolve, slack dismiss: resolve: with --delivered, what the receipt records; dismiss: the post
+    --reason R              slack dismiss: why the post needs nothing further (required, recorded in triage.jsonl)
+    --all                   slack triage: list every disposition, not only open ones
+    --json                  slack triage, slack heartbeat: print the items (triage) or the status (heartbeat) as JSON
+    --check                 slack triage: exit 1 while any request or review is open
     --port N                slack serve: the loopback port (default 5003)
     --lane S                slack notify: only this lane (repeatable)
     --dry-run               slack notify: send nothing and leave notification receipts unchanged

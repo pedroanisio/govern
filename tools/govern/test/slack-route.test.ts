@@ -174,7 +174,10 @@ test("channel alert boundaries, parent send receipts and missing inbox requireme
   const ts = `${NOW / 1000 - 600}.000000`; inbox(d, [post(ts)]);
   assert.deepEqual(channelAlerts({ ...base, inbox: d }, NOW), []);
   assert.ok(channelAlerts({ ...base, inbox: d }, NOW + 1).some(a => a.key.includes("unanswered")));
+  // The send that opened the thread is not an answer to a post made in it; only a later send in the thread is.
   write(join(d, "sent.jsonl"), JSON.stringify({ ts, thread: null, kind: "note", key: null }) + "\n");
+  assert.ok(channelAlerts({ ...base, inbox: d }, NOW + 1).some(a => a.key.includes("unanswered")));
+  write(join(d, "sent.jsonl"), JSON.stringify({ ts: `${NOW / 1000 - 1}.000000`, thread: ts, kind: "ack", key: null }) + "\n");
   assert.ok(!channelAlerts({ ...base, inbox: d }, NOW + 1).some(a => a.key.includes("unanswered")));
 }));
 
