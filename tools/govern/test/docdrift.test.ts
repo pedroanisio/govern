@@ -358,7 +358,7 @@ test("the FILES check catches a missing and an invented path", () => {
 function sources(dir = GOVERN_DIR): string[] {
   const out: string[] = [];
   for (const e of readdirSync(dir, { withFileTypes: true })) {
-    if (["node_modules", "test", "android"].includes(e.name)) continue;
+    if (["node_modules", "test", "android", "examples"].includes(e.name)) continue;
     const p = join(dir, e.name);
     if (e.isDirectory()) out.push(...sources(p));
     else if (e.name.endsWith(".ts")) out.push(p);

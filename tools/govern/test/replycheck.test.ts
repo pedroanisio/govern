@@ -38,6 +38,17 @@ test("file-refs passes when every file:line reference exists and fails naming ea
   assert.doesNotMatch(bad.stderr, /a\.ts:2:/);
 });
 
+test("file-refs resolves a reference in the task's folder first, then in the repo, and keeps each inside its root", () => {
+  const e = env();
+  write(join(e.root, "lane", "repo", "fees.js"), "a\nb\nc\n");
+  const run = (body: string) => spawnSync(process.execPath, ["--disable-warning=ExperimentalWarning", FILE_REFS, write(join(e.root, "r.txt"), body), join(e.root, "lane", "repo"), e.root], { encoding: "utf8" });
+  assert.equal(run("the bug is fees.js:3, see also src/a.ts:2").status, 0, "fees.js in the task's folder, src/a.ts in the repo");
+  const bad = run("fees.js:4 and ../../src/a.ts:1");
+  assert.equal(bad.status, 1);
+  assert.match(bad.stderr, /fees\.js:4: the file has 3 lines/);
+  assert.match(bad.stderr, /\.\.\/\.\.\/src\/a\.ts:1: outside the repo/, "a path leaving the task's folder is not looked up elsewhere");
+});
+
 test("file-refs fails a reply with no reference to check, and ignores URLs and times", () => {
   const e = env();
   const none = refs(e, "looks fine, see https://example.com:8080/x.html and 10:30");

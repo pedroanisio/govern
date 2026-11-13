@@ -84,7 +84,7 @@ function optionProblems(mans: string | readonly string[], table: readonly FlagTa
 function sources(dir = GOVERN_DIR): string[] {
   const out: string[] = [];
   for (const e of readdirSync(dir, { withFileTypes: true })) {
-    if (["node_modules", "test", "__pycache__"].includes(e.name)) continue;
+    if (["node_modules", "test", "__pycache__", "examples"].includes(e.name)) continue;
     const p = join(dir, e.name);
     if (e.isDirectory()) out.push(...sources(p));
     else if (e.name.endsWith(".ts") || e.name.endsWith(".py")) out.push(p);

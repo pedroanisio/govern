@@ -43,12 +43,17 @@ export interface WorkspaceConfig {
   /** Jev decisions (ext/decide/decide.ts): shadow asks about every TASK sent; envFile is a dotenv file holding TYPESAFE_API_KEY. */
   decide?: { shadow?: boolean; envFile?: string };
   /** Slack (ext/slack): the team whose signed requests count; envFile is a dotenv file holding SLACK_SIGNING_SECRET and
-   *  SLACK_BOT_TOKEN; channel is where `govern slack notify` posts; labels name the decision buttons. */
-  slack?: { team: string; envFile?: string; channel?: string; labels?: { complete?: string; approve?: string; reject?: string };
+   *  SLACK_BOT_TOKEN; channel is where `govern slack notify` posts; alertsChannel, when set, takes notify's channel alerts
+   *  (listener stale, unanswered request, unit failed) so the work channel keeps only decisions; labels name the buttons. */
+  slack?: { team: string; envFile?: string; channel?: string; alertsChannel?: string; labels?: { complete?: string; approve?: string; reject?: string };
     botTokenVar?: string; bot?: string[]; requesters?: Record<string, string>; tags?: string[]; inbox?: string;
     route?: { to: string; profile: string; maxPerHour: number };
     alerts?: { listenStaleSec: number; unansweredSec: number };
-    upload?: { roots: string[]; maxBytes: number } };
+    upload?: { roots: string[]; maxBytes: number };
+    /** Other workspaces whose lanes `slack serve` also decides (one Slack app, one interactivity URL). */
+    serveRepos?: string[];
+    /** `<@bot> run <name>` from a requester starts this systemd user unit, at most once per minIntervalSec (default 900). */
+    triggers?: Record<string, { unit: string; minIntervalSec?: number }> };
 }
 /** A file path, or the list shape lib/resources.ts checks (kept as written: resources() builds the registry). */
 const resourcesShape: Shape<unknown> = (v, p) => (typeof v === "string" ? v : (RESOURCES(v, p), v));
@@ -74,12 +79,21 @@ const CONFIG = obj({}, {
   projects: str, queue: str, processes: str, workflow: str, tuningLog: str, packages: str, prompts: str, paths: record(str),
   baseline: obj({ mainMedianCtx: posInt, subagentMedianCtx: posInt, source: str }),
   capabilities: str, resources: resourcesShape, allowances: (v: unknown) => v, state: str, decide: obj({}, { shadow: bool, envFile: str }),
-  slack: obj({ team: str }, { envFile: str, channel: str, labels: obj({}, { complete: str, approve: str, reject: str }),
+  slack: obj({ team: str }, { envFile: str, channel: str, alertsChannel: str, labels: obj({}, { complete: str, approve: str, reject: str }),
     botTokenVar: (v: unknown, p: string) => { const n = str(v, p); if (/^[A-Za-z_][A-Za-z0-9_]*$/.exec(n)?.[0] !== n) reject(p, "must name an environment variable"); return n; },
     bot: arr(str), requesters: record(str), tags: arr(str), inbox: str,
     route: obj({ to: str, profile: str, maxPerHour: posInt }),
     alerts: obj({ listenStaleSec: posInt, unansweredSec: posInt }),
     upload: obj({ roots: arr(str, { nonEmpty: true }), maxBytes: posInt }),
+    serveRepos: arr(str),
+    triggers: (v: unknown, p: string) => {
+      const t = record(obj({ unit: str }, { minIntervalSec: posInt }))(v, p);
+      for (const [name, x] of Object.entries(t)) {
+        if (!/^[a-z][a-z0-9-]*$/.test(name)) reject(`${p}.${name}`, "must be a lowercase name");
+        if (!/^[A-Za-z0-9@._:-]+\.(service|target)$/.test(x.unit)) reject(`${p}.${name}.unit`, "must name a systemd .service or .target unit");
+      }
+      return t;
+    },
   }),
   conversationAdapters: record(obj({argv: arr(str, {nonEmpty: true})})),
 });
@@ -103,6 +117,16 @@ function above(dir: string): string | undefined {
 }
 /** The workspace folder, or undefined when there is none (GOVERN_REPO unset and no config above the cwd). */
 export const findRepo = (): string | undefined => (process.env.GOVERN_REPO ? resolve(process.env.GOVERN_REPO) : above(process.cwd()));
+/** The environment overrides that point a folder of every workspace at one place: a process that works in several
+ *  workspaces (slack serve with slack.serveRepos) cannot honour them per workspace, so it refuses while one is set. */
+export const FOLDER_OVERRIDES = ["GOVERN_PROJECTS", "GOVERN_QUEUE", "GOVERN_TUNING_LOG", "GOVERN_PROCESSES", "GOVERN_WORKFLOW",
+  "GOVERN_PROMPTS", "GOVERN_CAPABILITIES", "GOVERN_STATE"] as const;
+/** Run `f` with `dir` as the workspace (GOVERN_REPO), restoring the previous one after; `f` must be synchronous. */
+export function inRepo<T>(dir: string, f: () => T): T {
+  const old = process.env.GOVERN_REPO;
+  process.env.GOVERN_REPO = dir;
+  try { return f(); } finally { if (old === undefined) delete process.env.GOVERN_REPO; else process.env.GOVERN_REPO = old; }
+}
 /** The workspace folder; no workspace is a clear error, never a guess. */
 export const repo = (): string =>
   findRepo() ?? fail(`no ${CONFIG_FILE} or ${DOT_DIR}/ at or above ${process.cwd()}: run \`govern init\` in the workspace root, or set GOVERN_REPO to that folder`);
@@ -176,7 +200,8 @@ export const slackConfig = (): NonNullable<WorkspaceConfig["slack"]> | undefined
   const c = findRepo() ? config().slack : undefined;
   return c && { ...c, ...(c.envFile ? { envFile: resolve(base(), c.envFile) } : {}),
     ...(c.inbox ? { inbox: resolve(base(), c.inbox) } : {}),
-    ...(c.upload ? { upload: { ...c.upload, roots: c.upload.roots.map(r => resolve(base(), r)) } } : {}) };
+    ...(c.upload ? { upload: { ...c.upload, roots: c.upload.roots.map(r => resolve(base(), r)) } } : {}),
+    ...(c.serveRepos ? { serveRepos: c.serveRepos.map(r => resolve(base(), r)) } : {}) };
 };
 /** The config's decide settings, envFile absolute. */
 export const decideConfig = (): { shadow: boolean; envFile?: string } => {

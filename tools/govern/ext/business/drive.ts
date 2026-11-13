@@ -73,7 +73,7 @@ export function outputsOf(body: string, outputs: readonly string[]): Record<stri
 function send(p: Project, stage: string, a: AgentDef, round: number, attempt: number, previous?: string): Run {
   const t = queue.resolveTarget(a.to, { write: a.write === true, ...(a.profile ? { profile: a.profile } : {}) });
   const body = render(a.body, p, stage) + (previous ? `\n\nThe previous attempt failed: ${previous}\nCorrect that and answer again.` : "");
-  const m = queue.send({ project: p.slug, task: a.task, kind: "TASK", from: DRIVER, to: a.to, summary: render(a.summary, p, stage), body,
+  const m = queue.send({ project: a.project ? render(a.project, p, stage) : p.slug, task: a.task, kind: "TASK", from: DRIVER, to: a.to, summary: render(a.summary, p, stage), body,
     files: a.files ?? [], access: t.access, ...(t.profile ? { profile: t.profile } : {}), lane: p.slug,
     ...(a.check ? { check: a.check } : {}), ...(a.verify ? { verify: a.verify } : {}), ...(a.timeout ? { timeoutSec: a.timeout } : {}) });
   appendLedger(p.slug, { kind: "drive-sent", stage, task: m.id, attempt, ...(previous ? { previous } : {}) });

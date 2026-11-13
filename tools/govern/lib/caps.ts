@@ -257,10 +257,14 @@ export interface CheckRecord { version: 1; profile: string; hash: string; at: st
 const RECORD = obj({ version: literal(1), profile: str, hash: str, at: str, model: str, ok: (v, p) => (typeof v === "boolean" ? v : reject(p, "must be true or false")),
   results: arr(obj({ capability: str, status: literal("ok", "refused", "error", "invalid", "untested", "leaked"), evidence: str })) }, { negative: literal("none applicable") });
 
-/** Whether Claude allow pattern `a` is already granted by `held`: the same pattern, or the bare tool (`Bash`, `Bash(*)`) that includes it. */
+/** File tools whose probes act on a file in the task's folder. */
+const FILE_TOOLS = new Set(["Read", "Grep", "Glob", "Edit", "Write", "NotebookEdit"]);
+/** Whether Claude allow pattern `a` is already granted by `held` as far as a probe can tell: the same pattern, the bare tool
+ *  (`Bash`, `Bash(*)`) that includes it, or, for a file tool, its grant on the task's folder (`Read(./**)`): every probe works
+ *  on a file there, so the folder grant would let the probe of the bare tool succeed without any grant being wrong. */
 const coveredBy = (a: string, held: Set<string>): boolean => {
   const tool = a.replace(/\(.*$/, "");
-  return held.has(a) || held.has(tool) || held.has(`${tool}(*)`);
+  return held.has(a) || held.has(tool) || held.has(`${tool}(*)`) || (FILE_TOOLS.has(tool) && held.has(`${tool}(./**)`));
 };
 /** The capability the negative probe asks a session of `p` to use: one the profile lacks, with a probe, that the engine can honour and
  *  whose Claude allow patterns (grok: tools) are not all granted already by the capabilities it holds, so a refusal is possible.

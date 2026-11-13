@@ -109,7 +109,7 @@ test("terminal measurements preserve explicit zero and unknown spend", () => {
 });
 
 // Captured `claude -p --output-format stream-json --verbose` runs (system events dropped, paths and signatures scrubbed).
-for (const version of ["2.1.219", "2.1.312"]) {
+for (const version of ["2.1.219", "2.1.312", "2.1.322"]) {
   test(`Claude Code ${version} stream and result decode`, { timeout: 10000 }, () => {
     const lines = readFileSync(join(HERE, `fixtures/claude-code-${version}.jsonl`), "utf8").trim().split("\n");
     const e = makeEnv("transport-claude-" + version), saved = process.env;

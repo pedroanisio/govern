@@ -12,6 +12,7 @@ import { poll, slackCall, postMessage, uploadFile, resolveSend, wasSent, wasAtte
 import { routePending, startLine } from "./route.ts";
 import { digest } from "./digest.ts";
 import { commandText } from "./commands.ts";
+import { runTrigger } from "./triggers.ts";
 import { installServices } from "./service.ts";
 import { MANPAGE } from "./manpage.ts";
 
@@ -59,7 +60,7 @@ async function cmdNotify(a: Args): Promise<void> {
   const lanes = many(a, "lane"), interval = Number(opt(a, "interval") ?? 30);
   if (!Number.isInteger(interval) || interval < 5) usage("--interval must be a whole number of seconds, 5 or more");
   const once = async () => {
-    const r = await notify({ api: process.env.GOVERN_SLACK_API ?? SLACK_API, token, channel, dryRun: flag(a, "dry-run"),
+    const r = await notify({ api: process.env.GOVERN_SLACK_API ?? SLACK_API, token, channel, alertsChannel: cfg.alertsChannel, dryRun: flag(a, "dry-run"),
       ...(lanes.length ? { lanes } : {}), ...(cfg.labels ? { labels: cfg.labels } : {}) });
     out(summary(r));
     return r.failed.length === 0;
@@ -92,7 +93,9 @@ async function cmdListen(a: Args): Promise<void> {
       const key = `command:${post.ts}`;
       if (wasSent(inbox, key)) return;
       if (wasAttempted(inbox, key)) { process.stderr.write(`slack listen: command ${post.ts} has an uncertain send; settle it with govern slack resolve --key ${key}\n`); return; }
-      await postMessage(call, inbox, cfg.channel, { kind: "note", text: commandText(command), thread: post.thread_ts ?? post.ts, threadIsParent: true, key });
+      const text = command.startsWith("run ") ? runTrigger(command.slice(4), cfg.triggers, inbox, new Date())
+        : commandText(command, Object.keys(cfg.triggers ?? {}));
+      await postMessage(call, inbox, cfg.channel, { kind: "note", text, thread: post.thread_ts ?? post.ts, threadIsParent: true, key });
     });
     const routed = await routePending(call, inbox, cfg);
     if (routed.waiting.length) process.stderr.write(`slack listen: route limit; ${routed.waiting.length} request(s) remain in inbox\n`);
@@ -110,7 +113,10 @@ async function cmdPost(a: Args): Promise<void> {
   const text = opt(a, "text"), file = opt(a, "file");
   if ((text === undefined) === (file === undefined)) usage("post requires exactly one of --text or --file");
   const { cfg, inbox, call } = channelSettings();
-  const sent = await postMessage(call, inbox, cfg.channel, { kind, text: file === undefined ? text! : readFileSync(file, "utf8"),
+  const alerts = flag(a, "alerts");
+  if (alerts && opt(a, "thread") !== undefined) usage("--alerts posts a top-level line; it cannot take --thread");
+  const channel = alerts ? (cfg.alertsChannel || fail(`${configFile()} names no slack.alertsChannel`)) : cfg.channel;
+  const sent = await postMessage(call, inbox, channel, { kind, text: file === undefined ? text! : readFileSync(file, "utf8"),
     thread: opt(a, "thread"), key: opt(a, "key") });
   out(`slack post: ${sent.ts}`);
 }
@@ -153,8 +159,8 @@ export const commands: Cmd[] = [
       digest: { lines: [["", "post waiting people, failed tasks and open alerts once per local day; stay silent when empty"]], run: cmdDigest },
       listen: { flags: { bool: ["once", "loop"], value: ["interval"] },
         lines: [["[--once | --loop --interval 60]", "record new channel posts in slack.inbox; first run marks existing posts seen; answer configured requesters' fixed commands"]], run: cmdListen },
-      post: { flags: { value: ["kind", "text", "file", "thread", "key"] },
-        lines: [["--kind ack|blocked|delivered|question|note (--text T | --file F) [--thread TS] [--key K]", "send a prefixed message to slack.channel, resolve a thread parent and journal the send in slack.inbox/sent.jsonl"]], run: cmdPost },
+      post: { flags: { value: ["kind", "text", "file", "thread", "key"], bool: ["alerts"] },
+        lines: [["--kind ack|blocked|delivered|question|note (--text T | --file F) [--thread TS | --alerts] [--key K]", "send a prefixed message to slack.channel (or slack.alertsChannel with --alerts), resolve a thread parent and journal the send in slack.inbox/sent.jsonl"]], run: cmdPost },
       serve: { flags: { value: ["port"] },
         lines: [["[--port 5003]", "serve Slack's interactivity requests on loopback (POST /slack/actions); the signing secret comes from\nSLACK_SIGNING_SECRET or the config's slack.envFile, the team from slack.team"]], run: cmdServe },
       notify: { flags: { multi: ["lane"], value: ["interval"], bool: ["loop", "dry-run"] },

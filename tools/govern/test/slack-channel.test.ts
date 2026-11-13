@@ -196,6 +196,10 @@ test("CLI handlers refuse missing config and credentials and contradictory optio
     for (const args of [["--once", "--loop"], ["--interval", "1"], ["--loop", "--interval", "0"]]) await assert.rejects(async () => listen.run!(parseArgs(args, listen.flags!, "slack listen")), /--/);
     await assert.rejects(async () => post.run!(parseArgs([], post.flags!, "slack post")), /--kind/);
     await assert.rejects(async () => post.run!(parseArgs(["--kind", "note", "--text", "x", "--file", "x"], post.flags!, "slack post")), /exactly one/);
+    const e = makeEnv("slack-alerts-flag"); setConfig(e, { slack: { team: "T1", channel: "C1", inbox: "generated/slack" } });
+    process.env = { ...childEnv(e), SLACK_BOT_TOKEN: "xoxb-test" };
+    await assert.rejects(async () => post.run!(parseArgs(["--kind", "note", "--text", "x", "--alerts", "--thread", "1.000001"], post.flags!, "slack post")), /cannot take --thread/);
+    await assert.rejects(async () => post.run!(parseArgs(["--kind", "note", "--text", "x", "--alerts"], post.flags!, "slack post")), /slack.alertsChannel/);
   } finally { process.env = back; }
 });
 
@@ -215,7 +219,7 @@ test("keyed sends retain ambiguous intent across restart, but proven refusals ca
 
 test("CLI handlers use custom dotenv token, record and answer commands, read files, redact failures", async t => {
   const e = makeEnv("slack-injected-cli"), back = process.env;
-  setConfig(e, { slack: { ...cfg, team: "T1", inbox: "generated/slack", envFile: "slack.env", botTokenVar: "BOT_TOKEN" } });
+  setConfig(e, { slack: { ...cfg, team: "T1", inbox: "generated/slack", envFile: "slack.env", botTokenVar: "BOT_TOKEN", alertsChannel: "C0OPS" } });
   write(join(e.root, "slack.env"), 'export BOT_TOKEN="test-secret"\n');
   const bodies: Record<string, unknown>[] = [], output: string[] = [], methods: string[] = []; let history: unknown[] = [], failure = false;
   process.env = { ...childEnv(e), BOT_TOKEN: "", SLACK_BOT_TOKEN: "wrong-variable", GOVERN_SLACK_API: "http://fake/api" };
@@ -240,6 +244,9 @@ test("CLI handlers use custom dotenv token, record and answer commands, read fil
     const file = write(join(e.root, "message.txt"), "done");
     await post.run!(parseArgs(["--kind", "delivered", "--file", file, "--key", "done", "--thread", "1.000001"], post.flags!, "slack post"));
     assert.equal(jsonl(join(e.root, "generated/slack/sent.jsonl")).length, 2);
+    await post.run!(parseArgs(["--kind", "blocked", "--text", "escalated", "--alerts"], post.flags!, "slack post"));
+    assert.equal(bodies.at(-1)!.channel, "C0OPS");
+    assert.equal(jsonl(join(e.root, "generated/slack/sent.jsonl")).length, 3);
     history = [msg("1.000001", "parent", "U1", { latest_reply: "3.000003" })];
     await once();
     assert.equal(methods.filter(m => m.endsWith("replies")).length, 2);

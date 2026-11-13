@@ -50,7 +50,7 @@ export interface Verification {
 }
 
 const script = (name: string, ...args: string[]): string[] => ["{node}", "--disable-warning=ExperimentalWarning", `{govern}/checks/${name}.ts`, ...args];
-const FILE_REFS: CheckDef = { argv: script("file-refs", "{reply}", "{repo}"), label: "refs exist" };
+const FILE_REFS: CheckDef = { argv: script("file-refs", "{reply}", "{dir}", "{repo}"), label: "refs exist" };
 const COMMIT_REFS: CheckDef = { argv: script("commit-refs", "{reply}", "{dir}"), label: "commits exist" };
 const BUILTIN: Record<string, CheckDef> = { REVIEW: FILE_REFS, HANDOFF: COMMIT_REFS };
 /** What commit-refs exits with when the reply names no commit: applied by default (not asked for) the reply then stays shape only. */

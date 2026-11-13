@@ -12,7 +12,7 @@ import { processOf } from "../../lib/process.ts";
 import { transaction } from "../../lib/lifecycle.ts";
 import { humanAction, policyVote, rejectRoute, gateApproved, ownerApproval } from "../../lib/business.ts";
 import { name as nameShape } from "../../lib/shape.ts";
-import { stateDir, slackConfig } from "../../lib/workspace.ts";
+import { stateDir, slackConfig, repo, inRepo, FOLDER_OVERRIDES } from "../../lib/workspace.ts";
 import { withLaneLock } from "../../lib/lane-lock.ts";
 import { BadRequest, Forbidden, NotFound, TooLarge } from "../../lib/http-errors.ts";
 import { GovernError, fail, nowIso } from "../../lib/util.ts";
@@ -144,15 +144,39 @@ function personOf(p: Project, user: string): string {
     ?? (() => { throw new Forbidden(`Slack user ${user} is no person of ${p.slug}'s process (map it as people.<id>.slack)`); })();
 }
 
+/** The workspace that holds lane `slug` among the ones this server decides for: its own, then slack.serveRepos. Several
+ *  workspaces need each one's own folders, so an environment override of a folder refuses (Forbidden); a lane in none is
+ *  NotFound, a lane in more than one is refused. */
+function laneRepo(slug: string): string {
+  const own = repo(), repos = [...new Set([own, ...(slackConfig()?.serveRepos ?? [])])];
+  if (repos.length > 1) {
+    const set = FOLDER_OVERRIDES.filter((v) => process.env[v]);
+    if (set.length) throw new Forbidden(`slack.serveRepos needs each workspace's own folders: unset ${set.join(", ")} for slack serve`);
+  }
+  const holders = repos.filter((r) => inRepo(r, () => existsSync(stateFile(slug))));
+  if (!holders.length) throw new NotFound(`no lane ${slug}`);
+  if (holders.length > 1) fail(`${slug} is a lane of more than one served workspace (${holders.join(", ")}): rename one`);
+  return holders[0]!;
+}
+
 /** Record `a` on its lane as the mapped person's decision, under the lane lock: a policy vote (a reject follows the
  *  policy's rejectTo), the owner's approval of a gate without a policy, or the completion of a human task (claimed first
- *  when nobody holds it). Returns the line the server replies with. */
+ *  when nobody holds it). The lane may live in another workspace this server decides for (slack.serveRepos); there its
+ *  own slack.team must be the request's team and its own process's people decide. Returns the line the server replies with. */
 export function perform(a: SlackAction, source: Extract<Source, { kind: "slack" }>): string {
   const team = slackConfig()?.team ?? (() => { throw new Forbidden("the workspace config names no slack.team"); })();
   if (a.team !== team) throw new Forbidden(`the request comes from Slack team ${a.team}, not ${team}`);
   let slug: string;
   try { slug = checkSlug(a.lane); } catch (e) { return bad((e as Error).message); }
-  if (!existsSync(stateFile(slug))) throw new NotFound(`no lane ${slug}`);
+  const at = laneRepo(slug);
+  return at === repo() ? decide(a, slug, source) : inRepo(at, () => {
+    const own = slackConfig()?.team;
+    if (own !== a.team) throw new Forbidden(`${slug}'s workspace (${at}) ${own ? `belongs to Slack team ${own}` : "names no Slack team (slack.team)"}, not ${a.team}`);
+    return decide(a, slug, source);
+  });
+}
+
+function decide(a: SlackAction, slug: string, source: Extract<Source, { kind: "slack" }>): string {
   return transaction(slug, () => {
     const p = load(slug), person = personOf(p, a.user);
     if (caseDigest(p) !== a.digest) fail(`${slug} has changed since this button was made (its data or a loop): decide on a new message`);

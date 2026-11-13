@@ -159,8 +159,9 @@ the queue's dispatcher runs the agents' tasks.
 ```
 
 - **Agent:** when the stage is active, its task is sent to `to` (a runner or profile; `profile`, `write`, `files`, `check`,
-  `verify` and `timeout` as for `govern task send`). `summary` and `body` may use `{lane}`, `{stage}`, `{title}` and
-  `{data.FIELD}`. The reply must finish the stage (HANDOFF, ACK, REVIEW or DECISION), pass its content checks, and carry
+  `verify` and `timeout` as for `govern task send`). `project` is the task's project folder, the lane's own by default;
+  `"{lane}/repo"` gives the model only the lane's clone. `summary`, `body` and `project` may use `{lane}`, `{stage}`,
+  `{title}` and `{data.FIELD}`. The reply must finish the stage (HANDOFF, ACK, REVIEW or DECISION), pass its content checks, and carry
   as body the JSON object of the stage's `outputs`: every key a declared output, every value valid for its field.
 - **Service:** the lane command `command` runs through `govern run`; it writes the JSON of its `outputs` to the file
   `$GOVERN_OUTPUTS` names, and must exit 0.

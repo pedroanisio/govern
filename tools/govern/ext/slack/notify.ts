@@ -21,7 +21,7 @@ import type { Scalar } from "../../lib/business-schema.ts";
 export interface Pending { key: string; lane: string; target: Target; decisions: Decision[]; people: string[];
   /** A gate's approve options as they stand on the case: each its label and the fields it sets. */
   options?: { label: string; set: Record<string, Scalar> }[] }
-export interface NotifyOptions { api?: string; token: string; channel: string; lanes?: string[]; dryRun?: boolean;
+export interface NotifyOptions { api?: string; token: string; channel: string; alertsChannel?: string; lanes?: string[]; dryRun?: boolean;
   labels?: Partial<Record<Decision, string>> }
 /** What one run did, by key (`lane:task:stage`, `lane:gate:name`, `lane:alert:id`); failed lines name the key and the reason. */
 export interface NotifyReport { posted: string[]; closed: string[]; superseded: string[]; alerts: string[]; failed: string[] }
@@ -196,13 +196,13 @@ export async function notify(o: NotifyOptions): Promise<NotifyReport> {
   const activeChannelKeys = new Set([...channelConditions.map(a => a.key), ...services.held.keys()]);
   for (const [key, ts] of Object.entries(state.alerts)) {
     if (!key.startsWith("channel:") || activeChannelKeys.has(key)) continue;
-    if (await send(key, "chat.update", { channel: o.channel, ts, ...closing(key, "condition cleared") })) {
+    if (await send(key, "chat.update", { channel: o.alertsChannel ?? o.channel, ts, ...closing(key, "condition cleared") })) {
       report.closed.push(key); if (!o.dryRun) delete state.alerts[key];
     }
   }
   for (const a of channelConditions) {
     if (state.alerts[a.key]) continue;
-    const result = await send(a.key, "chat.postMessage", { channel: o.channel, text: a.text });
+    const result = await send(a.key, "chat.postMessage", { channel: o.alertsChannel ?? o.channel, text: a.text });
     if (result) { report.alerts.push(a.key); if (!o.dryRun) state.alerts[a.key] = result.ts; }
   }
   if (!o.dryRun) writeState(state);

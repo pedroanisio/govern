@@ -51,10 +51,15 @@ const resultShape = (policy: UsagePolicy) => obj({}, {
   stop_reason: nullable(text), usage_is_incomplete: bool, cost_is_partial: bool,
   duration_ms: number, duration_api_ms: number, modelUsage: opaque, permission_denials: opaque,
   sessionId: text, requestId: text, cwd: text, total_cost_usd_ticks: count,
-  // Claude Code 2.1.x run metadata (2.1.219 sends the first seven; 2.1.312 adds the rest).
+  // Claude Code 2.1.x run metadata (2.1.219 sends the first seven; 2.1.312 adds the next six; 2.1.322 adds the last
+  // eleven, timing detail and credential_expires_at).
   terminal_reason: opaque, api_error_status: opaque, fast_mode_state: opaque, fast_mode_disabled_reason: opaque,
   time_to_request_ms: opaque, ttft_ms: opaque, ttft_stream_ms: opaque, first_content_frame_ms: opaque, queued_turn_count: opaque,
   result_index: opaque, safety_stops: opaque, subagent_stats: opaque, model_usage_since_last_result: opaque,
+  time_to_request_phases_ms: opaque, turn_start_resume_kind: opaque, process_turn_index: opaque,
+  time_to_request_loop_lag_ms: opaque, time_to_request_cpu_ms: opaque, time_to_request_major_faults: opaque,
+  input_attachments_detail: opaque, tool_schema_build_detail: opaque, message_normalization_detail: opaque,
+  request_build_detail: opaque, credential_expires_at: opaque,
   ...metadata,
 });
 const RESULT = { refuse: resultShape("refuse"), unknown: resultShape("unknown") };

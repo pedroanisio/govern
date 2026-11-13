@@ -103,12 +103,13 @@ export interface Human {
 }
 export const HUMAN = obj({}, { assignee: name, role: name });
 /** A stage an agent does (ext/business/drive.ts): its task goes through the queue to `to` (a runner or profile); the
- *  reply's body is the JSON of the stage's `outputs` (case fields). summary and body may use {lane}, {stage}, {title} and
- *  {data.FIELD}. `attempts` (default 1) bounds the tries before the stage is left to the operator. */
-export interface AgentDef { to: string; task: string; summary: string; body: string; outputs?: string[]; write?: boolean; profile?: string;
+ *  reply's body is the JSON of the stage's `outputs` (case fields). summary, body and project may use {lane}, {stage},
+ *  {title} and {data.FIELD}. `project` is the task's project folder (default: the lane's own, {lane}), e.g. "{lane}/repo" so
+ *  the model sees only the lane's clone. `attempts` (default 1) bounds the tries before the stage is left to the operator. */
+export interface AgentDef { to: string; task: string; summary: string; body: string; project?: string; outputs?: string[]; write?: boolean; profile?: string;
   files?: string[]; check?: string[]; verify?: string[]; timeout?: number; attempts?: number }
 export const AGENT = obj({ to: name, task: name, summary: str, body: str },
-  { outputs: arr(name), write: bool, profile: name, files: arr(str), check: arr(name, { nonEmpty: true }), verify: arr(str, { nonEmpty: true }), timeout: posInt, attempts: posInt });
+  { project: str, outputs: arr(name), write: bool, profile: name, files: arr(str), check: arr(name, { nonEmpty: true }), verify: arr(str, { nonEmpty: true }), timeout: posInt, attempts: posInt });
 /** A stage a command does (ext/business/drive.ts): the lane command `command`, which writes the JSON of the stage's
  *  `outputs` to the file $GOVERN_OUTPUTS names. */
 export interface ServiceDef { command: string; outputs?: string[]; attempts?: number }
@@ -341,13 +342,18 @@ export function validateBusinessProcess(p: BusinessProcess): void {
         reject(`${at}.${doer}.outputs`, `the ${gate.name} gate holds this stage: writing outputs would clear its approval (put the gate on a decision stage before it)`);
     }
     if (s.agent)
-      for (const k of ["summary", "body"] as const)
-        for (const m of s.agent[k].matchAll(/\{([A-Za-z][\w.-]*)\}/g)) {
+      for (const k of ["summary", "body", "project"] as const)
+        for (const m of (s.agent[k] ?? "").matchAll(/\{([A-Za-z][\w.-]*)\}/g)) {
           const w = m[1]!, field = /^data\.(.+)$/.exec(w)?.[1];
           if (AGENT_VARS.includes(w)) continue;
           if (field === undefined) reject(`${at}.agent.${k}`, `unknown placeholder {${w}} (an agent's text has {lane}, {stage}, {title} and {data.FIELD})`);
           if (!Object.hasOwn(fields, field!)) reject(`${at}.agent.${k}`, `{data.${field}} names no declared field`);
         }
+    if (s.agent?.project !== undefined) {
+      const shape = s.agent.project.replace(/\{[^}]*\}/g, "x");
+      if (!/^[a-z0-9][a-z0-9.\/-]*$/.test(shape) || shape.split("/").some((x) => x === ".." || x === "" || x === "."))
+        reject(`${at}.agent.project`, "must be a project folder under the workspace's projects: lowercase, digits, dots, dashes and /, no . or .. segment");
+    }
     if (s.join) {
       if (new Set(s.join.stages).size !== s.join.stages.length) reject(at + ".join", "duplicate join predecessors");
       for (const prev of s.join.stages) {
