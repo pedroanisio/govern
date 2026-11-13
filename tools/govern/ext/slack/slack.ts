@@ -173,15 +173,21 @@ function laneRepo(slug: string): string {
  *  when nobody holds it). The lane may live in another workspace this server decides for (slack.serveRepos); there its
  *  own slack.team must be the request's team and its own process's people decide. Returns the line the server replies with. */
 export function perform(a: SlackAction, source: Extract<Source, { kind: "slack" }>): string {
-  const team = slackConfig()?.team ?? (() => { throw new Forbidden("the workspace config names no slack.team"); })();
-  if (a.team !== team) throw new Forbidden(`the request comes from Slack team ${a.team}, not ${team}`);
+  return inLaneWorkspace(a.team, a.lane, (slug) => decide(a, slug, source));
+}
+
+/** Run `f` for lane `lane` inside the workspace that holds it (this one or one of slack.serveRepos), once the request's
+ *  Slack team is this server's and, in another workspace, that workspace's own slack.team. */
+function inLaneWorkspace<T>(team: string, lane: string, f: (slug: string) => T): T {
+  const ours = slackConfig()?.team ?? (() => { throw new Forbidden("the workspace config names no slack.team"); })();
+  if (team !== ours) throw new Forbidden(`the request comes from Slack team ${team}, not ${ours}`);
   let slug: string;
-  try { slug = checkSlug(a.lane); } catch (e) { return bad((e as Error).message); }
+  try { slug = checkSlug(lane); } catch (e) { return bad((e as Error).message); }
   const at = laneRepo(slug);
-  return at === repo() ? decide(a, slug, source) : inRepo(at, () => {
+  return at === repo() ? f(slug) : inRepo(at, () => {
     const own = slackConfig()?.team;
-    if (own !== a.team) throw new Forbidden(`${slug}'s workspace (${at}) ${own ? `belongs to Slack team ${own}` : "names no Slack team (slack.team)"}, not ${a.team}`);
-    return decide(a, slug, source);
+    if (own !== team) throw new Forbidden(`${slug}'s workspace (${at}) ${own ? `belongs to Slack team ${own}` : "names no Slack team (slack.team)"}, not ${team}`);
+    return f(slug);
   });
 }
 
@@ -378,9 +384,8 @@ export async function handleInteraction(secret: string, body: Buffer, ts: string
       update = () => closed(body, line);
     } else if (c) {
       remember(sig!, at);
-      const team = slackConfig()?.team ?? (() => { throw new Forbidden("the workspace config names no slack.team"); })();
-      if (c.team !== team) throw new Forbidden(`the request comes from Slack team ${c.team}, not ${team}`);
-      const line = performControl(c.control, (p) => personOf(p, c.user), { kind: "slack", team: c.team, user: c.user, timestamp: ts!, signedBody: body.toString("utf8"), signature: sig! }, c.quote, at);
+      const line = inLaneWorkspace(c.team, c.control.lane, () => performControl(c.control, (p) => personOf(p, c.user),
+        { kind: "slack", team: c.team, user: c.user, timestamp: ts!, signedBody: body.toString("utf8"), signature: sig! }, c.quote, at));
       result = { status: 200, value: { ok: true, text: line } };
       update = () => closed(body, line);
     } else {

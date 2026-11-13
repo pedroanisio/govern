@@ -10,6 +10,7 @@ import { makeEnv, govern, write, jsonl, type Env } from "./helpers.ts";
 import { slackServer, parseAction, verifySignature, decisionValue, caseDigest, SKEW_SECONDS, MAX_BODY } from "../ext/slack/slack.ts";
 import { parseProcess } from "../lib/process.ts";
 import { load } from "../lib/project.ts";
+import { stateDir } from "../lib/workspace.ts";
 import type { Project } from "../lib/project.ts";
 import { GovernError } from "../lib/util.ts";
 
@@ -420,6 +421,24 @@ test("a server decides the lanes of the workspaces slack.serveRepos names, as th
   assert.equal(p.approvals["go"]?.source?.kind, "slack");
   assert.equal(ledgerOf(squad, "dev-x").filter((x) => x.kind === "approve").length, 1);
   assert.notEqual(readFileSync(join(e.projects, "t1", "govern.json"), "utf8"), before, "t1 was decided in its own workspace");
+});
+
+test("alert and Retry stage buttons reach a lane of a workspace slack.serveRepos names", async () => {
+  // 2026-11-13: Retry stage on sc-sc135-storage (squad-sales-compass) answered "no lane": controls looked only here.
+  const e = setup(["t1"]);
+  const squad = otherWorkspace(["dev-x"]);
+  serveAlso(e, [squad.root]);
+  const drive = inWorkspace(squad, () => join(stateDir(), "drive", "state.json"));
+  write(drive, JSON.stringify({ "dev-x:build": { task: "20261113-dev-x", round: 0, attempt: 2, state: "failed", reason: "blocked" } }));
+  await serving(e, async (url) => {
+    const p = payload("U0ANA", JSON.stringify({ v: 1, lane: "dev-x", stage: "build", round: 0, action: "retry" }), "Retry stage");
+    (p.actions as Record<string, unknown>[])[0]!.action_id = "govern.drive.retry";
+    const r = await send(url, formBody(p));
+    assert.equal(r.status, 200, await r.clone().text());
+    assert.match(((await r.json()) as { text: string }).text, /Retry by/);
+  });
+  assert.equal(JSON.parse(readFileSync(drive, "utf8"))["dev-x:build"], undefined, "the served workspace's drive sends the stage again");
+  assert.equal(ledgerOf(squad, "dev-x").filter((x) => x.kind === "drive-retry").length, 1);
 });
 
 test("without serveRepos another workspace's lane is not found; a lane in two served workspaces is refused", async () => {
