@@ -201,6 +201,8 @@ export function save(p: Project, o: { allowFrozen?: boolean } = {}): void {
 export function create(given: string, o: { kind?: string; process?: string; title?: string; lang?: string; parent?: string; pin?:boolean; data?:Record<string,Value>; snapshot?:Snapshot; invocation?:Invocation; replay?:{run:string; of:string} }): Project {
   const slug = checkSlug(given);
   if (existsSync(stateFile(slug))) fail(`${slug}: govern.json already exists`);
+  if (!o.replay && slug.startsWith(REPLAY_PREFIX)) fail(`${slug}: lanes under ${REPLAY_PREFIX} are replays; only govern replay makes them`);
+  if (o.replay && !slug.startsWith(REPLAY_PREFIX)) fail(`${slug}: a replay lane is named ${REPLAY_PREFIX}<run>/<case>`);
   let kind: string, proc: string;
   // While a canary of the process runs, a new case (not one given its definition, not a replay) takes its arm's.
   const asg = o.process && !o.snapshot && !o.replay ? assignment(o.process, slug) : undefined;
@@ -284,8 +286,12 @@ function foldersHolding(file: string): string[] {
   return out.sort();
 }
 
-/** Every lane's slug. */
-export const laneSlugs = (): string[] => foldersHolding("govern.json");
+/** The slug prefix of replay lanes (`govern replay`): `replay/<run>/<case>`. Only a replay may be made under it. */
+export const REPLAY_PREFIX = "replay/";
+/** Every lane's slug. Replay lanes are left out unless `replays`: they are rehearsals, which no inbox, digest, tick or
+ *  status should show; only `govern drive` and `govern replay` see them. */
+export const laneSlugs = (o: { replays?: boolean } = {}): string[] =>
+  foldersHolding("govern.json").filter((s) => o.replays || !s.startsWith(REPLAY_PREFIX));
 /** Every folder under the lanes folder with a ledger, which a lane whose govern.json was archived away keeps. */
 export const ledgerSlugs = (): string[] => foldersHolding(join("govern", "ledger.jsonl"));
 

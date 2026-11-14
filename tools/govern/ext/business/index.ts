@@ -1,6 +1,7 @@
 // The business event and lifecycle commands: events, timers, alerts, subprocesses, recovery, typed case data, human tasks and policy
 // rejections. The runtime they drive (lib/lifecycle.ts) and the graph processes (lib/business.ts) stay in the core: advance,
 // approve and the brief depend on them. A workspace turns this extension on with `govern ext enable business`.
+import { writeFileSync } from "node:fs";
 import { userInfo } from "node:os";
 import { eventServer } from "./event-server.ts";
 import * as lifecycle from "../../lib/lifecycle.ts";
@@ -18,6 +19,7 @@ import type { ExtDoc } from "../../lib/ext-registry.ts";
 import { MANPAGE } from "./manpage.ts";
 import { recordOutcome, metrics, summaryLine } from "../../lib/outcomes.ts";
 import { startCanary, canaryReport, checkCanary, stopCanary, reportText } from "./canary.ts";
+import { startReplay, replayReport, replayText, replayExit } from "./replay.ts";
 
 /** A number flag: undefined when absent; a usage error when it is not a number. */
 function numberOpt(a: Args, k: string): number | undefined {
@@ -192,6 +194,31 @@ export const commands: Cmd[] = [
           const name = processArg(a, 'stop'), quote = opt(a, 'quote') ?? usage('govern canary stop <process> --quote Q');
           const c = stopCanary(name, quote);
           out(`${name}: canary ${c.id} stopped; revision ${c.candidate.revision} reverted`);
+        } },
+    } },
+  { name: "replay", section: 1, noSub: "govern replay start|report",
+    subs: {
+      start: { flags: { value: ["file", "cases", "since"], multi: ["lane"] },
+        lines: [["<process> [--file F] [--cases 20] [--since ISO] [--lane L]...", "run past finished cases again on revision F (default the current one), as replay/<run>/… lanes that\ngovern drive moves on: agents work, commands are never run (their outputs are the original's), and a replay\nstops where a person, a gate, an event or a sub-case would be needed; prints the run's id (as a service\nstage: its output replay)"]],
+        run: (a) => {
+          const name = a._[2] ?? usage('govern replay start <process>'), file = opt(a, 'file'), since = opt(a, 'since'), cases = numberOpt(a, 'cases'), lanes = many(a, 'lane');
+          // Run by a service stage: its idempotency key starts one run however often the stage runs, and the run's id is
+          // the stage's `replay` output.
+          const key = process.env.GOVERN_IDEMPOTENCY_KEY, outputs = process.env.GOVERN_OUTPUTS;
+          const r = startReplay(name, { ...(file ? { file } : {}), ...(since ? { since } : {}), ...(cases !== undefined ? { cases } : {}), ...(lanes.length ? { lanes } : {}), ...(key ? { key } : {}) });
+          if (outputs) writeFileSync(outputs, JSON.stringify({ replay: r.id }) + '\n', { mode: 0o600 });
+          const refused = r.cases.filter((c) => c.refused);
+          out(`${r.id}`);
+          process.stderr.write(`replay ${r.id} of ${name} revision ${r.revision}: ${r.cases.length - refused.length} cases started${refused.length ? `, ${refused.length} refused (${refused.map((c) => `${c.of}: ${c.refused}`).join('; ')})` : ''}; govern replay report ${r.id}\n`);
+        } },
+      report: { flags: { value: ["fields", "min"], bool: ["json"] },
+        lines: [["<run> [--fields a,b] [--min 0.9] [--json]", "compare the replayed cases with their originals: exit 0 when they agree (no case running, agreement\nat or above --min, no divergence, no case finished without the person its original had), 65 when not, 75 while\ncases still run"]],
+        run: (a) => {
+          const id = a._[2] ?? usage('govern replay report <run>'), fields = opt(a, 'fields'), min = numberOpt(a, 'min');
+          const rep = replayReport(id, { ...(fields ? { fields: fields.split(',').map((f) => f.trim()).filter(Boolean) } : {}), ...(min !== undefined ? { min } : {}) });
+          out(flag(a, 'json') ? JSON.stringify(rep, null, 2) : replayText(rep));
+          const code = replayExit(rep);
+          if (code) process.exitCode = code;
         } },
     } },
   { name: "data", section: 1, flags: { value: ["set"] },

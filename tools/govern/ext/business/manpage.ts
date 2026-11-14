@@ -13,6 +13,8 @@ export const MANPAGE = `SYNOPSIS
     govern metrics PROCESS [--since ISO] [--by revision|arm] [--json]
     govern canary start PROCESS --file F [--fraction 0.1] [--min 20] [--tolerance 0.05] [--quote Q]
     govern canary status|check PROCESS  |  canary stop PROCESS --quote Q
+    govern replay start PROCESS [--file F] [--cases 20] [--since ISO] [--lane L]...
+    govern replay report RUN [--fields a,b] [--min 0.9] [--json]
 DESCRIPTION
     The commands for the typed business processes (BUSINESS.md) and their lifecycle (LIFECYCLE.md). data reads or merges typed
     case fields; human lists, claims, delegates or completes human tasks, and human-inbox shows the active tasks of this OS
@@ -33,14 +35,18 @@ DESCRIPTION
     touched, and time to finish. canary start gives a new revision of a process a share of the new cases (by a hash of the
     lane's name); canary check judges it against the current revision's cases meanwhile and promotes it (the candidate
     becomes the process file, exit 0), reverts it (exit 65) or waits (exit 75). A canary that changes more than what an
-    agent is told and how stages retry is a policy change, started by a person with --quote.
+    agent is told and how stages retry is a policy change, started by a person with --quote. replay start runs past
+    finished cases of a process again on a candidate revision, as replay/RUN/… lanes that drive moves on: agents work, a
+    command is never run (its outputs are the original case's), and a replay stops at a person, a gate, an event, a
+    sub-case or an agent that may write. Replay lanes are left out of every view but drive and replay. replay report
+    compares them with their originals: exit 0 when they agree, 65 when not, 75 while cases still run.
 OPTIONS
     --data JSON             event: payload fields
     --id ID                 event: stable delivery id used for deduplication
     --correlation JSON      event: typed value matching the waiting stage
     --generation N          event: activation generation, required when the event contract declares it
     --port N                event-listen: loopback webhook port (default 5001)
-    --lane S                drive: only this lane (repeatable)
+    --lane S                drive, replay start: only this lane (drive), or this finished case (replay start); repeatable
     --close-breaker P       drive: close process P's open breaker (its service stages held after too many failures)
     --advance               tick: progress ready event, subprocess and retry stages through normal gates
     --ack ID                alerts: acknowledge an alert without approving a business decision
@@ -59,11 +65,14 @@ OPTIONS
     --correct yes|no        outcome: the case was concluded correctly
     --customer-impact yes|no  outcome: the case harmed its customer
     --note T                outcome: why, in a few words
-    --since ISO             metrics: only cases created at or after this time
-    --json                  metrics, canary status: as JSON
-    --file F                canary start: the candidate process file (a higher revision)
+    --since ISO             metrics, replay start: only cases created at or after this time
+    --json                  metrics, canary status, replay report: as JSON
+    --file F                canary start, replay start: the candidate process file (canary: a higher revision)
     --fraction X            canary start: the share of new cases the candidate gets (default 0.1)
-    --min N                 canary start: candidate cases finished (and judged) before a verdict (default 20)
+    --min N                 canary start, replay report: candidate cases finished (and judged) before a verdict (canary
+                            start, default 20); the agreement a pass needs (replay report, default 0.9)
+    --cases N               replay start: how many of the most recently finished cases (default 20)
+    --fields a,b            replay report: the fields compared (default: those the candidate's agents write)
     --tolerance X           canary start: how far the candidate's rates may fall behind the base's (default 0.05)
 ENVIRONMENT
     Webhooks: GOVERN_WEBHOOK_TOKEN (event-listen bearer token; at least 16 characters, configured securely).

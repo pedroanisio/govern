@@ -965,7 +965,7 @@ function cmdBpmn(a: Args): void {
   if (processes().has(name)) {
     p = getProcess(name);
     overlay = stat ? undefined : { now, lanes: readLanes({ now }).lanes.filter((l) => l.process.name === name) };
-  } else if (laneSlugs().includes(name)) {
+  } else if (laneSlugs({ replays: true }).includes(name)) {
     p = processOf(load(name));
     const sel = readLane(name, { now });
     overlay = stat ? undefined : { now, lanes: [sel], selected: sel };

@@ -292,6 +292,38 @@ the stage asks again after that long without using an attempt or the breaker. A 
 "stages": [{ "name": "canario", "service": { "command": "canario", "poll": 3600, "onExhausted": { "to": "revertida" } }, "next": [{ "to": ["promovida"] }] }]
 ```
 
+## Replaying past cases
+
+Before a candidate revision gets real cases in a canary, it can be run on cases that already finished.
+`govern replay start <process> [--file F] [--cases 20] [--since ISO] [--lane L]...` takes the most recently finished
+cases of the process (or the lanes named) and makes a replay lane for each, `replay/<run>/<case>`, with the case data
+the original was opened with (`intake`; for a lane older than that record, its final data less every field a stage
+writes) and the candidate's definition frozen in it. It prints the run's id. `govern drive` moves replay lanes on like
+any other, with these differences:
+
+- **A command is never run, not even as a dry run.** A service stage takes its outputs from the original case's final
+  data, recorded when the run started. When the original never completed that stage, or lacks one of its outputs, the
+  candidate went where the original never did: the replay stops there as *diverged*. No money is reserved and no
+  breaker counts it. (A replay cannot learn what a command would have answered to different input; a stage whose
+  command reads a field the candidate's agents changed is compared on the original's answer.)
+- **Agents work as they would**, on the replay lane's data, unless the agent may write (`write: true`): the replay stops
+  there.
+- **A replay stops for good** at a human task, a gate it would need approved, an event, or a `call`/`foreach` stage
+  (a sub-case would be real), with a `replay-stopped` ledger entry: *escalated*.
+
+Replay lanes are rehearsals: `govern status`, the inbox, `tick`, Slack notifications and digests and `govern metrics`
+leave them out, and a replay lane's failure is not an operator's failure in `govern drive`. Only `govern replay` may
+make a lane under `replay/`.
+
+`govern replay report <run> [--fields a,b] [--min 0.9] [--json]` compares each replay with its original: the fields
+compared default to those the candidate's agents write that the originals hold. A case is *decided* when it finished
+with a compared field, or failed with no destination; it agrees when every compared field equals the original's. The
+report counts the cases escalated more than the original (it stopped for a person the original did without) and less
+(it finished where the original had a person decide or work). It exits 75 while a case still runs; 0 when at least one
+case was decided, the agreement is at or above `--min`, nothing diverged and nothing escalated less; 65 otherwise. A
+service stage that runs it should declare `poll`. Run by a service stage, `replay start` writes `{"replay": "<run>"}` to
+`$GOVERN_OUTPUTS` and starts one run per idempotency key, however often the stage runs.
+
 ## Persistence and validation
 
 Lane state stores `data`, `workflow` (active/completed/waiting/cancelled stages), `humanTasks`, and policy `votes` alongside existing fields. Loading validates these fields against the process. CLI state mutations are serialized per lane using a crash-recoverable lock in the workspace runtime-state directory. Taking a lock never creates a lane folder before its state has been validated. A live lock does not expire while an exit check is running; a contending command waits up to 30 seconds, then asks for a retry. Exit checks should not recursively mutate the same lane.

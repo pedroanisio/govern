@@ -21,7 +21,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import * as queue from "../../lib/queue.ts";
 import { load, save, laneSlugs, ledgerFile, appendLedger, type Project } from "../../lib/project.ts";
-import { processOf } from "../../lib/process.ts";
+import { processOf, type StageDef } from "../../lib/process.ts";
 import { activeStages, setData, gateApproved } from "../../lib/business.ts";
 import { transaction, resetExecution } from "../../lib/lifecycle.ts";
 import { stateDir } from "../../lib/workspace.ts";
@@ -31,6 +31,7 @@ import * as allowances from "../../lib/allowances.ts";
 import { verifyQuote, type Source } from "../../lib/approval.ts";
 import type { AgentDef, Exhausted } from "../../lib/business-schema.ts";
 import type { Value } from "../../lib/business-schema.ts";
+import { replayCase } from "../../lib/replay.ts";
 
 /** The queue name the driver sends as and reads replies for. */
 export const DRIVER = "govern-drive";
@@ -188,6 +189,22 @@ function route(slug: string, stage: string, ex: Exhausted, reason: string): stri
   } catch (e) { return (e as Error).message; }
 }
 
+/** A replay lane (lib/replay.ts) stops for good where going on would need a person or reach outside its lane: why, or
+ *  undefined when stage `def` may run. */
+function replayHalt(def: StageDef | undefined, held: string[]): string | undefined {
+  if (!def) return undefined;
+  if (def.human) return "a person's task";
+  if (def.event) return "it waits for an event";
+  if (def.call || def.foreach) return "it would make real sub-cases";
+  if (held.length) return `it waits for the ${held.join(", ")} gate${held.length === 1 ? "" : "s"}`;
+  if (def.agent?.write) return "its agent may write";
+  return undefined;
+}
+/** Record that replay lane `slug` stopped at `stage`; `diverged`: the candidate went where the original never did. */
+function stopReplay(slug: string, stage: string, why: string, diverged = false): void {
+  appendLedger(slug, { kind: "replay-stopped", stage, why, ...(diverged ? { diverged: true } : {}) });
+}
+
 /** Bring every active agent and service stage (of every lane, or of `lanes`) one step on. An agent stage: send its task
  *  once its gates are approved, wait for the reply, consume it. A service stage: run its command and read the outputs it
  *  wrote. One line per stage; `failed` names the stages left to the operator (a stage routed to its onExhausted stage is
@@ -197,12 +214,15 @@ export function drive(o: { lanes?: string[] } = {}): DriveReport {
   mkdirSync(join(dir(), "outputs"), { recursive: true, mode: 0o700 });
   withLaneLock(join(dir(), "lock"), () => {
     const runs = readRuns(), breakers = readBreakers();
-    for (const slug of o.lanes ?? laneSlugs()) {
+    for (const slug of o.lanes ?? laneSlugs({ replays: true })) {
       let p: Project;
       try { p = load(slug); } catch (e) { report.lines.push(`${slug}: ${(e as Error).message}`); report.failed.push(slug); continue; }
+      if (p.replay && readJsonl(ledgerFile(slug)).some((e) => e.kind === "replay-stopped")) continue;
       for (const stage of activeStages(p)) {
         const def = processOf(p).stages.find((s) => s.name === stage), a = def?.agent, svc = def?.service;
         const held = processOf(p).gates.filter((g) => g.stage === stage && !gateApproved(p, g)).map((g) => g.name);
+        const halt = p.replay ? replayHalt(def, held) : undefined;
+        if (halt) { stopReplay(slug, stage, halt); report.lines.push(`${slug} ${stage}: replay stopped: ${halt}`); break; }
         const waiting = () => report.lines.push(`${slug} ${stage}: waiting for the ${held.join(", ")} gate${held.length === 1 ? "" : "s"}`);
         if (!a && !svc) {
           // Not an agent's or a command's: advanced once its person has completed the task, its gates are approved and
@@ -254,7 +274,7 @@ export function drive(o: { lanes?: string[] } = {}): DriveReport {
           const tripped = counted ? outcome(false) : "";
           if (ex && refused === undefined) { runs[key] = { ...runs[key]!, routed: ex.to }; line(`${after}; routed to ${ex.to}${tripped}`); return; }
           line((refused ? `${after}; not routed to ${ex!.to}: ${refused}` : after) + tripped);
-          report.failed.push(key);
+          if (!p.replay) report.failed.push(key); // a replay's failure is its report's, not the operator's
         };
         let run = runs[key];
         if (run && run.round >= round && run.state === "failed") {
@@ -263,6 +283,18 @@ export function drive(o: { lanes?: string[] } = {}): DriveReport {
           continue;
         }
         if (run && run.round >= round && run.state === "done") continue;
+        if (svc && p.replay) {
+          // A replay never runs the command: it takes the outputs the original case's run of it wrote.
+          const rec = replayCase(p.replay.run, slug), diverge = (why: string) => { stopReplay(slug, stage, why, true); line(`replay diverged: ${why}`); };
+          if (!rec) { diverge(`replay run ${p.replay.run} has no record of this case`); break; }
+          if (!rec.completed.includes(stage)) { diverge(`the original (${rec.of}) never completed ${stage}: its effect is unknown`); break; }
+          const outs = svc.outputs ?? [], missing = outs.filter((k) => rec.data[k] === undefined);
+          if (missing.length) { diverge(`the original (${rec.of}) has no ${missing.join(", ")}`); break; }
+          const end = finish(slug, stage, Object.fromEntries(outs.map((k) => [k, rec.data[k]!])), `replay of ${rec.of}: the command was not run`, { replayOf: rec.of });
+          if ("advanced" in end) { runs[key] = { task: `replay of ${rec.of}`, round, attempt: 1, state: "done" }; line("advanced with the original's outputs (command not run)"); }
+          else { diverge("retry" in end ? end.retry : end.fail); break; }
+          continue;
+        }
         if (svc) {
           if (held.length) { waiting(); continue; }
           const b = bk ? breakers[pname] : undefined;
