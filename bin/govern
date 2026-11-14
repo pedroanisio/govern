@@ -154,7 +154,7 @@
 #     --engine E              work, done: claude, codex or grok (default: claude inside a Claude Code session, grok inside a
 #                             grok session, else codex)
 #     --open                  work: launch a fresh interactive claude, codex or grok session for this lane
-#     --quote Q               approve, allow, process migrate, check, freeze, unfreeze, export: the decision owner's own words (in
+#     --quote Q               approve, delegate, allow, process migrate, check, freeze, unfreeze, export: the decision owner's own words (in
 #                             a Claude session, from a message the person typed; a Codex or Grok session is refused); allow: it must contain N
 #     --continued-as TEXT     freeze: a free-text pointer to where the work continued (e.g. workspace-b:ops/new-slug); on
 #                             an already-frozen lane this is the only thing a further freeze call records
@@ -165,6 +165,8 @@
 #     --drop-deps             import: drop a dependency (--after) on a lane this workspace does not have, instead of refusing
 #     --by NAME               approve, allow: the decision owner, required when the gate or allowance names one other
 #                             than owner; on a policy gate, the process person this OS account is mapped to
+#     --list                  delegate: the standing delegations and their revocation history
+#     --revoke                delegate: revoke the standing authority on that gate from --to (with --quote)
 #     --extra N               allow: raise the allowance's limit by N for its current period
 #     --timeout S             cmd, wait, up, down, reap, task send, task retry: cmd: the command's foreground limit (default 1800); wait: block at most S seconds (default
 #                             540), exit 124 if the job still runs; up, down, reap: the provider command's limit (default 120);
@@ -177,8 +179,8 @@
 #     --accept                check: the owner accepts that stage's flagged check changes (with --quote)
 #     --accept-import         check: the owner accepts an imported lane (with --quote): lifts the quarantine jobs.start
 #                             holds every one of its commands under until then, and counts as --accept for every stage
-#     --note T                advance, task retry, task close, task reclaim: advance: the evidence that a stage with no check is done (also recorded
-#                             as a decision); task retry: what was fixed before sending again (required, recorded on both messages);
+#     --note T                approve, advance, task retry, task close, task reclaim: advance: the evidence that a stage with no check is done (also recorded
+#                             as a decision); approve: the decision evidence under an active standing delegation, in place of --quote; task retry: what was fixed before sending again (required, recorded on both messages);
 #                             task close: a note recorded with the close; task reclaim: what was checked
 #                             before releasing an abandoned claim
 #     --after X               dep: LANE[:STAGE], the lane this one waits on (all of it, or past STAGE)
@@ -207,9 +209,9 @@
 #     --verify                task send: run the command after -- in the project folder once the reply is filed and the checks
 #                             pass; the reply is [checked] only on exit 0
 #     --against DIR           ledger verify: also check that each ledger still begins with the copy govern ledger export made in DIR
-#     --to X                  ledger export, task send, task list, task triage, task retry, task forward: ledger export: the append-only folder; send:
+#     --to X                  delegate, ledger export, task send, task list, task triage, task retry, task forward: ledger export: the append-only folder; send:
 #                             codex, claude, grok, a queue config runner, a profile, auto, owner, a live session or NAME@PEER; list, triage: only messages to X; retry: send to X
-#                             instead of the original recipient; forward: the new recipient
+#                             instead of the original recipient; forward: the new recipient; delegate: the person the standing authority goes to
 #     --project P             task send, task list, task triage: the message's project; list, triage: only that project's messages
 #     --task T                task send: the task the message belongs to
 #     --summary S             task send, task reply: the one-line summary
