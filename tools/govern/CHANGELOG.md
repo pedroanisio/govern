@@ -43,6 +43,7 @@ All notable changes to govern are documented here, following Keep a Changelog.
 
 ### Fixed
 
+- An item case of a `foreach` stage gets the task of its agent stage. Its lane is `<parent>/__items/…`, and the queue refused that project slug because of the `_`. So `govern drive` stopped with a usage error at the first agent stage of any item case. A replayed nested lane (`replay/<run>/a__b`) had the same problem. The queue now accepts `_` in a project slug.
 - A policy gate that needs more than one approval keeps its buttons in Slack after the first vote. The clicked message shows progress (`1/2 approvals: @ana`) above the buttons, and the buttons go only once the gate is decided or the case changes. Before, the first click removed them for every other approver and `notify` never posted them again, because a vote does not change the case digest.
 - A decided Slack message keeps what it asked. The click and `notify` both remove only the buttons and add one line saying who decided (`Done by @ana`, `Approved by @ana, @gil`, `Sent back by @gil`). Before, both replaced the whole message with one line of text. Messages posted before this change still close as text, since their blocks were not recorded.
 

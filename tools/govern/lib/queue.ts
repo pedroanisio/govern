@@ -248,8 +248,9 @@ export function undelivered(now = Date.now()): { to: string; count: number }[] {
 export function send(m: Omit<Message, "id" | "created">): Message {
   for (const [k, v] of [["task", m.task], ["to", m.to], ["from", m.from]] as const)
     if (!(NAME.test(v) || (k !== "task" && v.split("@").length === 2 && v.split("@").every((part) => NAME.test(part))))) fail(`--${k} must be lowercase letters, digits, dots and dashes: ${v}`);
-  if (!/^[a-z0-9][a-z0-9.\/-]*$/.test(m.project) || m.project.split("/").some((x) => x === ".." || x === ""))
-    usage(`--project must be a project slug (lowercase, digits, dots, dashes, /): ${m.project}`);
+  // "_" too: govern makes such lanes itself (a foreach item case is <parent>/__items/…, a replayed nested lane replay/<run>/a__b).
+  if (!/^[a-z0-9][a-z0-9._\/-]*$/.test(m.project) || m.project.split("/").some((x) => x === ".." || x === ""))
+    usage(`--project must be a project slug (lowercase, digits, dots, underscores, dashes, /): ${m.project}`);
   if (!KINDS.includes(m.kind as any)) usage(`--kind must be one of ${KINDS.join(", ")}`);
   if (!m.summary.trim()) usage("--summary is required");
   if (m.timeoutSec !== undefined) {

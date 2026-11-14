@@ -322,6 +322,38 @@ test("a foreach stage has its item cases started, and is advanced once they all 
   assert.deepEqual(stateOf(e).data.prontos, ["SUP-8", "SUP-9"]);
 });
 
+test("an item case's agent stage gets its task: an item lane's slug (…/__items/…) is a queue project", () => {
+  const child = { version: 1, name: "card", fields: { card: { type: "string", required: true }, feito: { type: "boolean" } },
+    stages: [{ name: "fazer", agent: { to: "codex", task: "fazer", summary: "Card {data.card}", body: "Do it. Reply HANDOFF whose body is JSON {\"feito\": boolean}.", outputs: ["feito"] },
+      next: [{ to: ["fim"] }] }, { name: "fim", next: [] }], gates: [] };
+  const parent = {
+    version: 1, name: "support",
+    fields: { ticketId: { type: "string", required: true }, cards: { type: "array", items: { type: "string" } }, feitos: { type: "array", items: { type: "boolean" } } },
+    stages: [{ name: "desenvolver", foreach: { process: "card", collection: "cards", itemField: "card", maxItems: 5, outputs: { feitos: "feito" } }, next: [{ to: ["fim"] }] },
+      { name: "fim", next: [] }],
+    gates: [],
+  };
+  const e = makeEnv("drive");
+  write(join(e.root, "PALS-Notes/processes/card.json"), JSON.stringify(child));
+  write(join(e.root, "PALS-Notes/processes/support.json"), JSON.stringify(parent));
+  assert.equal(govern(e, ["new", "t1", "--process", "support"]).code, 0);
+  assert.equal(govern(e, ["data", "t1", "--set", JSON.stringify({ ticketId: "1", cards: ["SUP-8"] })]).code, 0);
+  drive(e);
+  const second = drive(e);
+  assert.equal(second.code, 0, second.out + second.err);
+  assert.match(second.out, /t1\/__items\/\S+ fazer: sent/);
+  inWorkspace(e, () => {
+    const open = queue.all().find((x) => x.state === "open" && x.m.kind === "TASK")!;
+    assert.match(open.m.project, /^t1\/__items\//);
+    const r = queue.reply(open.m.id, "codex", { kind: "HANDOFF", summary: "done", body: '{"feito": true}' });
+    r.verification = { state: "shape only" };
+    queue.save(r, "open");
+  });
+  for (let i = 0; i < 4; i++) drive(e);
+  assert.equal(stateOf(e).stage, "fim");
+  assert.deepEqual(stateOf(e).data.feitos, [true]);
+});
+
 // ---------------------------------------------------------------- unattended services (CONNECTORS.md)
 const driveState = (e: Env) => join(e.root, "PALS-Notes", "govern-state", "drive", "state.json");
 const runOf = (e: Env) => JSON.parse(readFileSync(driveState(e), "utf8"))["t1:anunciar"];
