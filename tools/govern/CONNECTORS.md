@@ -93,3 +93,23 @@ and, optionally, `compensate`. `http()` classes HTTP failures by the table above
 - 503 exits 75, 422 exits 65, a missing key exits 65;
 - a dry run makes no write;
 - compensating twice undoes once.
+
+## Shadow mode
+
+Before a process acts on a system unattended, it can run in shadow: the agents decide, the connector runs only as a dry
+run, and the decision the people made on the same case is read back and compared. The process advances to acting once
+the agreement meets a criterion over enough cases. [examples/ops-cell](examples/ops-cell) does this for a cell that
+settles billing disputes:
+
+- `billing.ts coletar` and `billing.ts decisao-humana` only read. The second exits 75 while the team has not decided,
+  so `govern drive` polls it with the stage's backoff. Once the attempts are spent, `onExhausted` sends the case to an
+  inconclusive stage with the reason.
+- `billing.ts ajustar` is the connector the cell would run when acting: one credit note per key, voided by
+  `compensate`. In shadow it runs as `env GOVERN_DRY_RUN=1 … ajustar .` in a stage with no outputs.
+- `shadow.ts comparar` writes `comparacao.json` and the outputs `{concorda, desfecho}`.
+- `shadow.ts relatorio PROJECTS --processo P --min N --limite R [--alcada V]` sums the lanes. It exits 0 when at
+  least N cases were compared and the agreement is at least R. With `--alcada`, the criterion is judged only on the cases
+  the agent would settle alone: those whose amount is within the approval limit V.
+
+The tests ([test/ops-cell.test.ts](test/ops-cell.test.ts)) run a shadow case end to end under `govern drive` against a
+fake billing API.
