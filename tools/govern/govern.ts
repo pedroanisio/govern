@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { recordDelegation, listDelegations } from "./lib/delegation.ts";
 import { installSystemUnit } from "./lib/dispatch-service.ts";
 import { workingDirectory } from "./lib/systemd.ts";
 import * as lifecycle from './lib/lifecycle.ts';
@@ -171,10 +172,9 @@ function cmdApprove(a: Args): void {
   const gate = g.name;
   if (g.policy) return cmdPolicyDecision(a, p, g, 'approve');
   const quote = opt(a, "quote");
-  ownerApproval(p, g, opt(a, "by"), quote, () => verifyQuote(quote!));
-  const { by, source } = p.approvals[gate]!;
+  ownerApproval(p, g, opt(a, "by"), quote, () => verifyQuote(quote!), opt(a, "note"));
   save(p);
-  appendLedger(p.slug, { kind: "approve", gate, quote, by, source });
+  appendLedger(p.slug, { kind: "approve", gate, ...p.approvals[gate]! });
   out(`${p.slug}: ${gate} approved`);
 }
 
@@ -1065,8 +1065,20 @@ export const COMMANDS: readonly Cmd[] = [
       appendLedger(p.slug, { kind: "note", text });
       out(`${p.slug}: noted (${p.notes.length})`);
     } },
-  { name: "approve", section: 0, flags: { value: ["quote", "by"] },
-    lines: [["<slug> <gate> --quote \"<the owner's words>\" [--by NAME]", "(gates come from the lane's process; --by: the gate's decision owner,\nrequired when the process names one other than owner. In a Claude session the quote\nmust be in a message the person typed; a Codex or Grok session is refused)"]], run: cmdApprove },
+  { name: "approve", section: 0, flags: { value: ["quote", "by", "note"] },
+    lines: [["<slug> <gate> --quote \"<the owner's words>\" [--by NAME]", "(gates come from the lane's process; --by: the gate's decision owner,\nrequired when the process names one other than owner. An active standing delegation permits\napprove <slug> <gate> --by PERSON --note \"<decision evidence>\" without --quote. In a Claude session the quote\nmust be in a message the person typed; a Codex or Grok session is refused)"]], run: cmdApprove },
+  { name: "delegate", section: 0, flags: { value: ["to", "quote"], bool: ["list", "revoke"] },
+    lines: [["<process> <gate|*> --to PERSON --quote \"<the owner's words>\" [--revoke]", "record or revoke standing gate authority; the owner's words are checked once, at delegation"], ["--list", "list standing delegations and revocation history"]],
+    run(a) {
+      if (flag(a, "list")) {
+        if (a._.length !== 1 || opt(a, "to") || opt(a, "quote") || flag(a, "revoke")) usage("govern delegate --list");
+        return out(listDelegations());
+      }
+      const to = opt(a, "to"), quote = opt(a, "quote");
+      if (a._.length !== 3 || !to || !quote) usage("govern delegate <process> <gate|*> --to PERSON --quote <owner words> [--revoke]");
+      const d = recordDelegation(a._[1]!, a._[2]!, to!, quote!, flag(a, "revoke"));
+      out(`${d.process}: ${d.gates.join(", ")} ${d.action === "revoke" ? "revoked for" : "delegated to"} ${d.to}`);
+    } },
   { name: "allow", section: 0, flags: { value: ["extra", "quote", "by"] },
     lines: [["<allowance> --extra N --quote \"<the decision owner's words>\" [--by NAME]", "raise an allowance's limit by N for its current period (govern.config.json: allowances; govern usage\nlists them). --by: the allowance's decision owner, required when it names one other than owner. The quote must\ncontain N as a number (10 matches 10 and 10.0, not 100) and grants once per allowance and period. In a\nClaude session the quote must be in a message the person typed; a Codex or Grok session is refused)"]], run: cmdAllow },
   { name: "freeze", section: 0, flags: { value: ["quote", "continued-as"] },

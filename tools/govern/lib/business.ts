@@ -1,3 +1,4 @@
+import { activeDelegation } from "./delegation.ts";
 import { load } from "./project.ts";
 import { enterRuntime } from "./lifecycle-runtime.ts";
 import { userInfo } from "node:os";
@@ -428,8 +429,18 @@ export function requireGateOwner(g: GateDef, by: string | undefined): string {
 /** Records the owner's approval of gate `g` (one without a policy) on `p`: `by` must be the gate's decision owner (omitted
  *  only when that owner is "owner"), `quote` the owner's own words, and every gate it needs already approved. `source` says
  *  where the words came from; it runs after those checks, so a refusal names the missing approval before the quote is checked. */
-export function ownerApproval(p: Project, g: GateDef, by: string | undefined, quote: string | undefined, source: () => Source): void {
+export function ownerApproval(p: Project, g: GateDef, by: string | undefined, quote: string | undefined, source: () => Source, note?: string): void {
   const owner = requireGateOwner(g, by), gates = processOf(p).gates;
+  if (quote === undefined && by !== undefined) {
+    const delegation = activeDelegation(processOf(p), g, by);
+    if (delegation) {
+      if (!note?.trim()) usage("--note is required: evidence of the delegate's decision");
+      for (const need of g.needs ?? []) if (!gateApproved(p, gates.find((x) => x.name === need)!)) fail(g.message ?? `needs the ${need} approval first`);
+      p.approvals[g.name] = { at: nowIso(), by: owner, quote: delegation.quote, delegation, note };
+      p.notes.push({ at: nowIso(), stage: p.stage, text: `${owner} approved ${g.name} under delegation by ${delegation.by} at ${delegation.at}: "${delegation.quote}" · ${note}` });
+      return;
+    }
+  }
   if (!quote || quote.trim().length < 2) usage(`--quote is required: ${owner}'s own words approving the ${g.name} (only ${owner} approves)`);
   for (const need of g.needs ?? []) if (!gateApproved(p, gates.find((x) => x.name === need)!)) fail(g.message ?? `needs the ${need} approval first`);
   const src = source();
