@@ -9,6 +9,8 @@ All notable changes to govern are documented here, following Keep a Changelog.
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-11-14
+
 ### Added
 
 - Standing gate delegation: `delegate`, `delegate --list` and verified revocation retain workspace history. A named gate owner with active authority can `approve --by --note` without repeating the owner's quote; lane state, ledger, status and brief retain the delegation and evidence.
