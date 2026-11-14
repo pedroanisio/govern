@@ -18,7 +18,9 @@ DESCRIPTION
     subprocess starts the declared child and syncs its outputs once it finishes; recover is the human decision after an
     exhausted retry or an uncertain result. drive runs the stages a process gives to an agent (a queued task; the reply's
     body is the JSON of the stage's typed outputs) or to a command (a service that writes its outputs to $GOVERN_OUTPUTS),
-    advances them through their checks, and advances stages that have nothing to do but their gates and routes. Mutations
+    advances them through their checks, and advances stages that have nothing to do but their gates and routes. A service
+    exiting 75 is retried after a backoff, one exiting 65 is not retried; a stage that gives up goes to its onExhausted
+    stage when it declares one, else to the operator (exit 1). Mutations
     by a person need that person's own quoted words.
 OPTIONS
     --data JSON             event: payload fields

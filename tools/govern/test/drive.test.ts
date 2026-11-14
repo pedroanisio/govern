@@ -3,7 +3,7 @@
 // a reply that is blocked, unverified or invalid is retried up to the stage's attempts and then left to the operator.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { userInfo } from "node:os";
 import { makeEnv, govern, write, jsonl, type Env } from "./helpers.ts";
@@ -319,4 +319,142 @@ test("a foreach stage has its item cases started, and is advanced once they all 
   for (let i = 0; i < 4; i++) drive(e);
   assert.equal(stateOf(e).stage, "fim");
   assert.deepEqual(stateOf(e).data.prontos, ["SUP-8", "SUP-9"]);
+});
+
+// ---------------------------------------------------------------- unattended services (CONNECTORS.md)
+const driveState = (e: Env) => join(e.root, "PALS-Notes", "govern-state", "drive", "state.json");
+const runOf = (e: Env) => JSON.parse(readFileSync(driveState(e), "utf8"))["t1:anunciar"];
+const editRun = (e: Env, f: (run: Record<string, unknown>) => void) => {
+  const all = JSON.parse(readFileSync(driveState(e), "utf8"));
+  f(all["t1:anunciar"]);
+  writeFileSync(driveState(e), JSON.stringify(all));
+};
+const ledgerOf = (e: Env) => jsonl(join(e.projects, "t1", "govern", "ledger.jsonl"));
+/** A service that records the GOVERN_* variables it was given in `env.json` next to the lane, then exits `code`. */
+const recorder = (e: Env, code = 0) => announce(e, `const fs = require('fs');
+  const seen = fs.existsSync('env.jsonl') ? fs.readFileSync('env.jsonl', 'utf8') : '';
+  const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => /^GOVERN_(STAGE|ROUND|ATTEMPT|IDEMPOTENCY_KEY|INTERRUPTED)$/.test(k)));
+  fs.writeFileSync('env.jsonl', seen + JSON.stringify(env) + '\\n');
+  if (${code} === 0) fs.writeFileSync(process.env.GOVERN_OUTPUTS, JSON.stringify({ slackTs: '1793000000.000100' }));
+  process.exit(${code})`);
+const envsOf = (e: Env) => readFileSync(join(e.projects, "t1", "env.jsonl"), "utf8").trim().split("\n").map((l) => JSON.parse(l));
+
+test("a service command is told its stage, round, attempt and an idempotency key that stays the same across attempts", () => {
+  const e = setup(serviceDef(3));
+  recorder(e, 1);
+  drive(e); drive(e);
+  const [one, two] = envsOf(e);
+  assert.deepEqual(one, { GOVERN_STAGE: "anunciar", GOVERN_ROUND: "0", GOVERN_ATTEMPT: "1", GOVERN_IDEMPOTENCY_KEY: "t1:anunciar:0" });
+  assert.equal(two.GOVERN_ATTEMPT, "2");
+  assert.equal(two.GOVERN_IDEMPOTENCY_KEY, one.GOVERN_IDEMPOTENCY_KEY);
+});
+
+test("a service run is recorded as running before its command starts; one found running was interrupted and is run again with the same key", () => {
+  const e = setup(serviceDef(2));
+  // The command sees its own run recorded as running: a crash from here on leaves that mark behind.
+  announce(e, `const fs = require('fs');
+    fs.writeFileSync('seen.json', fs.readFileSync(${JSON.stringify(driveState(e))}, 'utf8'));
+    process.exit(1)`);
+  drive(e);
+  assert.equal(JSON.parse(readFileSync(join(e.projects, "t1", "seen.json"), "utf8"))["t1:anunciar"].state, "running");
+  // A driver that died mid-command: the run is still marked running.
+  editRun(e, (r) => { r.state = "running"; r.attempt = 1; });
+  recorder(e);
+  const r = drive(e);
+  assert.equal(r.code, 0, r.out + r.err);
+  assert.match(r.out, /t1 anunciar: interrupted during attempt 1; running it again \(attempt 2 of 2\)/);
+  assert.deepEqual(envsOf(e)[0], { GOVERN_STAGE: "anunciar", GOVERN_ROUND: "0", GOVERN_ATTEMPT: "2", GOVERN_IDEMPOTENCY_KEY: "t1:anunciar:0", GOVERN_INTERRUPTED: "1" });
+  assert.equal(stateOf(e).stage, "fim");
+  assert.ok(ledgerOf(e).some((x) => x.kind === "drive-interrupted" && x.stage === "anunciar" && x.attempt === 1));
+});
+
+test("a run interrupted on its last attempt is not run again: its outcome is uncertain", () => {
+  const e = setup(serviceDef(1));
+  recorder(e, 1);
+  drive(e);
+  editRun(e, (r) => { r.state = "running"; });
+  const r = drive(e);
+  assert.equal(r.code, 1);
+  assert.match(r.out, /failed after 1 attempt: interrupted during attempt 1/);
+});
+
+test("exit 75 is a transient failure: retried after an exponential backoff, not at once", () => {
+  const e = setup({ ...serviceDef(3), stages: [{ ...serviceDef().stages[0], service: { command: "announce", outputs: ["slackTs"], attempts: 3, backoffSeconds: 60 } }, serviceDef().stages[1]] });
+  recorder(e, 75);
+  const t0 = Date.now();
+  const first = drive(e);
+  assert.equal(first.code, 0, "a scheduled retry is not left to the operator");
+  assert.match(first.out, /t1 anunciar: transient failure; retry 2 of 3 after .*: the command exited 75/);
+  const due = Date.parse(runOf(e).notBefore);
+  assert.ok(due >= t0 + 60_000 && due <= Date.now() + 60_000, runOf(e).notBefore);
+  const early = drive(e);
+  assert.match(early.out, /t1 anunciar: retry 2 of 3 is due at/);
+  assert.equal(envsOf(e).length, 1, "nothing runs before the retry is due");
+  editRun(e, (r) => { r.notBefore = new Date(Date.now() - 1000).toISOString(); });
+  drive(e);
+  assert.equal(envsOf(e).length, 2);
+  // the delay doubles with each transient failure
+  const second = Date.parse(runOf(e).notBefore) - Date.now();
+  assert.ok(second > 110_000 && second <= 120_000, String(second));
+});
+
+test("exit 65 is a permanent failure: no retry, whatever attempts remain", () => {
+  const e = setup(serviceDef(3));
+  recorder(e, 65);
+  const r = drive(e);
+  assert.equal(r.code, 1);
+  assert.match(r.out, /t1 anunciar: failed after 1 attempt: permanent failure: the command exited 65/);
+  assert.equal(envsOf(e).length, 1);
+});
+
+/** serviceDef with an exception route: a stage `excecao` takes the case when the service gives up. */
+const routedDef = (onExhausted: Record<string, unknown>) => ({
+  ...serviceDef(1),
+  fields: { ...serviceDef().fields, motivo: { type: "string" } },
+  stages: [
+    { name: "anunciar", service: { command: "announce", outputs: ["slackTs"], attempts: 1, onExhausted }, next: [{ to: ["fim"] }] },
+    { name: "excecao", next: [{ to: ["anunciar"] }] },
+    { name: "fim", next: [] },
+  ],
+});
+
+test("a service that gives up routes the case to its onExhausted stage, with the reason, instead of parking the lane", () => {
+  const e = setup(routedDef({ to: "excecao", field: "motivo" }));
+  recorder(e, 65);
+  const r = drive(e);
+  assert.equal(r.code, 0, r.out + r.err);
+  assert.match(r.out, /t1 anunciar: failed after 1 attempt: permanent failure: the command exited 65:.*; routed to excecao/);
+  assert.equal(stateOf(e).stage, "excecao");
+  assert.match(stateOf(e).data.motivo, /exited 65/);
+  assert.ok(ledgerOf(e).some((x) => x.kind === "exception-route" && x.from === "anunciar" && x.to === "excecao"));
+  // Sent back, the stage is a new entry: its service runs afresh, with a new idempotency key.
+  recorder(e);
+  assert.equal(govern(e, ["advance", "t1", "--note", "fixed by hand"]).code, 0);
+  const again = drive(e);
+  assert.equal(again.code, 0, again.out + again.err);
+  assert.equal(stateOf(e).stage, "fim");
+  assert.equal(envsOf(e).at(-1).GOVERN_IDEMPOTENCY_KEY, "t1:anunciar:1");
+});
+
+test("an agent stage that gives up routes to its onExhausted stage too", () => {
+  const def = definition(agent({ attempts: 1, onExhausted: { to: "fim" } }));
+  const e = setup(def);
+  drive(e);
+  answer(e, "BLOCKED", "no access to the ticket");
+  const r = drive(e);
+  assert.equal(r.code, 0, r.out + r.err);
+  assert.match(r.out, /routed to fim/);
+  assert.equal(stateOf(e).stage, "fim");
+});
+
+test("onExhausted is checked when the process loads", () => {
+  const refused = (on: Record<string, unknown>, re: RegExp) => {
+    try { parseProcess("support.json", JSON.stringify(routedDef(on))); assert.fail("loaded"); }
+    catch (err) { assert.ok(err instanceof GovernError); assert.match(err.message, re); }
+  };
+  refused({ to: "nowhere" }, /onExhausted\.to.*nowhere/);
+  refused({ to: "anunciar" }, /onExhausted\.to.*itself/);
+  refused({ to: "excecao", field: "nada" }, /onExhausted\.field.*nada/);
+  refused({ to: "excecao", field: "slackTs", extra: 1 }, /extra/);
+  assert.doesNotThrow(() => parseProcess("support.json", JSON.stringify(routedDef({ to: "excecao" }))));
 });

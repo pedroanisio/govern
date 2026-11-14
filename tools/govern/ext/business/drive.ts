@@ -1,8 +1,11 @@
 // govern drive: runs the stages a process gives to an agent. When such a stage is active, its task goes through the queue
 // to the declared runner or profile (the dispatcher runs it, sealed to the profile); the agent's reply is consumed here:
 // a BLOCKED, unverified or invalid reply is retried with its reason up to the stage's attempts, then left to the
-// operator; a valid one has its body parsed as the stage's typed outputs (case fields, unknown ones refused), applied,
-// and the stage advanced through `govern advance`, so its exit check, gates and dependencies decide as for anyone.
+// operator (or routed to the stage's onExhausted stage); a valid one has its body parsed as the stage's typed outputs (case
+// fields, unknown ones refused), applied, and the stage advanced through `govern advance`, so its exit check, gates and
+// dependencies decide as for anyone. A service stage's command gets an idempotency key that is the same on every attempt
+// of one entry into the stage; its run is recorded as running before it starts, so a driver that dies mid-command leaves
+// a mark the next pass reads as an interrupted attempt; exit 75 is retried after a backoff, exit 65 never (CONNECTORS.md).
 //
 // ARCHITECTURAL REQUIREMENT: LLMs will always produce some form of error.
 // Absence of output verification is a design defect, not a runtime bug.
@@ -15,11 +18,11 @@ import * as queue from "../../lib/queue.ts";
 import { load, save, laneSlugs, ledgerFile, appendLedger, type Project } from "../../lib/project.ts";
 import { processOf } from "../../lib/process.ts";
 import { activeStages, setData, gateApproved } from "../../lib/business.ts";
-import { transaction } from "../../lib/lifecycle.ts";
+import { transaction, resetExecution } from "../../lib/lifecycle.ts";
 import { stateDir } from "../../lib/workspace.ts";
 import { withLaneLock } from "../../lib/lane-lock.ts";
 import { fail, readJsonl } from "../../lib/util.ts";
-import type { AgentDef } from "../../lib/business-schema.ts";
+import type { AgentDef, Exhausted } from "../../lib/business-schema.ts";
 import type { Value } from "../../lib/business-schema.ts";
 
 /** The queue name the driver sends as and reads replies for. */
@@ -28,9 +31,12 @@ export const DRIVER = "govern-drive";
 const FINISHING = new Set(["HANDOFF", "ACK", "REVIEW", "DECISION"]);
 const GOVERN_TS = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "govern.ts");
 
-/** The driver's record of one agent stage of one lane: the task in flight, which entry of the stage it is for (the number
- *  of advances out of the stage before it), which attempt, and whether it is waiting, done or failed. */
-export interface Run { task: string; round: number; attempt: number; state: "sent" | "done" | "failed"; reason?: string }
+/** The driver's record of one agent or service stage of one lane: the task in flight, which entry of the stage it is for
+ *  (the number of times the lane left the stage before it), which attempt, and whether it is waiting, running (a service's
+ *  command started and has not been seen to end), done or failed. A service's transient failures count in `transient`;
+ *  `notBefore` is when its next attempt is due; `routed` is the stage a failed run sent the case to. */
+export interface Run { task: string; round: number; attempt: number; state: "sent" | "running" | "done" | "failed"; reason?: string;
+  notBefore?: string; transient?: number; routed?: string }
 export interface DriveReport { lines: string[]; failed: string[] }
 
 const dir = () => join(stateDir(), "drive");
@@ -58,8 +64,15 @@ export function retryFailed(slug: string, stage: string, round: number): void {
   });
 }
 
-/** How many times the lane has advanced out of `stage`: a new entry into the stage has a higher round than the last task. */
-const roundOf = (slug: string, stage: string): number => readJsonl(ledgerFile(slug)).filter((e) => e.kind === "advance" && e.from === stage).length;
+/** How many times the lane has left `stage`, by an advance or an exception route: a new entry into the stage has a higher
+ *  round than the last task. */
+const roundOf = (slug: string, stage: string): number =>
+  readJsonl(ledgerFile(slug)).filter((e) => (e.kind === "advance" || e.kind === "exception-route") && e.from === stage).length;
+/** A service exit code that says the failure is transient (EX_TEMPFAIL): retried after a backoff. */
+export const EXIT_TRANSIENT = 75;
+/** A service exit code that says the failure is permanent (EX_DATAERR): never retried. */
+export const EXIT_PERMANENT = 65;
+const DEFAULT_BACKOFF_SECONDS = 30;
 
 /** `text` with {lane}, {stage}, {title} and {data.FIELD} filled from the case (a missing field reads "(none)"). */
 export function render(text: string, p: Project, stage: string): string {
@@ -92,10 +105,13 @@ function send(p: Project, stage: string, a: AgentDef, round: number, attempt: nu
   return { task: m.id, round, attempt, state: "sent" };
 }
 
-/** A govern command as its own process (check, advance, run): the same rules, locks and ledger as at a terminal. */
-function governRun(args: string[], env: Record<string, string> = {}): { code: number; out: string } {
+/** A govern command as its own process (check, advance, run): the same rules, locks and ledger as at a terminal. An
+ *  `env` value of undefined removes the variable. */
+function governRun(args: string[], env: Record<string, string | undefined> = {}): { code: number; out: string } {
+  const merged: NodeJS.ProcessEnv = { ...process.env, ...env };
+  for (const [k, v] of Object.entries(env)) if (v === undefined) delete merged[k];
   const r = spawnSync(process.execPath, ["--disable-warning=ExperimentalWarning", GOVERN_TS, ...args],
-    { encoding: "utf8", env: { ...process.env, ...env }, timeout: 35 * 60_000 });
+    { encoding: "utf8", env: merged, timeout: 35 * 60_000 });
   return { code: r.status ?? 1, out: `${r.stdout ?? ""}${r.stderr ?? ""}`.trim() };
 }
 const tail = (text: string) => text.split("\n").slice(-12).join("\n");
@@ -118,9 +134,23 @@ function finish(slug: string, stage: string, data: Record<string, Value>, note: 
   return adv.code === 0 ? { advanced: true } : { fail: `advance refused: ${adv.out}` };
 }
 
+/** Send the case to `ex.to` as an exception route, with `reason` in `ex.field` when named. Returns why it could not. */
+function route(slug: string, stage: string, ex: Exhausted, reason: string): string | undefined {
+  try {
+    transaction(slug, () => {
+      const q = load(slug);
+      if (ex.field) setData(q, { [ex.field]: reason.slice(0, 2000) });
+      resetExecution(q, ex.to, `${stage} gave up: ${reason}`);
+      save(q);
+    });
+    return undefined;
+  } catch (e) { return (e as Error).message; }
+}
+
 /** Bring every active agent and service stage (of every lane, or of `lanes`) one step on. An agent stage: send its task
  *  once its gates are approved, wait for the reply, consume it. A service stage: run its command and read the outputs it
- *  wrote. One line per stage; `failed` names the stages left to the operator. */
+ *  wrote. One line per stage; `failed` names the stages left to the operator (a stage routed to its onExhausted stage is
+ *  not). */
 export function drive(o: { lanes?: string[] } = {}): DriveReport {
   const report: DriveReport = { lines: [], failed: [] };
   mkdirSync(join(dir(), "outputs"), { recursive: true, mode: 0o700 });
@@ -153,9 +183,14 @@ export function drive(o: { lanes?: string[] } = {}): DriveReport {
         const key = `${slug}:${stage}`, round = roundOf(slug, stage), attempts = (a ?? svc)!.attempts ?? 1;
         const line = (s: string) => report.lines.push(`${slug} ${stage}: ${s}`);
         const failed = (run: Run, reason: string) => {
-          runs[key] = { ...run, state: "failed", reason };
+          const { notBefore: _, ...rest } = run;
+          runs[key] = { ...rest, state: "failed", reason };
           appendLedger(slug, { kind: "drive-failed", stage, task: run.task, attempt: run.attempt, reason });
-          line(`failed after ${run.attempt} attempt${run.attempt === 1 ? "" : "s"}: ${reason}`);
+          const after = `failed after ${run.attempt} attempt${run.attempt === 1 ? "" : "s"}: ${reason}`;
+          const ex = (a ?? svc)!.onExhausted;
+          const refused = ex ? route(slug, stage, ex, reason) : "";
+          if (ex && refused === undefined) { runs[key] = { ...runs[key]!, routed: ex.to }; line(`${after}; routed to ${ex.to}`); return; }
+          line(refused ? `${after}; not routed to ${ex!.to}: ${refused}` : after);
           report.failed.push(key);
         };
         let run = runs[key];
@@ -168,13 +203,42 @@ export function drive(o: { lanes?: string[] } = {}): DriveReport {
         if (svc) {
           if (held.length) { waiting(); continue; }
           if (!run || run.round < round) run = runs[key] = { task: `command ${svc.command}`, round, attempt: 1, state: "sent" };
+          let interrupted = false;
+          if (run.state === "running") {
+            // The driver died while the command ran: its effect may or may not have happened. Only the same key may run.
+            appendLedger(slug, { kind: "drive-interrupted", stage, attempt: run.attempt });
+            if (run.attempt >= attempts) { failed(run, `interrupted during attempt ${run.attempt}; its outcome is uncertain`); continue; }
+            line(`interrupted during attempt ${run.attempt}; running it again (attempt ${run.attempt + 1} of ${attempts})`);
+            run = runs[key] = { ...run, attempt: run.attempt + 1, state: "sent" };
+            interrupted = true;
+          }
+          if (run.notBefore && Date.parse(run.notBefore) > Date.now()) { line(`retry ${run.attempt} of ${attempts} is due at ${run.notBefore}`); continue; }
+          const { notBefore: _due, ...ready } = run;
+          run = ready;
           const retryOrFail = (reason: string) => {
             if (run!.attempt < attempts) { runs[key] = { ...run!, attempt: run!.attempt + 1 }; line(`retried (attempt ${run!.attempt + 1} of ${attempts}): ${reason}`); }
             else failed(run!, reason);
           };
           const outFile = join(dir(), "outputs", `${slug.replace(/\//g, "__")}--${stage}.json`);
           rmSync(outFile, { force: true });
-          const r = governRun(["run", slug, svc.command], { GOVERN_OUTPUTS: outFile });
+          // Recorded before the command starts: a crash from here on is read as an interrupted attempt on the next pass.
+          runs[key] = { ...run, state: "running" };
+          writeRuns(runs);
+          runs[key] = run;
+          const r = governRun(["run", slug, svc.command], {
+            GOVERN_OUTPUTS: outFile, GOVERN_STAGE: stage, GOVERN_ROUND: String(round), GOVERN_ATTEMPT: String(run.attempt),
+            GOVERN_IDEMPOTENCY_KEY: `${slug}:${stage}:${round}`, GOVERN_INTERRUPTED: interrupted ? "1" : undefined });
+          if (r.code === EXIT_PERMANENT) { failed(run, `permanent failure: the command exited ${EXIT_PERMANENT}: ${tail(r.out)}`); continue; }
+          if (r.code === EXIT_TRANSIENT) {
+            const why = `the command exited ${EXIT_TRANSIENT}: ${tail(r.out)}`;
+            if (run.attempt >= attempts) { failed(run, `transient failure persisted: ${why}`); continue; }
+            const transient = (run.transient ?? 0) + 1, delay = (svc.backoffSeconds ?? DEFAULT_BACKOFF_SECONDS) * 2 ** (transient - 1);
+            const notBefore = new Date(Date.now() + delay * 1000).toISOString();
+            runs[key] = { ...run, attempt: run.attempt + 1, transient, notBefore };
+            appendLedger(slug, { kind: "drive-retry-scheduled", stage, attempt: run.attempt + 1, at: notBefore });
+            line(`transient failure; retry ${run.attempt + 1} of ${attempts} after ${delay}s (at ${notBefore}): ${why}`);
+            continue;
+          }
           if (r.code !== 0) { retryOrFail(`the command failed: ${tail(r.out)}`); continue; }
           let data: Record<string, Value> = {};
           if ((svc.outputs ?? []).length) {
@@ -190,12 +254,14 @@ export function drive(o: { lanes?: string[] } = {}): DriveReport {
         if (!run || run.round < round) {
           if (held.length) { waiting(); continue; }
           run = runs[key] = send(p, stage, a!, round, 1);
+          writeRuns(runs); // a task sent is recorded at once: a crash later in the pass must not send it again
           line(`sent (${run.task})`);
           continue;
         }
         const retryOrFail = (reason: string) => {
           if (run!.attempt < attempts) {
             runs[key] = send(load(slug), stage, a!, round, run!.attempt + 1, reason);
+            writeRuns(runs);
             line(`retried (attempt ${run!.attempt + 1} of ${attempts}): ${reason}`);
           } else failed(run!, reason);
         };

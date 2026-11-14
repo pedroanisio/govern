@@ -105,15 +105,21 @@ export const HUMAN = obj({}, { assignee: name, role: name });
 /** A stage an agent does (ext/business/drive.ts): its task goes through the queue to `to` (a runner or profile); the
  *  reply's body is the JSON of the stage's `outputs` (case fields). summary, body and project may use {lane}, {stage},
  *  {title} and {data.FIELD}. `project` is the task's project folder (default: the lane's own, {lane}), e.g. "{lane}/repo" so
- *  the model sees only the lane's clone. `attempts` (default 1) bounds the tries before the stage is left to the operator. */
+ *  the model sees only the lane's clone. `attempts` (default 1) bounds the tries before the stage is left to the operator,
+ *  or routed to `onExhausted.to` when declared. */
 export interface AgentDef { to: string; task: string; summary: string; body: string; project?: string; outputs?: string[]; write?: boolean; profile?: string;
-  files?: string[]; check?: string[]; verify?: string[]; timeout?: number; attempts?: number }
+  files?: string[]; check?: string[]; verify?: string[]; timeout?: number; attempts?: number; onExhausted?: Exhausted }
+/** Where govern drive sends a case whose agent or service stage gave up, instead of leaving the lane to the operator: stage
+ *  `to` (an exception route, as onError's), with the failure's reason written to the string field `field` when named. */
+export interface Exhausted { to: string; field?: string }
+export const EXHAUSTED = obj({ to: name }, { field: name });
 export const AGENT = obj({ to: name, task: name, summary: str, body: str },
-  { project: str, outputs: arr(name), write: bool, profile: name, files: arr(str), check: arr(name, { nonEmpty: true }), verify: arr(str, { nonEmpty: true }), timeout: posInt, attempts: posInt });
+  { project: str, outputs: arr(name), write: bool, profile: name, files: arr(str), check: arr(name, { nonEmpty: true }), verify: arr(str, { nonEmpty: true }), timeout: posInt, attempts: posInt, onExhausted: EXHAUSTED });
 /** A stage a command does (ext/business/drive.ts): the lane command `command`, which writes the JSON of the stage's
- *  `outputs` to the file $GOVERN_OUTPUTS names. */
-export interface ServiceDef { command: string; outputs?: string[]; attempts?: number }
-export const SERVICE = obj({ command: name }, { outputs: arr(name), attempts: posInt });
+ *  `outputs` to the file $GOVERN_OUTPUTS names. Its exit code classes the failure (CONNECTORS.md): 75 is transient
+ *  (retried after `backoffSeconds`, default 30, doubled per transient failure), 65 permanent (never retried). */
+export interface ServiceDef { command: string; outputs?: string[]; attempts?: number; backoffSeconds?: number; onExhausted?: Exhausted }
+export const SERVICE = obj({ command: name }, { outputs: arr(name), attempts: posInt, backoffSeconds: posInt, onExhausted: EXHAUSTED });
 /** One approve choice of a gate (ext/slack): its button label and the case fields the choice sets; a string value may
  *  use {data.FIELD}, filled when the choice is offered. `edit` names the string fields of `set` an approver may change
  *  before approving (a Slack form, with `slack.forms`). */
@@ -341,6 +347,14 @@ export function validateBusinessProcess(p: BusinessProcess): void {
       const gate = p.gates.find((g) => g.stage === s.name);
       if (gate && ((s.agent ?? s.service)!.outputs ?? []).length)
         reject(`${at}.${doer}.outputs`, `the ${gate.name} gate holds this stage: writing outputs would clear its approval (put the gate on a decision stage before it)`);
+      const ex = (s.agent ?? s.service)!.onExhausted;
+      if (ex) {
+        if (!stages.has(ex.to)) reject(`${at}.${doer}.onExhausted.to`, `unknown stage ${ex.to}`);
+        if (ex.to === s.name) reject(`${at}.${doer}.onExhausted.to`, "exception route cannot target itself");
+        if (stages.get(ex.to)!.join) reject(`${at}.${doer}.onExhausted.to`, "exception route cannot bypass a join");
+        if (ex.field !== undefined && fields[ex.field]?.type !== "string")
+          reject(`${at}.${doer}.onExhausted.field`, `${ex.field} is not a declared string field`);
+      }
     }
     if (s.agent)
       for (const k of ["summary", "body", "project"] as const)
@@ -423,7 +437,7 @@ export function validateBusinessProcess(p: BusinessProcess): void {
       changed = false;
       for (const id of [...reachable]) {
         const s = stages.get(id)!;
-        for (const to of [...(s.next ?? []).flatMap(routeTargets), s.onError?.to, s.timer?.escalate?.to].filter(
+        for (const to of [...(s.next ?? []).flatMap(routeTargets), s.onError?.to, s.timer?.escalate?.to, (s.agent ?? s.service)?.onExhausted?.to].filter(
           (x): x is string => x !== undefined
         ))
           if (stages.has(to) && !reachable.has(to)) {

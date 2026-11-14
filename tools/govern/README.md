@@ -119,6 +119,7 @@ Documentation:
   with a one-frame 4K diagram built by [scripts/govern_architecture.py](../../scripts/govern_architecture.py).
 - [BUSINESS.md](BUSINESS.md) covers the business-workflow features: routes, parallel stages, case data, human tasks and approval policies.
 - [LIFECYCLE.md](LIFECYCLE.md) covers deadlines, external events, retries and subprocesses.
+- [CONNECTORS.md](CONNECTORS.md) is the contract for service commands that act on outside systems: idempotency key, probe, confirm, compensation, dry run and exit codes.
 - [ITERATION.md](ITERATION.md) covers bounded loops, conditional branches and per-item subprocesses.
 - [CONVERSATIONS.md](CONVERSATIONS.md) covers persistent sessions, adapters, context checkpoints and recovery.
 - [SLACK-TUTORIAL.md](SLACK-TUTORIAL.md) sets up a real Slack app and runs a case's decisions through it;

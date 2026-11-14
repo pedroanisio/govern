@@ -164,12 +164,32 @@ the queue's dispatcher runs the agents' tasks.
   `{title}` and `{data.FIELD}`. The reply must finish the stage (HANDOFF, ACK, REVIEW or DECISION), pass its content checks, and carry
   as body the JSON object of the stage's `outputs`: every key a declared output, every value valid for its field.
 - **Service:** the lane command `command` runs through `govern run`; it writes the JSON of its `outputs` to the file
-  `$GOVERN_OUTPUTS` names, and must exit 0.
+  `$GOVERN_OUTPUTS` names, and must exit 0. It also gets `GOVERN_STAGE`, `GOVERN_ROUND` (how many times the lane left the
+  stage before this entry), `GOVERN_ATTEMPT` and `GOVERN_IDEMPOTENCY_KEY` (`<lane>:<stage>:<round>`, the same on every
+  attempt of one entry), and `GOVERN_INTERRUPTED=1` when it runs again after a driver died during its previous attempt.
+  The run is recorded as running before the command starts, so that death is seen on the next pass; an interrupted
+  last attempt is not run again, its outcome being uncertain. [CONNECTORS.md](CONNECTORS.md) is the contract a command
+  that acts on an outside system keeps.
+- A service's exit code classes its failure: 75 (`EX_TEMPFAIL`) is transient, retried after `backoffSeconds` (default
+  30), doubled at each transient failure; 65 (`EX_DATAERR`) is permanent, never retried; any other non-zero code is
+  retried at once, as before.
 - The outputs are applied as case data, the stage's check runs, and the stage advances. A blocked or unverified reply, a
   refused output, a failed command or a failed check is retried, the reason added to the next task, up to `attempts`
   (default 1). Then the stage is left to the operator: `govern drive` exits 1 and names it, and `govern slack notify`
   posts it.
-- A stage entered again (a loop, a rejection) gets a new task. A stage held by a gate waits until the gate is approved,
+- `onExhausted: { "to": STAGE, "field": FIELD }` on an agent or service sends the case to `STAGE` instead, as an
+  exception route (the lifecycle's `exception-route`: workflow state, human tasks, approvals and votes reset), with the
+  reason in the string field `FIELD` when named. The lane is not left to the operator and `govern drive` does not exit 1
+  for it. Point it at a human stage (an exception queue) or a compensation stage; the destination counts for
+  reachability like `onError.to`.
+
+```json
+{ "name": "cobrar", "service": { "command": "charge", "attempts": 4, "backoffSeconds": 60,
+    "onExhausted": { "to": "excecao", "field": "motivo" } }, "next": [{ "to": ["fim"] }] }
+```
+
+- A stage entered again (a loop, a rejection, an exception route back to it) gets a new task, and a service a new
+  idempotency key. A stage held by a gate waits until the gate is approved,
   and cannot declare outputs, because writing case data would clear that approval: put the gate on a decision stage
   before it.
 - A stage with nothing to do but its gates and routes (no human task, agent, service, event, call, foreach or check) is
