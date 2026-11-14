@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { repo, slackConfig } from "../../lib/workspace.ts";
 import { GovernError } from "../../lib/util.ts";
-import { workingDirectory } from "../../lib/systemd.ts";
+import { unitGovern, workingDirectory } from "../../lib/systemd.ts";
 
 function word(value: string, command = false): string {
   if (/[\r\n\0]/.test(value)) throw new GovernError("cannot write a line break or NUL into a service unit", 1);
@@ -35,7 +35,7 @@ export function installServices(): string {
   const cfg = slackConfig();
   if (!cfg?.channel || !cfg.inbox) throw new GovernError("slack.channel and slack.inbox are required to install Slack services", 1);
   const d = join(process.env.XDG_CONFIG_HOME || join(homedir(), ".config"), "systemd", "user");
-  const units = serviceUnits(fileURLToPath(new URL("../../../../bin/govern", import.meta.url)), repo(), process.env.PATH ?? "");
+  const units = serviceUnits(unitGovern(fileURLToPath(new URL("../../../../bin/govern", import.meta.url))), repo(), process.env.PATH ?? "");
   mkdirSync(d, { recursive: true, mode: 0o700 });
   for (const [name, text] of Object.entries(units)) {
     const f = join(d, name); writeFileSync(f, text, { mode: 0o600 }); chmodSync(f, 0o600);

@@ -7,6 +7,7 @@ import { makeEnv, childEnv, setConfig } from "./helpers.ts";
 import { installServices, serviceUnits } from "../ext/slack/service.ts";
 import { commands } from "../ext/slack/index.ts";
 import { GovernError, parseArgs } from "../lib/util.ts";
+import { unitGovern } from "../lib/systemd.ts";
 
 test("service generation quotes binary and environment without copying secrets", () => {
   const units = serviceUnits('/opt/Program Files/a$bin%/govern', '/work space/%repo', '/opt/bin:/p%q:/a"b');
@@ -19,6 +20,20 @@ test("service generation quotes binary and environment without copying secrets",
   assert.match(units["govern-slack-digest.timer"]!, /Persistent=true/);
   assert.match(units["govern-slack-digest.timer"]!, /WantedBy=timers.target/);
   assert.throws(() => serviceUnits("/bin/govern\nInjected=yes", "/work", "/bin"), /line break/);
+});
+
+test("generated units run GOVERN_BIN when it is an absolute path, else the writing copy's bin/govern", () => {
+  const saved = process.env.GOVERN_BIN;
+  try {
+    delete process.env.GOVERN_BIN;
+    assert.equal(unitGovern("/src/super-tools/bin/govern"), "/src/super-tools/bin/govern");
+    process.env.GOVERN_BIN = "/usr/local/bin/govern";
+    assert.equal(unitGovern("/opt/govern/releases/govern-0.2.0/bin/govern"), "/usr/local/bin/govern");
+    process.env.GOVERN_BIN = "govern";
+    assert.equal(unitGovern("/src/super-tools/bin/govern"), "/src/super-tools/bin/govern");
+  } finally {
+    if (saved === undefined) delete process.env.GOVERN_BIN; else process.env.GOVERN_BIN = saved;
+  }
 });
 
 test("WorkingDirectory is an unquoted absolute path with literal percent specifiers", () => {

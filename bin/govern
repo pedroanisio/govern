@@ -269,7 +269,9 @@
 #     · GROK_HOME (the user's grok home, where the login is read from; default ~/.grok) · GOVERN_CODEX_HOME (govern's private
 #     codex home; default $XDG_STATE_HOME, else ~/.local/state, /govern/codex-home) · CODEX_HOME (the user's codex home, where
 #     the login is read from; default ~/.codex).
-#     Programs: SCENE_RENDER (the scene-render engine bpmn --png runs) · GOVERN_CODEX_BIN (codex) · GOVERN_CLAUDE_BIN (claude) · GOVERN_GROK_BIN (grok) · GOVERN_PYTHON (python3;
+#     Programs: GOVERN_BIN (an absolute path: the govern that task install-service and slack install write into units,
+#     instead of this copy's bin/govern; an installed release sets it to its stable command) ·
+#     SCENE_RENDER (the scene-render engine bpmn --png runs) · GOVERN_CODEX_BIN (codex) · GOVERN_CLAUDE_BIN (claude) · GOVERN_GROK_BIN (grok) · GOVERN_PYTHON (python3;
 #     fills {python}). SCENE_RENDER_BIN (scene-render; the engine the infographic process's pipeline.py render stage runs).
 #     Limits and models: GOVERN_CTX_WARN (150000) · GOVERN_TARGET_CTX (150000, tune) · GOVERN_MAX_INLINE (60000, ask)
 #     · GOVERN_QUEUE_MAX_INLINE (40000) · GOVERN_QUEUE_CLAUDE_MODEL (sonnet) · GOVERN_QUEUE_CODEX_EFFORT (medium)

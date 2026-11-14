@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { recordDelegation, listDelegations } from "./lib/delegation.ts";
 import { installSystemUnit } from "./lib/dispatch-service.ts";
-import { workingDirectory } from "./lib/systemd.ts";
+import { unitGovern, workingDirectory } from "./lib/systemd.ts";
 import * as lifecycle from './lib/lifecycle.ts';
 import { enterRuntime } from './lib/lifecycle-runtime.ts';
 import { withLaneLock } from './lib/lane-lock.ts';
@@ -932,7 +932,7 @@ async function cmdTask(a: Args): Promise<void> {
   if (sub === "install-service") {
     // A user systemd service, so the dispatcher survives sessions and reboots. It runs a model only when a message waits.
     const system = flag(a, "system");
-    const bin = resolve(HERE, "..", "..", "bin", "govern");
+    const bin = unitGovern(resolve(HERE, "..", "..", "bin", "govern"));
     const text = serviceUnit(bin, String(secondsOpt(a, "interval") ?? 30), secondsOpt(a, "reap-every"), system, parallelOpt(a));
     if (system) return out(installSystemUnit(text, flag(a, "write")));
     const unit = join(homedir(), ".config", "systemd", "user", "govern-dispatch.service");
