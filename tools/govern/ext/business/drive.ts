@@ -8,12 +8,15 @@
 // a mark the next pass reads as an interrupted attempt; exit 75 is retried after a backoff, exit 65 never (CONNECTORS.md).
 // When the last attempt ends with its outcome uncertain and the service declares a probe, the probe (a dry run) says
 // whether the effect happened; a definite answer buys more attempts with the same key, an unknown one leaves it to a person.
+// A service that moves money has the amount reserved against the lane's money allowance before its command runs: a case
+// over the ceiling is not run but routed to a person. A process's breaker holds its service stages once too many of their
+// last outcomes failed, until a trial after the cooldown succeeds or a person closes it in their own words.
 //
 // ARCHITECTURAL REQUIREMENT: LLMs will always produce some form of error.
 // Absence of output verification is a design defect, not a runtime bug.
 // All LLM output must be treated as untrusted and validated explicitly.
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import * as queue from "../../lib/queue.ts";
@@ -23,7 +26,9 @@ import { activeStages, setData, gateApproved } from "../../lib/business.ts";
 import { transaction, resetExecution } from "../../lib/lifecycle.ts";
 import { stateDir } from "../../lib/workspace.ts";
 import { withLaneLock } from "../../lib/lane-lock.ts";
-import { fail, readJsonl } from "../../lib/util.ts";
+import { fail, nowIso, readJsonl } from "../../lib/util.ts";
+import * as allowances from "../../lib/allowances.ts";
+import { verifyQuote, type Source } from "../../lib/approval.ts";
 import type { AgentDef, Exhausted } from "../../lib/business-schema.ts";
 import type { Value } from "../../lib/business-schema.ts";
 
@@ -39,7 +44,10 @@ const GOVERN_TS = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "gov
  *  `notBefore` is when its next attempt is due; `routed` is the stage a failed run sent the case to; `recovered` is how
  *  many times a probe answered for an uncertain outcome (each buys the service its attempts again). */
 export interface Run { task: string; round: number; attempt: number; state: "sent" | "running" | "done" | "failed"; reason?: string;
-  notBefore?: string; transient?: number; routed?: string; recovered?: number }
+  notBefore?: string; transient?: number; routed?: string; recovered?: number;
+  /** A money effect's amount: reserved for the attempt that runs, or charged once (it succeeded, or its outcome is
+   *  uncertain); a charged entry is not charged again by the attempts that follow with the same key. */
+  money?: { amount: number; currency: string; state: "reserved" | "charged" } }
 export interface DriveReport { lines: string[]; failed: string[] }
 
 const dir = () => join(stateDir(), "drive");
@@ -53,6 +61,35 @@ function writeRuns(runs: Record<string, Run>): void {
   const tmp = `${file()}.tmp-${process.pid}`;
   writeFileSync(tmp, JSON.stringify(runs, null, 2) + "\n", { mode: 0o600 });
   renameSync(tmp, file());
+}
+
+/** A process's circuit breaker: the last outcomes of its service stages (true: done), and whether it holds them. */
+export interface Breaker { outcomes: boolean[]; state: "closed" | "open" | "half-open"; openedAt?: string; trial?: string; trialAt?: string }
+const breakersFile = () => join(dir(), "breakers.json");
+const breakerLog = (row: Record<string, unknown>) => appendFileSync(join(dir(), "breakers.jsonl"), JSON.stringify({ at: nowIso(), ...row }) + "\n", { mode: 0o600 });
+function readBreakers(): Record<string, Breaker> {
+  if (!existsSync(breakersFile())) return {};
+  try { return JSON.parse(readFileSync(breakersFile(), "utf8")) as Record<string, Breaker>; } catch (e) { return fail(`${breakersFile()} is not valid JSON (${(e as Error).message})`, 1); }
+}
+function writeBreakers(b: Record<string, Breaker>): void {
+  const tmp = `${breakersFile()}.tmp-${process.pid}`;
+  writeFileSync(tmp, JSON.stringify(b, null, 2) + "\n", { mode: 0o600 });
+  renameSync(tmp, breakersFile());
+}
+
+/** `govern drive --close-breaker P --quote Q`: a person closes process P's open (or half-open) breaker in their own words,
+ *  checked as an approval's are. Fails when P has none open. */
+export function closeBreaker(processName: string, quote: string): Source {
+  mkdirSync(dir(), { recursive: true, mode: 0o700 });
+  return withLaneLock(join(dir(), "lock"), () => {
+    const all = readBreakers(), b = all[processName];
+    if (!b || b.state === "closed") return fail(`no open breaker for process ${processName}`, 1);
+    const source = verifyQuote(quote);
+    all[processName] = { outcomes: [], state: "closed" };
+    writeBreakers(all);
+    breakerLog({ kind: "closed", process: processName, quote, source });
+    return source;
+  });
 }
 
 /** Let `govern drive` try a stage it left to the operator again: the failed run of `slug`'s `stage` for entry `round` is
@@ -76,6 +113,7 @@ export const EXIT_TRANSIENT = 75;
 /** A service exit code that says the failure is permanent (EX_DATAERR): never retried. */
 export const EXIT_PERMANENT = 65;
 const DEFAULT_BACKOFF_SECONDS = 30;
+const DEFAULT_COOLDOWN_SECONDS = 300;
 
 /** `text` with {lane}, {stage}, {title} and {data.FIELD} filled from the case (a missing field reads "(none)"). */
 export function render(text: string, p: Project, stage: string): string {
@@ -158,7 +196,7 @@ export function drive(o: { lanes?: string[] } = {}): DriveReport {
   const report: DriveReport = { lines: [], failed: [] };
   mkdirSync(join(dir(), "outputs"), { recursive: true, mode: 0o700 });
   withLaneLock(join(dir(), "lock"), () => {
-    const runs = readRuns();
+    const runs = readRuns(), breakers = readBreakers();
     for (const slug of o.lanes ?? laneSlugs()) {
       let p: Project;
       try { p = load(slug); } catch (e) { report.lines.push(`${slug}: ${(e as Error).message}`); report.failed.push(slug); continue; }
@@ -185,15 +223,36 @@ export function drive(o: { lanes?: string[] } = {}): DriveReport {
         }
         const key = `${slug}:${stage}`, round = roundOf(slug, stage), attempts = (a ?? svc)!.attempts ?? 1;
         const line = (s: string) => report.lines.push(`${slug} ${stage}: ${s}`);
-        const failed = (run: Run, reason: string) => {
+        const pname = processOf(p).name, bk = svc ? processOf(p).breaker : undefined;
+        /** Count a service's final outcome toward its process's breaker; what that did to the breaker, for the line. */
+        const outcome = (ok: boolean): string => {
+          if (!bk) return "";
+          const b = breakers[pname] ?? { outcomes: [], state: "closed" };
+          if (b.state === "half-open" && b.trial === key) {
+            if (ok) { breakers[pname] = { outcomes: [], state: "closed" }; breakerLog({ kind: "closed", process: pname, by: "trial", lane: slug }); return `; the ${pname} breaker closes: its trial succeeded`; }
+            breakers[pname] = { outcomes: b.outcomes, state: "open", openedAt: nowIso() };
+            breakerLog({ kind: "opened", process: pname, by: "trial", lane: slug });
+            return `; the ${pname} breaker opens again: its trial failed`;
+          }
+          if (b.state !== "closed") return "";
+          const outcomes = [...b.outcomes, ok].slice(-bk.window), n = outcomes.filter((x) => !x).length;
+          if (ok || n < bk.failures) { breakers[pname] = { ...b, outcomes }; return ""; }
+          breakers[pname] = { outcomes, state: "open", openedAt: nowIso() };
+          breakerLog({ kind: "opened", process: pname, failures: n, window: outcomes.length, lane: slug });
+          return `; the ${pname} breaker opens: ${n} of the last ${outcomes.length} outcomes failed`;
+        };
+        /** Give up on the stage. `counted`: a failure of the service (a refusal before it ran, such as the money
+         *  ceiling's, is not), so it counts toward the process's breaker. */
+        const failed = (run: Run, reason: string, counted = true) => {
           const { notBefore: _, ...rest } = run;
           runs[key] = { ...rest, state: "failed", reason };
           appendLedger(slug, { kind: "drive-failed", stage, task: run.task, attempt: run.attempt, reason });
           const after = `failed after ${run.attempt} attempt${run.attempt === 1 ? "" : "s"}: ${reason}`;
           const ex = (a ?? svc)!.onExhausted;
           const refused = ex ? route(slug, stage, ex, reason) : "";
-          if (ex && refused === undefined) { runs[key] = { ...runs[key]!, routed: ex.to }; line(`${after}; routed to ${ex.to}`); return; }
-          line(refused ? `${after}; not routed to ${ex!.to}: ${refused}` : after);
+          const tripped = counted ? outcome(false) : "";
+          if (ex && refused === undefined) { runs[key] = { ...runs[key]!, routed: ex.to }; line(`${after}; routed to ${ex.to}${tripped}`); return; }
+          line((refused ? `${after}; not routed to ${ex!.to}: ${refused}` : after) + tripped);
           report.failed.push(key);
         };
         let run = runs[key];
@@ -205,8 +264,20 @@ export function drive(o: { lanes?: string[] } = {}): DriveReport {
         if (run && run.round >= round && run.state === "done") continue;
         if (svc) {
           if (held.length) { waiting(); continue; }
+          const b = bk ? breakers[pname] : undefined;
+          if (bk && b && b.state !== "closed") {
+            const cool = (bk.cooldown ?? DEFAULT_COOLDOWN_SECONDS) * 1000;
+            // A trial whose case never came to an outcome (it left the stage, or waits) gives way to another after the cooldown.
+            const due = b.state === "open" ? Date.now() - Date.parse(b.openedAt ?? "") >= cool : b.trial !== key && Date.now() - Date.parse(b.trialAt ?? "") >= cool;
+            if (due) { breakers[pname] = { ...b, state: "half-open", trial: key, trialAt: nowIso() }; line(`the ${pname} breaker is half-open: this run is its trial`); }
+            else if (!(b.state === "half-open" && b.trial === key)) {
+              line(`held: the ${pname} breaker is open since ${b.openedAt}; to close it: govern drive --close-breaker ${pname} --quote "<your own words>"`);
+              if (!report.failed.includes(`breaker:${pname}`)) report.failed.push(`breaker:${pname}`);
+              continue;
+            }
+          }
           if (!run || run.round < round) run = runs[key] = { task: `command ${svc.command}`, round, attempt: 1, state: "sent" };
-          const idem = `${slug}:${stage}:${round}`, base = join(dir(), "outputs", `${slug.replace(/\//g, "__")}--${stage}`);
+          const idem = `${slug}:${stage}:${round}`, moneyId = `drive:${idem}`, base = join(dir(), "outputs", `${slug.replace(/\//g, "__")}--${stage}`);
           /** The attempts this run may make: the stage's, again for every recovery a probe allowed. */
           const limit = (r: Run) => attempts * (1 + (r.recovered ?? 0));
           /** The last attempt ended and nobody knows whether its effect happened. With a probe left to ask, ask it. */
@@ -233,10 +304,22 @@ export function drive(o: { lanes?: string[] } = {}): DriveReport {
             runs[key] = { ...rest, state: "sent", attempt: r.attempt + 1, recovered: used + 1 };
             line(`${reason}; the probe says the effect ${done ? "happened" : "did not happen"}: attempt ${r.attempt + 1} runs with the same key (recovery ${used + 1} of ${max})`);
           };
+          /** Close the attempt's money reservation: charge it (the effect happened, or may have: charged as reserved), or
+           *  give it back (the command said it did not happen: exit 65 or 75). */
+          const settleMoney = (r: Run, how: "charge" | "uncertain" | "release"): Run => {
+            const m = r.money;
+            if (!m || m.state !== "reserved") return r;
+            if (how === "release") allowances.release(moneyId);
+            else allowances.settle(moneyId, { money: { amount: m.amount, currency: m.currency } }, how === "uncertain" ? "outcome uncertain: charged as reserved" : undefined);
+            appendLedger(slug, { kind: "drive-money", stage, attempt: r.attempt, amount: m.amount, currency: m.currency, charged: how !== "release", ...(how === "uncertain" ? { uncertain: true } : {}) });
+            const { money: _m, ...rest } = r;
+            return how === "release" ? rest : { ...rest, money: { ...m, state: "charged" } };
+          };
           let interrupted = false;
           if (run.state === "running") {
             // The driver died while the command ran: its effect may or may not have happened. Only the same key may run.
             appendLedger(slug, { kind: "drive-interrupted", stage, attempt: run.attempt });
+            run = runs[key] = settleMoney(run, "uncertain");
             if (run.attempt >= limit(run)) { uncertain(run, `interrupted during attempt ${run.attempt}; its outcome is uncertain`); continue; }
             line(`interrupted during attempt ${run.attempt}; running it again (attempt ${run.attempt + 1} of ${limit(run)})`);
             run = runs[key] = { ...run, attempt: run.attempt + 1, state: "sent" };
@@ -251,6 +334,24 @@ export function drive(o: { lanes?: string[] } = {}): DriveReport {
             else if (outcome === "uncertain") uncertain(run!, reason);
             else failed(run!, reason);
           };
+          if (svc.money && run.money?.state !== "charged") {
+            // The amount is reserved before the effect, against the money allowance that covers the lane; none: not run.
+            const { field, currency } = svc.money, amount = p.data?.[field];
+            if (typeof amount !== "number" || !Number.isFinite(amount) || amount < 0) {
+              failed(run, `${field} is not an amount (${amount === undefined ? "none" : JSON.stringify(amount)}): permanent failure`); continue;
+            }
+            let refusal: string | undefined;
+            try {
+              const list = allowances.allowances();
+              if (!allowances.coversMoney(list, slug, currency)) refusal = `no money allowance in ${currency} covers lane ${slug}: an effect that moves money is never run unmetered`;
+              else {
+                const no = allowances.reserve(list, { lane: slug }, { id: moneyId, label: `${slug} ${stage}`, effect: { amount, currency } });
+                if (no) refusal = `over the money ceiling: ${no.text}`;
+              }
+            } catch (e) { refusal = `the money allowances cannot be read: ${(e as Error).message}`; }
+            if (refusal) { failed(run, refusal, false); continue; }
+            run = { ...run, money: { amount, currency, state: "reserved" } };
+          }
           const outFile = `${base}.json`;
           rmSync(outFile, { force: true });
           // Recorded before the command starts: a crash from here on is read as an interrupted attempt on the next pass.
@@ -260,6 +361,7 @@ export function drive(o: { lanes?: string[] } = {}): DriveReport {
           const r = governRun(["run", slug, svc.command], {
             GOVERN_OUTPUTS: outFile, GOVERN_STAGE: stage, GOVERN_ROUND: String(round), GOVERN_ATTEMPT: String(run.attempt),
             GOVERN_IDEMPOTENCY_KEY: idem, GOVERN_INTERRUPTED: interrupted ? "1" : undefined });
+          run = settleMoney(run, r.code === 0 ? "charge" : r.code === EXIT_PERMANENT || r.code === EXIT_TRANSIENT ? "release" : "uncertain");
           if (r.code === EXIT_PERMANENT) { failed(run, `permanent failure: the command exited ${EXIT_PERMANENT}: ${tail(r.out)}`); continue; }
           if (r.code === EXIT_TRANSIENT) {
             const why = `the command exited ${EXIT_TRANSIENT}: ${tail(r.out)}`;
@@ -278,7 +380,7 @@ export function drive(o: { lanes?: string[] } = {}): DriveReport {
             try { data = outputsOf(readFileSync(outFile, "utf8"), svc.outputs!); } catch (e) { retryOrFail((e as Error).message, "uncertain"); continue; }
           }
           const end = finish(slug, stage, data, `command ${svc.command}`, { command: svc.command });
-          if ("advanced" in end) { runs[key] = { ...run, state: "done" }; line("advanced"); }
+          if ("advanced" in end) { runs[key] = { ...run, state: "done" }; line(`advanced${outcome(true)}`); }
           else if ("retry" in end) retryOrFail(end.retry, "known");
           else failed(run, end.fail);
           continue;
@@ -315,6 +417,7 @@ export function drive(o: { lanes?: string[] } = {}): DriveReport {
       }
     }
     writeRuns(runs);
+    if (Object.keys(breakers).length) writeBreakers(breakers);
   });
   return report;
 }

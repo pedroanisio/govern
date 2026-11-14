@@ -94,6 +94,43 @@ the probe with `GOVERN_DRY_RUN=1`, the same `GOVERN_IDEMPOTENCY_KEY`, and `GOVER
 outside system, never from the connector's own record. A connector whose probe cannot see the effect (an API with no
 read by key) must not declare one.
 
+## Money
+
+A stage whose effect moves money declares `"money": {"field": "valor", "currency": "BRL"}`: the amount is the case's
+number field `valor`. Before each attempt, `govern drive` reserves it, as reservation `drive:<idempotency key>`, against
+the money allowance in that currency that covers the lane (`lane:<lane or folder>` in the workspace's allowances). It
+then:
+
+| Situation | What `govern drive` does |
+|---|---|
+| No money allowance in the currency covers the lane | Not run: an effect that moves money is never run unmetered (`onExhausted`, else the operator) |
+| The amount is missing or not a number 0 or more | Not run: a permanent failure |
+| The amount is over what is left of the allowance | Not run: `over the money ceiling`, with what is left and the allowance's decision owner; `govern allow` by that owner raises the limit |
+| Exit 0 | Charged at the amount |
+| Exit 65 or 75 | Released: the command said the effect did not happen |
+| Uncertain (another exit, missing outputs, interrupted) | Charged as reserved; the attempts that follow with the same key are not charged again |
+
+Each charge or release is a `drive-money` ledger entry. A refusal before the command runs is certain, so it is not
+probed and does not count toward the breaker. This is the approval limit: below it the cell acts alone, above it the
+case goes to a person.
+
+## Breaker
+
+A process may declare `"breaker": {"failures": 3, "window": 10, "cooldown": 600}`. Govern drive counts the final
+outcomes of the process's service stages: advanced, or failed (exit 65, attempts used up, an unknown probe). Once
+`failures` of the last `window` outcomes failed, the breaker opens. Every service stage of the process is then held,
+with `held: the <process> breaker is open`, and `govern drive` exits 1.
+
+After `cooldown` seconds (default 300), one case runs as a trial. Success closes the breaker; failure opens it again.
+A person may close it at any time in their own words:
+
+```bash
+govern drive --close-breaker <process> --quote "billing voltou, pode reabrir"
+```
+
+The quote is checked as an approval's is. State is in `<govern state>/drive/breakers.json`; every opening and closing,
+with the quote, is a line of `breakers.jsonl` beside it.
+
 ## In a process
 
 ```json

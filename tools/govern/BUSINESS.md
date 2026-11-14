@@ -178,6 +178,12 @@ the queue's dispatcher runs the agents' tasks.
   happened, or makes the one that did not. A probe that fails or writes no boolean `done` leaves the stage to the operator
   (or `onExhausted`) as before. `recoveries` (default 1) bounds how often a probe may answer for one entry; the ledger
   records each answer as `drive-probe`.
+- `money: {field, currency}` says the effect moves the amount in the case's number field `field`: govern drive reserves
+  it against the lane's money allowance before the command runs, and a case with no allowance covering it, or over the
+  ceiling, is not run but routed (`onExhausted`, else the operator). See [CONNECTORS.md](CONNECTORS.md#money).
+- A process's `breaker: {failures, window, cooldown?}` holds all its service stages once `failures` of their last
+  `window` outcomes failed, until a trial after `cooldown` seconds (default 300) succeeds or a person runs `govern drive
+  --close-breaker <process> --quote Q` ([CONNECTORS.md](CONNECTORS.md#breaker)).
 - A service's exit code classes its failure: 75 (`EX_TEMPFAIL`) is transient, retried after `backoffSeconds` (default
   30), doubled at each transient failure; 65 (`EX_DATAERR`) is permanent, never retried; any other non-zero code is
   retried at once, as before.

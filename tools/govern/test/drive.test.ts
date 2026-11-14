@@ -3,15 +3,16 @@
 // a reply that is blocked, unverified or invalid is retried up to the stage's attempts and then left to the operator.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { userInfo } from "node:os";
-import { makeEnv, govern, write, jsonl, type Env } from "./helpers.ts";
+import { makeEnv, govern, write, jsonl, setConfig, type Env } from "./helpers.ts";
 import * as queue from "../lib/queue.ts";
 import { load, save } from "../lib/project.ts";
 import { processOf, parseProcess } from "../lib/process.ts";
 import { policyVote, rejectRoute, humanAction } from "../lib/business.ts";
 import { GovernError } from "../lib/util.ts";
+import * as al from "../lib/allowances.ts";
 
 const agent = (o: Record<string, unknown> = {}) => ({
   to: "codex", task: "analisar", summary: "Analyze ticket {data.ticketId}",
@@ -558,4 +559,217 @@ test("probe and recoveries are checked when the process loads", () => {
   refused({ recoveries: 0 }, /recoveries/);
   refused({ probe: undefined, recoveries: 2 }, /recoveries.*probe/);
   assert.doesNotThrow(() => parseProcess("support.json", JSON.stringify(probedDef({ recoveries: 3 }))));
+});
+
+// ---------------------------------------------------------------- money ceiling (CONNECTORS.md, "Money")
+/** probedDef whose service moves money: the amount is the case's `valor`, in BRL, reserved before the command runs. */
+const moneyDef = (o: Record<string, unknown> = {}, extra: Record<string, unknown> = {}) => {
+  const d = probedDef({ money: { field: "valor", currency: "BRL" }, ...o });
+  return { ...d, fields: { ...d.fields, valor: { type: "number" } }, ...extra };
+};
+const estornos = (limit = 100) => ({ name: "estornos", consumer: "lane:t1", unit: "money", currency: "BRL", limit, period: "day", owner: "financeiro" });
+function moneySetup(valor: unknown, list: unknown[] = [estornos()], def: unknown = moneyDef()): Env {
+  const e = setup(def);
+  setConfig(e, { allowances: list });
+  if (valor !== undefined) assert.equal(govern(e, ["data", "t1", "--set", JSON.stringify({ valor })]).code, 0);
+  return e;
+}
+const spentOf = (e: Env) => {
+  const f = join(e.root, "PALS-Notes", "govern-state", "allowances", "estornos", "spent.jsonl");
+  return existsSync(f) ? jsonl(f) : [];
+};
+const reservedOf = (e: Env) => {
+  const d = join(e.root, "PALS-Notes", "govern-state", "allowances", "estornos", "reserved");
+  return existsSync(d) ? readdirSync(d).length : 0;
+};
+const ran = (e: Env) => existsSync(join(e.projects, "t1", "env.jsonl"));
+
+test("a money effect is reserved against the lane's money allowance before its command runs, and charged when it succeeds", () => {
+  const e = moneySetup(30);
+  announce(e, `const fs = require('fs');
+    fs.writeFileSync('reserved.txt', String(fs.readdirSync(${JSON.stringify(join(e.root, "PALS-Notes", "govern-state", "allowances", "estornos", "reserved"))}).length));
+    fs.writeFileSync(process.env.GOVERN_OUTPUTS, JSON.stringify({ slackTs: '1793000000.000100' }))`);
+  const r = drive(e);
+  assert.equal(r.code, 0, r.out + r.err);
+  assert.match(r.out, /t1 anunciar: advanced/);
+  assert.equal(readFileSync(join(e.projects, "t1", "reserved.txt"), "utf8"), "1", "the amount was reserved while the command ran");
+  const [row] = spentOf(e);
+  assert.equal(row.reserved, 30);
+  assert.equal(row.actual, 30);
+  assert.equal(row.id, "drive:t1:anunciar:0");
+  assert.equal(reservedOf(e), 0);
+  assert.ok(ledgerOf(e).some((x) => x.kind === "drive-money" && x.amount === 30 && x.currency === "BRL" && x.charged === true));
+});
+
+test("an effect over the money ceiling is not run: the case goes to its exception route, naming who may allow it", () => {
+  const e = moneySetup(150);
+  recorder(e);
+  const r = drive(e);
+  assert.equal(r.code, 0, r.out + r.err);
+  assert.match(r.out, /t1 anunciar: failed after 1 attempt: over the money ceiling: .*asked 150 BRL of allowance "estornos".*Decision owner: financeiro.*routed to excecao/s);
+  assert.equal(ran(e), false, "the command never ran");
+  assert.equal(stateOf(e).stage, "excecao");
+  assert.match(stateOf(e).data.motivo, /over the money ceiling/);
+  assert.equal(spentOf(e).length, 0);
+  assert.equal(existsSync(join(e.projects, "t1", "probe.jsonl")), false, "a refusal is certain: nothing to probe");
+  // Within the ceiling once the owner allows more: the same case, sent back, runs.
+  assert.equal(govern(e, ["allow", "estornos", "--extra", "50", "--by", "financeiro", "--quote", "libera 50 a mais"]).code, 0);
+  assert.equal(govern(e, ["advance", "t1", "--note", "retry"]).code, 0);
+  assert.match(drive(e).out, /t1 anunciar: advanced/);
+  assert.equal(spentOf(e).at(-1).actual, 150);
+});
+
+test("a money effect with no money allowance in its currency covering the lane, or no amount, is never run", () => {
+  for (const list of [[], [{ ...estornos(), currency: "USD" }], [{ ...estornos(), consumer: "lane:outra" }]]) {
+    const e = moneySetup(10, list);
+    recorder(e);
+    const r = drive(e);
+    assert.match(r.out, /no money allowance in BRL covers lane t1: an effect that moves money is never run unmetered.*routed to excecao/s);
+    assert.equal(ran(e), false);
+  }
+  for (const valor of [undefined, -5]) {
+    const e = moneySetup(valor);
+    recorder(e);
+    assert.match(drive(e).out, /valor is not an amount \(.*\): permanent failure.*routed to excecao/s);
+    assert.equal(ran(e), false);
+  }
+});
+
+test("exit 65 and 75 give the reservation back; an uncertain outcome is charged as reserved, once, however many attempts follow", () => {
+  const e = moneySetup(40);
+  recorder(e, 65);
+  drive(e);
+  assert.deepEqual(spentOf(e).map((x) => [x.actual, x.note]), [[0, "released"]]);
+  const t = moneySetup(40, [estornos()], moneyDef({ attempts: 2 }));
+  recorder(t, 75);
+  drive(t);
+  assert.deepEqual(spentOf(t).map((x) => x.actual), [0]);
+  assert.equal(reservedOf(t), 0);
+  const u = moneySetup(40);
+  recorder(u, 1);
+  sonda(u, false);
+  assert.match(drive(u).out, /the probe says the effect did not happen/);
+  assert.deepEqual(spentOf(u).map((x) => [x.actual, x.note]), [[40, "outcome uncertain: charged as reserved"]]);
+  recorder(u);
+  assert.match(drive(u).out, /t1 anunciar: advanced/);
+  assert.deepEqual(spentOf(u).map((x) => x.actual), [40], "the attempt with the same key is not charged again");
+  // A driver that died mid-command left its reservation, held by a process that is gone: the next pass charges it as
+  // reserved, once, and the attempt the probe allows is not charged again.
+  const i = moneySetup(25);
+  inWorkspace(i, () => assert.equal(al.reserve(al.allowances(), { lane: "t1" }, { id: "drive:t1:anunciar:0", label: "t1 anunciar", effect: { amount: 25, currency: "BRL" }, holder: { pid: 2 ** 22 + 4321 } }), undefined));
+  mkdirSync(dirname(driveState(i)), { recursive: true });
+  writeFileSync(driveState(i), JSON.stringify({ "t1:anunciar": { task: "command announce", round: 0, attempt: 1, state: "running", money: { amount: 25, currency: "BRL", state: "reserved" } } }));
+  sonda(i, true);
+  recorder(i);
+  drive(i);
+  assert.match(drive(i).out, /t1 anunciar: advanced/);
+  assert.deepEqual(spentOf(i).map((x) => [x.actual, x.note]), [[25, "outcome uncertain: charged as reserved"]]);
+});
+
+test("money is checked when the process loads", () => {
+  const refused = (o: Record<string, unknown>, re: RegExp) => {
+    try { parseProcess("support.json", JSON.stringify(moneyDef(o))); assert.fail("loaded"); }
+    catch (err) { assert.ok(err instanceof GovernError); assert.match(err.message, re); }
+  };
+  refused({ money: { field: "motivo", currency: "BRL" } }, /motivo is not a declared number field/);
+  refused({ money: { field: "nada", currency: "BRL" } }, /nada is not a declared number field/);
+  refused({ money: { field: "valor" } }, /currency/);
+  assert.doesNotThrow(() => parseProcess("support.json", JSON.stringify(moneyDef())));
+});
+
+// ---------------------------------------------------------------- breaker (CONNECTORS.md, "Breaker")
+/** routedDef (exit 65 is routed to excecao) for lanes t1..tN, with a breaker on the process. */
+function breakerSetup(n: number, breaker: Record<string, unknown> = { failures: 2, window: 3, cooldown: 60 }): Env {
+  const e = setup({ ...routedDef({ to: "excecao", field: "motivo" }), breaker });
+  for (let i = 2; i <= n; i++) {
+    assert.equal(govern(e, ["new", `t${i}`, "--process", "support", "--title", `Ticket ${i}`]).code, 0);
+    assert.equal(govern(e, ["data", `t${i}`, "--set", JSON.stringify({ ticketId: `ZD-${i}` })]).code, 0);
+  }
+  return e;
+}
+/** Lane `slug`'s announce: exits `code`, after recording that it ran; on 0 it writes the outputs. */
+const service = (e: Env, slug: string, code: number) => assert.equal(govern(e, ["cmd", slug, "announce", "--", process.execPath, "-e", `const fs = require('fs');
+  fs.appendFileSync('ran.txt', 'x');
+  if (${code} === 0) fs.writeFileSync(process.env.GOVERN_OUTPUTS, JSON.stringify({ slackTs: '1793000000.000100' }));
+  process.exit(${code})`]).code, 0);
+const runs = (e: Env, slug: string) => (existsSync(join(e.projects, slug, "ran.txt")) ? readFileSync(join(e.projects, slug, "ran.txt"), "utf8").length : 0);
+const breakersFile = (e: Env) => join(e.root, "PALS-Notes", "govern-state", "drive", "breakers.json");
+const editBreaker = (e: Env, f: (b: Record<string, unknown>) => void) => {
+  const all = JSON.parse(readFileSync(breakersFile(e), "utf8"));
+  f(all.support);
+  writeFileSync(breakersFile(e), JSON.stringify(all));
+};
+const stageOf = (e: Env, slug: string) => JSON.parse(readFileSync(join(e.projects, slug, "govern.json"), "utf8")).stage;
+
+test("a breaker opens when the failures in the process's last outcomes reach its limit: the rest is held, not run", () => {
+  const e = breakerSetup(3);
+  service(e, "t1", 65); service(e, "t2", 65); service(e, "t3", 0);
+  const r = drive(e);
+  assert.equal(r.code, 1, "an open breaker is the operator's");
+  assert.match(r.out, /t2 anunciar: failed after 1 attempt: permanent failure.*routed to excecao; the support breaker opens: 2 of the last 2 outcomes failed/s);
+  assert.match(r.out, /t3 anunciar: held: the support breaker is open since .*; to close it: govern drive --close-breaker support --quote/);
+  assert.equal(runs(e, "t3"), 0);
+  assert.equal(stageOf(e, "t3"), "anunciar");
+  assert.equal(drive(e).code, 1);
+  assert.equal(runs(e, "t3"), 0, "still held on the next pass");
+});
+
+test("after the cooldown one case runs as a trial: success closes the breaker, failure opens it again", () => {
+  const e = breakerSetup(4);
+  service(e, "t1", 65); service(e, "t2", 65); service(e, "t3", 0); service(e, "t4", 0);
+  drive(e);
+  editBreaker(e, (b) => { b.openedAt = new Date(Date.now() - 61_000).toISOString(); });
+  const r = drive(e);
+  assert.equal(r.code, 0, r.out + r.err);
+  assert.match(r.out, /t3 anunciar: the support breaker is half-open: this run is its trial/);
+  assert.match(r.out, /t3 anunciar: advanced; the support breaker closes/);
+  assert.equal(stageOf(e, "t4"), "fim", "closed again: the rest runs in the same pass");
+  const f = breakerSetup(4);
+  service(f, "t1", 65); service(f, "t2", 65); service(f, "t3", 65); service(f, "t4", 0);
+  drive(f);
+  editBreaker(f, (b) => { b.openedAt = new Date(Date.now() - 61_000).toISOString(); });
+  const again = drive(f);
+  assert.equal(again.code, 1);
+  assert.match(again.out, /t3 anunciar: failed .*; the support breaker opens again: its trial failed/s);
+  assert.match(again.out, /t4 anunciar: held: the support breaker is open/);
+  assert.equal(runs(f, "t4"), 0);
+});
+
+test("govern drive --close-breaker closes it in the person's own words; refused without them or for a process with none open", () => {
+  const e = breakerSetup(3);
+  service(e, "t1", 65); service(e, "t2", 65); service(e, "t3", 0);
+  drive(e);
+  assert.equal(govern(e, ["drive", "--close-breaker", "support"]).code, 2);
+  const no = govern(e, ["drive", "--close-breaker", "outro", "--quote", "pode fechar"]);
+  assert.equal(no.code, 1);
+  assert.match(no.out + no.err, /no open breaker for process outro/);
+  const ok = govern(e, ["drive", "--close-breaker", "support", "--quote", "billing voltou, pode fechar"]);
+  assert.equal(ok.code, 0, ok.out + ok.err);
+  assert.match(ok.out, /support: breaker closed by .* \(terminal\)/);
+  const log = jsonl(join(e.root, "PALS-Notes", "govern-state", "drive", "breakers.jsonl"));
+  assert.deepEqual(log.map((x) => x.kind), ["opened", "closed"]);
+  assert.equal(log[1].quote, "billing voltou, pode fechar");
+  assert.equal(drive(e).code, 0);
+  assert.equal(stageOf(e, "t3"), "fim");
+});
+
+test("a money refusal is not a failure of the service: it does not count toward the breaker", () => {
+  const e = setup({ ...moneyDef(), breaker: { failures: 1, window: 1 } });
+  setConfig(e, { allowances: [estornos(10)] });
+  assert.equal(govern(e, ["data", "t1", "--set", JSON.stringify({ valor: 50 })]).code, 0);
+  recorder(e);
+  const r = drive(e);
+  assert.match(r.out, /over the money ceiling/);
+  assert.doesNotMatch(r.out, /breaker opens/);
+});
+
+test("a breaker is checked when the process loads", () => {
+  const refused = (breaker: unknown, re: RegExp) => {
+    try { parseProcess("support.json", JSON.stringify({ ...routedDef({ to: "excecao" }), breaker })); assert.fail("loaded"); }
+    catch (err) { assert.ok(err instanceof GovernError); assert.match(err.message, re); }
+  };
+  refused({ failures: 0, window: 3 }, /failures/);
+  refused({ failures: 4, window: 3 }, /failures.*window/);
+  refused({ window: 3 }, /failures/);
+  assert.doesNotThrow(() => parseProcess("support.json", JSON.stringify({ ...routedDef({ to: "excecao" }), breaker: { failures: 3, window: 10 } })));
 });

@@ -58,6 +58,9 @@ export interface Process {
   prompts?: string;
   fields?: Record<string, Field>;
   people?: Record<string, Person>;
+  /** govern drive's circuit breaker for the process's service stages (CONNECTORS.md, Breaker): open once `failures` of the
+   *  last `window` outcomes failed; after `cooldown` seconds (default 300) one case runs as a trial. */
+  breaker?: { failures: number; window: number; cooldown?: number };
   setup?: SetupGroup[];
   recipes?: Record<string, Recipe>;
   /** The folder of the process file (not a key of it): what manual and prompts are relative to. */
@@ -106,7 +109,7 @@ const PUBLISH = obj({ gates: arr(name), commands: arr(name, { nonEmpty: true }) 
 });
 const PROCESS = obj({ version: literal(1), name, stages: arr(STAGE, { nonEmpty: true }) },
   { publish: PUBLISH, revision:posInt, calendars:CALENDARS, description: str, kinds: arr(name, { nonEmpty: true }), exitFrom: literal("workflow"), gates: arr(GATE), manual: str, prompts: str,
-    fields: record(FIELD), people: PEOPLE, setup: arr(obj({}, { ifFile: str, commands: record(arr(str)), files: record(str) })), recipes: RECIPES });
+    fields: record(FIELD), people: PEOPLE, breaker: obj({ failures: posInt, window: posInt }, { cooldown: posInt }), setup: arr(obj({}, { ifFile: str, commands: record(arr(str)), files: record(str) })), recipes: RECIPES });
 
 /** Names unique within a list: the second one is refused at its path. */
 function unique(items: { name: string }[], what: string, at: string): void {
@@ -119,6 +122,7 @@ function unique(items: { name: string }[], what: string, at: string): void {
 function resolveRefs(p: ReturnType<typeof PROCESS>): void {
   const stages = p.stages, gates = p.gates ?? [];
   unique(stages, "stage", "$.stages");
+  if (p.breaker && p.breaker.failures > p.breaker.window) reject("$.breaker.failures", `${p.breaker.failures} failures cannot happen in a window of ${p.breaker.window} outcomes`);
   unique(gates, "gate", "$.gates");
   const names = new Set(stages.map((s) => s.name)), byName = new Map(gates.map((g) => [g.name, g]));
   if (p.publish) {

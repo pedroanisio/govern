@@ -9,7 +9,7 @@ import { scalar, value } from "../../lib/business-schema.ts";
 import { check, record } from "../../lib/shape.ts";
 import { verifyQuote } from "../../lib/approval.ts";
 import { GovernError, fail, usage, parseArgs, opt, flag, many, secondsOpt, nowIso } from "../../lib/util.ts";
-import { drive } from "./drive.ts";
+import { drive, closeBreaker } from "./drive.ts";
 import type { Args } from "../../lib/util.ts";
 import { load, save, appendLedger, laneSlugs, checkSlug } from "../../lib/project.ts";
 import { processOf } from "../../lib/process.ts";
@@ -94,6 +94,14 @@ export const docs: ExtDoc[] = [
 export const manpage = MANPAGE;
 /** `govern drive`: one pass over the agent and service stages, or one every --interval seconds with --loop. */
 async function cmdDrive(a: Args): Promise<void> {
+  const close = opt(a, 'close-breaker');
+  if (close !== undefined) {
+    const quote = opt(a, 'quote');
+    if (!close || !quote || quote.trim().length < 2) usage('govern drive --close-breaker <process> --quote "<your own words>": only a person closes an open breaker');
+    const source = closeBreaker(close, quote!);
+    out(`${close}: breaker closed by ${source.kind === 'terminal' ? source.user : source.kind === 'device' ? source.device : 'the person'} (${source.kind})`);
+    return;
+  }
   const lanes = many(a, 'lane'), interval = Number(opt(a, 'interval') ?? 30);
   if (!Number.isInteger(interval) || interval < 5) usage('--interval must be a whole number of seconds, 5 or more');
   const once = () => { const r = drive(lanes.length ? { lanes } : {}); out(r.lines.join('\n') || '(no agent or service stage is active)'); return r.failed.length === 0; };
@@ -105,7 +113,7 @@ async function cmdDrive(a: Args): Promise<void> {
 }
 
 export const commands: Cmd[] = [
-  {name:'drive',section:1,flags:{multi:['lane'],value:['interval'],bool:['loop']},lines:[["[--lane S]... [--loop --interval 30]","run the stages a process gives to an agent or a command: send the task when the stage is active, apply the\nreply's typed outputs and advance through the stage's check; failures are retried up to the stage's attempts, then\nleft to the operator (exit 1)"]],run:cmdDrive},
+  {name:'drive',section:1,flags:{multi:['lane'],value:['interval','close-breaker','quote'],bool:['loop']},lines:[["[--lane S]... [--loop --interval 30]","run the stages a process gives to an agent or a command: send the task when the stage is active, apply the\nreply's typed outputs and advance through the stage's check; failures are retried up to the stage's attempts, then\nleft to the operator (exit 1)"],["--close-breaker PROCESS --quote \"…\"","close a process's open breaker (its service stages held after too many failures), in your own words"]],run:cmdDrive},
   {name:'event',section:1,flags:{value:['id','correlation','data','generation']},lines:[["<slug> <name> --id ID --correlation JSON [--data JSON] [--generation N]","deliver a deduplicated event to one matching active stage; adapters supply a stable id"]],run:cmdEvent},
   {name:'event-listen',section:1,flags:{value:['port']},lines:[["[--port 5001]","loopback POST /events listener; Bearer token comes from GOVERN_WEBHOOK_TOKEN (minimum 16 characters)"]],run:a=>{
     const token=process.env.GOVERN_WEBHOOK_TOKEN??fail('GOVERN_WEBHOOK_TOKEN is not set; configure it securely before starting the listener');

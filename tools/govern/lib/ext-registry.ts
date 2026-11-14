@@ -50,7 +50,7 @@ export const EXTENSIONS: readonly ExtInfo[] = [
     docs: [{ title: "typed case data, conditional routes, parallel joins, human tasks, quorum approval policies", path: "BUSINESS.md" },
       { title: "timers, business calendars, events, recovery, subprocesses, process revisions", path: "LIFECYCLE.md" }],
     files: ["ext/business/index.ts", "ext/business/event-server.ts", "ext/business/drive.ts"],
-    flags: ["ack", "action", "advance", "as", "by", "correlation", "data", "generation", "id", "interval", "lane", "loop", "port", "quote", "set", "stage", "to"] },
+    flags: ["ack", "action", "advance", "as", "by", "close-breaker", "correlation", "data", "generation", "id", "interval", "lane", "loop", "port", "quote", "set", "stage", "to"] },
   { name: "slack", description: "Slack: decisions people make with buttons in Slack, verified by Slack's signature",
     commands: ["slack"],
     docs: [{ title: "Slack: decisions from Slack buttons, signature checks, people mapping", path: "SLACK.md" }],

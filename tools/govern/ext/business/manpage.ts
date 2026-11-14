@@ -8,7 +8,7 @@ export const MANPAGE = `SYNOPSIS
     govern event SLUG NAME --id ID --correlation JSON [--data JSON] [--generation N]
     govern event-listen [--port 5001]  |  tick [SLUG] [--advance] [--loop --interval S]
     govern alerts SLUG [--ack ID]  |  subprocess SLUG STAGE  |  recover SLUG --action retry|compensated --quote Q
-    govern drive [--lane S]... [--loop --interval 30]
+    govern drive [--lane S]... [--loop --interval 30]  |  drive --close-breaker PROCESS --quote Q
 DESCRIPTION
     The commands for the typed business processes (BUSINESS.md) and their lifecycle (LIFECYCLE.md). data reads or merges typed
     case fields; human lists, claims, delegates or completes human tasks, and human-inbox shows the active tasks of this OS
@@ -20,7 +20,9 @@ DESCRIPTION
     body is the JSON of the stage's typed outputs) or to a command (a service that writes its outputs to $GOVERN_OUTPUTS),
     advances them through their checks, and advances stages that have nothing to do but their gates and routes. A service
     exiting 75 is retried after a backoff, one exiting 65 is not retried; a stage that gives up goes to its onExhausted
-    stage when it declares one, else to the operator (exit 1). Mutations
+    stage when it declares one, else to the operator (exit 1). A service that moves money has the amount reserved against
+    the lane's money allowance before it runs (over the ceiling: not run, routed); a process's breaker holds its service
+    stages once too many outcomes failed, until a trial after the cooldown succeeds or --close-breaker. Mutations
     by a person need that person's own quoted words.
 OPTIONS
     --data JSON             event: payload fields
@@ -29,10 +31,11 @@ OPTIONS
     --generation N          event: activation generation, required when the event contract declares it
     --port N                event-listen: loopback webhook port (default 5001)
     --lane S                drive: only this lane (repeatable)
+    --close-breaker P       drive: close process P's open breaker (its service stages held after too many failures)
     --advance               tick: progress ready event, subprocess and retry stages through normal gates
     --ack ID                alerts: acknowledge an alert without approving a business decision
     --action NAME           recover: retry an investigated failure or confirm compensation with compensated
-    --quote Q               reject, human, recover: the decision owner's own words (in a Claude session, from a message the person typed;
+    --quote Q               reject, human, recover, drive: the decision owner's own words (in a Claude session, from a message the person typed;
                             a Codex or Grok session is refused); human: the person's instruction to claim, delegate or complete
     --by NAME               reject: on a policy gate, the process person this OS account is mapped to
     --set X                 data: a JSON object of case fields merged into the lane (changed data invalidates
