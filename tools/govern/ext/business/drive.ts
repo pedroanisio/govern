@@ -246,10 +246,11 @@ export function drive(o: { lanes?: string[] } = {}): DriveReport {
         const failed = (run: Run, reason: string, counted = true) => {
           const { notBefore: _, ...rest } = run;
           runs[key] = { ...rest, state: "failed", reason };
-          appendLedger(slug, { kind: "drive-failed", stage, task: run.task, attempt: run.attempt, reason });
           const after = `failed after ${run.attempt} attempt${run.attempt === 1 ? "" : "s"}: ${reason}`;
           const ex = (a ?? svc)!.onExhausted;
           const refused = ex ? route(slug, stage, ex, reason) : "";
+          // `routed`: the stage the case went on to; an entry without it is an exception left with no destination.
+          appendLedger(slug, { kind: "drive-failed", stage, task: run.task, attempt: run.attempt, reason, ...(ex && refused === undefined ? { routed: ex.to } : {}) });
           const tripped = counted ? outcome(false) : "";
           if (ex && refused === undefined) { runs[key] = { ...runs[key]!, routed: ex.to }; line(`${after}; routed to ${ex.to}${tripped}`); return; }
           line((refused ? `${after}; not routed to ${ex!.to}: ${refused}` : after) + tripped);

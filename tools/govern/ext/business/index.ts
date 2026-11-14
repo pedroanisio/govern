@@ -16,6 +16,30 @@ import { processOf } from "../../lib/process.ts";
 import { out, jsonValue, core, type Cmd } from "../../lib/cli.ts";
 import type { ExtDoc } from "../../lib/ext-registry.ts";
 import { MANPAGE } from "./manpage.ts";
+import { recordOutcome, metrics, summaryLine } from "../../lib/outcomes.ts";
+
+/** A yes/no flag's value: undefined when absent; a usage error when it is neither. */
+function yesNo(a: Args, k: string): boolean | undefined {
+  const v = opt(a, k);
+  if (v === undefined) return undefined;
+  if (v === 'yes' || v === 'true') return true;
+  if (v === 'no' || v === 'false') return false;
+  return usage(`--${k} must be yes or no`);
+}
+function cmdOutcome(a: Args): void {
+  const correct = yesNo(a, 'correct'), customerImpact = yesNo(a, 'customer-impact'), note = opt(a, 'note');
+  if (correct === undefined && customerImpact === undefined) usage('govern outcome <slug> [--correct yes|no] [--customer-impact yes|no] [--note T]: name at least one');
+  const o = recordOutcome(checkSlug(a._[1]), { ...(correct !== undefined ? { correct } : {}), ...(customerImpact !== undefined ? { customerImpact } : {}), ...(note ? { note } : {}) });
+  out(`${o.slug}: correct ${o.correct ?? '-'}, customer harmed ${o.customerImpact ?? '-'}`);
+}
+function cmdMetrics(a: Args): void {
+  const name = a._[1] ?? usage('govern metrics <process> [--since ISO] [--by revision|arm] [--json]');
+  const by = opt(a, 'by'), since = opt(a, 'since');
+  if (by !== undefined && by !== 'revision' && by !== 'arm') usage('--by must be revision or arm');
+  if (since !== undefined && Number.isNaN(Date.parse(since))) usage('--since must be an ISO date');
+  const rows = metrics(name!, { ...(since ? { since } : {}), ...(by ? { by: by as 'revision' | 'arm' } : {}) });
+  out(flag(a, 'json') ? JSON.stringify({ process: name, ...(since ? { since } : {}), groups: rows }, null, 2) : rows.map(summaryLine).join('\n') || `(no cases of ${name})`);
+}
 
 function cmdData(a:Args):void {
   const p=load(a._[1]), text=opt(a,'set');
@@ -133,6 +157,10 @@ export const commands: Cmd[] = [
     lines: [["<slug> [list | claim|delegate|complete STAGE] [--as PERSON] [--to PERSON] [--quote Q]", "list, claim, delegate or complete stage tasks; person identity is mapped to the current OS account; mutations require verified human words"]], run: cmdHuman },
   { name: "human-inbox", section: 1, flags: { value: ["as"] },
     lines: [["[--as PERSON]", "active tasks assigned to this OS account or claimable through its process roles"]], run: cmdHumanInbox },
+  { name: "outcome", section: 1, flags: { value: ["correct", "customer-impact", "note"] },
+    lines: [["<slug> [--correct yes|no] [--customer-impact yes|no] [--note T]", "record what became of a case after the fact (it was right; its customer was harmed); the latest entry wins over the process's outcome fields"]], run: cmdOutcome },
+  { name: "metrics", section: 1, flags: { value: ["since", "by"], bool: ["json"] },
+    lines: [["<process> [--since ISO] [--by revision|arm] [--json]", "a process's business outcomes per revision or canary arm: correct share, customer harm, exceptions and those with no destination, cases a person touched, time"]], run: cmdMetrics },
   { name: "data", section: 1, flags: { value: ["set"] },
     lines: [["<slug> [--set JSON]", "read or merge typed case fields; changed data invalidates policy votes and active human task completion"]], run: cmdData },
   { name: "reject", section: 1, flags: { value: ["quote", "by"] },

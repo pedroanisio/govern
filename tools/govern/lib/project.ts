@@ -75,6 +75,12 @@ export interface Project {
   frozen?: Frozen;
   importedFrom?: ImportedFrom;
   importedApprovals?: ImportedApproval[];
+  /** The canary this lane was assigned to when it was made, and on which side: the candidate revision or the base. */
+  canary?: { id: string; arm: "candidate" | "base" };
+  /** A replay lane: the replay run it belongs to and the past case it replays (`govern replay`). */
+  replay?: { run: string; of: string };
+  /** The case data the lane was made with (an event's or `govern new`'s): what a replay starts from. */
+  intake?: Record<string, Value>;
 }
 
 /** Lane `slug`'s folder under the lanes folder. */
@@ -126,7 +132,8 @@ const PROJECT = obj(
     commands: record(COMMAND), files: record(str), approvals: record(obj({ at: iso, quote: str }, { by: name, source: SOURCE })),
     notes: arr(obj({ at: iso, stage: name, text: str })) },
   {processSnapshot:SNAPSHOT, runtime:RUNTIME, events:EVENTS, alerts:ALERTS, invocation:INVOCATION, data: record(value), workflow: WORKFLOW, humanTasks: HUMAN_TASKS, votes: VOTES, process: name, parent: str, finished: iso, checks: record(name), after: arr(obj({ lane: name }, { stage: name })), frozen: FROZEN,
-   importedFrom: IMPORTED_FROM, importedApprovals: arr(IMPORTED_APPROVAL) },
+   importedFrom: IMPORTED_FROM, importedApprovals: arr(IMPORTED_APPROVAL),
+   canary: obj({ id: name, arm: literal("candidate", "base") }), replay: obj({ run: name, of: str }), intake: record(value) },
 );
 
 /** Parse the text of lane `slug`'s govern.json (`file`): typed, unknown keys refused, then checked against what the types
@@ -224,7 +231,7 @@ export function create(given: string, o: { kind?: string; process?: string; titl
   if(o.snapshot || o.pin || definition.revision!==undefined)p.processSnapshot=o.snapshot??freezeProcess(definition);
   if(o.invocation)p.invocation=o.invocation;
   initializeBusiness(p);
-  if(o.data)setData(p,o.data);
+  if(o.data){setData(p,o.data); p.intake={...o.data};}
   save(p);
   return p;
 }

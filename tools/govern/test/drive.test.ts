@@ -406,6 +406,7 @@ test("exit 65 is a permanent failure: no retry, whatever attempts remain", () =>
   assert.equal(r.code, 1);
   assert.match(r.out, /t1 anunciar: failed after 1 attempt: permanent failure: the command exited 65/);
   assert.equal(envsOf(e).length, 1);
+  assert.ok(ledgerOf(e).some((x) => x.kind === "drive-failed" && !("routed" in x)), "a failure with no destination has no routed");
 });
 
 /** serviceDef with an exception route: a stage `excecao` takes the case when the service gives up. */
@@ -428,6 +429,7 @@ test("a service that gives up routes the case to its onExhausted stage, with the
   assert.equal(stateOf(e).stage, "excecao");
   assert.match(stateOf(e).data.motivo, /exited 65/);
   assert.ok(ledgerOf(e).some((x) => x.kind === "exception-route" && x.from === "anunciar" && x.to === "excecao"));
+  assert.ok(ledgerOf(e).some((x) => x.kind === "drive-failed" && x.routed === "excecao"), "the failure names where the case went");
   // Sent back, the stage is a new entry: its service runs afresh, with a new idempotency key.
   recorder(e);
   assert.equal(govern(e, ["advance", "t1", "--note", "fixed by hand"]).code, 0);

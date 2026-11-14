@@ -221,6 +221,31 @@ An option's `edit` names string fields of its `set` an approver may change befor
 Edit button opens them prefilled). The other fields are set as the case has them; the ledger's approval lists the fields
 that were changed as `edited`.
 
+## Business outcomes
+
+The ledger says what was spent and who acted; `outcomes` says whether the work was right. A process may name two of its
+boolean fields:
+
+```json
+"fields": { "correto": { "type": "boolean" }, "clienteImpactado": { "type": "boolean" } },
+"outcomes": { "correct": "correto", "customerImpact": "clienteImpactado" }
+```
+
+A stage that reconciles the case (an agent checking the credit against the invoice a week later, a person answering a
+complaint) sets them like any output. When the verdict comes after the case closed, record it on the lane instead; the
+latest entry wins over the fields:
+
+```bash
+govern outcome contestacao-123 --correct no --customer-impact yes --note "credit applied twice"
+```
+
+`govern metrics <process> [--since ISO] [--by revision|arm] [--json]` sums the process's cases (replays excepted) per
+revision, or per canary arm: cases and finished cases; the share judged correct, over the cases judged; cases whose
+customer was harmed; exceptions (stages that gave up, a `drive-failed` entry) and those left with no destination (no
+`routed`); the share of cases a person touched (an approval, rejection, completed human task or recovery); median and
+90th-percentile time to finish; agent tasks sent; and money moved per currency. Model cost per lane stays in
+`govern usage`.
+
 ## Persistence and validation
 
 Lane state stores `data`, `workflow` (active/completed/waiting/cancelled stages), `humanTasks`, and policy `votes` alongside existing fields. Loading validates these fields against the process. CLI state mutations are serialized per lane using a crash-recoverable lock in the workspace runtime-state directory. Taking a lock never creates a lane folder before its state has been validated. A live lock does not expire while an exit check is running; a contending command waits up to 30 seconds, then asks for a retry. Exit checks should not recursively mutate the same lane.
