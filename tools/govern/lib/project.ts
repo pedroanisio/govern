@@ -9,6 +9,8 @@ import { repo, projectsDir, workflowFile, config, configFile, pathEntry } from "
 import { getProcess, processOf, processes, processName, manualOf, freezeProcess, snapshotProcess } from "./process.ts";
 import { RUNTIME, EVENTS, ALERTS, SNAPSHOT, INVOCATION, type StageRuntime, type EventReceipt, type Alert, type Snapshot, type Invocation } from './lifecycle-schema.ts';
 import { validateRuntime } from './lifecycle-runtime.ts';
+import { withMutex } from "./locks.ts";
+import { chainHead, sealedLine } from "./ledgerchain.ts";
 import { obj, arr, record, emptyRecord, str, name, posInt, literal, parseFile, reject, keyPath, type Shape } from "./shape.ts";
 
 /** Lane kinds that need no --process: a video (long, short) or ops work (engine, lab, docs, channel set-up). */
@@ -383,7 +385,8 @@ export function frozenOf(slug: string): Frozen | undefined {
   catch { return undefined; }
 }
 
-/** Append `entry` to the lane's ledger as one JSON line, stamped with the time and slug; creates `govern/` when missing.
+/** Append `entry` to the lane's ledger as one JSON line, stamped with the time and slug and sealed into the ledger's
+ *  hash chain (lib/ledgerchain.ts); creates `govern/` when missing.
  *  Refuses any entry but freeze, unfreeze or export for a frozen lane. */
 export function appendLedger(slug: string, entry: Record<string, unknown>): void {
   if (!FROZEN_LEDGER_KINDS.has(String(entry.kind))) {
@@ -391,7 +394,11 @@ export function appendLedger(slug: string, entry: Record<string, unknown>): void
     if (frozen) fail(frozenMessage(slug, frozen));
   }
   mkdirSync(governDir(slug), { recursive: true });
-  appendFileSync(ledgerFile(slug), JSON.stringify({ t: nowIso(), slug, ...entry }) + "\n");
+  // One writer at a time: each entry is sealed with the hash of the one before it (lib/ledgerchain.ts).
+  withMutex(join(governDir(slug), ".ledger-lock"), () => {
+    const file = ledgerFile(slug);
+    appendFileSync(file, sealedLine(chainHead(file), { t: nowIso(), slug, ...entry }) + "\n");
+  });
 }
 
 /** The "Exit when" cell of the stage's row (numbered by its place in the process) in the workspace's workflow document. */

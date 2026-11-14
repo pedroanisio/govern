@@ -183,9 +183,10 @@ export function ledgerSummary(e: Record<string, unknown>): Pick<LedgerView, "sum
   return { summary: clip(text(summary) || scalar(kind) || "entry", 160), tone };
 }
 
-/** A ledger entry as one line: its kind and time, the rest as compact JSON (quotes and sources kept short). */
+/** A ledger entry as one line: its kind and time, the rest as compact JSON (quotes and sources kept short); its seal
+ *  (h, lib/ledgerchain.ts) is left out. */
 function ledgerView(e: Record<string, unknown>): LedgerView {
-  const { t, kind, slug: _, ...rest } = e;
+  const { t, kind, slug: _, h: _seal, ...rest } = e;
   return { t: String(t), kind: String(kind), text: clip(JSON.stringify(rest), 240), ...ledgerSummary(e) };
 }
 

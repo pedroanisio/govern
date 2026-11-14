@@ -21,6 +21,7 @@
 #     govern slice SLUG RECIPE [--machines N] [--estimate HOURS] [--bg]
 #     govern up RESOURCE [--lane SLUG] [--count N] [--timeout S]  |  down TAG|ID [--forget] [--timeout S]  |  reap [RESOURCE] [--yes] [--timeout S]
 #     govern log SLUG [JOB] [--tail N] [--grep RE]
+#     govern ledger verify [SLUG...] [--against DIR]  |  ledger export --to DIR [SLUG...]
 #     govern prompts [PROCESS]  |  ask SLUG STEP [--file F]... [--var K=V]... [--image PNG]... [--effort E] [--model M]
 #     govern usage [SLUG...] [--since DATE]  |  ctx  |  desk  |  tune  |  publish SLUG
 #     govern artifact add SLUG FILE [--name N] [--title T] [--caption C]  |  artifact list SLUG
@@ -204,7 +205,8 @@
 #                             claims-cited, or one the profile or config.json defines)
 #     --verify                task send: run the command after -- in the project folder once the reply is filed and the checks
 #                             pass; the reply is [checked] only on exit 0
-#     --to X                  task send, task list, task triage, task retry, task forward: send:
+#     --against DIR           ledger verify: also check that each ledger still begins with the copy govern ledger export made in DIR
+#     --to X                  ledger export, task send, task list, task triage, task retry, task forward: ledger export: the append-only folder; send:
 #                             codex, claude, grok, a queue config runner, a profile, auto, owner, a live session or NAME@PEER; list, triage: only messages to X; retry: send to X
 #                             instead of the original recipient; forward: the new recipient
 #     --project P             task send, task list, task triage: the message's project; list, triage: only that project's messages

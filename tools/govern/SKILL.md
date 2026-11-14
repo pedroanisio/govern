@@ -46,7 +46,7 @@ govern task send --to codex --project <slug> --task <name> --kind TASK --summary
 
 - `--to` is a runner (`codex`, `claude`, `grok`), a profile, `auto`, `owner`, a live session name or `NAME@PEER` on another host. Prefer `codex` for checks. `--write` lets the runner change files in the project folder; the default is read-only.
 - Your mail: `govern task inbox`. Answer with `govern task reply <id> --kind ACK|REVIEW|HANDOFF|BLOCKED|… --summary … --body …`; `govern task close <id> --note …` when nothing needs saying. Read replies once, when the owner asks or the work needs them, never in a loop. Do not send as `owner`; the owner has no inbox.
-- Every reply carries one of three marks: `[checked: …]` (a content check passed), `[unverified]` (the check failed or could not run: read the reply yourself before acting on it) and `[shape only]` (no check exists for the kind: it proves the form only).
+- Every reply carries one of three marks: `[checked: …]` (a content check passed), `[unverified]` (the check failed or could not run: read the reply yourself before acting on it) and `[shape only]` (no check for the kind: form only).
 - Ask for checks: `--check commit-refs|claims-cited|file-refs` and `--verify -- <test command>` make govern verify the reply (every HANDOFF's commits are checked anyway); a reply that does not parse gets one repair call before it fails (`[repaired]`).
 - `--timeout S` sets one run's limit; `govern task triage` lists failed tasks with the cause, and `govern task retry <id> --note "<what was fixed>"` resends one (never automatic).
 - No profile runs unchecked: the dispatcher self-tests a profile once per definition before its first run (`govern caps --check`). A message that asks for file changes is refused for a read profile: add `--write`, or `--read-only` to confirm it needs no edits.
@@ -67,7 +67,7 @@ govern task send --to codex --project <slug> --task <name> --kind TASK --summary
 - No heavy work on the machine the owner works on: builds and renders run where the lane's commands say.
 - No long logs or whole files pasted into the chat.
 - No overwriting an approved file. Write the new one beside it with a suffix.
-- Never `kill` a job's pid by hand: `govern kill <slug>`.
+- Never `kill` a job's pid by hand (`govern kill <slug>`) nor edit a ledger (`govern ledger verify`, `govern ledger export`).
 
 ## Keep the context small
 
@@ -84,4 +84,4 @@ govern task send --to codex --project <slug> --task <name> --kind TASK --summary
 - Extensions (peer, center, remote, decide, conversation, business, slack) load only where the workspace enables them: `govern ext list` shows each one's state, `govern ext enable <name>` and `govern ext disable <name>` change it; a disabled one's commands are refused (exit 4) and its documents are not in `govern help --topics`.
 - [BUSINESS.md](BUSINESS.md): typed case data, routes, human tasks, quorum. [LIFECYCLE.md](LIFECYCLE.md): timers, events, recovery, subprocesses. [ITERATION.md](ITERATION.md): loops and branching. [CONVERSATIONS.md](CONVERSATIONS.md): persistent conversations. [REMOTE.md](REMOTE.md): phone and devices. [SLACK.md](SLACK.md): decisions from Slack buttons. [PEERS.md](PEERS.md): other hosts and mesh. [PORTABILITY.md](PORTABILITY.md): freeze, export, import, clone.
 
-- Slack: `govern slack listen` records posts; `govern slack post` journals sends; `govern slack upload` uploads media; `govern slack resolve` settles an uncertain send; `govern slack digest` sends daily summaries; `govern slack triage` lists posts owed a reply or a manual review; `govern slack dismiss` records why a post needs nothing; `govern slack heartbeat` shows whether the agent session's heartbeat is fresh (exit 1 when stale or missing; `notify` posts `blocked:`/`note:` for it); `govern slack install-service` writes user units.
+- Slack: `govern slack listen` records posts; `govern slack post` journals sends; `govern slack upload` uploads media; `govern slack resolve` settles an uncertain send; `govern slack digest` sends daily summaries; `govern slack triage` lists posts owed a reply or a manual review; `govern slack dismiss` records why a post needs nothing; `govern slack heartbeat` shows whether the agent session's heartbeat is fresh (exit 1 if not); `govern slack install-service` writes user units.
