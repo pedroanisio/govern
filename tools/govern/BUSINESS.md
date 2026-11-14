@@ -246,6 +246,52 @@ customer was harmed; exceptions (stages that gave up, a `drive-failed` entry) an
 90th-percentile time to finish; agent tasks sent; and money moved per currency. Model cost per lane stays in
 `govern usage`.
 
+## Canary revisions
+
+A new revision of a process is tried on a share of the new cases before it replaces the current one. Write it as a
+whole process file with a higher `revision` (conventionally `<process>.candidate.json` in the processes folder, which
+is never read as a process of its own) and start a canary:
+
+```bash
+govern canary start contestacao --file PALS-Notes/processes/contestacao.candidate.json --fraction 0.1 --min 20 --tolerance 0.05
+```
+
+While it runs, each new case falls in the candidate arm or the base arm by a hash of the canary and the lane's name (the
+same name, the same arm), and runs that arm's definition, frozen, for its whole life: the candidate, or the revision
+that was current when the canary started. The lane records `canary: {id, arm}` and its ledger a `canary` entry. Cases
+given a definition (children, clones, imports) and replays are not assigned.
+
+`govern canary check contestacao` judges the canary from the two arms' outcomes ([Business outcomes](#business-outcomes)):
+
+- reverted at once (exit 65) when a candidate case harmed its customer, a candidate exception was left with no
+  destination, or the process file was edited under the canary;
+- not yet (exit 75) until `--min` candidate cases finished and, when the process names a `correct` field, were judged;
+- then reverted when the candidate's correct rate is more than `--tolerance` below the base arm's (below 1 − tolerance
+  when the base arm has none judged), or its exception rate more than `--tolerance` above it;
+- promoted (exit 0) otherwise: the candidate's definition is written over the process file, the old file is kept in
+  `govern-state/canary/<process>.r<revision>.json`, and the candidate file is moved there too.
+
+`govern canary status <process> [--json]` shows the arms and the verdict without applying it; `govern canary stop
+<process> --quote Q` reverts the running canary in a person's own words. Starts and ends are logged to
+`govern-state/canary/canary.jsonl`.
+
+A candidate that changes only what an agent is told and how a stage retries is a heuristic change: the description, the
+manual, an agent's `summary`, `body`, `to`, `profile`, `files`, `timeout` and `attempts`, a service's `attempts`,
+`backoffSeconds`, `recoveries` and `poll`. Anything else (fields, routes, gates and their policies, people, what a stage
+outputs, its checks, a service's command or money, the outcomes) is a policy change, and a person starts its canary with
+`--quote`. So do limits beyond `--fraction 0.5`, `--min 10` and `--tolerance 0.1`. An agent can therefore try a better
+prompt on its own, and nothing more. A prompt lives in the process file (`body`), so the candidate carries its own; a
+file the agent is pointed to (`files`) and edited in place changes both arms at once, so give the candidate a new one.
+
+A service stage that runs `govern canary check` should declare `poll` (seconds): its exit 75 then means "not yet" and
+the stage asks again after that long without using an attempt or the breaker. A lane command may pass a case field as
+`{data.FIELD}` (refused when the field is unset or its value starts with `-`):
+
+```json
+"setup": [{ "commands": { "canario": ["govern", "canary", "check", "{data.processo}"] } }],
+"stages": [{ "name": "canario", "service": { "command": "canario", "poll": 3600, "onExhausted": { "to": "revertida" } }, "next": [{ "to": ["promovida"] }] }]
+```
+
 ## Persistence and validation
 
 Lane state stores `data`, `workflow` (active/completed/waiting/cancelled stages), `humanTasks`, and policy `votes` alongside existing fields. Loading validates these fields against the process. CLI state mutations are serialized per lane using a crash-recoverable lock in the workspace runtime-state directory. Taking a lock never creates a lane folder before its state has been validated. A live lock does not expire while an exit check is running; a contending command waits up to 30 seconds, then asks for a retry. Exit checks should not recursively mutate the same lane.

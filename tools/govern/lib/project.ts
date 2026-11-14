@@ -10,6 +10,7 @@ import { getProcess, processOf, processes, processName, manualOf, freezeProcess,
 import { RUNTIME, EVENTS, ALERTS, SNAPSHOT, INVOCATION, type StageRuntime, type EventReceipt, type Alert, type Snapshot, type Invocation } from './lifecycle-schema.ts';
 import { validateRuntime } from './lifecycle-runtime.ts';
 import { withMutex } from "./locks.ts";
+import { assignment } from "./canary.ts";
 import { chainHead, sealedLine } from "./ledgerchain.ts";
 import { obj, arr, record, emptyRecord, str, name, posInt, literal, parseFile, reject, keyPath, type Shape } from "./shape.ts";
 
@@ -197,12 +198,15 @@ export function save(p: Project, o: { allowFrozen?: boolean } = {}): void {
 /** Create and save a new lane's govern.json from a process (or a frozen snapshot of one) or a legacy kind: commands and
  *  files from the process setup, the first stage, initial business state and optional case data. Fails when the lane
  *  exists or the kind does not fit the process; warns on stderr about {paths.NAME} keys the config lacks. */
-export function create(given: string, o: { kind?: string; process?: string; title?: string; lang?: string; parent?: string; pin?:boolean; data?:Record<string,Value>; snapshot?:Snapshot; invocation?:Invocation }): Project {
+export function create(given: string, o: { kind?: string; process?: string; title?: string; lang?: string; parent?: string; pin?:boolean; data?:Record<string,Value>; snapshot?:Snapshot; invocation?:Invocation; replay?:{run:string; of:string} }): Project {
   const slug = checkSlug(given);
   if (existsSync(stateFile(slug))) fail(`${slug}: govern.json already exists`);
   let kind: string, proc: string;
+  // While a canary of the process runs, a new case (not one given its definition, not a replay) takes its arm's.
+  const asg = o.process && !o.snapshot && !o.replay ? assignment(o.process, slug) : undefined;
+  const snapshot = o.snapshot ?? asg?.snapshot;
   if (o.process) {
-    const pr = o.snapshot ? snapshotProcess(o.snapshot) : getProcess(o.process);
+    const pr = snapshot ? snapshotProcess(snapshot) : getProcess(o.process);
     if(pr.name!==o.process)fail("snapshot names a different process");
     proc = pr.name;
     if (pr.kinds) {
@@ -214,7 +218,7 @@ export function create(given: string, o: { kind?: string; process?: string; titl
     kind = o.kind!;
     proc = kind === "ops" ? "ops" : "video";
   }
-  const definition = o.snapshot ? snapshotProcess(o.snapshot) : getProcess(proc);
+  const definition = snapshot ? snapshotProcess(snapshot) : getProcess(proc);
   const dir = projectDir(slug);
   const commands = emptyRecord<string[]>();
   const files = emptyRecord<string>();
@@ -228,11 +232,14 @@ export function create(given: string, o: { kind?: string; process?: string; titl
     version: 1, slug, title: o.title ?? slug, kind, process: proc, lang: o.lang ?? "en", ...(o.parent ? { parent: o.parent } : {}),
     stage: definition.stages[0].name, created: nowIso(), commands, files, approvals: emptyRecord<Approval>(), notes: [],
   };
-  if(o.snapshot || o.pin || definition.revision!==undefined)p.processSnapshot=o.snapshot??freezeProcess(definition);
+  if(snapshot || o.pin || definition.revision!==undefined)p.processSnapshot=snapshot??freezeProcess(definition);
   if(o.invocation)p.invocation=o.invocation;
+  if(asg)p.canary={id:asg.canary.id, arm:asg.arm};
+  if(o.replay)p.replay={...o.replay};
   initializeBusiness(p);
   if(o.data){setData(p,o.data); p.intake={...o.data};}
   save(p);
+  if(asg)appendLedger(slug,{kind:"canary",id:asg.canary.id,arm:asg.arm,revision:asg.snapshot.revision});
   return p;
 }
 

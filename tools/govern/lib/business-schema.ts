@@ -122,12 +122,14 @@ export const AGENT = obj({ to: name, task: name, summary: str, body: str },
  *  the last attempt ends with its outcome uncertain, a definite answer buys the stage `attempts` more tries with the same
  *  idempotency key, up to `recoveries` times (default 1), instead of a person deciding (CONNECTORS.md, Recovery). `money`
  *  says the effect moves the amount in the case's number field `field`, in `currency`: it is reserved against the lane's
- *  money allowance before the command runs, and a case over the ceiling is not run (CONNECTORS.md, Money). */
+ *  money allowance before the command runs, and a case over the ceiling is not run (CONNECTORS.md, Money). `poll` makes
+ *  the command a wait for something outside the case (a canary, a replay): its exit 75 means "not yet", and it runs again
+ *  after `poll` seconds, without using an attempt or counting toward the breaker. */
 export interface ServiceDef { command: string; outputs?: string[]; attempts?: number; backoffSeconds?: number; onExhausted?: Exhausted;
-  probe?: string; recoveries?: number; money?: MoneyEffect }
+  probe?: string; recoveries?: number; money?: MoneyEffect; poll?: number }
 export interface MoneyEffect { field: string; currency: string }
 export const SERVICE = obj({ command: name }, { outputs: arr(name), attempts: posInt, backoffSeconds: posInt, onExhausted: EXHAUSTED,
-  probe: name, recoveries: posInt, money: obj({ field: name, currency: name }) });
+  probe: name, recoveries: posInt, money: obj({ field: name, currency: name }), poll: posInt });
 /** One approve choice of a gate (ext/slack): its button label and the case fields the choice sets; a string value may
  *  use {data.FIELD}, filled when the choice is offered. `edit` names the string fields of `set` an approver may change
  *  before approving (a Slack form, with `slack.forms`). */

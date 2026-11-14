@@ -20,7 +20,7 @@ export interface StageDef { name: string; exit?: string; check?: string; require
 /** `owner`: who decides the gate (default "owner"); `govern approve --by` must name them. */
 export interface GateDef { name: string; stage?: string; needs?: string[]; message?: string; owner?: string; policy?: Policy; options?: GateOption[] }
 /** What a new lane of the process starts with: commands and named files, each group optionally only when a file already
- *  exists in the lane's folder (`ifFile`). A command's argv may use {repo}, {dir}, {python} and {paths.NAME}. */
+ *  exists in the lane's folder (`ifFile`). A command's argv may use {repo}, {dir}, {python}, {paths.NAME} and {data.FIELD}. */
 export interface SetupGroup { ifFile?: string; commands?: Record<string, string[]>; files?: Record<string, string> }
 /** A recipe job (`govern slice`): machines of `resource` started under one tag, a `split` that names the pieces, a
  *  `piece` run once per piece on the machine that claims it, then `join` and `verify`. Every step is an argv list.
@@ -175,7 +175,8 @@ export function parseProcess(file: string, text: string): Process {
 
 function readDir(dir: string | undefined): Process[] {
   if (!dir || !existsSync(dir)) return [];
-  return readdirSync(dir).filter((f) => f.endsWith(".json")).sort().map((f) => parseProcess(join(dir, f), readFileSync(join(dir, f), "utf8")));
+  // A candidate revision waiting for its canary (govern canary start --file) is not a process of its own.
+  return readdirSync(dir).filter((f) => f.endsWith(".json") && !f.endsWith(".candidate.json")).sort().map((f) => parseProcess(join(dir, f), readFileSync(join(dir, f), "utf8")));
 }
 
 /** Every process by name; a workspace process overrides a built-in of the same name. */

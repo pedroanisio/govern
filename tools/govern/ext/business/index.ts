@@ -17,6 +17,16 @@ import { out, jsonValue, core, type Cmd } from "../../lib/cli.ts";
 import type { ExtDoc } from "../../lib/ext-registry.ts";
 import { MANPAGE } from "./manpage.ts";
 import { recordOutcome, metrics, summaryLine } from "../../lib/outcomes.ts";
+import { startCanary, canaryReport, checkCanary, stopCanary, reportText } from "./canary.ts";
+
+/** A number flag: undefined when absent; a usage error when it is not a number. */
+function numberOpt(a: Args, k: string): number | undefined {
+  const v = opt(a, k);
+  if (v === undefined) return undefined;
+  const n = Number(v);
+  return Number.isFinite(n) && v.trim() !== '' ? n : usage(`--${k} must be a number`);
+}
+const processArg = (a: Args, sub: string) => a._[2] ?? usage(`govern canary ${sub} <process>`);
 
 /** A yes/no flag's value: undefined when absent; a usage error when it is neither. */
 function yesNo(a: Args, k: string): boolean | undefined {
@@ -161,6 +171,29 @@ export const commands: Cmd[] = [
     lines: [["<slug> [--correct yes|no] [--customer-impact yes|no] [--note T]", "record what became of a case after the fact (it was right; its customer was harmed); the latest entry wins over the process's outcome fields"]], run: cmdOutcome },
   { name: "metrics", section: 1, flags: { value: ["since", "by"], bool: ["json"] },
     lines: [["<process> [--since ISO] [--by revision|arm] [--json]", "a process's business outcomes per revision or canary arm: correct share, customer harm, exceptions and those with no destination, cases a person touched, time"]], run: cmdMetrics },
+  { name: "canary", section: 1, noSub: "govern canary start|status|check|stop",
+    subs: {
+      start: { flags: { value: ["file", "fraction", "min", "tolerance", "quote"] },
+        lines: [["<process> --file F [--fraction 0.1] [--min 20] [--tolerance 0.05] [--quote Q]", "give revision F of the process a share of the new cases, judged against the current revision's cases meanwhile;\na change beyond what an agent is told and how stages retry (policy), or limits beyond --fraction 0.5, --min 10, --tolerance 0.1, needs --quote"]],
+        run: (a) => {
+          const name = processArg(a, 'start'), file = opt(a, 'file') ?? usage('govern canary start <process> --file F: the candidate revision');
+          const fraction = numberOpt(a, 'fraction'), min = numberOpt(a, 'min'), tolerance = numberOpt(a, 'tolerance'), quote = opt(a, 'quote');
+          const c = startCanary(name, file, { ...(fraction !== undefined ? { fraction } : {}), ...(min !== undefined ? { min } : {}), ...(tolerance !== undefined ? { tolerance } : {}), ...(quote ? { quote } : {}) });
+          out(`${name}: canary ${c.id} started: revision ${c.base.revision} → ${c.candidate.revision} (${c.kind} change) on ${Math.round(c.fraction * 100)}% of new cases; judged after ${c.min} finished`);
+        } },
+      status: { flags: { bool: ["json"] },
+        lines: [["<process> [--json]", "the canary's two arms and its verdict: promote, revert or continue"]],
+        run: (a) => { const r = canaryReport(processArg(a, 'status')); out(flag(a, 'json') ? JSON.stringify(r, (k, v) => (k === 'definition' ? undefined : v), 2) : reportText(r)); } },
+      check: { lines: [["<process>", "apply the verdict: promote (the candidate becomes the process file; exit 0), revert (exit 65) or not yet (exit 75), for a polling service stage"]],
+        run: (a) => { const r = checkCanary(processArg(a, 'check')); out(r.text); if (r.code) process.exitCode = r.code; } },
+      stop: { flags: { value: ["quote"] },
+        lines: [["<process> --quote Q", "revert the running canary: new cases go back to the current revision"]],
+        run: (a) => {
+          const name = processArg(a, 'stop'), quote = opt(a, 'quote') ?? usage('govern canary stop <process> --quote Q');
+          const c = stopCanary(name, quote);
+          out(`${name}: canary ${c.id} stopped; revision ${c.candidate.revision} reverted`);
+        } },
+    } },
   { name: "data", section: 1, flags: { value: ["set"] },
     lines: [["<slug> [--set JSON]", "read or merge typed case fields; changed data invalidates policy votes and active human task completion"]], run: cmdData },
   { name: "reject", section: 1, flags: { value: ["quote", "by"] },

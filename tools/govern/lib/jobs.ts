@@ -47,10 +47,18 @@ const POLL_MS = 100;
 const jobsDir = (slug: string) => resolve(governDir(slug), "jobs");
 const jobDir = (slug: string, id: string) => join(jobsDir(slug), id);
 
-/** A job's argv with {repo}, {dir} (the lane's folder), {paths.NAME} and {python} (GOVERN_PYTHON, default python3) filled in. */
+/** A job's argv with {repo}, {dir} (the lane's folder), {paths.NAME}, {python} (GOVERN_PYTHON, default python3) and
+ *  {data.FIELD} (the case's field, as text) filled in. A field that is not set fails; so does a value that starts with
+ *  "-", which the command would read as a flag. */
 export function expand(p: Project, argv: string[]): string[] {
   const python = process.env.GOVERN_PYTHON ?? "python3";
-  return argv.map((a) => expandPlaceholders(a, projectDir(p.slug)).replaceAll("{python}", python));
+  return argv.map((a) => expandPlaceholders(a, projectDir(p.slug)).replaceAll("{python}", python).replace(/\{data\.([A-Za-z0-9_-]+)\}/g, (_, f: string) => {
+    const v = p.data?.[f];
+    if (v === undefined || v === null || typeof v === "object") return fail(`${p.slug}: {data.${f}}: the case has no ${f}${v === undefined || v === null ? "" : " that is text, a number or a yes/no"}`);
+    const text = String(v);
+    if (text.startsWith("-")) return fail(`${p.slug}: {data.${f}} is ${JSON.stringify(text.slice(0, 40))}, which starts with "-": refused, a command would read it as a flag`);
+    return text;
+  }));
 }
 
 /** A new job id, its directory created here: mkdir is atomic, so neither a run of the same command in the same second nor a

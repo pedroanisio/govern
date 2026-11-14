@@ -364,6 +364,13 @@ export function drive(o: { lanes?: string[] } = {}): DriveReport {
             GOVERN_IDEMPOTENCY_KEY: idem, GOVERN_INTERRUPTED: interrupted ? "1" : undefined });
           run = settleMoney(run, r.code === 0 ? "charge" : r.code === EXIT_PERMANENT || r.code === EXIT_TRANSIENT ? "release" : "uncertain");
           if (r.code === EXIT_PERMANENT) { failed(run, `permanent failure: the command exited ${EXIT_PERMANENT}: ${tail(r.out)}`); continue; }
+          if (r.code === EXIT_TRANSIENT && svc.poll) {
+            // A wait for something outside the case: not yet. Asked again later, with the same attempt.
+            const notBefore = new Date(Date.now() + svc.poll * 1000).toISOString();
+            runs[key] = { ...run, notBefore };
+            line(`not yet; asked again after ${svc.poll}s (at ${notBefore}): ${tail(r.out).trim().split("\n").at(-1) ?? ""}`);
+            continue;
+          }
           if (r.code === EXIT_TRANSIENT) {
             const why = `the command exited ${EXIT_TRANSIENT}: ${tail(r.out)}`;
             if (run.attempt >= limit(run)) { uncertain(run, `transient failure persisted: ${why}`); continue; }

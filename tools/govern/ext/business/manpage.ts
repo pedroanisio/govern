@@ -11,6 +11,8 @@ export const MANPAGE = `SYNOPSIS
     govern drive [--lane S]... [--loop --interval 30]  |  drive --close-breaker PROCESS --quote Q
     govern outcome SLUG [--correct yes|no] [--customer-impact yes|no] [--note T]
     govern metrics PROCESS [--since ISO] [--by revision|arm] [--json]
+    govern canary start PROCESS --file F [--fraction 0.1] [--min 20] [--tolerance 0.05] [--quote Q]
+    govern canary status|check PROCESS  |  canary stop PROCESS --quote Q
 DESCRIPTION
     The commands for the typed business processes (BUSINESS.md) and their lifecycle (LIFECYCLE.md). data reads or merges typed
     case fields; human lists, claims, delegates or completes human tasks, and human-inbox shows the active tasks of this OS
@@ -28,7 +30,10 @@ DESCRIPTION
     by a person need that person's own quoted words. outcome records what became of a case after the fact (it was right; its
     customer was harmed), which wins over the process's declared outcome fields; metrics sums a process's cases per revision
     (or canary arm): the share judged correct, customer harm, exceptions and those left with no destination, cases a person
-    touched, and time to finish.
+    touched, and time to finish. canary start gives a new revision of a process a share of the new cases (by a hash of the
+    lane's name); canary check judges it against the current revision's cases meanwhile and promotes it (the candidate
+    becomes the process file, exit 0), reverts it (exit 65) or waits (exit 75). A canary that changes more than what an
+    agent is told and how stages retry is a policy change, started by a person with --quote.
 OPTIONS
     --data JSON             event: payload fields
     --id ID                 event: stable delivery id used for deduplication
@@ -40,7 +45,7 @@ OPTIONS
     --advance               tick: progress ready event, subprocess and retry stages through normal gates
     --ack ID                alerts: acknowledge an alert without approving a business decision
     --action NAME           recover: retry an investigated failure or confirm compensation with compensated
-    --quote Q               reject, human, recover, drive: the decision owner's own words (in a Claude session, from a message the person typed;
+    --quote Q               reject, human, recover, drive, canary start, canary stop: the decision owner's own words (in a Claude session, from a message the person typed;
                             a Codex or Grok session is refused); human: the person's instruction to claim, delegate or complete
     --by X                  reject, metrics: on a policy gate, the process person this OS account is mapped to; metrics:
                             group per process revision (default) or per canary arm
@@ -55,7 +60,11 @@ OPTIONS
     --customer-impact yes|no  outcome: the case harmed its customer
     --note T                outcome: why, in a few words
     --since ISO             metrics: only cases created at or after this time
-    --json                  metrics: the groups as JSON
+    --json                  metrics, canary status: as JSON
+    --file F                canary start: the candidate process file (a higher revision)
+    --fraction X            canary start: the share of new cases the candidate gets (default 0.1)
+    --min N                 canary start: candidate cases finished (and judged) before a verdict (default 20)
+    --tolerance X           canary start: how far the candidate's rates may fall behind the base's (default 0.05)
 ENVIRONMENT
     Webhooks: GOVERN_WEBHOOK_TOKEN (event-listen bearer token; at least 16 characters, configured securely).
 `;
