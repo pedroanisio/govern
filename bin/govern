@@ -285,7 +285,8 @@
 #     list commands) · GOVERN_PIECES, GOVERN_OUT, GOVERN_TAG, GOVERN_PIECE, GOVERN_ID (a slice recipe's steps)
 #     · GOVERN_OUTPUTS (a service stage's command under govern drive: the file it writes its outputs to), GOVERN_STAGE,
 #     GOVERN_ROUND, GOVERN_ATTEMPT, GOVERN_IDEMPOTENCY_KEY and GOVERN_INTERRUPTED (the same command: which entry and
-#     attempt it is, the key its outside effect is deduplicated by, and 1 after an interrupted attempt)
+#     attempt it is, the key its outside effect is deduplicated by, and 1 after an interrupted attempt) · GOVERN_DRY_RUN=1
+#     and GOVERN_PROBE (a service's probe under govern drive: check only, and the file it writes {"done": true|false} to)
 #     · GOVERN_REPLY_FILE (a reply check) · GOVERN_TASK_FILES (a reply check: the task's attached files, a JSON array of paths). task install-service writes PATH, GOVERN_REPO and GOVERN_QUEUE into
 #     the unit, and GOVERN_STATE and GOVERN_PROJECTS when they are set; a queued run drops CLAUDECODE and the other
 #     CLAUDE_CODE_ variables. A sealed grok run (a queued one, or a conversation worker on grok) gets HOME (a private

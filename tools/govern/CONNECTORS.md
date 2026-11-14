@@ -21,7 +21,8 @@ is [examples/connector/tickets.ts](examples/connector/tickets.ts), and its tests
 
 `govern drive` records the run as running before it starts the command. If the next pass finds that mark, the attempt
 was interrupted. While attempts remain, drive runs the command again with the same key. On the last attempt it does
-not: the outcome is uncertain, so the stage goes to its `onExhausted` stage or to the operator.
+not: the outcome is uncertain, so the stage goes to its `onExhausted` stage or to the operator, unless the stage
+declares a `probe` ([Recovery](#recovery)).
 
 ## What the command does
 
@@ -64,13 +65,40 @@ GOVERN_DRY_RUN=1 govern run <lane> <command>
 ```
 
 Under `govern drive`, a dry run leaves a stage with declared outputs failing ("wrote no outputs"), so the stage does
-not advance on an effect that never happened.
+not advance on an effect that never happened. With `GOVERN_PROBE` set, the dry run also writes its answer to that file:
+that is how drive asks a connector whether an effect happened.
+
+## Recovery
+
+When a service's last attempt ends and nobody knows whether its effect happened, a person used to decide. A stage that
+declares `"probe": "<lane command>"`, usually the connector's own command, lets the probe decide instead. The outcome
+is uncertain when the attempt:
+
+- was interrupted (the driver died while it ran);
+- failed transiently (exit 75) on the last attempt;
+- exited with another non-zero code;
+- wrote no outputs, or invalid ones.
+
+It is not uncertain on exit 65, or when the command succeeded and the stage's check failed after it. Drive then runs
+the probe with `GOVERN_DRY_RUN=1`, the same `GOVERN_IDEMPOTENCY_KEY`, and `GOVERN_PROBE`, a file to write
+`{"done": true|false}` to. The probe gets no `GOVERN_OUTPUTS`.
+
+| Probe answer | What `govern drive` does |
+|---|---|
+| `done: false` | The effect did not happen: the stage gets its `attempts` again, with the same key, and makes it |
+| `done: true` | The effect happened: the stage gets its `attempts` again, with the same key; the connector finds the effect, confirms it and writes the outputs |
+| anything else (a failing probe, no file, no boolean `done`) | Unknown: `onExhausted`, else the operator, as without a probe |
+
+`recoveries` (default 1) bounds how many times a probe may answer for one entry into the stage. Every answer is a
+`drive-probe` ledger entry: `done` and the recovery's number, or `unknown` and why. The probe proves the state from the
+outside system, never from the connector's own record. A connector whose probe cannot see the effect (an API with no
+read by key) must not declare one.
 
 ## In a process
 
 ```json
 { "name": "abrir", "service": { "command": "open", "outputs": ["ticketId"], "attempts": 4, "backoffSeconds": 60,
-    "onExhausted": { "to": "excecao", "field": "motivo" } }, "next": [{ "to": ["fim"] }] }
+    "probe": "open", "onExhausted": { "to": "excecao", "field": "motivo" } }, "next": [{ "to": ["fim"] }] }
 { "name": "excecao", "human": { "role": "suporte" }, "next": [{ "to": ["abrir"] }] }
 ```
 
@@ -91,7 +119,7 @@ and, optionally, `compensate`. `http()` classes HTTP failures by the table above
 
 - a lost answer followed by a retry makes one effect;
 - 503 exits 75, 422 exits 65, a missing key exits 65;
-- a dry run makes no write;
+- a dry run makes no write, and with `GOVERN_PROBE` writes its answer there;
 - compensating twice undoes once.
 
 ## Shadow mode

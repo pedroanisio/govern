@@ -4,7 +4,8 @@
 //   execute mode   probe for the effect the idempotency key names; if absent, execute it (passing the key along);
 //                  confirm it by reading it back; write the outputs to $GOVERN_OUTPUTS.
 //   compensate     probe for the effect of `--key K` (default: $GOVERN_IDEMPOTENCY_KEY); undo it if present.
-//   dry run        GOVERN_DRY_RUN=1: probe only, and print what execute would send; no effect, no outputs.
+//   dry run        GOVERN_DRY_RUN=1: probe only, and print what execute would send; no effect, no outputs. With
+//                  GOVERN_PROBE set, also write that answer there: govern drive asks it when an outcome is uncertain.
 //
 // Exit codes: 0 done; 75 (EX_TEMPFAIL) transient, govern drive retries after a backoff; 65 (EX_DATAERR) permanent,
 // never retried (also a usage or configuration error: running it again would fail the same way); 70 (EX_SOFTWARE) a bug
@@ -104,7 +105,10 @@ export async function main<E>(c: Connector<E>, verb: string, argv: string[]): Pr
       return EXIT.ok;
     }
     if (ctx.dryRun) {
-      process.stdout.write(JSON.stringify({ connector: c.name, key, done: found !== undefined, plan: c.plan(ctx) }) + "\n");
+      const answer = JSON.stringify({ connector: c.name, key, done: found !== undefined, plan: c.plan(ctx) });
+      // Run as a stage's probe, govern drive reads the answer from this file (CONNECTORS.md, Recovery).
+      if (process.env.GOVERN_PROBE) writeFileSync(process.env.GOVERN_PROBE, answer);
+      process.stdout.write(answer + "\n");
       return EXIT.ok;
     }
     const effect = found ?? await c.execute(ctx);

@@ -3,8 +3,8 @@
 // a reply that is blocked, unverified or invalid is retried up to the stage's attempts and then left to the operator.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { userInfo } from "node:os";
 import { makeEnv, govern, write, jsonl, type Env } from "./helpers.ts";
 import * as queue from "../lib/queue.ts";
@@ -457,4 +457,105 @@ test("onExhausted is checked when the process loads", () => {
   refused({ to: "excecao", field: "nada" }, /onExhausted\.field.*nada/);
   refused({ to: "excecao", field: "slackTs", extra: 1 }, /extra/);
   assert.doesNotThrow(() => parseProcess("support.json", JSON.stringify(routedDef({ to: "excecao" }))));
+});
+
+// ---------------------------------------------------------------- recovery by probe (CONNECTORS.md, "Recovery")
+/** serviceDef whose service declares a probe: the lane command `sonda`, which writes {"done": …} to $GOVERN_PROBE. */
+const probedDef = (o: Record<string, unknown> = {}) => ({
+  ...routedDef({ to: "excecao", field: "motivo" }),
+  stages: [
+    { name: "anunciar", service: { command: "announce", outputs: ["slackTs"], attempts: 1, probe: "sonda", onExhausted: { to: "excecao", field: "motivo" }, ...o }, next: [{ to: ["fim"] }] },
+    { name: "excecao", next: [{ to: ["anunciar"] }] },
+    { name: "fim", next: [] },
+  ],
+});
+/** The probe: records what it was given in probe.jsonl; answers `done` (true, false) or, for "fail", exits 75. */
+const sonda = (e: Env, done: boolean | "fail" | "garbage") => assert.equal(govern(e, ["cmd", "t1", "sonda", "--", process.execPath, "-e", `const fs = require('fs');
+  const seen = fs.existsSync('probe.jsonl') ? fs.readFileSync('probe.jsonl', 'utf8') : '';
+  const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => /^GOVERN_(DRY_RUN|IDEMPOTENCY_KEY|STAGE|ROUND|OUTPUTS|PROBE)$/.test(k)));
+  fs.writeFileSync('probe.jsonl', seen + JSON.stringify(env) + '\\n');
+  const done = ${JSON.stringify(done)};
+  if (done === 'fail') { console.error('billing API unreachable'); process.exit(75); }
+  fs.writeFileSync(process.env.GOVERN_PROBE, done === 'garbage' ? 'not json' : JSON.stringify({ connector: 'x', key: process.env.GOVERN_IDEMPOTENCY_KEY, done }));`]).code, 0);
+const probesOf = (e: Env) => readFileSync(join(e.projects, "t1", "probe.jsonl"), "utf8").trim().split("\n").map((l) => JSON.parse(l));
+
+test("an uncertain outcome is probed: the effect not done, the same key runs again, with no person", () => {
+  const e = setup(probedDef());
+  sonda(e, false);
+  // The driver died mid-command on the stage's last attempt: its run is still marked running.
+  mkdirSync(dirname(driveState(e)), { recursive: true });
+  writeFileSync(driveState(e), JSON.stringify({ "t1:anunciar": { task: "command announce", round: 0, attempt: 1, state: "running" } }));
+  const r = drive(e);
+  assert.equal(r.code, 0, r.out + r.err);
+  assert.match(r.out, /t1 anunciar: interrupted during attempt 1; its outcome is uncertain; the probe says the effect did not happen: attempt 2 runs with the same key \(recovery 1 of 1\)/);
+  const [p] = probesOf(e);
+  assert.equal(p.GOVERN_DRY_RUN, "1");
+  assert.equal(p.GOVERN_IDEMPOTENCY_KEY, "t1:anunciar:0");
+  assert.equal(p.GOVERN_OUTPUTS, undefined, "a probe writes no outputs");
+  assert.ok(p.GOVERN_PROBE);
+  assert.ok(ledgerOf(e).some((x) => x.kind === "drive-probe" && x.stage === "anunciar" && x.done === false && x.recovery === 1));
+  assert.equal(stateOf(e).stage, "anunciar", "not routed to a person");
+  recorder(e);
+  const again = drive(e);
+  assert.equal(again.code, 0, again.out + again.err);
+  assert.equal(stateOf(e).stage, "fim");
+  assert.equal(envsOf(e).at(-1).GOVERN_IDEMPOTENCY_KEY, "t1:anunciar:0");
+  assert.equal(envsOf(e).at(-1).GOVERN_ATTEMPT, "2");
+});
+
+test("the probe finding the effect done also runs the same key again: the command confirms it and writes the outputs", () => {
+  const e = setup(probedDef());
+  recorder(e, 75); // transient on the last attempt: persisted
+  sonda(e, true);
+  const r = drive(e);
+  assert.equal(r.code, 0, r.out + r.err);
+  assert.match(r.out, /transient failure persisted.*; the probe says the effect happened: attempt 2 runs with the same key/s);
+  recorder(e);
+  drive(e);
+  assert.equal(stateOf(e).stage, "fim");
+});
+
+test("a probe that cannot tell leaves the case to a person, as before; so does a second uncertain outcome past recoveries", () => {
+  for (const answer of ["fail", "garbage"] as const) {
+    const e = setup(probedDef());
+    recorder(e, 1);
+    sonda(e, answer);
+    const r = drive(e);
+    assert.equal(r.code, 0, r.out + r.err);
+    assert.match(r.out, /the command failed.*; the probe could not tell whether the effect happened.*; routed to excecao/s);
+    assert.equal(stateOf(e).stage, "excecao");
+    assert.match(stateOf(e).data.motivo, /probe could not tell/);
+  }
+  const e = setup(probedDef());
+  recorder(e, 1);
+  sonda(e, false);
+  assert.match(drive(e).out, /recovery 1 of 1/);
+  const second = drive(e);
+  assert.match(second.out, /failed after 2 attempts: the command failed.*recoveries used up \(1\).*routed to excecao/s);
+  assert.equal(probesOf(e).length, 1, "the probe runs once per recovery");
+  const two = setup(probedDef({ recoveries: 2 }));
+  recorder(two, 1);
+  sonda(two, false);
+  drive(two); drive(two);
+  assert.match(drive(two).out, /recoveries used up \(2\)/);
+});
+
+test("a certain failure is not probed: exit 65, or a stage check that fails after the command succeeded", () => {
+  const e = setup(probedDef());
+  recorder(e, 65);
+  sonda(e, false);
+  const r = drive(e);
+  assert.match(r.out, /permanent failure: the command exited 65.*routed to excecao/s);
+  assert.equal(existsSync(join(e.projects, "t1", "probe.jsonl")), false);
+});
+
+test("probe and recoveries are checked when the process loads", () => {
+  const refused = (o: Record<string, unknown>, re: RegExp) => {
+    try { parseProcess("support.json", JSON.stringify(probedDef(o))); assert.fail("loaded"); }
+    catch (err) { assert.ok(err instanceof GovernError); assert.match(err.message, re); }
+  };
+  refused({ probe: "" }, /probe/);
+  refused({ recoveries: 0 }, /recoveries/);
+  refused({ probe: undefined, recoveries: 2 }, /recoveries.*probe/);
+  assert.doesNotThrow(() => parseProcess("support.json", JSON.stringify(probedDef({ recoveries: 3 }))));
 });

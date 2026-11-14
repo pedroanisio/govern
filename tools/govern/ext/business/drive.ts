@@ -6,6 +6,8 @@
 // dependencies decide as for anyone. A service stage's command gets an idempotency key that is the same on every attempt
 // of one entry into the stage; its run is recorded as running before it starts, so a driver that dies mid-command leaves
 // a mark the next pass reads as an interrupted attempt; exit 75 is retried after a backoff, exit 65 never (CONNECTORS.md).
+// When the last attempt ends with its outcome uncertain and the service declares a probe, the probe (a dry run) says
+// whether the effect happened; a definite answer buys more attempts with the same key, an unknown one leaves it to a person.
 //
 // ARCHITECTURAL REQUIREMENT: LLMs will always produce some form of error.
 // Absence of output verification is a design defect, not a runtime bug.
@@ -34,9 +36,10 @@ const GOVERN_TS = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "gov
 /** The driver's record of one agent or service stage of one lane: the task in flight, which entry of the stage it is for
  *  (the number of times the lane left the stage before it), which attempt, and whether it is waiting, running (a service's
  *  command started and has not been seen to end), done or failed. A service's transient failures count in `transient`;
- *  `notBefore` is when its next attempt is due; `routed` is the stage a failed run sent the case to. */
+ *  `notBefore` is when its next attempt is due; `routed` is the stage a failed run sent the case to; `recovered` is how
+ *  many times a probe answered for an uncertain outcome (each buys the service its attempts again). */
 export interface Run { task: string; round: number; attempt: number; state: "sent" | "running" | "done" | "failed"; reason?: string;
-  notBefore?: string; transient?: number; routed?: string }
+  notBefore?: string; transient?: number; routed?: string; recovered?: number }
 export interface DriveReport { lines: string[]; failed: string[] }
 
 const dir = () => join(stateDir(), "drive");
@@ -203,23 +206,52 @@ export function drive(o: { lanes?: string[] } = {}): DriveReport {
         if (svc) {
           if (held.length) { waiting(); continue; }
           if (!run || run.round < round) run = runs[key] = { task: `command ${svc.command}`, round, attempt: 1, state: "sent" };
+          const idem = `${slug}:${stage}:${round}`, base = join(dir(), "outputs", `${slug.replace(/\//g, "__")}--${stage}`);
+          /** The attempts this run may make: the stage's, again for every recovery a probe allowed. */
+          const limit = (r: Run) => attempts * (1 + (r.recovered ?? 0));
+          /** The last attempt ended and nobody knows whether its effect happened. With a probe left to ask, ask it. */
+          const uncertain = (r: Run, reason: string) => {
+            const max = svc.recoveries ?? 1, used = r.recovered ?? 0;
+            if (!svc.probe) return failed(r, reason);
+            if (used >= max) return failed(r, `${reason}; recoveries used up (${max})`);
+            const probeFile = `${base}.probe.json`;
+            rmSync(probeFile, { force: true });
+            const pr = governRun(["run", slug, svc.probe], {
+              GOVERN_DRY_RUN: "1", GOVERN_PROBE: probeFile, GOVERN_OUTPUTS: undefined, GOVERN_STAGE: stage, GOVERN_ROUND: String(round),
+              GOVERN_ATTEMPT: String(r.attempt), GOVERN_IDEMPOTENCY_KEY: idem, GOVERN_INTERRUPTED: undefined });
+            let done: boolean | undefined, why = "";
+            if (pr.code !== 0) why = `the probe exited ${pr.code}: ${tail(pr.out)}`;
+            else {
+              try {
+                const v = JSON.parse(readFileSync(probeFile, "utf8")) as { done?: unknown } | null;
+                if (typeof v?.done === "boolean") done = v.done; else why = "its answer in $GOVERN_PROBE has no boolean done";
+              } catch (e) { why = `it wrote no JSON answer to $GOVERN_PROBE (${(e as Error).message})`; }
+            }
+            appendLedger(slug, { kind: "drive-probe", stage, attempt: r.attempt, ...(done === undefined ? { unknown: why } : { done, recovery: used + 1 }) });
+            if (done === undefined) return failed(r, `${reason}; the probe could not tell whether the effect happened: ${why}`);
+            const { notBefore: _n, transient: _t, ...rest } = r;
+            runs[key] = { ...rest, state: "sent", attempt: r.attempt + 1, recovered: used + 1 };
+            line(`${reason}; the probe says the effect ${done ? "happened" : "did not happen"}: attempt ${r.attempt + 1} runs with the same key (recovery ${used + 1} of ${max})`);
+          };
           let interrupted = false;
           if (run.state === "running") {
             // The driver died while the command ran: its effect may or may not have happened. Only the same key may run.
             appendLedger(slug, { kind: "drive-interrupted", stage, attempt: run.attempt });
-            if (run.attempt >= attempts) { failed(run, `interrupted during attempt ${run.attempt}; its outcome is uncertain`); continue; }
-            line(`interrupted during attempt ${run.attempt}; running it again (attempt ${run.attempt + 1} of ${attempts})`);
+            if (run.attempt >= limit(run)) { uncertain(run, `interrupted during attempt ${run.attempt}; its outcome is uncertain`); continue; }
+            line(`interrupted during attempt ${run.attempt}; running it again (attempt ${run.attempt + 1} of ${limit(run)})`);
             run = runs[key] = { ...run, attempt: run.attempt + 1, state: "sent" };
             interrupted = true;
           }
-          if (run.notBefore && Date.parse(run.notBefore) > Date.now()) { line(`retry ${run.attempt} of ${attempts} is due at ${run.notBefore}`); continue; }
+          if (run.notBefore && Date.parse(run.notBefore) > Date.now()) { line(`retry ${run.attempt} of ${limit(run)} is due at ${run.notBefore}`); continue; }
           const { notBefore: _due, ...ready } = run;
           run = ready;
-          const retryOrFail = (reason: string) => {
-            if (run!.attempt < attempts) { runs[key] = { ...run!, attempt: run!.attempt + 1 }; line(`retried (attempt ${run!.attempt + 1} of ${attempts}): ${reason}`); }
+          /** Another attempt if one is left; else give up, after asking the probe when the effect may have happened. */
+          const retryOrFail = (reason: string, outcome: "uncertain" | "known") => {
+            if (run!.attempt < limit(run!)) { runs[key] = { ...run!, attempt: run!.attempt + 1 }; line(`retried (attempt ${run!.attempt + 1} of ${limit(run!)}): ${reason}`); }
+            else if (outcome === "uncertain") uncertain(run!, reason);
             else failed(run!, reason);
           };
-          const outFile = join(dir(), "outputs", `${slug.replace(/\//g, "__")}--${stage}.json`);
+          const outFile = `${base}.json`;
           rmSync(outFile, { force: true });
           // Recorded before the command starts: a crash from here on is read as an interrupted attempt on the next pass.
           runs[key] = { ...run, state: "running" };
@@ -227,27 +259,27 @@ export function drive(o: { lanes?: string[] } = {}): DriveReport {
           runs[key] = run;
           const r = governRun(["run", slug, svc.command], {
             GOVERN_OUTPUTS: outFile, GOVERN_STAGE: stage, GOVERN_ROUND: String(round), GOVERN_ATTEMPT: String(run.attempt),
-            GOVERN_IDEMPOTENCY_KEY: `${slug}:${stage}:${round}`, GOVERN_INTERRUPTED: interrupted ? "1" : undefined });
+            GOVERN_IDEMPOTENCY_KEY: idem, GOVERN_INTERRUPTED: interrupted ? "1" : undefined });
           if (r.code === EXIT_PERMANENT) { failed(run, `permanent failure: the command exited ${EXIT_PERMANENT}: ${tail(r.out)}`); continue; }
           if (r.code === EXIT_TRANSIENT) {
             const why = `the command exited ${EXIT_TRANSIENT}: ${tail(r.out)}`;
-            if (run.attempt >= attempts) { failed(run, `transient failure persisted: ${why}`); continue; }
+            if (run.attempt >= limit(run)) { uncertain(run, `transient failure persisted: ${why}`); continue; }
             const transient = (run.transient ?? 0) + 1, delay = (svc.backoffSeconds ?? DEFAULT_BACKOFF_SECONDS) * 2 ** (transient - 1);
             const notBefore = new Date(Date.now() + delay * 1000).toISOString();
             runs[key] = { ...run, attempt: run.attempt + 1, transient, notBefore };
             appendLedger(slug, { kind: "drive-retry-scheduled", stage, attempt: run.attempt + 1, at: notBefore });
-            line(`transient failure; retry ${run.attempt + 1} of ${attempts} after ${delay}s (at ${notBefore}): ${why}`);
+            line(`transient failure; retry ${run.attempt + 1} of ${limit(run)} after ${delay}s (at ${notBefore}): ${why}`);
             continue;
           }
-          if (r.code !== 0) { retryOrFail(`the command failed: ${tail(r.out)}`); continue; }
+          if (r.code !== 0) { retryOrFail(`the command failed: ${tail(r.out)}`, "uncertain"); continue; }
           let data: Record<string, Value> = {};
           if ((svc.outputs ?? []).length) {
-            if (!existsSync(outFile)) { retryOrFail("the command wrote no outputs to $GOVERN_OUTPUTS"); continue; }
-            try { data = outputsOf(readFileSync(outFile, "utf8"), svc.outputs!); } catch (e) { retryOrFail((e as Error).message); continue; }
+            if (!existsSync(outFile)) { retryOrFail("the command wrote no outputs to $GOVERN_OUTPUTS", "uncertain"); continue; }
+            try { data = outputsOf(readFileSync(outFile, "utf8"), svc.outputs!); } catch (e) { retryOrFail((e as Error).message, "uncertain"); continue; }
           }
           const end = finish(slug, stage, data, `command ${svc.command}`, { command: svc.command });
           if ("advanced" in end) { runs[key] = { ...run, state: "done" }; line("advanced"); }
-          else if ("retry" in end) retryOrFail(end.retry);
+          else if ("retry" in end) retryOrFail(end.retry, "known");
           else failed(run, end.fail);
           continue;
         }

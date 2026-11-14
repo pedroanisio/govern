@@ -117,9 +117,14 @@ export const AGENT = obj({ to: name, task: name, summary: str, body: str },
   { project: str, outputs: arr(name), write: bool, profile: name, files: arr(str), check: arr(name, { nonEmpty: true }), verify: arr(str, { nonEmpty: true }), timeout: posInt, attempts: posInt, onExhausted: EXHAUSTED });
 /** A stage a command does (ext/business/drive.ts): the lane command `command`, which writes the JSON of the stage's
  *  `outputs` to the file $GOVERN_OUTPUTS names. Its exit code classes the failure (CONNECTORS.md): 75 is transient
- *  (retried after `backoffSeconds`, default 30, doubled per transient failure), 65 permanent (never retried). */
-export interface ServiceDef { command: string; outputs?: string[]; attempts?: number; backoffSeconds?: number; onExhausted?: Exhausted }
-export const SERVICE = obj({ command: name }, { outputs: arr(name), attempts: posInt, backoffSeconds: posInt, onExhausted: EXHAUSTED });
+ *  (retried after `backoffSeconds`, default 30, doubled per transient failure), 65 permanent (never retried). `probe`
+ *  names a lane command (usually `command` itself) that, run as a dry run, writes {"done": boolean} to $GOVERN_PROBE: when
+ *  the last attempt ends with its outcome uncertain, a definite answer buys the stage `attempts` more tries with the same
+ *  idempotency key, up to `recoveries` times (default 1), instead of a person deciding (CONNECTORS.md, Recovery). */
+export interface ServiceDef { command: string; outputs?: string[]; attempts?: number; backoffSeconds?: number; onExhausted?: Exhausted;
+  probe?: string; recoveries?: number }
+export const SERVICE = obj({ command: name }, { outputs: arr(name), attempts: posInt, backoffSeconds: posInt, onExhausted: EXHAUSTED,
+  probe: name, recoveries: posInt });
 /** One approve choice of a gate (ext/slack): its button label and the case fields the choice sets; a string value may
  *  use {data.FIELD}, filled when the choice is offered. `edit` names the string fields of `set` an approver may change
  *  before approving (a Slack form, with `slack.forms`). */
@@ -347,6 +352,7 @@ export function validateBusinessProcess(p: BusinessProcess): void {
       const gate = p.gates.find((g) => g.stage === s.name);
       if (gate && ((s.agent ?? s.service)!.outputs ?? []).length)
         reject(`${at}.${doer}.outputs`, `the ${gate.name} gate holds this stage: writing outputs would clear its approval (put the gate on a decision stage before it)`);
+      if (s.service?.recoveries !== undefined && !s.service.probe) reject(`${at}.service.recoveries`, "recoveries needs a probe to tell whether the effect happened");
       const ex = (s.agent ?? s.service)!.onExhausted;
       if (ex) {
         if (!stages.has(ex.to)) reject(`${at}.${doer}.onExhausted.to`, `unknown stage ${ex.to}`);

@@ -170,6 +170,14 @@ the queue's dispatcher runs the agents' tasks.
   The run is recorded as running before the command starts, so that death is seen on the next pass; an interrupted
   last attempt is not run again, its outcome being uncertain. [CONNECTORS.md](CONNECTORS.md) is the contract a command
   that acts on an outside system keeps.
+- `probe: NAME` names a lane command (usually `command` itself, a connector) that govern drive runs as a dry run when the
+  last attempt ends with its outcome uncertain: interrupted, a transient failure that persisted, another non-zero exit, or
+  missing or invalid outputs (not exit 65, and not a check that failed after the command succeeded). It gets
+  `GOVERN_DRY_RUN=1`, the same `GOVERN_IDEMPOTENCY_KEY` and `GOVERN_PROBE`, a file to write `{"done": true|false}` to.
+  Either answer gives the stage its `attempts` again with the same key: the command then confirms the effect that
+  happened, or makes the one that did not. A probe that fails or writes no boolean `done` leaves the stage to the operator
+  (or `onExhausted`) as before. `recoveries` (default 1) bounds how often a probe may answer for one entry; the ledger
+  records each answer as `drive-probe`.
 - A service's exit code classes its failure: 75 (`EX_TEMPFAIL`) is transient, retried after `backoffSeconds` (default
   30), doubled at each transient failure; 65 (`EX_DATAERR`) is permanent, never retried; any other non-zero code is
   retried at once, as before.

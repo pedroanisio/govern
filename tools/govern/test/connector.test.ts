@@ -122,6 +122,18 @@ test("a dry run only reads: it prints what it would do and writes no outputs", a
   });
 });
 
+test("a dry run with GOVERN_PROBE also writes its answer there: govern drive's probe reads done from it", async () => {
+  await withApi(async (a) => {
+    const l = lane(), probe = join(l.dir, "probe.json");
+    const before = await run(["open", l.dir], envFor(a, l, { GOVERN_DRY_RUN: "1", GOVERN_PROBE: probe }));
+    assert.equal(before.code, 0, before.out);
+    assert.equal(JSON.parse(readFileSync(probe, "utf8")).done, false);
+    assert.equal((await run(["open", l.dir], envFor(a, l))).code, 0);
+    await run(["open", l.dir], envFor(a, l, { GOVERN_DRY_RUN: "1", GOVERN_PROBE: probe }));
+    assert.deepEqual(JSON.parse(readFileSync(probe, "utf8")), { ...JSON.parse(before.out), done: true });
+  });
+});
+
 test("compensate undoes the effect its key names, and is a no-op once undone or when there was none", async () => {
   await withApi(async (a) => {
     const l = lane();
@@ -213,5 +225,39 @@ test("under govern drive: a refused creation sends the case to the exception sta
     assert.equal(lane.stage, "excecao");
     assert.match(lane.data.motivo, /title is too long/);
     assert.equal((await a.state()).seen.filter((x) => x.method === "POST").length, 1, "a permanent failure is not retried");
+  });
+});
+
+test("under govern drive: a lost answer on the last attempt is probed, and the same key finishes it with no person", async () => {
+  await withApi(async (a) => {
+    const e = makeEnv("connector-probe");
+    write(join(e.root, "PALS-Notes/processes/tickets.json"), JSON.stringify({
+      version: 1, name: "tickets",
+      fields: { ticketId: { type: "string" }, descricao: { type: "string" }, motivo: { type: "string" } },
+      stages: [
+        { name: "abrir", service: { command: "open", outputs: ["ticketId"], attempts: 1, probe: "open", onExhausted: { to: "excecao", field: "motivo" } },
+          next: [{ to: ["fim"] }] },
+        { name: "excecao", next: [{ to: ["abrir"] }] },
+        { name: "fim", next: [] },
+      ],
+      gates: [],
+    }));
+    const g = (args: string[]) => govern(e, args, { TICKETS_API: a.base, TICKETS_TOKEN: "test-token" });
+    assert.equal(g(["new", "c1", "--process", "tickets", "--title", "Printer offline"]).code, 0);
+    assert.equal(g(["data", "c1", "--set", JSON.stringify({ descricao: "It stopped printing." })]).code, 0);
+    assert.equal(g(["cmd", "c1", "open", "--", process.execPath, "--disable-warning=ExperimentalWarning", TICKETS, "open", "."]).code, 0);
+    await a.mode("lose");
+    const first = g(["drive"]);
+    assert.equal(first.code, 0, first.out + first.err);
+    assert.match(first.out, /c1 abrir: transient failure persisted.*; the probe says the effect happened: attempt 2 runs with the same key/s);
+    const second = g(["drive"]);
+    assert.equal(second.code, 0, second.out + second.err);
+    assert.match(second.out, /c1 abrir: advanced/);
+    const s = await a.state();
+    assert.equal(s.tickets.length, 1, "one ticket: the probe found it, the second attempt confirmed it");
+    assert.equal(s.seen.filter((x) => x.method === "POST").length, 1);
+    const lane = JSON.parse(readFileSync(join(e.projects, "c1", "govern.json"), "utf8"));
+    assert.equal(lane.stage, "fim");
+    assert.equal(lane.data.ticketId, "T-1");
   });
 });
