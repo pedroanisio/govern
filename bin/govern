@@ -10,6 +10,7 @@
 #     govern new SLUG (--process NAME | --kind long|short|ops) [--title T] [--lang L] [--parent SLUG] [--pin]
 #     govern work SLUG STAGE [--engine claude|codex|grok] [--open]  |  brief SLUG  |  status [SLUG]
 #     govern note SLUG TEXT  |  approve SLUG GATE --quote "owner's words"  |  done SLUG [--engine E]
+#     govern delegate PROCESS GATE|* --to PERSON --quote "owner's words" [--revoke]  |  delegate --list
 #     govern freeze SLUG --quote "owner's words" [--continued-as TEXT]  |  unfreeze SLUG --quote "owner's words"
 #     govern export SLUG [--template] [--out FILE] [--exclude GLOB]... [--freeze --quote "owner's words"]
 #     govern import BUNDLE [--as SLUG] [--drop-deps]  |  clone SLUG --as NEW [--template] [--exclude GLOB]...
