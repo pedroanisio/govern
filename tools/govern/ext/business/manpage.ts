@@ -76,4 +76,5 @@ OPTIONS
     --tolerance X           canary start: how far the candidate's rates may fall behind the base's (default 0.05)
 ENVIRONMENT
     Webhooks: GOVERN_WEBHOOK_TOKEN (event-listen bearer token; at least 16 characters, configured securely).
+    Drive: GOVERN_DRIVE_SERVICE_WAIT (seconds a pass waits for a service's background job before driving the other lanes; default 5).
 `;

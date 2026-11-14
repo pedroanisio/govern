@@ -56,6 +56,7 @@ All notable changes to govern are documented here, following Keep a Changelog.
 
 ### Changed
 
+- `govern drive` runs a service stage's command as a background job (`govern run --bg`): a long command (tests, builds) no longer holds the other lanes' stages. A pass waits up to `GOVERN_DRIVE_SERVICE_WAIT` seconds (default 5), so a quick command still finishes its stage in the same pass; a later pass consumes the outputs, records the job's end and seconds in the ledger, and stops a job past its command's timeout, retrying the stage.
 - `govern drive` counts an exception route out of a stage (an `onError.to`, a timer escalation or an `onExhausted` route) as leaving it, as it already counted an advance. A stage the case comes back to gets a fresh task and key, and drive no longer waits on the reply to a task sent before the reroute.
 
 - An imported lane's quarantine listing (`govern brief`, `govern import`) shows each `{paths.NAME}` its commands use as this workspace resolves it, or `(not in govern.config.json)`, so the owner reviews the paths an accepted import would run, not only the argv.

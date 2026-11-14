@@ -163,10 +163,14 @@ the queue's dispatcher runs the agents' tasks.
   `"{lane}/repo"` gives the model only the lane's clone. `summary`, `body` and `project` may use `{lane}`, `{stage}`,
   `{title}` and `{data.FIELD}`. The reply must finish the stage (HANDOFF, ACK, REVIEW or DECISION), pass its content checks, and carry
   as body the JSON object of the stage's `outputs`: every key a declared output, every value valid for its field.
-- **Service:** the lane command `command` runs through `govern run`; it writes the JSON of its `outputs` to the file
-  `$GOVERN_OUTPUTS` names, and must exit 0. It also gets `GOVERN_STAGE`, `GOVERN_ROUND` (how many times the lane left the
+- **Service:** the lane command `command` runs through `govern run --bg`; it writes the JSON of its `outputs` to the file
+  `$GOVERN_OUTPUTS` names, and must exit 0. A pass waits for it up to `GOVERN_DRIVE_SERVICE_WAIT` seconds (default 5),
+  then leaves it running and drives the other lanes; a later pass reads how it ended. Past its command's timeout
+  (`govern cmd --timeout`, default 30 minutes) the job is stopped and the attempt counts as one with an uncertain
+  outcome. A job lost without an exit code (a reboot) is an interrupted attempt. Its end and seconds go to the lane's
+  ledger as for any job. It also gets `GOVERN_STAGE`, `GOVERN_ROUND` (how many times the lane left the
   stage before this entry), `GOVERN_ATTEMPT` and `GOVERN_IDEMPOTENCY_KEY` (`<lane>:<stage>:<round>`, the same on every
-  attempt of one entry), and `GOVERN_INTERRUPTED=1` when it runs again after a driver died during its previous attempt.
+  attempt of one entry), and `GOVERN_INTERRUPTED=1` when it runs again after a driver died during its previous attempt, or its job was lost.
   The run is recorded as running before the command starts, so that death is seen on the next pass; an interrupted
   last attempt is not run again, its outcome being uncertain. [CONNECTORS.md](CONNECTORS.md) is the contract a command
   that acts on an outside system keeps.

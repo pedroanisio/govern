@@ -263,6 +263,40 @@ test("a stage with nothing to do but its gates is advanced once they are approve
   assert.equal(stateOf(e).stage, "fim");
 });
 
+test("a long service runs in the background: the other lanes are driven while it runs, and a later pass finishes it", () => {
+  const e = setup(serviceDef());
+  assert.equal(govern(e, ["new", "t2", "--process", "support", "--title", "Ticket two"]).code, 0);
+  assert.equal(govern(e, ["data", "t2", "--set", JSON.stringify({ ticketId: "ZD-2" })]).code, 0);
+  // t1 waits (up to 20 s) for a file the test writes; t2 answers at once.
+  announce(e, "const fs=require('fs');const end=Date.now()+20000;while(!fs.existsSync('go')&&Date.now()<end){Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0,100)}" +
+    "if(!fs.existsSync('go'))process.exit(1);fs.writeFileSync(process.env.GOVERN_OUTPUTS,JSON.stringify({slackTs:'1793000000.000100'}))");
+  assert.equal(govern(e, ["cmd", "t2", "announce", "--", process.execPath, "-e", "require('fs').writeFileSync(process.env.GOVERN_OUTPUTS, JSON.stringify({ slackTs: '1793000000.000200' }))"]).code, 0);
+  const t0 = Date.now();
+  const first = govern(e, ["drive"], { GOVERN_DRIVE_SERVICE_WAIT: "1" });
+  assert.equal(first.code, 0, first.out + first.err);
+  assert.ok(Date.now() - t0 < 15000, "the pass does not wait for t1's command");
+  assert.match(first.out, /t1 anunciar: running \(job \S+\)/);
+  assert.match(first.out, /t2 anunciar: advanced/);
+  assert.equal(stateOf(e).stage, "anunciar");
+  // A pass while it still runs starts no second job.
+  assert.match(govern(e, ["drive"], { GOVERN_DRIVE_SERVICE_WAIT: "0" }).out, /t1 anunciar: running/);
+  write(join(e.projects, "t1", "go"), "yes");
+  const done = govern(e, ["drive"], { GOVERN_DRIVE_SERVICE_WAIT: "15" });
+  assert.match(done.out, /t1 anunciar: advanced/, done.out + done.err);
+  assert.equal(stateOf(e).data.slackTs, "1793000000.000100");
+  const jobs = jsonl(join(e.projects, "t1", "govern", "ledger.jsonl")).filter((x) => x.kind === "job" && x.name === "announce");
+  assert.equal(jobs.filter((x) => x.status === "started").length, 1, "one job for the stage");
+  assert.equal(jobs.filter((x) => x.status === "ok" && typeof x.seconds === "number").length, 1, "its end is in the ledger, with its seconds");
+});
+
+test("a background service past its command's timeout is stopped and retried, then left to the operator", () => {
+  const e = setup(serviceDef(1));
+  assert.equal(govern(e, ["cmd", "t1", "announce", "--timeout", "1", "--", process.execPath, "-e", "setTimeout(() => {}, 30000)"]).code, 0);
+  const r = govern(e, ["drive"], { GOVERN_DRIVE_SERVICE_WAIT: "3" });
+  assert.equal(r.code, 1, r.out + r.err);
+  assert.match(r.out, /t1 anunciar: failed after 1 attempt: the command timed out after 1s/);
+});
+
 test("a service stage held by a gate waits for it", () => {
   const def = serviceDef();
   const e = setup({ ...def, people: { gil: { user: userInfo().username, roles: ["gestor"] } },

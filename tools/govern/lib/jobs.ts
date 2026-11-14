@@ -46,6 +46,8 @@ const POLL_MS = 100;
 // Absolute: a job directory is also the mark in its processes' environment, compared as text.
 const jobsDir = (slug: string) => resolve(governDir(slug), "jobs");
 const jobDir = (slug: string, id: string) => join(jobsDir(slug), id);
+/** A job's directory (its job.json, log and exit files). */
+export const dirOf = jobDir;
 
 /** A job's argv with {repo}, {dir} (the lane's folder), {paths.NAME}, {python} (GOVERN_PYTHON, default python3) and
  *  {data.FIELD} (the case's field, as text) filled in. A field that is not set fails; so does a value that starts with
