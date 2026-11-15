@@ -9,6 +9,8 @@ All notable changes to govern are documented here, following Keep a Changelog.
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-11-15
+
 ### Added
 
 - Box checks ([BOX.md](BOX.md)). `govern doctor [--manifest FILE] [--only GROUP,...] [--json]` says whether a host or container can run its lanes, from a box manifest (`~/.config/govern/box.json`, schema 1.x): govern's version and Node, each engine installed and logged in, each workspace's config, processes and profile self-tests, its systemd user units and linger, its Slack token, team, channel membership and listener, and the images and check commands the manifest declares. Every failure names its fix, who applies it (agent or operator) and, where the box can apply it itself, an action. Exit 1 when a probe fails.
