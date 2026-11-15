@@ -101,7 +101,7 @@ const auth = { Authorization: "Bearer secret-token" };
 test("the center serves lanes, processes and diagrams over HTTP: token required, 404 for what is not there, host and lane selection", async () => {
   const { a, hosts } = await federation();
   use(a);
-  const server = center.centerServer({ token: "secret-token", post: network(hosts, () => Date.now()) });
+  const server = center.centerServer({ token: "secret-token", post: network(hosts), now: () => NOW });
   server.listen(0, "127.0.0.1"); await once(server, "listening");
   const port = (server.address() as { port: number }).port;
   try {

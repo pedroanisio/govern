@@ -211,9 +211,10 @@ export function persistentToken(o: { rotate?: boolean } = {}): string {
 export const centerAddress = (host: string, port: number, token: string): string => `http://${host.includes(":") ? `[${host}]` : host}:${port}/#token=${token}`;
 /** The dashboard on loopback. The page is public; /api/state needs `Authorization: Bearer TOKEN`, and every request
  *  must name a loopback host, so a page on another site cannot read the view through a rebound DNS name. */
-export function centerServer(o: { token: string; view?: () => Promise<View>; live?: () => Promise<LiveView>; post?: peer.Post }): Server {
-  const view = o.view ?? (() => gather());
-  const liveView = o.live ?? (() => gatherLive(o.post ? { post: o.post } : {}));
+export function centerServer(o: { token: string; view?: () => Promise<View>; live?: () => Promise<LiveView>; post?: peer.Post; now?: () => number }): Server {
+  const now = o.now ?? Date.now, clock = { now }, signing = { ...(o.post ? { post: o.post } : {}), now };
+  const view = o.view ?? (() => gather(clock));
+  const liveView = o.live ?? (() => gatherLive(signing));
   let cached: { at: number; v: Promise<View> } | undefined, cachedLive: { at: number; v: Promise<LiveView> } | undefined;
   const definitions = new Map<string, Process>();
   const server = createServer((req, res) => {
@@ -232,10 +233,10 @@ export function centerServer(o: { token: string; view?: () => Promise<View>; liv
     const given = /^Bearer (.+)$/.exec(req.headers.authorization ?? "")?.[1] ?? "";
     if (!timingSafeEqual(digest(given), digest(o.token))) return json(401, { error: "missing or wrong token" });
     if (url.pathname === "/api/state") {
-      if (!cached || Date.now() - cached.at > CACHE_MS) cached = { at: Date.now(), v: view() };
+      if (!cached || now() - cached.at > CACHE_MS) cached = { at: now(), v: view() };
       return void cached.v.then(v => json(200, v), (e: Error) => { cached = undefined; json(500, { error: clip(e.message, 300) }); });
     }
-    if (!cachedLive || Date.now() - cachedLive.at > CACHE_MS) cachedLive = { at: Date.now(), v: liveView() };
+    if (!cachedLive || now() - cachedLive.at > CACHE_MS) cachedLive = { at: now(), v: liveView() };
     cachedLive.v.then(async v => {
       if (url.pathname === "/api/lanes") return json(200, { at: v.at, hosts: v.hosts, lanes: v.lanes, places: v.places });
       if (url.pathname === "/api/processes") return json(200, { at: v.at, hosts: v.hosts, processes: v.processes });
@@ -243,7 +244,7 @@ export function centerServer(o: { token: string; view?: () => Promise<View>; liv
       try { name = decodeURIComponent(svgName!); } catch { return json(404, { error: "not found" }); }
       const q = url.searchParams, hash = q.get("hash") ?? undefined, host = q.get("host") ?? undefined, lane = q.get("lane") ?? undefined;
       if (hash !== undefined && !/^[0-9a-f]{64}$/.test(hash)) return json(404, { error: "hash must be a 64 digit lowercase hex SHA-256" });
-      const r = await processDrawing(v, { name, ...(host ? { host } : {}), ...(hash ? { hash } : {}), ...(lane ? { lane } : {}) }, { ...(o.post ? { post: o.post } : {}), definitions });
+      const r = await processDrawing(v, { name, ...(host ? { host } : {}), ...(hash ? { hash } : {}), ...(lane ? { lane } : {}) }, { ...signing, definitions });
       if (r.status === 200) send(200, "image/svg+xml; charset=utf-8", r.svg); else json(r.status, { error: r.error });
     }).catch((e: Error) => { cachedLive = undefined; json(500, { error: clip(e.message, 300) }); });
   });
