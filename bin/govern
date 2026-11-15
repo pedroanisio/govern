@@ -25,6 +25,7 @@
 #     govern ledger verify [SLUG...] [--against DIR]  |  ledger export --to DIR [SLUG...]
 #     govern prompts [PROCESS]  |  ask SLUG STEP [--file F]... [--var K=V]... [--image PNG]... [--effort E] [--model M]
 #     govern usage [SLUG...] [--since DATE]  |  ctx  |  desk  |  tune  |  publish SLUG
+#     govern doctor [--manifest FILE] [--only GROUP[,GROUP]...] [--json]  |  onboard [--manifest FILE] [--port 5020] [--host 127.0.0.1]
 #     govern artifact add SLUG FILE [--name N] [--title T] [--caption C]  |  artifact list SLUG
 #     govern caps [PROFILE]  |  caps --check PROFILE  |  caps --check --all
 #     govern help [COMMAND]  |  help --topics  |  COMMAND --help  |  manual [PROCESS | --full | --size]  |  install-skill [SKILLS-DIR] [--check] [--replace]
@@ -128,6 +129,14 @@
 #     whose summary or body asks for file changes (an edit verb within six words of file, test, module, function, branch, commit, .ts, .py or .md);
 #     --write or --profile P with a write profile fixes it, --read-only sends it and records readOnlyConfirmed. `task show` and `desk` print
 #     `bound: N turns · T s` for a running or recorded grok run: grok has no dollar cap, so that is its only limit.
+#     `doctor` says whether this box (a host or a container) can run its lanes, from a box manifest (default
+#     ~/.config/govern/box.json; without one, the workspace here): govern's version and Node, each engine installed and
+#     logged in, each workspace's config, processes and profile self-tests, its systemd user units and linger, its Slack
+#     token, team, channel membership and listener, and the images and check commands the manifest declares. It reads
+#     only, except those check commands; every failure names its fix and who applies it, the agent or the operator
+#     (tools/govern/BOX.md). `onboard` serves the same probes as a guided setup page: each group a step, each failure
+#     with a Fix it button for what the box can do itself or the operator's part to copy; it accepts loopback host names
+#     only and prints its address with a fresh token in the fragment.
 #     Standard host setup includes task install-service and its printed enable command. --system previews a system
 #     unit with current User=; --system --write requires root, otherwise prints the refusal and unit, never escalates.
 # OPTIONS
@@ -225,14 +234,19 @@
 #     --profile P             task send, task retry: seal the run to profile P's capabilities (govern caps); not with --write
 #     --estimate-usd N        task send: what the run is expected to cost, reserved against a matching allowance
 #     --state S               task list: only messages in state open, claimed, done or failed
-#     --json                  version, task triage: print the version, or the triage rows as an array, as JSON
+#     --json                  version, task triage, doctor: print the version, the triage rows as an array, or the doctor's
+#                             {"schema", "ok", "findings"} as JSON
 #     --as NAME               import, clone, task inbox, task close, task reclaim, task forward, task reply: import: the new lane's slug (default: the
 #                             source's own); clone: the new lane's slug (required); task: who you are; default GOVERN_AS, else this session
 #     --all                   task triage, task inbox, caps: task triage: also replies marked unverified in done/; task inbox: messages in every state, not only open ones;
 #                             caps --check: every profile without a current passing check
 #     --hook                  task inbox: the UserPromptSubmit hook form, silent when empty
 #     --max N                 task dispatch: run at most N messages
-#     --only E                task dispatch: only messages to that runner (codex, claude, grok or a queue config runner)
+#     --only E                task dispatch, doctor: task dispatch: only messages to that runner (codex, claude, grok or a queue config
+#                             runner); doctor: only these probe groups, comma-separated (govern, engines, workspaces, services, slack, checks)
+#     --manifest FILE         doctor, onboard: the box manifest to check against (default ~/.config/govern/box.json)
+#     --port N                onboard: the port the setup page listens on (default 5020)
+#     --host H                onboard: the address it binds (default 127.0.0.1; 0.0.0.0 in a container published as -p 127.0.0.1:N:N)
 #     --parallel N            task dispatch, task install-service: run up to N messages at once in this dispatcher (default 1);
 #                             a runner still never exceeds its QUEUE/config.json concurrency (default 1) across all dispatchers
 #     --run-claimed ID        task dispatch: run the message a --parallel dispatcher claimed (what its workers run; not for use by hand)
@@ -336,7 +350,7 @@
 # SEE ALSO
 #     st-man - tools/govern/SKILL.md (govern manual) - tools/govern/REFERENCE.md (govern manual --full) - tools/govern/processes/video/MANUAL.md (govern manual video)
 #     - tools/govern/processes/infographic/MANUAL.md (govern manual infographic) - tools/govern/PURPOSE.md
-#     - tools/govern/PORTABILITY.md
+#     - tools/govern/PORTABILITY.md - tools/govern/BOX.md
 # MANPAGE <<<
 set -eu
 # Help stays shell-only; other commands check before loading TypeScript.

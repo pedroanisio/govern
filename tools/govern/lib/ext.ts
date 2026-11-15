@@ -11,6 +11,7 @@ import { EXTENSIONS, EXTENSION_NAMES, type ExtDoc, type ExtInfo } from "./ext-re
 import { approxTokens, BYTES_PER_TOKEN } from "./skill.ts";
 import type { Cmd } from "./cli.ts";
 import type { Message } from "./queue.ts";
+import type { DoctorTarget, Finding } from "./doctor.ts";
 
 /** What ext/<name>/index.ts exports. */
 export interface Extension {
@@ -26,6 +27,8 @@ export interface Extension {
   requireHost?: (host: string) => void;
   /** peer: the dispatcher loop's federation work, one call per tick, returning the lines to print. */
   relay?: () => (max: number | undefined) => Promise<string[]>;
+  /** slack: `govern doctor`'s probes for one workspace that enables the extension (run with GOVERN_REPO set to it). */
+  doctor?: (t: DoctorTarget) => Promise<Finding[]>;
   /** decide: the shadow ask about a sent TASK. */
   shadowTask?: (m: Message) => void;
 }

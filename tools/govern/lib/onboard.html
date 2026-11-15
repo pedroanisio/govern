@@ -1,0 +1,239 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Box Setup</title>
+<style>
+:root {
+  --bg: #f6f7f9; --card: #ffffff; --ink: #16181d; --muted: #5d6470; --line: #e3e6eb;
+  --accent: #3b5bdb; --accent-ink: #ffffff; --ok: #1f8a4c; --ok-bg: #e7f5ec; --bad: #c92a2a; --bad-bg: #fdecec;
+  --you: #b35c00; --you-bg: #fff3e0; --skip: #868e96; --code: #f1f3f5; --shadow: 0 1px 2px rgba(0,0,0,.05), 0 4px 16px rgba(0,0,0,.05);
+}
+@media (prefers-color-scheme: dark) {
+  :root { --bg: #111317; --card: #1a1d23; --ink: #e9ecef; --muted: #a0a7b3; --line: #2b2f37; --accent: #748ffc; --accent-ink: #0b0d12;
+    --ok: #51cf66; --ok-bg: #16281c; --bad: #ff8787; --bad-bg: #2d1a1a; --you: #ffa94d; --you-bg: #2d2214; --skip: #868e96; --code: #22262e;
+    --shadow: 0 1px 2px rgba(0,0,0,.4); }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--ink); font: 16px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+header { max-width: 1040px; margin: 0 auto; padding: 28px 16px 8px; display: flex; gap: 20px; align-items: center; flex-wrap: wrap; }
+header h1 { font-size: 26px; margin: 0; letter-spacing: -.01em; }
+header p { margin: 2px 0 0; color: var(--muted); }
+.ring { width: 64px; height: 64px; flex: none; }
+.ring circle { fill: none; stroke-width: 7; }
+.ring .track { stroke: var(--line); }
+.ring .fill { stroke: var(--ok); stroke-linecap: round; transform: rotate(-90deg); transform-origin: 50% 50%; }
+.ring text { font-size: 15px; font-weight: 700; fill: var(--ink); text-anchor: middle; dominant-baseline: central; }
+main > *, .row .what, .cmd code { min-width: 0; }
+main { max-width: 1040px; margin: 0 auto; padding: 8px 16px 48px; display: grid; grid-template-columns: 260px 1fr; gap: 20px; }
+@media (max-width: 760px) { main { grid-template-columns: 1fr; } }
+nav ol { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+@media (max-width: 760px) { nav ol { flex-direction: row; overflow-x: auto; padding-bottom: 4px; } nav li { flex: none; } }
+nav button { width: 100%; display: flex; gap: 12px; align-items: center; text-align: left; background: transparent; border: 1px solid transparent;
+  border-radius: 12px; padding: 10px 12px; color: var(--ink); font: inherit; cursor: pointer; }
+nav button:hover { background: var(--card); }
+nav button[aria-current="step"] { background: var(--card); border-color: var(--line); box-shadow: var(--shadow); font-weight: 600; }
+.dot { width: 28px; height: 28px; flex: none; border-radius: 50%; display: grid; place-items: center; font-size: 14px; font-weight: 700;
+  background: var(--line); color: var(--muted); }
+.dot.ok { background: var(--ok-bg); color: var(--ok); } .dot.fail { background: var(--bad-bg); color: var(--bad); }
+.dot.you { background: var(--you-bg); color: var(--you); } .dot.busy { animation: pulse 1s infinite alternate; }
+@keyframes pulse { from { opacity: .4; } to { opacity: 1; } }
+.card { background: var(--card); border: 1px solid var(--line); border-radius: 16px; box-shadow: var(--shadow); padding: 24px; }
+.card h2 { margin: 0 0 4px; font-size: 22px; } .lead { margin: 0 0 18px; color: var(--muted); }
+.item { border: 1px solid var(--line); border-radius: 12px; padding: 14px 16px; margin: 10px 0; }
+.item.fail { border-color: color-mix(in srgb, var(--bad) 40%, var(--line)); background: color-mix(in srgb, var(--bad-bg) 55%, var(--card)); }
+.item.you { border-color: color-mix(in srgb, var(--you) 40%, var(--line)); background: color-mix(in srgb, var(--you-bg) 55%, var(--card)); }
+.row { display: flex; gap: 10px; align-items: flex-start; }
+.row .what { flex: 1; min-width: 0; }
+@media (max-width: 520px) { .row { flex-direction: column-reverse; gap: 4px; } } .what b { display: block; } .ev { color: var(--muted); font-size: 14px; overflow-wrap: anywhere; }
+.tag { font-size: 12px; font-weight: 700; padding: 2px 8px; border-radius: 99px; white-space: nowrap; }
+.tag.fail { background: var(--bad-bg); color: var(--bad); } .tag.you { background: var(--you-bg); color: var(--you); }
+.do { margin-top: 12px; display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.cmd { display: flex; gap: 8px; align-items: stretch; width: 100%; }
+.cmd code { flex: 1; background: var(--code); border-radius: 8px; padding: 8px 10px; font: 13px/1.4 ui-monospace, Menlo, Consolas, monospace; overflow-wrap: anywhere; }
+button.primary, button.ghost { font: inherit; font-weight: 600; border-radius: 10px; padding: 9px 16px; cursor: pointer; border: 1px solid var(--accent); }
+button.primary { background: var(--accent); color: var(--accent-ink); } button.ghost { background: transparent; color: var(--accent); }
+button:disabled { opacity: .55; cursor: progress; }
+button:focus-visible, input:focus-visible { outline: 3px solid color-mix(in srgb, var(--accent) 45%, transparent); outline-offset: 2px; }
+input[type=password] { flex: 1; min-width: 220px; font: inherit; padding: 8px 10px; border-radius: 8px; border: 1px solid var(--line); background: var(--card); color: var(--ink); }
+details.good { margin-top: 14px; } details.good summary { cursor: pointer; color: var(--ok); font-weight: 600; }
+details.good ul { margin: 8px 0 0; padding-left: 20px; color: var(--muted); font-size: 14px; }
+.foot { display: flex; justify-content: space-between; gap: 10px; margin-top: 20px; flex-wrap: wrap; }
+.note { font-size: 14px; color: var(--muted); } .msg { margin-top: 8px; font-size: 14px; } .msg.ok { color: var(--ok); } .msg.bad { color: var(--bad); }
+.done { text-align: center; padding: 40px 24px; } .done .big { font-size: 56px; }
+.empty { color: var(--muted); }
+</style>
+</head>
+<body>
+<header>
+  <svg class="ring" viewBox="0 0 64 64" aria-hidden="true"><circle class="track" cx="32" cy="32" r="27"/><circle class="fill" id="ringFill" cx="32" cy="32" r="27" stroke-dasharray="0 170"/><text x="32" y="32" id="ringText">…</text></svg>
+  <div>
+    <h1>Set up this box</h1>
+    <p id="sub">Checking what this machine needs to run your squads…</p>
+  </div>
+</header>
+<main>
+  <nav aria-label="Setup steps"><ol id="steps"></ol></nav>
+  <section class="card" id="panel" aria-live="polite"><p class="empty">Checking your box. This takes a few seconds.</p></section>
+</main>
+<script>
+"use strict";
+const STEPS = {
+  govern:     { title: "Govern", lead: "The engine that runs your lanes. It must be the release this box expects, on a recent Node." },
+  engines:    { title: "AI assistants", lead: "Claude and Codex do the work. Each must be installed and signed in on this machine." },
+  workspaces: { title: "Squads", lead: "Each squad's settings, processes and AI profiles must load, and every profile must pass its self-test." },
+  services:   { title: "Background services", lead: "Dispatchers, drivers and timers keep work moving while nobody is logged in." },
+  slack:      { title: "Slack", lead: "Where people approve work and follow progress. We test the bot token, the team, the channel and the listener." },
+  checks:     { title: "Tools & access", lead: "The Docker images and access checks each squad needs, such as reaching the code host." },
+};
+const NAMES = { installed: "is installed", login: "is signed in", found: "exists", config: "settings load", processes: "processes load",
+  profiles: "AI profiles self-tested", token: "bot token is in place", auth: "Slack accepts the token", channel: "bot is in the channel",
+  listener: "listener is reading the channel", enabled: "Slack is turned on" };
+const cap = (s) => s.charAt(0).toUpperCase() + s.slice(1);
+function label(id) {
+  const p = id.split(":");
+  if (id === "govern:version") return "Govern version";
+  if (id === "govern:node") return "Node.js";
+  if (id === "services:linger") return "Services keep running after you log out";
+  if (p[0] === "engines") return `${cap(p[1])} ${NAMES[p[2]] || p[2]}`;
+  if (p[0] === "services") return `${p.slice(2).join(":").replace(/\.service$/, "")} is running`;
+  if (p[0] === "checks" && p[2] === "image") return `Image ${p.slice(3).join(":")} is available`;
+  if (p[0] === "checks") return `${p[1]}: ${p.slice(2).join(":")} check passes`;
+  if (p.length >= 3) return `${p[1]}: ${NAMES[p[2]] || p[2]}`;
+  return cap(id);
+}
+const token = (() => {
+  const m = /token=([A-Za-z0-9_-]+)/.exec(location.hash);
+  try { if (m) { sessionStorage.setItem("onboard-token", m[1]); history.replaceState(null, "", location.pathname); } return m ? m[1] : sessionStorage.getItem("onboard-token"); }
+  catch { return m ? m[1] : null; }
+})();
+let groups = Object.keys(STEPS), findings = [], current = null, busy = new Set(), messages = {}, flash = {};
+
+async function api(path, body) {
+  const r = await fetch(path, { method: body ? "POST" : "GET", headers: { Authorization: `Bearer ${token}`, ...(body ? { "Content-Type": "application/json" } : {}) }, body: body ? JSON.stringify(body) : undefined });
+  const j = await r.json().catch(() => ({ error: `HTTP ${r.status}` }));
+  if (!r.ok && !j.findings) throw new Error(j.error || `HTTP ${r.status}`);
+  return j;
+}
+function merge(j, group) {
+  if (j.groups) groups = j.groups;
+  findings = group ? findings.filter((f) => f.group !== group).concat(j.findings) : j.findings;
+  findings.sort((a, b) => groups.indexOf(a.group) - groups.indexOf(b.group));
+}
+const of = (g) => findings.filter((f) => f.group === g);
+function stateOf(g) {
+  if (busy.has(g)) return "busy";
+  const fs = of(g);
+  if (!fs.length) return "wait";
+  const bad = fs.filter((f) => f.status === "fail");
+  if (!bad.length) return "ok";
+  return bad.some((f) => f.action || f.actor === "agent") ? "fail" : "you";
+}
+const el = (tag, attrs = {}, ...kids) => {
+  const e = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs)) if (k === "class") e.className = v; else if (k.startsWith("on")) e.addEventListener(k.slice(2), v); else if (v !== undefined && v !== false) e.setAttribute(k, v === true ? "" : v);
+  for (const k of kids.flat()) if (k !== null && k !== undefined) e.append(k);
+  return e;
+};
+
+function renderNav() {
+  const ol = document.getElementById("steps"); ol.replaceChildren();
+  groups.forEach((g, i) => {
+    const s = stateOf(g), mark = { ok: "✓", fail: "!", you: "✋", busy: "…", wait: String(i + 1) }[s];
+    const sr = { ok: "ready", fail: "needs a fix", you: "needs you", busy: "checking", wait: "not checked yet" }[s];
+    ol.append(el("li", {}, el("button", { "aria-current": g === current ? "step" : false, onclick: () => { current = g; render(); } },
+      el("span", { class: `dot ${s}`, "aria-hidden": "true" }, mark), el("span", {}, STEPS[g]?.title || g, el("span", { class: "note", style: "display:block" }, sr)))));
+  });
+  const ready = groups.filter((g) => stateOf(g) === "ok").length, total = groups.length;
+  document.getElementById("ringFill").setAttribute("stroke-dasharray", `${(ready / total) * 169.6} 170`);
+  document.getElementById("ringText").textContent = `${ready}/${total}`;
+  const youCount = findings.filter((f) => f.status === "fail" && f.actor === "operator" && !f.action).length;
+  document.getElementById("sub").textContent = !findings.length ? "Checking what this machine needs to run your squads…"
+    : ready === total ? "Everything is ready. This box can run your squads."
+    : `${ready} of ${total} steps ready${youCount ? ` · ${youCount} thing${youCount > 1 ? "s" : ""} only you can do` : ""}.`;
+}
+
+/** The command part of a fix: a trailing note in parentheses is for reading, not for the terminal. */
+const commandOf = (text) => text.replace(/\s+\([^()]*\)\s*$/, "");
+function copyButton(text) {
+  return el("button", { class: "ghost", onclick: async (ev) => { try { await navigator.clipboard.writeText(text); ev.target.textContent = "Copied"; setTimeout(() => (ev.target.textContent = "Copy"), 1500); } catch { ev.target.textContent = "Select and copy"; } } }, "Copy");
+}
+function itemView(f) {
+  const you = !f.action && f.actor === "operator";
+  const box = el("div", { class: `item ${you ? "you" : "fail"}` },
+    el("div", { class: "row" }, el("div", { class: "what" }, el("b", {}, label(f.id)), el("span", { class: "ev" }, f.evidence)),
+      el("span", { class: `tag ${you ? "you" : "fail"}` }, you ? "Your part" : "Needs a fix")));
+  const act = el("div", { class: "do" });
+  if (f.action && f.action.kind === "slack-token") {
+    const input = el("input", { type: "password", autocomplete: "off", spellcheck: "false", placeholder: "xoxb-…", "aria-label": "Slack bot token" });
+    act.append(el("span", { class: "note", style: "width:100%" }, "Paste the bot token from your Slack app (OAuth & Permissions → Bot User OAuth Token). It is saved on this box only, readable by you alone."),
+      input, el("button", { class: "primary", onclick: () => fix(f, input.value) }, "Save token"));
+  } else if (f.action) {
+    const what = { "enable-unit": "Start it", "chmod-private": "Make it private", "enable-extension": "Turn it on", "self-test": "Run the self-tests" }[f.action.kind] || "Fix it";
+    act.append(el("button", { class: "primary", onclick: () => fix(f) }, `${what} for me`));
+    if (f.action.kind === "self-test") act.append(el("span", { class: "note" }, "Uses a few small AI calls, about a minute per profile."));
+  }
+  if (f.fix && !(f.action && f.action.kind === "slack-token")) {
+    act.append(el("span", { class: "note", style: "width:100%" }, f.action ? "Or do it yourself:" : you ? "Here is what to do:" : "To fix it:"),
+      el("div", { class: "cmd" }, el("code", {}, f.fix), copyButton(commandOf(f.fix))));
+  }
+  box.append(act);
+  if (messages[f.id]) box.append(el("div", { class: `msg ${messages[f.id].ok ? "ok" : "bad"}`, role: "status" }, messages[f.id].text));
+  return box;
+}
+
+function render() {
+  renderNav();
+  const panel = document.getElementById("panel");
+  if (!token) { panel.replaceChildren(el("h2", {}, "Open the link govern printed"), el("p", { class: "lead" }, "This page needs the address with #token=… that `govern onboard` printed in the terminal.")); return; }
+  if (!findings.length) return;
+  if (groups.every((g) => stateOf(g) === "ok")) {
+    panel.replaceChildren(el("div", { class: "done" }, el("div", { class: "big", "aria-hidden": "true" }, "🎉"), el("h2", {}, "This box is ready"),
+      el("p", { class: "lead" }, "Govern, the AI assistants, your squads, their services and Slack all passed. You can close this page."),
+      el("button", { class: "ghost", onclick: () => recheck() }, "Check everything again")));
+    return;
+  }
+  const g = current || groups.find((x) => stateOf(x) !== "ok") || groups[0];
+  current = g;
+  const fs = of(g), bad = fs.filter((f) => f.status === "fail"), good = fs.filter((f) => f.status === "ok"), skipped = fs.filter((f) => f.status === "skip");
+  const i = groups.indexOf(g), next = groups.slice(i + 1).find((x) => stateOf(x) !== "ok") || groups.find((x) => stateOf(x) !== "ok" && x !== g);
+  const kids = [el("h2", {}, `Step ${i + 1}. ${STEPS[g]?.title || g}`), el("p", { class: "lead" }, STEPS[g]?.lead || "")];
+  if (flash[g]) kids.push(el("p", { class: "msg ok", role: "status" }, flash[g]));
+  if (busy.has(g)) kids.push(el("p", { class: "empty" }, "Checking…"));
+  else if (!bad.length) kids.push(el("p", { class: "msg ok" }, good.length ? "✓ All good here." : "Nothing to check here on this box."));
+  bad.sort((a, b) => (a.action ? 0 : 1) - (b.action ? 0 : 1)).forEach((f) => kids.push(itemView(f)));
+  if (good.length) kids.push(el("details", { class: "good", open: !bad.length && good.length < 6 }, el("summary", {}, `${good.length} thing${good.length > 1 ? "s" : ""} look${good.length > 1 ? "" : "s"} good`),
+    el("ul", {}, good.map((f) => el("li", {}, `${label(f.id)}: ${f.evidence}`)))));
+  if (skipped.length) kids.push(el("details", { class: "good" }, el("summary", { style: "color:var(--muted)" }, `${skipped.length} not checked`),
+    el("ul", {}, skipped.map((f) => el("li", {}, `${label(f.id)}: ${f.evidence}`)))));
+  kids.push(el("div", { class: "foot" }, el("button", { class: "ghost", disabled: busy.has(g), onclick: () => recheck(g) }, "Check this step again"),
+    next ? el("button", { class: "primary", onclick: () => { current = next; render(); window.scrollTo({ top: 0, behavior: "smooth" }); } }, `Next: ${STEPS[next]?.title || next} →`) : null));
+  panel.replaceChildren(...kids);
+}
+
+async function recheck(group) {
+  if (group) delete flash[group]; else flash = {};
+  const gs = group ? [group] : groups;
+  gs.forEach((g) => busy.add(g)); render();
+  try { merge(group ? await api("/api/check", { group }) : await api("/api/state"), group); }
+  catch (e) { document.getElementById("sub").textContent = `Could not check: ${e.message}`; }
+  finally { gs.forEach((g) => busy.delete(g)); render(); }
+}
+async function fix(f, value) {
+  busy.add(f.group); delete messages[f.id]; render();
+  try {
+    const j = await api("/api/fix", value === undefined ? { id: f.id } : { id: f.id, value });
+    merge(j, f.group);
+    const still = findings.find((x) => x.id === f.id && x.status === "fail");
+    if (j.applied && j.applied.ok && !still) flash[f.group] = `✓ Fixed: ${label(f.id)}`;
+    messages[f.id] = j.applied ? { ok: j.applied.ok && !still, text: j.applied.ok ? (still ? `Done, but it still fails: ${j.applied.output}` : "Fixed ✓") : `That did not work: ${j.applied.output}` }
+      : { ok: false, text: j.error || "Nothing was done." };
+  } catch (e) { messages[f.id] = { ok: false, text: e.message }; }
+  finally { busy.delete(f.group); render(); }
+}
+render();
+if (token) recheck();
+</script>
+</body>
+</html>

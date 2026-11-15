@@ -29,6 +29,8 @@ import { laneByCwd, recordLane } from "./lib/attribution.ts";
 import * as queue from "./lib/queue.ts";
 import { tag, verdict } from "./lib/replycheck.ts";
 import { desk } from "./lib/desk.ts";
+import { doctor, loadBox, parseOnly, report as doctorReport, BOX_SCHEMA, defaultBoxFile } from "./lib/doctor.ts";
+import { onboardServer, onboardAddress, newToken as onboardToken, defaultDeps } from "./lib/onboard.ts";
 import { status } from "./lib/status.ts";
 import { listLines, showLines, place } from "./lib/resources.ts";
 import * as reaping from "./lib/reap.ts";
@@ -958,6 +960,29 @@ function sceneRender(): string | undefined {
 
 /** `govern bpmn <process|lane>`: the BPMN diagram of a process (with the live state of every lane on it) or of one lane (its own
  *  process, with that lane's progress). Read-only: SVG to a file or stdout, a scene-render scene, or a PNG the engine renders. */
+/** `govern doctor`: every probe group (or --only's), as text or --json; exit 1 when one fails. --only is read before the
+ *  manifest, so a wrong group is a usage error whatever the manifest holds. */
+async function cmdDoctor(a: Args): Promise<void> {
+  const only = parseOnly(opt(a, "only"));
+  const fs = await doctor(loadBox(opt(a, "manifest")), only ? { only } : {});
+  const ok = fs.every((f) => f.status !== "fail");
+  out(flag(a, "json") ? JSON.stringify({ schema: BOX_SCHEMA, ok, findings: fs }, null, 2) : doctorReport(fs));
+  if (!ok) process.exitCode = 1;
+}
+
+/** `govern onboard`: the guided setup page for this box, on loopback (or --host), with a fresh token in the printed address.
+ *  The manifest is read once, now, so a malformed one is refused before anything listens. */
+function cmdOnboard(a: Args): void {
+  const given = opt(a, "manifest"), box = loadBox(given);
+  const port = Number(opt(a, "port") ?? 5020), host = opt(a, "host") ?? "127.0.0.1";
+  if (!Number.isInteger(port) || port < 1 || port > 65535) usage(`--port must be a whole number from 1 to 65535 (got ${opt(a, "port")})`);
+  const token = onboardToken(), manifest = given ?? (existsSync(defaultBoxFile()) ? defaultBoxFile() : undefined);
+  const server = onboardServer({ token, deps: defaultDeps(box), ...(manifest ? { manifest } : {}) });
+  server.on("error", (e: NodeJS.ErrnoException) => { process.stderr.write(`govern: onboard cannot listen on ${host}:${port} (${e.code ?? e.message})\n`); process.exitCode = 4; });
+  server.listen(port, host, () => out(`govern onboard: open ${onboardAddress(host, port, token)}\n` +
+    `from another machine: ssh -L ${port}:127.0.0.1:${port} <this box>, then the same address (Ctrl-C stops it)`));
+}
+
 function cmdBpmn(a: Args): void {
   const name = a._[1] ?? usage("govern bpmn <process|lane-slug> [--svg FILE] [--scene FILE] [--png FILE] [--width N] [--height N] [--static]");
   const stat = flag(a, "static"), now = Date.now();
@@ -1311,6 +1336,10 @@ export const COMMANDS: readonly Cmd[] = [
     out(d.text);
     if (d.failed) unreadable(d.failed, d.lanes);
   } },
+  { name: "doctor", section: 7, footer: false, flags: { bool: ["json"], value: ["manifest", "only"] },
+    lines: [["[--manifest FILE] [--only GROUP[,GROUP]...] [--json]", "whether this box can run its lanes (BOX.md): govern, the engines and their logins, each workspace's config,\nprocesses and profile self-tests, its systemd units, its Slack connection, and the images and commands the box\nmanifest names (default ~/.config/govern/box.json; without one, this workspace). Groups: govern, engines,\nworkspaces, services, slack, checks. Reads only, except the check commands the manifest declares; each failure\nnames its fix and who applies it (agent or operator); exit 1 when one fails"]], run: cmdDoctor },
+  { name: "onboard", section: 7, footer: false, flags: { value: ["manifest", "port", "host"] },
+    lines: [["[--manifest FILE] [--port 5020] [--host 127.0.0.1]", "the guided setup page for this box (BOX.md): each doctor group as a step, each failure with a Fix it button\nfor what the box can do itself (start a unit, make a secret private, turn slack on, run the self-tests, save a pasted\nSlack bot token) and the operator's part to copy; serves loopback host names only, the API behind the printed token"]], run: cmdOnboard },
   { name: "artifact", section: 7, noSub: "govern artifact add|list (lane evidence)",
     subs: {
       add: { flags: { value: ["name", "title", "caption"] },

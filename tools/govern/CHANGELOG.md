@@ -9,6 +9,11 @@ All notable changes to govern are documented here, following Keep a Changelog.
 
 ## [Unreleased]
 
+### Added
+
+- Box checks ([BOX.md](BOX.md)). `govern doctor [--manifest FILE] [--only GROUP,...] [--json]` says whether a host or container can run its lanes, from a box manifest (`~/.config/govern/box.json`, schema 1.x): govern's version and Node, each engine installed and logged in, each workspace's config, processes and profile self-tests, its systemd user units and linger, its Slack token, team, channel membership and listener, and the images and check commands the manifest declares. Every failure names its fix, who applies it (agent or operator) and, where the box can apply it itself, an action. Exit 1 when a probe fails.
+- Guided setup page. `govern onboard [--manifest FILE] [--port 5020] [--host H]` serves the doctor's groups as steps on loopback host names, behind a fresh token in the printed address. "Fix it" runs only the action the server's own fresh doctor run attached to a failing finding (start a unit, make a secret file private, enable slack, run the self-tests, save a pasted Slack bot token mode 600); the operator's part is shown with a copy button.
+
 ## [0.2.0] - 2026-11-14
 
 ### Added

@@ -66,8 +66,8 @@ export function classify(p: Record<string, string>, now: number): { health: Heal
 }
 
 /** `systemctl show` of one unit: its properties, or why this scope cannot be asked. A missing unit is not an error here:
- *  systemctl answers LoadState=not-found with status 0. */
-function show(scope: Scope, unit: string): Record<string, string> | { gap: string } {
+ *  systemctl answers LoadState=not-found with status 0. `govern doctor` judges a unit from these (lib/doctor.ts). */
+export function unitProperties(scope: Scope, unit: string): Record<string, string> | { gap: string } {
   const r = spawnSync("systemctl", [...scopeArg(scope), "show", "--timestamp=unix", `--property=${PROPERTIES.join(",")}`, "--", unit], { encoding: "utf8", timeout: QUERY_MS });
   const code = (r.error as NodeJS.ErrnoException | undefined)?.code;
   if (code === "ENOENT") return { gap: "no systemctl on this host" };
@@ -83,7 +83,7 @@ export function watched(now = Date.now(), watch: WorkspaceConfig["watch"] = find
   for (const scope of ["user", "system"] as const) {
     let gap: string | undefined;
     for (const unit of watch?.[scope] ?? []) {
-      const p: ReturnType<typeof show> = gap === undefined ? show(scope, unit) : { gap };
+      const p: ReturnType<typeof unitProperties> = gap === undefined ? unitProperties(scope, unit) : { gap };
       if ("gap" in p) { gap ??= p.gap as string; units.push({ scope, unit, health: "pending", state: "not known", lastSuccess: "not known" }); continue; }
       const { health, state } = classify(p, now);
       units.push({ scope, unit, health, state, lastSuccess: health === "problem" && state === "not found" ? "not known" : lastSuccess(scope, unit, p, now) });

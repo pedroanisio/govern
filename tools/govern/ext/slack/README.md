@@ -33,4 +33,5 @@ one reader and one writer per inbox. See [migration and channel commands](../../
 
 Run `notify` independently to detect a dead listener. Configure `slack.route` and `slack.alerts` explicitly; uploading requires explicit `slack.upload` roots and byte limits. First activation records a fixed private start line so migrated posts do not trigger replies or unanswered alerts.
 
+- [doctor.ts](doctor.ts): `govern doctor`'s Slack probes ([BOX.md](../../BOX.md)): config, token and env-file mode, `auth.test` team, channel membership and listener heartbeat; [secrets.ts](secrets.ts) resolves the bot token for it and for the commands.
 - [service.ts](service.ts): user listener and notifier units plus a daily digest timer; installation starts nothing and copies no credentials.

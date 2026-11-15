@@ -13,6 +13,8 @@ const ENCODING = {
   "chat.update": "json",
   "views.open": "json",
   "files.completeUploadExternal": "json",
+  "auth.test": "form",
+  "conversations.info": "form",
   "conversations.history": "form",
   "conversations.replies": "form",
   "files.getUploadURLExternal": "form",

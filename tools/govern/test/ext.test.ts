@@ -16,7 +16,7 @@ const TOOL = resolve(HERE, "..");
 const ALL = EXTENSION_NAMES.join(",");
 
 /** The commands added after the split, each with its owner: the core, or the extension that brought it. */
-const ADDED: Record<string, string> = { delegate: "core", ext: "core", slack: "slack", drive: "business", freeze: "core", unfreeze: "core", export: "core", import: "core", clone: "core", ledger: "core", outcome: "business", metrics: "business", canary: "business", replay: "business" };
+const ADDED: Record<string, string> = { delegate: "core", ext: "core", slack: "slack", drive: "business", freeze: "core", unfreeze: "core", export: "core", import: "core", clone: "core", ledger: "core", outcome: "business", metrics: "business", canary: "business", replay: "business", doctor: "core", onboard: "core" };
 /** The command table before the extensions existed: no name may be lost to the split. */
 const OLD_TABLE = ["version", "conversation", "init", "new", "work", "brief", "status", "note", "approve", "reject", "data", "human-inbox", "human", "allow", "done",
   "cmd", "file", "process", "bpmn", "check", "advance", "event", "event-listen", "tick", "alerts", "subprocess", "recover", "dep", "hook", "run", "slice", "wait",

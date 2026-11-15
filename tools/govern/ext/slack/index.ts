@@ -1,6 +1,6 @@
 // Slack: decisions people make with buttons in Slack, verified by Slack's request signature and recorded as the mapped
 // person's own (SLACK.md). A workspace turns this extension on with `govern ext enable slack`.
-import { existsSync, readFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { slackServer } from "./slack.ts";
 import { notify, SLACK_API, type NotifyReport } from "./notify.ts";
 import { slackConfig, configFile } from "../../lib/workspace.ts";
@@ -18,26 +18,9 @@ import { installServices } from "./service.ts";
 import { MANPAGE } from "./manpage.ts";
 import { triage, open, dismiss, type Item } from "./triage.ts";
 import { heartbeatSettings, heartbeatStatus, clock } from "./heartbeat.ts";
+import { secret, botToken } from "./secrets.ts";
+import { doctor } from "./doctor.ts";
 
-/** `fromEnv` (the variable `name` as the environment has it), else that variable from the config's slack.envFile;
- *  undefined when neither has it. */
-function secret(name: string, fromEnv: string | undefined, envFile: string | undefined): string | undefined {
-  if (fromEnv) return fromEnv;
-  if (!envFile) return undefined;
-  if (!existsSync(envFile)) fail(`${configFile()}: slack.envFile ${envFile} does not exist`);
-  for (const line of readFileSync(envFile, "utf8").split("\n")) {
-    const m = new RegExp(`^\\s*(?:export\\s+)?${name}\\s*=\\s*(.*?)\\s*$`).exec(line);
-    if (m) return m[1]!.replace(/^(["'])(.*)\1$/, "$2") || undefined;
-  }
-  return undefined;
-}
-
-/** Both notification and channel commands use the configured variable, then the same dotenv fallback. */
-function botToken(cfg: NonNullable<ReturnType<typeof slackConfig>>): string {
-  const variable = cfg.botTokenVar ?? "SLACK_BOT_TOKEN";
-  return secret(variable, cfg.botTokenVar ? process.env[variable] : process.env.SLACK_BOT_TOKEN, cfg.envFile)
-    ?? fail(`${variable} is not set: export it, or put it in the dotenv file slack.envFile names in ${configFile()}`);
-}
 
 /** `govern slack serve`: the interactivity server on loopback, once the team and the signing secret are configured. */
 function cmdServe(a: Args): void {
@@ -191,6 +174,8 @@ export const name = "slack";
 export const description = "Slack: decisions people make with buttons in Slack, verified by Slack's signature";
 export const docs: ExtDoc[] = [{ title: "Slack: decisions from Slack buttons, signature checks, people mapping", path: "SLACK.md" }];
 export const manpage = MANPAGE;
+/** `govern doctor`'s Slack probes for this workspace (doctor.ts). */
+export { doctor };
 
 export const commands: Cmd[] = [
   { name: "slack", section: 7, noSub: "govern slack serve|notify|listen|post|upload|resolve|digest|triage|dismiss|heartbeat|install-service (the protocol: tools/govern/SLACK.md)",

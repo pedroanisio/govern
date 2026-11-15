@@ -11,7 +11,7 @@ This is the core manual. `govern help <command>` prints flags and rules; `govern
 
 ## Start
 
-1. `govern desk` is the owner's one screen (lanes, inbox, queue, today's tokens); `govern status` lists the lanes. One session works one lane.
+1. `govern desk` is the owner's one screen (lanes, inbox, queue, today's tokens); `govern status` lists the lanes. One session, one lane. Box: `govern doctor`/`govern onboard`.
 2. No lane yet: `govern new <slug> --process <name> --title "…"` (`govern process list` shows the processes).
 3. `govern work <slug> <stage>` opens a measured work segment and prints the **brief**: stage, exit condition, approvals, files, commands, jobs and decisions. `govern brief <slug>` prints it again. Work from the brief, not whole process documents. If it names `manual: govern manual <process>`, read that once. In a lane's folder, or with `GOVERN_LANE=<slug>`, `govern hook session-start` opens the segment.
 4. Name commands and files once: `govern cmd <slug> build -- {python} build.py`, `govern file <slug> report summary.json`.

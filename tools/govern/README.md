@@ -131,6 +131,9 @@ Documentation:
 - [PORTABILITY.md](PORTABILITY.md) covers `govern freeze`, `export`, `import` and `clone`: stopping a lane and making
   it read-only, writing it to one bundle file, and bringing a bundle back as a new lane — the bundle format and what a
   copy does not inherit.
+- [BOX.md](BOX.md) covers `govern doctor`: the box manifest (`~/.config/govern/box.json`) and the deterministic probes
+  that say whether a host or a container can run its lanes (govern, engines and logins, workspaces, units, Slack, images
+  and check commands), each failure with its fix and who applies it.
 - [processes/video/MANUAL.md](processes/video/MANUAL.md) is the manual of the built-in `video` process (`govern manual video`).
 - [OPENCLAW-GAP.md](OPENCLAW-GAP.md) and [OPENCLAW-PARITY.md](OPENCLAW-PARITY.md) are research snapshots, not
   maintained: how OpenClaw could run on top of govern, and what govern would need to offer an OpenClaw-like
