@@ -109,6 +109,9 @@ export interface Request {
   usd?: number;
   /** A machine job's estimate in hours, and its price for the same time when the resource is time-priced. */
   hours?: number; money?: { amount: number; currency: string };
+  /** A service's effect that moves money (govern drive, CONNECTORS.md "Money"): metered only by money allowances in its
+   *  currency. */
+  effect?: { amount: number; currency: string };
   /** The process that holds the reservation (default: this one). */
   holder?: Holder; job?: JobRef;
 }
@@ -119,11 +122,15 @@ const matches = (a: Allowance, k: { lane?: string; profile?: string }): boolean 
 /** Whether a machine job of lane `lane` is metered by some allowance (a money one only in `currency`). */
 export const meters = (list: Record<string, Allowance>, lane: string, currency: string | undefined): boolean =>
   Object.values(list).some((a) => matches(a, { lane }) && (a.unit === "machine-hours" || (a.unit === "money" && a.currency === currency)));
+/** Whether some money allowance in `currency` covers lane `lane`: an effect that moves money runs only then. */
+export const coversMoney = (list: Record<string, Allowance>, lane: string, currency: string): boolean =>
+  Object.values(list).some((a) => a.unit === "money" && a.currency === currency && matches(a, { lane }));
 const UNITS: Record<Unit, string> = { "model-usd": "model dollars", "machine-hours": "machine-hours", money: "money" };
 const unitOf = (a: Allowance): string => (a.unit === "model-usd" ? "USD" : a.unit === "money" ? a.currency! : "machine-hours");
 const periodWords = (a: Allowance) => (a.period === "day" ? "per day" : "in total");
 /** What `req` would reserve against `a`: undefined when the request is not metered by it, null when it has no estimate. */
 function amountFor(a: Allowance, req: Request): number | null | undefined {
+  if (req.effect) return a.unit === "money" && a.currency === req.effect.currency ? req.effect.amount : undefined;
   if (req.hours !== undefined) {
     if (a.unit === "machine-hours") return req.hours;
     return a.unit === "money" && req.money && req.money.currency === a.currency ? req.money.amount : undefined;
@@ -134,7 +141,7 @@ function amountFor(a: Allowance, req: Request): number | null | undefined {
 const validAmount = (n: number): boolean => Number.isFinite(n) && n >= 0;
 /** Whether a request's amount (hours, USD, money) is an amount at all: never negative, never NaN or Infinity. */
 const invalid = (a: Allowance, req: Request): Refusal | undefined => {
-  const raw = req.hours !== undefined ? (a.unit === "machine-hours" ? req.hours : req.money?.amount) : req.usd;
+  const raw = req.effect ? req.effect.amount : req.hours !== undefined ? (a.unit === "machine-hours" ? req.hours : req.money?.amount) : req.usd;
   return raw !== undefined && !validAmount(raw) ? { kind: "invalid", owner: a.owner, text: `${req.label} asked ${String(raw)} of allowance "${a.name}": not a valid amount (it must be a finite number, 0 or more)` } : undefined;
 };
 

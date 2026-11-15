@@ -285,6 +285,25 @@ test("a stage govern drive left to the operator is posted once, with its reason"
   });
 });
 
+test("channel alerts go to slack.alertsChannel when set; lane posts stay in the work channel", async () => {
+  // 2026-11-13: govern-ops. Machinery alerts (listener stale, unanswered request, unit failed) mixed with the gate
+  // buttons in the work channels; a dedicated channel keeps decisions readable and alerts mutable.
+  const e = setup();
+  const cfg = JSON.parse(readFileSync(join(e.root, "govern.config.json"), "utf8"));
+  const inbox = join(e.root, "slack-inbox");
+  write(join(e.root, "govern.config.json"), JSON.stringify({ ...cfg, slack: { team: "T0TEAM", channel: "C0SUP", alertsChannel: "C0OPS",
+    inbox, alerts: { listenStaleSec: 300, unansweredSec: 600 } } }));
+  await fakeSlack(async (api, calls) => {
+    const r = await inWorkspace(e, () => notify({ api, token: "xoxb-test-token", channel: "C0SUP", alertsChannel: "C0OPS" }));
+    assert.ok(r.alerts.includes("channel:listen-stale"), JSON.stringify(r.alerts));
+    const stale = calls.find((c) => c.method === "chat.postMessage" && /heartbeat/.test(String(c.body.text)))!;
+    assert.equal(stale.body.channel, "C0OPS");
+    for (const c of calls.filter((c) => c.method === "chat.postMessage" && !/heartbeat/.test(String(c.body.text))))
+      assert.equal(c.body.channel, "C0SUP", "lane timers and gates stay in the work channel");
+  });
+  assert.equal(govern(e, ["slack", "notify", "--dry-run"], { SLACK_BOT_TOKEN: "xoxb-1" }).code, 0, "the config accepts alertsChannel");
+});
+
 // slack.threads: one card per case, kept up to date in place; what the case waits on and its alerts go in its thread.
 const posts = (calls: Call[]) => calls.filter((c) => c.method === "chat.postMessage");
 const cardOf = (calls: Call[]) => posts(calls).find((c) => c.body.thread_ts === undefined)!;

@@ -117,7 +117,7 @@ test("a Claude Code 2.1.318 result that names its origin still decodes", () => {
 });
 
 // Captured `claude -p --output-format stream-json --verbose` runs (system events dropped, paths and signatures scrubbed).
-for (const version of ["2.1.219", "2.1.312", "2.1.318"]) {
+for (const version of ["2.1.219", "2.1.312", "2.1.318", "2.1.322"]) {
   test(`Claude Code ${version} stream and result decode`, { timeout: 10000 }, () => {
     const lines = readFileSync(join(HERE, `fixtures/claude-code-${version}.jsonl`), "utf8").trim().split("\n");
     const e = makeEnv("transport-claude-" + version), saved = process.env;

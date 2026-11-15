@@ -1,26 +1,40 @@
 // govern drive: runs the stages a process gives to an agent. When such a stage is active, its task goes through the queue
 // to the declared runner or profile (the dispatcher runs it, sealed to the profile); the agent's reply is consumed here:
 // a BLOCKED, unverified or invalid reply is retried with its reason up to the stage's attempts, then left to the
-// operator; a valid one has its body parsed as the stage's typed outputs (case fields, unknown ones refused), applied,
-// and the stage advanced through `govern advance`, so its exit check, gates and dependencies decide as for anyone.
+// operator (or routed to the stage's onExhausted stage); a valid one has its body parsed as the stage's typed outputs (case
+// fields, unknown ones refused), applied, and the stage advanced through `govern advance`, so its exit check, gates and
+// dependencies decide as for anyone. A service stage's command gets an idempotency key that is the same on every attempt
+// of one entry into the stage; its run is recorded as running before it starts, so a driver that dies mid-command leaves
+// a mark the next pass reads as an interrupted attempt. The command runs as a background job: a pass waits for it up to
+// GOVERN_DRIVE_SERVICE_WAIT seconds (default 5), then leaves it running and drives the other lanes; a later pass reads how
+// it ended (a job lost without an exit, as after a reboot, is an interrupted attempt) and stops it past its timeout; exit 75 is retried after a backoff, exit 65 never (CONNECTORS.md).
+// When the last attempt ends with its outcome uncertain and the service declares a probe, the probe (a dry run) says
+// whether the effect happened; a definite answer buys more attempts with the same key, an unknown one leaves it to a person.
+// A service that moves money has the amount reserved against the lane's money allowance before its command runs: a case
+// over the ceiling is not run but routed to a person. A process's breaker holds its service stages once too many of their
+// last outcomes failed, until a trial after the cooldown succeeds or a person closes it in their own words.
 //
 // ARCHITECTURAL REQUIREMENT: LLMs will always produce some form of error.
 // Absence of output verification is a design defect, not a runtime bug.
 // All LLM output must be treated as untrusted and validated explicitly.
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import * as queue from "../../lib/queue.ts";
 import { load, save, laneSlugs, ledgerFile, appendLedger, type Project } from "../../lib/project.ts";
-import { processOf } from "../../lib/process.ts";
+import { processOf, type StageDef } from "../../lib/process.ts";
 import { activeStages, setData, gateApproved } from "../../lib/business.ts";
-import { transaction } from "../../lib/lifecycle.ts";
+import { transaction, resetExecution } from "../../lib/lifecycle.ts";
 import { stateDir } from "../../lib/workspace.ts";
 import { withLaneLock } from "../../lib/lane-lock.ts";
-import { fail, readJsonl } from "../../lib/util.ts";
-import type { AgentDef } from "../../lib/business-schema.ts";
+import { fail, nowIso, readJsonl } from "../../lib/util.ts";
+import * as allowances from "../../lib/allowances.ts";
+import * as jobs from "../../lib/jobs.ts";
+import { verifyQuote, type Source } from "../../lib/approval.ts";
+import type { AgentDef, Exhausted } from "../../lib/business-schema.ts";
 import type { Value } from "../../lib/business-schema.ts";
+import { replayCase } from "../../lib/replay.ts";
 
 /** The queue name the driver sends as and reads replies for. */
 export const DRIVER = "govern-drive";
@@ -28,9 +42,21 @@ export const DRIVER = "govern-drive";
 const FINISHING = new Set(["HANDOFF", "ACK", "REVIEW", "DECISION"]);
 const GOVERN_TS = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "govern.ts");
 
-/** The driver's record of one agent stage of one lane: the task in flight, which entry of the stage it is for (the number
- *  of advances out of the stage before it), which attempt, and whether it is waiting, done or failed. */
-export interface Run { task: string; round: number; attempt: number; state: "sent" | "done" | "failed"; reason?: string }
+/** The driver's record of one agent or service stage of one lane: the task in flight, which entry of the stage it is for
+ *  (the number of times the lane left the stage before it), which attempt, and whether it is waiting, running (a service's
+ *  command started and has not been seen to end), done or failed. A service's transient failures count in `transient`;
+ *  `notBefore` is when its next attempt is due; `routed` is the stage a failed run sent the case to; `recovered` is how
+ *  many times a probe answered for an uncertain outcome (each buys the service its attempts again). */
+export interface Run { task: string; round: number; attempt: number; state: "sent" | "running" | "done" | "failed"; reason?: string;
+  notBefore?: string; transient?: number; routed?: string; recovered?: number;
+  /** A service's background job while its command runs (state "running"); a running run without one is interrupted. */
+  job?: string;
+  /** A money effect's amount: reserved for the attempt that runs, or charged once (it succeeded, or its outcome is
+   *  uncertain); a charged entry is not charged again by the attempts that follow with the same key. */
+  money?: { amount: number; currency: string; state: "reserved" | "charged" } }
+/** How long one pass waits for a service's background job before leaving it running and driving the other lanes
+ *  (GOVERN_DRIVE_SERVICE_WAIT seconds, default 5): a quick command still finishes its stage in the pass that started it. */
+const serviceWait = () => { const s = Number(process.env["GOVERN_DRIVE_SERVICE_WAIT"]); return Number.isFinite(s) && s >= 0 ? s : 5; };
 export interface DriveReport { lines: string[]; failed: string[] }
 
 const dir = () => join(stateDir(), "drive");
@@ -46,6 +72,35 @@ function writeRuns(runs: Record<string, Run>): void {
   renameSync(tmp, file());
 }
 
+/** A process's circuit breaker: the last outcomes of its service stages (true: done), and whether it holds them. */
+export interface Breaker { outcomes: boolean[]; state: "closed" | "open" | "half-open"; openedAt?: string; trial?: string; trialAt?: string }
+const breakersFile = () => join(dir(), "breakers.json");
+const breakerLog = (row: Record<string, unknown>) => appendFileSync(join(dir(), "breakers.jsonl"), JSON.stringify({ at: nowIso(), ...row }) + "\n", { mode: 0o600 });
+function readBreakers(): Record<string, Breaker> {
+  if (!existsSync(breakersFile())) return {};
+  try { return JSON.parse(readFileSync(breakersFile(), "utf8")) as Record<string, Breaker>; } catch (e) { return fail(`${breakersFile()} is not valid JSON (${(e as Error).message})`, 1); }
+}
+function writeBreakers(b: Record<string, Breaker>): void {
+  const tmp = `${breakersFile()}.tmp-${process.pid}`;
+  writeFileSync(tmp, JSON.stringify(b, null, 2) + "\n", { mode: 0o600 });
+  renameSync(tmp, breakersFile());
+}
+
+/** `govern drive --close-breaker P --quote Q`: a person closes process P's open (or half-open) breaker in their own words,
+ *  checked as an approval's are. Fails when P has none open. */
+export function closeBreaker(processName: string, quote: string): Source {
+  mkdirSync(dir(), { recursive: true, mode: 0o700 });
+  return withLaneLock(join(dir(), "lock"), () => {
+    const all = readBreakers(), b = all[processName];
+    if (!b || b.state === "closed") return fail(`no open breaker for process ${processName}`, 1);
+    const source = verifyQuote(quote);
+    all[processName] = { outcomes: [], state: "closed" };
+    writeBreakers(all);
+    breakerLog({ kind: "closed", process: processName, quote, source });
+    return source;
+  });
+}
+
 /** Let `govern drive` try a stage it left to the operator again: the failed run of `slug`'s `stage` for entry `round` is
  *  forgotten, so the next drive sends the stage's task afresh (attempt 1). Fails when that run is not the failed one. */
 export function retryFailed(slug: string, stage: string, round: number): void {
@@ -58,8 +113,16 @@ export function retryFailed(slug: string, stage: string, round: number): void {
   });
 }
 
-/** How many times the lane has advanced out of `stage`: a new entry into the stage has a higher round than the last task. */
-const roundOf = (slug: string, stage: string): number => readJsonl(ledgerFile(slug)).filter((e) => e.kind === "advance" && e.from === stage).length;
+/** How many times the lane has left `stage`, by an advance or an exception route: a new entry into the stage has a higher
+ *  round than the last task. */
+const roundOf = (slug: string, stage: string): number =>
+  readJsonl(ledgerFile(slug)).filter((e) => (e.kind === "advance" || e.kind === "exception-route") && e.from === stage).length;
+/** A service exit code that says the failure is transient (EX_TEMPFAIL): retried after a backoff. */
+export const EXIT_TRANSIENT = 75;
+/** A service exit code that says the failure is permanent (EX_DATAERR): never retried. */
+export const EXIT_PERMANENT = 65;
+const DEFAULT_BACKOFF_SECONDS = 30;
+const DEFAULT_COOLDOWN_SECONDS = 300;
 
 /** `text` with {lane}, {stage}, {title} and {data.FIELD} filled from the case (a missing field reads "(none)"). */
 export function render(text: string, p: Project, stage: string): string {
@@ -85,17 +148,20 @@ export function outputsOf(body: string, outputs: readonly string[]): Record<stri
 function send(p: Project, stage: string, a: AgentDef, round: number, attempt: number, previous?: string): Run {
   const t = queue.resolveTarget(a.to, { write: a.write === true, ...(a.profile ? { profile: a.profile } : {}) });
   const body = render(a.body, p, stage) + (previous ? `\n\nThe previous attempt failed: ${previous}\nCorrect that and answer again.` : "");
-  const m = queue.send({ project: p.slug, task: a.task, kind: "TASK", from: DRIVER, to: a.to, summary: render(a.summary, p, stage), body,
+  const m = queue.send({ project: a.project ? render(a.project, p, stage) : p.slug, task: a.task, kind: "TASK", from: DRIVER, to: a.to, summary: render(a.summary, p, stage), body,
     files: a.files ?? [], access: t.access, ...(t.profile ? { profile: t.profile } : {}), lane: p.slug,
     ...(a.check ? { check: a.check } : {}), ...(a.verify ? { verify: a.verify } : {}), ...(a.timeout ? { timeoutSec: a.timeout } : {}) });
   appendLedger(p.slug, { kind: "drive-sent", stage, task: m.id, attempt, ...(previous ? { previous } : {}) });
   return { task: m.id, round, attempt, state: "sent" };
 }
 
-/** A govern command as its own process (check, advance, run): the same rules, locks and ledger as at a terminal. */
-function governRun(args: string[], env: Record<string, string> = {}): { code: number; out: string } {
+/** A govern command as its own process (check, advance, run): the same rules, locks and ledger as at a terminal. An
+ *  `env` value of undefined removes the variable. */
+function governRun(args: string[], env: Record<string, string | undefined> = {}): { code: number; out: string } {
+  const merged: NodeJS.ProcessEnv = { ...process.env, ...env };
+  for (const [k, v] of Object.entries(env)) if (v === undefined) delete merged[k];
   const r = spawnSync(process.execPath, ["--disable-warning=ExperimentalWarning", GOVERN_TS, ...args],
-    { encoding: "utf8", env: { ...process.env, ...env }, timeout: 35 * 60_000 });
+    { encoding: "utf8", env: merged, timeout: 35 * 60_000 });
   return { code: r.status ?? 1, out: `${r.stdout ?? ""}${r.stderr ?? ""}`.trim() };
 }
 const tail = (text: string) => text.split("\n").slice(-12).join("\n");
@@ -118,20 +184,53 @@ function finish(slug: string, stage: string, data: Record<string, Value>, note: 
   return adv.code === 0 ? { advanced: true } : { fail: `advance refused: ${adv.out}` };
 }
 
+/** Send the case to `ex.to` as an exception route, with `reason` in `ex.field` when named. Returns why it could not. */
+function route(slug: string, stage: string, ex: Exhausted, reason: string): string | undefined {
+  try {
+    transaction(slug, () => {
+      const q = load(slug);
+      if (ex.field) setData(q, { [ex.field]: reason.slice(0, 2000) });
+      resetExecution(q, ex.to, `${stage} gave up: ${reason}`);
+      save(q);
+    });
+    return undefined;
+  } catch (e) { return (e as Error).message; }
+}
+
+/** A replay lane (lib/replay.ts) stops for good where going on would need a person or reach outside its lane: why, or
+ *  undefined when stage `def` may run. */
+function replayHalt(def: StageDef | undefined, held: string[]): string | undefined {
+  if (!def) return undefined;
+  if (def.human) return "a person's task";
+  if (def.event) return "it waits for an event";
+  if (def.call || def.foreach) return "it would make real sub-cases";
+  if (held.length) return `it waits for the ${held.join(", ")} gate${held.length === 1 ? "" : "s"}`;
+  if (def.agent?.write) return "its agent may write";
+  return undefined;
+}
+/** Record that replay lane `slug` stopped at `stage`; `diverged`: the candidate went where the original never did. */
+function stopReplay(slug: string, stage: string, why: string, diverged = false): void {
+  appendLedger(slug, { kind: "replay-stopped", stage, why, ...(diverged ? { diverged: true } : {}) });
+}
+
 /** Bring every active agent and service stage (of every lane, or of `lanes`) one step on. An agent stage: send its task
  *  once its gates are approved, wait for the reply, consume it. A service stage: run its command and read the outputs it
- *  wrote. One line per stage; `failed` names the stages left to the operator. */
+ *  wrote. One line per stage; `failed` names the stages left to the operator (a stage routed to its onExhausted stage is
+ *  not). */
 export function drive(o: { lanes?: string[] } = {}): DriveReport {
   const report: DriveReport = { lines: [], failed: [] };
   mkdirSync(join(dir(), "outputs"), { recursive: true, mode: 0o700 });
   withLaneLock(join(dir(), "lock"), () => {
-    const runs = readRuns();
-    for (const slug of o.lanes ?? laneSlugs()) {
+    const runs = readRuns(), breakers = readBreakers();
+    for (const slug of o.lanes ?? laneSlugs({ replays: true })) {
       let p: Project;
       try { p = load(slug); } catch (e) { report.lines.push(`${slug}: ${(e as Error).message}`); report.failed.push(slug); continue; }
+      if (p.replay && readJsonl(ledgerFile(slug)).some((e) => e.kind === "replay-stopped")) continue;
       for (const stage of activeStages(p)) {
         const def = processOf(p).stages.find((s) => s.name === stage), a = def?.agent, svc = def?.service;
         const held = processOf(p).gates.filter((g) => g.stage === stage && !gateApproved(p, g)).map((g) => g.name);
+        const halt = p.replay ? replayHalt(def, held) : undefined;
+        if (halt) { stopReplay(slug, stage, halt); report.lines.push(`${slug} ${stage}: replay stopped: ${halt}`); break; }
         const waiting = () => report.lines.push(`${slug} ${stage}: waiting for the ${held.join(", ")} gate${held.length === 1 ? "" : "s"}`);
         if (!a && !svc) {
           // Not an agent's or a command's: advanced once its person has completed the task, its gates are approved and
@@ -152,11 +251,38 @@ export function drive(o: { lanes?: string[] } = {}): DriveReport {
         }
         const key = `${slug}:${stage}`, round = roundOf(slug, stage), attempts = (a ?? svc)!.attempts ?? 1;
         const line = (s: string) => report.lines.push(`${slug} ${stage}: ${s}`);
-        const failed = (run: Run, reason: string) => {
-          runs[key] = { ...run, state: "failed", reason };
-          appendLedger(slug, { kind: "drive-failed", stage, task: run.task, attempt: run.attempt, reason });
-          line(`failed after ${run.attempt} attempt${run.attempt === 1 ? "" : "s"}: ${reason}`);
-          report.failed.push(key);
+        const pname = processOf(p).name, bk = svc ? processOf(p).breaker : undefined;
+        /** Count a service's final outcome toward its process's breaker; what that did to the breaker, for the line. */
+        const outcome = (ok: boolean): string => {
+          if (!bk) return "";
+          const b = breakers[pname] ?? { outcomes: [], state: "closed" };
+          if (b.state === "half-open" && b.trial === key) {
+            if (ok) { breakers[pname] = { outcomes: [], state: "closed" }; breakerLog({ kind: "closed", process: pname, by: "trial", lane: slug }); return `; the ${pname} breaker closes: its trial succeeded`; }
+            breakers[pname] = { outcomes: b.outcomes, state: "open", openedAt: nowIso() };
+            breakerLog({ kind: "opened", process: pname, by: "trial", lane: slug });
+            return `; the ${pname} breaker opens again: its trial failed`;
+          }
+          if (b.state !== "closed") return "";
+          const outcomes = [...b.outcomes, ok].slice(-bk.window), n = outcomes.filter((x) => !x).length;
+          if (ok || n < bk.failures) { breakers[pname] = { ...b, outcomes }; return ""; }
+          breakers[pname] = { outcomes, state: "open", openedAt: nowIso() };
+          breakerLog({ kind: "opened", process: pname, failures: n, window: outcomes.length, lane: slug });
+          return `; the ${pname} breaker opens: ${n} of the last ${outcomes.length} outcomes failed`;
+        };
+        /** Give up on the stage. `counted`: a failure of the service (a refusal before it ran, such as the money
+         *  ceiling's, is not), so it counts toward the process's breaker. */
+        const failed = (run: Run, reason: string, counted = true) => {
+          const { notBefore: _, ...rest } = run;
+          runs[key] = { ...rest, state: "failed", reason };
+          const after = `failed after ${run.attempt} attempt${run.attempt === 1 ? "" : "s"}: ${reason}`;
+          const ex = (a ?? svc)!.onExhausted;
+          const refused = ex ? route(slug, stage, ex, reason) : "";
+          // `routed`: the stage the case went on to; an entry without it is an exception left with no destination.
+          appendLedger(slug, { kind: "drive-failed", stage, task: run.task, attempt: run.attempt, reason, ...(ex && refused === undefined ? { routed: ex.to } : {}) });
+          const tripped = counted ? outcome(false) : "";
+          if (ex && refused === undefined) { runs[key] = { ...runs[key]!, routed: ex.to }; line(`${after}; routed to ${ex.to}${tripped}`); return; }
+          line((refused ? `${after}; not routed to ${ex!.to}: ${refused}` : after) + tripped);
+          if (!p.replay) report.failed.push(key); // a replay's failure is its report's, not the operator's
         };
         let run = runs[key];
         if (run && run.round >= round && run.state === "failed") {
@@ -165,37 +291,201 @@ export function drive(o: { lanes?: string[] } = {}): DriveReport {
           continue;
         }
         if (run && run.round >= round && run.state === "done") continue;
+        if (svc && p.replay) {
+          // A replay never runs the command: it takes the outputs the original case's run of it wrote.
+          const rec = replayCase(p.replay.run, slug), diverge = (why: string) => { stopReplay(slug, stage, why, true); line(`replay diverged: ${why}`); };
+          if (!rec) { diverge(`replay run ${p.replay.run} has no record of this case`); break; }
+          if (!rec.completed.includes(stage)) { diverge(`the original (${rec.of}) never completed ${stage}: its effect is unknown`); break; }
+          const outs = svc.outputs ?? [], missing = outs.filter((k) => rec.data[k] === undefined);
+          if (missing.length) { diverge(`the original (${rec.of}) has no ${missing.join(", ")}`); break; }
+          const end = finish(slug, stage, Object.fromEntries(outs.map((k) => [k, rec.data[k]!])), `replay of ${rec.of}: the command was not run`, { replayOf: rec.of });
+          if ("advanced" in end) { runs[key] = { task: `replay of ${rec.of}`, round, attempt: 1, state: "done" }; line("advanced with the original's outputs (command not run)"); }
+          else { diverge("retry" in end ? end.retry : end.fail); break; }
+          continue;
+        }
         if (svc) {
-          if (held.length) { waiting(); continue; }
+          // A command already running is looked at whatever the gates and the breaker say now: it started under them.
+          const inFlight = !!run && run.round >= round && run.state === "running" && !!run.job;
+          if (!inFlight && held.length) { waiting(); continue; }
+          const b = bk ? breakers[pname] : undefined;
+          if (!inFlight && bk && b && b.state !== "closed") {
+            const cool = (bk.cooldown ?? DEFAULT_COOLDOWN_SECONDS) * 1000;
+            // A trial whose case never came to an outcome (it left the stage, or waits) gives way to another after the cooldown.
+            const due = b.state === "open" ? Date.now() - Date.parse(b.openedAt ?? "") >= cool : b.trial !== key && Date.now() - Date.parse(b.trialAt ?? "") >= cool;
+            if (due) { breakers[pname] = { ...b, state: "half-open", trial: key, trialAt: nowIso() }; line(`the ${pname} breaker is half-open: this run is its trial`); }
+            else if (!(b.state === "half-open" && b.trial === key)) {
+              line(`held: the ${pname} breaker is open since ${b.openedAt}; to close it: govern drive --close-breaker ${pname} --quote "<your own words>"`);
+              if (!report.failed.includes(`breaker:${pname}`)) report.failed.push(`breaker:${pname}`);
+              continue;
+            }
+          }
           if (!run || run.round < round) run = runs[key] = { task: `command ${svc.command}`, round, attempt: 1, state: "sent" };
-          const retryOrFail = (reason: string) => {
-            if (run!.attempt < attempts) { runs[key] = { ...run!, attempt: run!.attempt + 1 }; line(`retried (attempt ${run!.attempt + 1} of ${attempts}): ${reason}`); }
+          const idem = `${slug}:${stage}:${round}`, moneyId = `drive:${idem}`, base = join(dir(), "outputs", `${slug.replace(/\//g, "__")}--${stage}`);
+          /** The attempts this run may make: the stage's, again for every recovery a probe allowed. */
+          const limit = (r: Run) => attempts * (1 + (r.recovered ?? 0));
+          /** The last attempt ended and nobody knows whether its effect happened. With a probe left to ask, ask it. */
+          const uncertain = (r: Run, reason: string) => {
+            const max = svc.recoveries ?? 1, used = r.recovered ?? 0;
+            if (!svc.probe) return failed(r, reason);
+            if (used >= max) return failed(r, `${reason}; recoveries used up (${max})`);
+            const probeFile = `${base}.probe.json`;
+            rmSync(probeFile, { force: true });
+            const pr = governRun(["run", slug, svc.probe], {
+              GOVERN_DRY_RUN: "1", GOVERN_PROBE: probeFile, GOVERN_OUTPUTS: undefined, GOVERN_STAGE: stage, GOVERN_ROUND: String(round),
+              GOVERN_ATTEMPT: String(r.attempt), GOVERN_IDEMPOTENCY_KEY: idem, GOVERN_INTERRUPTED: undefined });
+            let done: boolean | undefined, why = "";
+            if (pr.code !== 0) why = `the probe exited ${pr.code}: ${tail(pr.out)}`;
+            else {
+              try {
+                const v = JSON.parse(readFileSync(probeFile, "utf8")) as { done?: unknown } | null;
+                if (typeof v?.done === "boolean") done = v.done; else why = "its answer in $GOVERN_PROBE has no boolean done";
+              } catch (e) { why = `it wrote no JSON answer to $GOVERN_PROBE (${(e as Error).message})`; }
+            }
+            appendLedger(slug, { kind: "drive-probe", stage, attempt: r.attempt, ...(done === undefined ? { unknown: why } : { done, recovery: used + 1 }) });
+            if (done === undefined) return failed(r, `${reason}; the probe could not tell whether the effect happened: ${why}`);
+            const { notBefore: _n, transient: _t, ...rest } = r;
+            runs[key] = { ...rest, state: "sent", attempt: r.attempt + 1, recovered: used + 1 };
+            line(`${reason}; the probe says the effect ${done ? "happened" : "did not happen"}: attempt ${r.attempt + 1} runs with the same key (recovery ${used + 1} of ${max})`);
+          };
+          /** Close the attempt's money reservation: charge it (the effect happened, or may have: charged as reserved), or
+           *  give it back (the command said it did not happen: exit 65 or 75). */
+          const settleMoney = (r: Run, how: "charge" | "uncertain" | "release"): Run => {
+            const m = r.money;
+            if (!m || m.state !== "reserved") return r;
+            if (how === "release") allowances.release(moneyId);
+            else allowances.settle(moneyId, { money: { amount: m.amount, currency: m.currency } }, how === "uncertain" ? "outcome uncertain: charged as reserved" : undefined);
+            appendLedger(slug, { kind: "drive-money", stage, attempt: r.attempt, amount: m.amount, currency: m.currency, charged: how !== "release", ...(how === "uncertain" ? { uncertain: true } : {}) });
+            const { money: _m, ...rest } = r;
+            return how === "release" ? rest : { ...rest, money: { ...m, state: "charged" } };
+          };
+          const outFile = `${base}.json`;
+          /** The background job `jobId` after up to serviceWait() seconds: still running, lost (gone without an exit: its
+           *  effect is unknown), or ended, with its exit code and log (and a reason when it was stopped at its timeout). */
+          const observe = (jobId: string): "running" | "lost" | { code: number; out: string; reason?: string } => {
+            let st: ReturnType<typeof jobs.wait>;
+            try { st = jobs.wait(slug, jobId, serviceWait(), 250); } catch { return "lost"; }
+            const cmd = p.commands[svc.command], max = (cmd && !Array.isArray(cmd) ? cmd.timeout : undefined) ?? jobs.DEFAULT_TIMEOUT;
+            if (st.timedOut) {
+              if (Date.now() - Date.parse(st.start) < max * 1000) return "running";
+              try { jobs.kill(slug, jobId); } catch { /* already gone: its state says how it ended */ }
+              jobs.recordEnd(slug, jobId);
+              return { code: 1, out: "", reason: `the command timed out after ${max}s` };
+            }
+            jobs.recordEnd(slug, jobId);
+            if (st.status === "lost") return "lost";
+            const log = (() => { try { return readFileSync(join(jobs.dirOf(slug, jobId), "log"), "utf8").trim(); } catch { return ""; } })();
+            return { code: jobs.exitCode(st), out: log || jobs.ending(st), ...(st.status === "timeout" ? { reason: `the command timed out after ${max}s` } : {}) };
+          };
+          let interrupted = false, ended: { code: number; out: string; reason?: string } | undefined;
+          if (run.state === "running" && run.job) {
+            const jobId = run.job, seen = observe(jobId);
+            if (seen === "running") { line(`running (job ${jobId})`); continue; }
+            const { job: _j, ...rest } = run;
+            // A lost job stays "running" without its job: read below as an interrupted attempt.
+            run = runs[key] = seen === "lost" ? rest : { ...rest, state: "sent" };
+            if (seen !== "lost") ended = seen;
+          }
+          if (!ended && run.state === "running") {
+            // The driver died while the command ran: its effect may or may not have happened. Only the same key may run.
+            appendLedger(slug, { kind: "drive-interrupted", stage, attempt: run.attempt });
+            run = runs[key] = settleMoney(run, "uncertain");
+            if (run.attempt >= limit(run)) { uncertain(run, `interrupted during attempt ${run.attempt}; its outcome is uncertain`); continue; }
+            line(`interrupted during attempt ${run.attempt}; running it again (attempt ${run.attempt + 1} of ${limit(run)})`);
+            run = runs[key] = { ...run, attempt: run.attempt + 1, state: "sent" };
+            interrupted = true;
+          }
+          if (!ended && run.notBefore && Date.parse(run.notBefore) > Date.now()) { line(`retry ${run.attempt} of ${limit(run)} is due at ${run.notBefore}`); continue; }
+          if (!ended) { const { notBefore: _due, ...ready } = run; run = ready; }
+          /** Another attempt if one is left; else give up, after asking the probe when the effect may have happened. */
+          const retryOrFail = (reason: string, outcome: "uncertain" | "known") => {
+            if (run!.attempt < limit(run!)) { runs[key] = { ...run!, attempt: run!.attempt + 1 }; line(`retried (attempt ${run!.attempt + 1} of ${limit(run!)}): ${reason}`); }
+            else if (outcome === "uncertain") uncertain(run!, reason);
             else failed(run!, reason);
           };
-          const outFile = join(dir(), "outputs", `${slug.replace(/\//g, "__")}--${stage}.json`);
-          rmSync(outFile, { force: true });
-          const r = governRun(["run", slug, svc.command], { GOVERN_OUTPUTS: outFile });
-          if (r.code !== 0) { retryOrFail(`the command failed: ${tail(r.out)}`); continue; }
+          if (!ended && svc.money && run.money?.state !== "charged") {
+            // The amount is reserved before the effect, against the money allowance that covers the lane; none: not run.
+            const { field, currency } = svc.money, amount = p.data?.[field];
+            if (typeof amount !== "number" || !Number.isFinite(amount) || amount < 0) {
+              failed(run, `${field} is not an amount (${amount === undefined ? "none" : JSON.stringify(amount)}): permanent failure`); continue;
+            }
+            let refusal: string | undefined;
+            try {
+              const list = allowances.allowances();
+              if (!allowances.coversMoney(list, slug, currency)) refusal = `no money allowance in ${currency} covers lane ${slug}: an effect that moves money is never run unmetered`;
+              else {
+                const no = allowances.reserve(list, { lane: slug }, { id: moneyId, label: `${slug} ${stage}`, effect: { amount, currency } });
+                if (no) refusal = `over the money ceiling: ${no.text}`;
+              }
+            } catch (e) { refusal = `the money allowances cannot be read: ${(e as Error).message}`; }
+            if (refusal) { failed(run, refusal, false); continue; }
+            run = { ...run, money: { amount, currency, state: "reserved" } };
+          }
+          if (!ended) {
+            rmSync(outFile, { force: true });
+            // Recorded before the command starts: a crash from here on is read as an interrupted attempt on the next pass.
+            runs[key] = { ...run, state: "running" };
+            writeRuns(runs);
+            const s = governRun(["run", slug, svc.command, "--bg"], {
+              GOVERN_OUTPUTS: outFile, GOVERN_STAGE: stage, GOVERN_ROUND: String(round), GOVERN_ATTEMPT: String(run.attempt),
+              GOVERN_IDEMPOTENCY_KEY: idem, GOVERN_INTERRUPTED: interrupted ? "1" : undefined });
+            const jobId = s.code === 0 ? /^job (\S+) /m.exec(s.out)?.[1] : undefined;
+            if (!jobId) { runs[key] = run; ended = { code: s.code === 0 ? 1 : s.code, out: s.out, reason: `the command did not start: ${tail(s.out)}` }; }
+            else {
+              run = runs[key] = { ...run, state: "running", job: jobId };
+              writeRuns(runs);
+              const seen = observe(jobId);
+              if (seen === "running") { line(`running (job ${jobId})`); continue; }
+              const { job: _j, ...rest } = run;
+              run = runs[key] = seen === "lost" ? rest : { ...rest, state: "sent" };
+              // Lost at once: left "running", the next pass reads it as interrupted.
+              if (seen === "lost") { line(`job ${jobId} was lost: the next pass runs it again as interrupted`); continue; }
+              ended = seen;
+            }
+          }
+          const r = ended!;
+          run = settleMoney(run, r.code === 0 ? "charge" : r.code === EXIT_PERMANENT || r.code === EXIT_TRANSIENT ? "release" : "uncertain");
+          if (r.reason) { retryOrFail(r.reason, "uncertain"); continue; }
+          if (r.code === EXIT_PERMANENT) { failed(run, `permanent failure: the command exited ${EXIT_PERMANENT}: ${tail(r.out)}`); continue; }
+          if (r.code === EXIT_TRANSIENT && svc.poll) {
+            // A wait for something outside the case: not yet. Asked again later, with the same attempt.
+            const notBefore = new Date(Date.now() + svc.poll * 1000).toISOString();
+            runs[key] = { ...run, notBefore };
+            line(`not yet; asked again after ${svc.poll}s (at ${notBefore}): ${tail(r.out).trim().split("\n").at(-1) ?? ""}`);
+            continue;
+          }
+          if (r.code === EXIT_TRANSIENT) {
+            const why = `the command exited ${EXIT_TRANSIENT}: ${tail(r.out)}`;
+            if (run.attempt >= limit(run)) { uncertain(run, `transient failure persisted: ${why}`); continue; }
+            const transient = (run.transient ?? 0) + 1, delay = (svc.backoffSeconds ?? DEFAULT_BACKOFF_SECONDS) * 2 ** (transient - 1);
+            const notBefore = new Date(Date.now() + delay * 1000).toISOString();
+            runs[key] = { ...run, attempt: run.attempt + 1, transient, notBefore };
+            appendLedger(slug, { kind: "drive-retry-scheduled", stage, attempt: run.attempt + 1, at: notBefore });
+            line(`transient failure; retry ${run.attempt + 1} of ${limit(run)} after ${delay}s (at ${notBefore}): ${why}`);
+            continue;
+          }
+          if (r.code !== 0) { retryOrFail(`the command failed: ${tail(r.out)}`, "uncertain"); continue; }
           let data: Record<string, Value> = {};
           if ((svc.outputs ?? []).length) {
-            if (!existsSync(outFile)) { retryOrFail("the command wrote no outputs to $GOVERN_OUTPUTS"); continue; }
-            try { data = outputsOf(readFileSync(outFile, "utf8"), svc.outputs!); } catch (e) { retryOrFail((e as Error).message); continue; }
+            if (!existsSync(outFile)) { retryOrFail("the command wrote no outputs to $GOVERN_OUTPUTS", "uncertain"); continue; }
+            try { data = outputsOf(readFileSync(outFile, "utf8"), svc.outputs!); } catch (e) { retryOrFail((e as Error).message, "uncertain"); continue; }
           }
           const end = finish(slug, stage, data, `command ${svc.command}`, { command: svc.command });
-          if ("advanced" in end) { runs[key] = { ...run, state: "done" }; line("advanced"); }
-          else if ("retry" in end) retryOrFail(end.retry);
+          if ("advanced" in end) { runs[key] = { ...run, state: "done" }; line(`advanced${outcome(true)}`); }
+          else if ("retry" in end) retryOrFail(end.retry, "known");
           else failed(run, end.fail);
           continue;
         }
         if (!run || run.round < round) {
           if (held.length) { waiting(); continue; }
           run = runs[key] = send(p, stage, a!, round, 1);
+          writeRuns(runs); // a task sent is recorded at once: a crash later in the pass must not send it again
           line(`sent (${run.task})`);
           continue;
         }
         const retryOrFail = (reason: string) => {
           if (run!.attempt < attempts) {
             runs[key] = send(load(slug), stage, a!, round, run!.attempt + 1, reason);
+            writeRuns(runs);
             line(`retried (attempt ${run!.attempt + 1} of ${attempts}): ${reason}`);
           } else failed(run!, reason);
         };
@@ -217,6 +507,7 @@ export function drive(o: { lanes?: string[] } = {}): DriveReport {
       }
     }
     writeRuns(runs);
+    if (Object.keys(breakers).length) writeBreakers(breakers);
   });
   return report;
 }

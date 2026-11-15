@@ -25,7 +25,7 @@ export const nonempty: Shape<string> = (v, p) => { const s = str(v, p); return s
 /** An ISO-8601 UTC timestamp, as `Date.toISOString` writes it. */
 export const iso: Shape<string> = (v, p) => { const s = str(v, p); return /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?Z$/.test(s) && Number.isFinite(Date.parse(s)) ? s : reject(p, "must be an ISO timestamp"); };
 /** A project slug: lowercase segments separated by `/`, with no empty or `..` segment. */
-export const slug: Shape<string> = (v, p) => { const s = str(v, p); return /^[a-z0-9][a-z0-9.\/-]*$/.test(s) && !s.split("/").some(x => x === ".." || x === "") ? s : reject(p, "must be a project slug"); };
+export const slug: Shape<string> = (v, p) => { const s = str(v, p); return /^[a-z0-9][a-z0-9._\/-]*$/.test(s) && !s.split("/").some(x => x === ".." || x === "") ? s : reject(p, "must be a project slug"); };
 /** A project grant: one slug, or "*" for every project. */
 export const project: Shape<string> = (v, p) => v === "*" ? "*" : slug(v, p);
 /** A lowercase hex SHA-256 key fingerprint. */

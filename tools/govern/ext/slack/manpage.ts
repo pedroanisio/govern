@@ -10,23 +10,27 @@ export const MANPAGE = `SYNOPSIS
     govern slack triage [--all] [--json] [--check]  |  slack dismiss --ts TS --reason R
     govern slack heartbeat [--json]
     govern slack listen [--once | --loop --interval 60]
-    govern slack post --kind ack|blocked|delivered|question|note (--text T | --file F) [--thread TS] [--key K]
+    govern slack post --kind ack|blocked|delivered|question|note (--text T | --file F) [--thread TS | --alerts] [--key K]
 DESCRIPTION
     slack serve takes Slack's interactivity requests on loopback (POST /slack/actions; put an HTTPS proxy in front for
     Slack to reach it). A request counts only when its X-Slack-Signature is the app's signing secret's HMAC of the body,
     its timestamp is within 300 s and it was never received before. The clicking Slack user must be a process person
     (people.<id>.slack) of the config's slack.team. A govern.decide button approves or rejects a gate, or completes a
     human task, as that person, with the signed request as the decision's source; a button made before the case data or
-    a loop changed is refused. slack notify posts to slack.channel what the lanes wait on from people (active human tasks,
+    a loop changed is refused. slack.serveRepos lists other workspaces whose lanes the same server decides (one Slack
+    app, one interactivity URL); a click is decided in the one workspace holding its lane, under that workspace's
+    slack.team and people. slack notify posts to slack.channel what the lanes wait on from people (active human tasks,
     gates that can be decided now, each gate option as its own button), their open timer alerts and the stages govern
     drive left to the operator, once each; it updates a message without its buttons once its decision is made or the case
     changes. Recorded clicks also update immediately through an HTTPS hooks.slack.com response_url; refusals explain
     why to the clicker. Failed feedback never rolls back a decision; notify still reconciles.
     slack listen records new posts in slack.inbox using the poller-compatible state.json and inbox.jsonl. First run
     marks existing posts seen; subsequent runs follow at most twenty changed threads. Only configured requesters can
-    ask a fixed command after an exact bot mention: status, pending, lane <slug>, help. No post executes code.
-    slack post sends a kind-prefixed message, resolving --thread to its parent, and appends sent.jsonl. A sent --key
-    cannot be sent again. Run one reader and one writer per inbox. Bot identities, requesters and tags come from config.
+    ask a fixed command after an exact bot mention: status, pending, lane <slug>, help, and run <name> for each
+    slack.triggers name, which starts that systemd user unit at most once per minIntervalSec (default 900). Post text
+    never becomes argv or a unit name.
+    slack post sends a kind-prefixed message, resolving --thread to its parent, and appends sent.jsonl. --alerts sends a
+    top-level line to slack.alertsChannel instead. A sent --key cannot be sent again. Run one reader and one writer per inbox. Bot identities, requesters and tags come from config.
     With slack.route configured, listen queues requester requests, briefs and non-command bot mentions under a sealed
     read-only profile, once per timestamp and within maxPerHour. It posts seen: with the task id; model replies go only
     to the owner's queue, through parseReply and mandatory file-reference checks. Backlog stays in the durable inbox.
@@ -61,6 +65,7 @@ OPTIONS
     --text T                slack post, slack upload: nonempty message text, at most 40000 characters with prefix
     --file F                slack post, slack upload: message text file for post; binary image/video for upload
     --thread TS             slack post, slack upload: reply in this thread (a reply timestamp is resolved to its parent)
+    --alerts                slack post: send a top-level line to slack.alertsChannel instead of slack.channel
     --key K                 slack post, slack upload, slack resolve: refuse a previously sent key (resolve: the key to settle)
     --title T               slack upload: optional title, 1..255 characters
     --delivered             slack resolve: the channel shows it; journal the key (--ts gives the timestamp or file id)

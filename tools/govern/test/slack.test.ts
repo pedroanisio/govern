@@ -10,6 +10,7 @@ import { makeEnv, govern, write, jsonl, type Env } from "./helpers.ts";
 import { slackServer, parseAction, verifySignature, decisionValue, caseDigest, SKEW_SECONDS, MAX_BODY } from "../ext/slack/slack.ts";
 import { parseProcess } from "../lib/process.ts";
 import { load } from "../lib/project.ts";
+import { stateDir } from "../lib/workspace.ts";
 import type { Project } from "../lib/project.ts";
 import { GovernError } from "../lib/util.ts";
 
@@ -382,4 +383,127 @@ test("a set that is not one of the gate's options as the case stands is refused"
   });
   assert.equal(stateOf(e).data?.["respostaFinal"], undefined);
   assert.equal(stateOf(e).votes?.["envio"], undefined);
+});
+
+// ---------------------------------------------------------------- several workspaces behind one server
+
+/** A second workspace with the support process and its own lanes, and `slack` as its config's slack block. */
+function otherWorkspace(lanes: string[], slack: Record<string, unknown> = { team: TEAM }): Env {
+  const e = makeEnv("slack-other");
+  write(join(e.root, "PALS-Notes/processes/support.json"), JSON.stringify(PROCESS));
+  const cfg = JSON.parse(readFileSync(join(e.root, "govern.config.json"), "utf8"));
+  write(join(e.root, "govern.config.json"), JSON.stringify({ ...cfg, slack }));
+  for (const slug of lanes) assert.equal(govern(e, ["new", slug, "--process", "support", "--title", `Ticket ${slug}`]).code, 0);
+  return e;
+}
+/** The serving workspace's config with slack.serveRepos set to `repos`. */
+function serveAlso(e: Env, repos: string[]): void {
+  const cfg = JSON.parse(readFileSync(join(e.root, "govern.config.json"), "utf8"));
+  write(join(e.root, "govern.config.json"), JSON.stringify({ ...cfg, slack: { ...cfg.slack, serveRepos: repos } }));
+}
+
+test("a server decides the lanes of the workspaces slack.serveRepos names, as their own process's people", async () => {
+  const e = setup(["t1"]);
+  const squad = otherWorkspace(["dev-x"]);
+  serveAlso(e, [squad.root]);
+  const before = readFileSync(join(e.projects, "t1", "govern.json"), "utf8");
+  await serving(e, async (url) => {
+    const v = inWorkspace(squad, () => decisionValue(load("dev-x"), { gate: "go" }, "approve"));
+    const r = await send(url, formBody(payload("U0OTTO", v, "Enviar branch e abrir PR")));
+    assert.equal(r.status, 200, await r.clone().text());
+    assert.match(((await r.json()) as { text: string }).text, /dev-x: go approved by otto/);
+    // the serving workspace's own lanes still decide as before
+    const own = inWorkspace(e, () => decisionValue(load("t1"), { gate: "go" }, "approve"));
+    assert.equal((await send(url, formBody(payload("U0OTTO", own, "Enviar")))).status, 200);
+  });
+  const p = stateOf(squad, "dev-x");
+  assert.equal(p.approvals["go"]?.by, "otto");
+  assert.equal(p.approvals["go"]?.source?.kind, "slack");
+  assert.equal(ledgerOf(squad, "dev-x").filter((x) => x.kind === "approve").length, 1);
+  assert.notEqual(readFileSync(join(e.projects, "t1", "govern.json"), "utf8"), before, "t1 was decided in its own workspace");
+});
+
+test("alert and Retry stage buttons reach a lane of a workspace slack.serveRepos names", async () => {
+  // 2026-11-13: Retry stage on sc-sc135-storage (squad-sales-compass) answered "no lane": controls looked only here.
+  const e = setup(["t1"]);
+  const squad = otherWorkspace(["dev-x"]);
+  serveAlso(e, [squad.root]);
+  const drive = inWorkspace(squad, () => join(stateDir(), "drive", "state.json"));
+  write(drive, JSON.stringify({ "dev-x:build": { task: "20261113-dev-x", round: 0, attempt: 2, state: "failed", reason: "blocked" } }));
+  await serving(e, async (url) => {
+    const p = payload("U0ANA", JSON.stringify({ v: 1, lane: "dev-x", stage: "build", round: 0, action: "retry" }), "Retry stage");
+    (p.actions as Record<string, unknown>[])[0]!.action_id = "govern.drive.retry";
+    const r = await send(url, formBody(p));
+    assert.equal(r.status, 200, await r.clone().text());
+    assert.match(((await r.json()) as { text: string }).text, /Retry by/);
+  });
+  assert.equal(JSON.parse(readFileSync(drive, "utf8"))["dev-x:build"], undefined, "the served workspace's drive sends the stage again");
+  assert.equal(ledgerOf(squad, "dev-x").filter((x) => x.kind === "drive-retry").length, 1);
+});
+
+test("without serveRepos another workspace's lane is not found; a lane in two served workspaces is refused", async () => {
+  const e = setup(["t1"]);
+  const squad = otherWorkspace(["dev-x", "t1"]);
+  await serving(e, async (url) => {
+    const v = inWorkspace(squad, () => decisionValue(load("dev-x"), { gate: "go" }, "approve"));
+    const r = await send(url, formBody(payload("U0OTTO", v, "Enviar")));
+    assert.equal(r.status, 404);
+    assert.match(((await r.json()) as { error: string }).error, /no lane dev-x/);
+  });
+  // a new serving workspace (a server reads its config once): t1 is both its own lane and the squad's
+  const both = setup(["t1"]);
+  serveAlso(both, [squad.root]);
+  await serving(both, async (url) => {
+    const v = inWorkspace(both, () => decisionValue(load("t1"), { gate: "go" }, "approve"));
+    const r = await send(url, formBody(payload("U0OTTO", v, "Enviar")));
+    assert.equal(r.status, 409);
+    assert.match(((await r.json()) as { error: string }).error, /t1 is a lane of more than one served workspace/);
+  });
+  assert.equal(stateOf(both).approvals["go"], undefined);
+  assert.equal(stateOf(squad, "t1").approvals["go"], undefined);
+});
+
+test("a served workspace of another Slack team, or with none, decides nothing", async () => {
+  const e = setup(["t1"]);
+  const other = otherWorkspace(["dev-x"], { team: "T0OTHER" });
+  const none = makeEnv("slack-none");
+  write(join(none.root, "PALS-Notes/processes/support.json"), JSON.stringify(PROCESS));
+  assert.equal(govern(none, ["new", "dev-y", "--process", "support", "--title", "y"]).code, 0);
+  serveAlso(e, [other.root, none.root]);
+  await serving(e, async (url) => {
+    for (const [ws, slug] of [[other, "dev-x"], [none, "dev-y"]] as const) {
+      const v = inWorkspace(ws, () => decisionValue(load(slug), { gate: "go" }, "approve"));
+      const r = await send(url, formBody(payload("U0OTTO", v, "Enviar")));
+      assert.equal(r.status, 403, slug);
+      assert.match(((await r.json()) as { error: string }).error, new RegExp(`${slug}'s workspace .* team`), slug);
+    }
+  });
+  assert.equal(stateOf(other, "dev-x").approvals["go"], undefined);
+  assert.equal(stateOf(none, "dev-y").approvals["go"], undefined);
+});
+
+test("serveRepos is refused when an environment override would point every workspace at the same folders", async () => {
+  const e = setup(["t1"]);
+  const squad = otherWorkspace(["dev-x"]);
+  serveAlso(e, [squad.root]);
+  const old = process.env.GOVERN_STATE;
+  process.env.GOVERN_STATE = join(e.root, "state-override");
+  try {
+    await serving(e, async (url) => {
+      const v = inWorkspace(squad, () => decisionValue(load("dev-x"), { gate: "go" }, "approve"));
+      const r = await send(url, formBody(payload("U0OTTO", v, "Enviar")));
+      assert.equal(r.status, 403);
+      assert.match(((await r.json()) as { error: string }).error, /GOVERN_STATE/);
+    });
+  } finally { if (old === undefined) delete process.env.GOVERN_STATE; else process.env.GOVERN_STATE = old; }
+  assert.equal(stateOf(squad, "dev-x").approvals["go"], undefined);
+});
+
+test("slack.serveRepos must be a list of folders", () => {
+  const e = makeEnv("slack-serverepos");
+  const cfg = JSON.parse(readFileSync(join(e.root, "govern.config.json"), "utf8"));
+  write(join(e.root, "govern.config.json"), JSON.stringify({ ...cfg, slack: { team: TEAM, serveRepos: "/not/a/list" } }));
+  const r = govern(e, ["slack", "serve", "--port", "0"], { SLACK_SIGNING_SECRET: SECRET });
+  assert.notEqual(r.code, 0);
+  assert.match(r.err, /slack\.serveRepos: must be/);
 });

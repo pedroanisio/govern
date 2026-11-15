@@ -138,6 +138,8 @@ An error or timer route is an explicit case-wide rework/exception transition, li
 
 Retry limits and compensation apply to **stage exit-check attempts made by `advance`**, including scheduler advancement. Direct `govern check` diagnostics, arbitrary `govern run` jobs and model calls do not automatically acquire these policies. If retries exhaust without an error route, the failed stage remains blocked until explicit recovery.
 
+Agent and service stages run by `govern drive` have their own attempts ([BUSINESS.md](BUSINESS.md#agent-and-service-stages)): a service's exit 75 is retried after a doubling backoff and its exit 65 never, and a stage that gives up follows its `onExhausted` route, the same kind of exception transition as `onError.to` (same validation: a known stage, not itself, not a join). A drive run interrupted mid-command is retried with the same idempotency key while attempts remain; on the last attempt it is left to `onExhausted` or the operator, its outcome uncertain, unless the stage declares a `probe`: a dry run that proves from the outside system whether the effect happened buys the stage its attempts again with the same key, up to `recoveries` times, with no human words needed (`govern recover` stays the path for lifecycle checks and compensation). [CONNECTORS.md](CONNECTORS.md#recovery) is the contract that makes such a retry safe.
+
 ## Reusable subprocesses
 
 A call stage binds parent fields into a child case, then child fields back into its parent:

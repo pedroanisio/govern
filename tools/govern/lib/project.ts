@@ -11,6 +11,9 @@ import { repo, projectsDir, workflowFile, config, configFile, pathEntry } from "
 import { getProcess, processOf, processes, processName, manualOf, freezeProcess, snapshotProcess } from "./process.ts";
 import { RUNTIME, EVENTS, ALERTS, SNAPSHOT, INVOCATION, type StageRuntime, type EventReceipt, type Alert, type Snapshot, type Invocation } from './lifecycle-schema.ts';
 import { validateRuntime } from './lifecycle-runtime.ts';
+import { withMutex } from "./locks.ts";
+import { assignment } from "./canary.ts";
+import { chainHead, sealedLine } from "./ledgerchain.ts";
 import { obj, arr, record, emptyRecord, str, name, posInt, literal, parseFile, reject, keyPath, type Shape } from "./shape.ts";
 
 /** Lane kinds that need no --process: a video (long, short) or ops work (engine, lab, docs, channel set-up). */
@@ -75,6 +78,12 @@ export interface Project {
   frozen?: Frozen;
   importedFrom?: ImportedFrom;
   importedApprovals?: ImportedApproval[];
+  /** The canary this lane was assigned to when it was made, and on which side: the candidate revision or the base. */
+  canary?: { id: string; arm: "candidate" | "base" };
+  /** A replay lane: the replay run it belongs to and the past case it replays (`govern replay`). */
+  replay?: { run: string; of: string };
+  /** The case data the lane was made with (an event's or `govern new`'s): what a replay starts from. */
+  intake?: Record<string, Value>;
 }
 
 /** Lane `slug`'s folder under the lanes folder. */
@@ -119,7 +128,8 @@ const PROJECT = obj(
     commands: record(COMMAND), files: record(str), approvals: record(obj({ at: iso, quote: str }, { by: name, source: SOURCE, note: str, delegation: DELEGATION })),
     notes: arr(obj({ at: iso, stage: name, text: str })) },
   {processSnapshot:SNAPSHOT, runtime:RUNTIME, events:EVENTS, alerts:ALERTS, invocation:INVOCATION, data: record(value), workflow: WORKFLOW, humanTasks: HUMAN_TASKS, votes: VOTES, process: name, parent: str, finished: iso, checks: record(name), after: arr(obj({ lane: name }, { stage: name })), frozen: FROZEN,
-   importedFrom: IMPORTED_FROM, importedApprovals: arr(IMPORTED_APPROVAL) },
+   importedFrom: IMPORTED_FROM, importedApprovals: arr(IMPORTED_APPROVAL),
+   canary: obj({ id: name, arm: literal("candidate", "base") }), replay: obj({ run: name, of: str }), intake: record(value) },
 );
 
 /** Parse the text of lane `slug`'s govern.json (`file`): typed, unknown keys refused, then checked against what the types
@@ -183,12 +193,17 @@ export function save(p: Project, o: { allowFrozen?: boolean } = {}): void {
 /** Create and save a new lane's govern.json from a process (or a frozen snapshot of one) or a legacy kind: commands and
  *  files from the process setup, the first stage, initial business state and optional case data. Fails when the lane
  *  exists or the kind does not fit the process; warns on stderr about {paths.NAME} keys the config lacks. */
-export function create(given: string, o: { kind?: string; process?: string; title?: string; lang?: string; parent?: string; pin?:boolean; data?:Record<string,Value>; snapshot?:Snapshot; invocation?:Invocation }): Project {
+export function create(given: string, o: { kind?: string; process?: string; title?: string; lang?: string; parent?: string; pin?:boolean; data?:Record<string,Value>; snapshot?:Snapshot; invocation?:Invocation; replay?:{run:string; of:string} }): Project {
   const slug = checkSlug(given);
   if (existsSync(stateFile(slug))) fail(`${slug}: govern.json already exists`);
+  if (!o.replay && slug.startsWith(REPLAY_PREFIX)) fail(`${slug}: lanes under ${REPLAY_PREFIX} are replays; only govern replay makes them`);
+  if (o.replay && !slug.startsWith(REPLAY_PREFIX)) fail(`${slug}: a replay lane is named ${REPLAY_PREFIX}<run>/<case>`);
   let kind: string, proc: string;
+  // While a canary of the process runs, a new case (not one given its definition, not a replay) takes its arm's.
+  const asg = o.process && !o.snapshot && !o.replay ? assignment(o.process, slug) : undefined;
+  const snapshot = o.snapshot ?? asg?.snapshot;
   if (o.process) {
-    const pr = o.snapshot ? snapshotProcess(o.snapshot) : getProcess(o.process);
+    const pr = snapshot ? snapshotProcess(snapshot) : getProcess(o.process);
     if(pr.name!==o.process)fail("snapshot names a different process");
     proc = pr.name;
     if (pr.kinds) {
@@ -200,7 +215,7 @@ export function create(given: string, o: { kind?: string; process?: string; titl
     kind = o.kind!;
     proc = kind === "ops" ? "ops" : "video";
   }
-  const definition = o.snapshot ? snapshotProcess(o.snapshot) : getProcess(proc);
+  const definition = snapshot ? snapshotProcess(snapshot) : getProcess(proc);
   const dir = projectDir(slug);
   const commands = emptyRecord<string[]>();
   const files = emptyRecord<string>();
@@ -214,11 +229,14 @@ export function create(given: string, o: { kind?: string; process?: string; titl
     version: 1, slug, title: o.title ?? slug, kind, process: proc, lang: o.lang ?? "en", ...(o.parent ? { parent: o.parent } : {}),
     stage: definition.stages[0].name, created: nowIso(), commands, files, approvals: emptyRecord<Approval>(), notes: [],
   };
-  if(o.snapshot || o.pin || definition.revision!==undefined)p.processSnapshot=o.snapshot??freezeProcess(definition);
+  if(snapshot || o.pin || definition.revision!==undefined)p.processSnapshot=snapshot??freezeProcess(definition);
   if(o.invocation)p.invocation=o.invocation;
+  if(asg)p.canary={id:asg.canary.id, arm:asg.arm};
+  if(o.replay)p.replay={...o.replay};
   initializeBusiness(p);
-  if(o.data)setData(p,o.data);
+  if(o.data){setData(p,o.data); p.intake={...o.data};}
   save(p);
+  if(asg)appendLedger(slug,{kind:"canary",id:asg.canary.id,arm:asg.arm,revision:asg.snapshot.revision});
   return p;
 }
 
@@ -263,8 +281,12 @@ function foldersHolding(file: string): string[] {
   return out.sort();
 }
 
-/** Every lane's slug. */
-export const laneSlugs = (): string[] => foldersHolding("govern.json");
+/** The slug prefix of replay lanes (`govern replay`): `replay/<run>/<case>`. Only a replay may be made under it. */
+export const REPLAY_PREFIX = "replay/";
+/** Every lane's slug. Replay lanes are left out unless `replays`: they are rehearsals, which no inbox, digest, tick or
+ *  status should show; only `govern drive` and `govern replay` see them. */
+export const laneSlugs = (o: { replays?: boolean } = {}): string[] =>
+  foldersHolding("govern.json").filter((s) => o.replays || !s.startsWith(REPLAY_PREFIX));
 /** Every folder under the lanes folder with a ledger, which a lane whose govern.json was archived away keeps. */
 export const ledgerSlugs = (): string[] => foldersHolding(join("govern", "ledger.jsonl"));
 
@@ -378,7 +400,8 @@ export function frozenOf(slug: string): Frozen | undefined {
   catch { return undefined; }
 }
 
-/** Append `entry` to the lane's ledger as one JSON line, stamped with the time and slug; creates `govern/` when missing.
+/** Append `entry` to the lane's ledger as one JSON line, stamped with the time and slug and sealed into the ledger's
+ *  hash chain (lib/ledgerchain.ts); creates `govern/` when missing.
  *  Refuses any entry but freeze, unfreeze or export for a frozen lane. */
 export function appendLedger(slug: string, entry: Record<string, unknown>): void {
   if (!FROZEN_LEDGER_KINDS.has(String(entry.kind))) {
@@ -386,7 +409,11 @@ export function appendLedger(slug: string, entry: Record<string, unknown>): void
     if (frozen) fail(frozenMessage(slug, frozen));
   }
   mkdirSync(governDir(slug), { recursive: true });
-  appendFileSync(ledgerFile(slug), JSON.stringify({ t: nowIso(), slug, ...entry }) + "\n");
+  // One writer at a time: each entry is sealed with the hash of the one before it (lib/ledgerchain.ts).
+  withMutex(join(governDir(slug), ".ledger-lock"), () => {
+    const file = ledgerFile(slug);
+    appendFileSync(file, sealedLine(chainHead(file), { t: nowIso(), slug, ...entry }) + "\n");
+  });
 }
 
 /** The "Exit when" cell of the stage's row (numbered by its place in the process) in the workspace's workflow document. */

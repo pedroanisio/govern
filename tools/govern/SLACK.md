@@ -42,6 +42,20 @@ not changed since the button was made.
    Slack app's Interactivity Request URL to its `/slack/actions`. Socket Mode is not supported: its payloads carry no
    per-request signature, so govern could not verify them itself.
 
+4. A Slack app has one Interactivity Request URL. When lanes of other workspaces post buttons through the same app (each
+   runs its own `govern slack notify`), list those workspaces in the serving workspace's `slack.serveRepos`, relative to
+   the config's folder or absolute:
+
+   ```json
+   "slack": { "team": "T04TEAM789", "envFile": "secrets/slack.env", "serveRepos": ["../squad"] }
+   ```
+
+   A click is decided in the one workspace that holds the button's lane: its own `slack.team` must be the request's team,
+   and its own process's `people` decide. A lane in no served workspace is 404; a lane name in more than one is refused
+   (409). The serve reads its config once, so restart it after a change. With `serveRepos`, a folder override in the
+   environment (`GOVERN_PROJECTS`, `GOVERN_STATE` and the like) would point every workspace at one folder, so every click
+   is refused (403) while one is set.
+
 ## The button
 
 A decision is a Slack button with `action_id` `govern.decide`, or `govern.decide.` and a suffix (Slack wants ids unique within a block). Its `value` is the JSON govern makes with `decisionValue()` in
@@ -205,7 +219,12 @@ or reference file is needed at runtime. Preserve `commands.json`, `sent.jsonl` a
 ```sh
 govern slack post --kind ack --text 'Received' --thread 1793000000.000001 --key work-received
 govern slack post --kind delivered --file generated/result.txt --key work-delivered
+govern slack post --kind blocked --text 'Request escalated' --alerts
 ```
+
+`--alerts` posts a top-level message to `slack.alertsChannel` instead of `slack.channel` and refuses `--thread`; it fails
+when `slack.alertsChannel` is unset. `govern slack notify` sends its channel alerts (stale heartbeat, unanswered
+requests, route limits) there too, while lane and gate posts stay in `slack.channel`.
 
 Kinds are `ack`, `blocked`, `delivered`, `question`, `note`. The text starts with `<kind>: ` and must be nonempty and at
 most 40000 Unicode characters including the prefix. Exactly one of `--text` and `--file` is required. A thread timestamp
@@ -235,6 +254,19 @@ A requester may write exactly `<@UBOT> status`, `<@UBOT> pending`, `<@UBOT> lane
 must match `slack.bot`. The code parses this fixed grammar, reads the shared status/brief and pending-decision views,
 and answers in that post's thread, capped to Slack's limit. It records answered timestamps separately from the poller's
 state and uses a send key per command. Everyone else's posts and anything outside the grammar enter the inbox. Posts never become shell commands. Configured routing below handles eligible non-command posts as untrusted data.
+
+## Triggers: `run <name>`
+
+`slack.triggers` maps a lowercase name to a systemd user unit. A configured requester who posts exactly
+`<@bot> run <name>` starts that unit with `systemctl --user start --no-block`, at most once per `minIntervalSec`
+(default 900); a unit already active is not started again. The reply says started, already running, or when the next
+request counts. The post only selects a configured name: it never becomes argv, a path or a unit name, and an
+unconfigured `run x` is an ordinary post. `help` lists the configured names. The last start per name is kept in
+`slack.inbox/triggers.json`.
+
+```json
+"triggers": { "report": { "unit": "govern-grafana-report.service", "minIntervalSec": 900 } }
+```
 
 ## Routing requests, independent alerts and a daily digest
 

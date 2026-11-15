@@ -1,6 +1,7 @@
 // The business event and lifecycle commands: events, timers, alerts, subprocesses, recovery, typed case data, human tasks and policy
 // rejections. The runtime they drive (lib/lifecycle.ts) and the graph processes (lib/business.ts) stay in the core: advance,
 // approve and the brief depend on them. A workspace turns this extension on with `govern ext enable business`.
+import { writeFileSync } from "node:fs";
 import { userInfo } from "node:os";
 import { eventServer } from "./event-server.ts";
 import * as lifecycle from "../../lib/lifecycle.ts";
@@ -9,13 +10,48 @@ import { scalar, value } from "../../lib/business-schema.ts";
 import { check, record } from "../../lib/shape.ts";
 import { verifyQuote } from "../../lib/approval.ts";
 import { GovernError, fail, usage, parseArgs, opt, flag, many, secondsOpt, nowIso } from "../../lib/util.ts";
-import { drive } from "./drive.ts";
+import { drive, closeBreaker } from "./drive.ts";
 import type { Args } from "../../lib/util.ts";
 import { load, save, appendLedger, laneSlugs, checkSlug } from "../../lib/project.ts";
 import { processOf } from "../../lib/process.ts";
 import { out, jsonValue, core, type Cmd } from "../../lib/cli.ts";
 import type { ExtDoc } from "../../lib/ext-registry.ts";
 import { MANPAGE } from "./manpage.ts";
+import { recordOutcome, metrics, summaryLine } from "../../lib/outcomes.ts";
+import { startCanary, canaryReport, checkCanary, stopCanary, reportText } from "./canary.ts";
+import { startReplay, replayReport, replayText, replayExit } from "./replay.ts";
+
+/** A number flag: undefined when absent; a usage error when it is not a number. */
+function numberOpt(a: Args, k: string): number | undefined {
+  const v = opt(a, k);
+  if (v === undefined) return undefined;
+  const n = Number(v);
+  return Number.isFinite(n) && v.trim() !== '' ? n : usage(`--${k} must be a number`);
+}
+const processArg = (a: Args, sub: string) => a._[2] ?? usage(`govern canary ${sub} <process>`);
+
+/** A yes/no flag's value: undefined when absent; a usage error when it is neither. */
+function yesNo(a: Args, k: string): boolean | undefined {
+  const v = opt(a, k);
+  if (v === undefined) return undefined;
+  if (v === 'yes' || v === 'true') return true;
+  if (v === 'no' || v === 'false') return false;
+  return usage(`--${k} must be yes or no`);
+}
+function cmdOutcome(a: Args): void {
+  const correct = yesNo(a, 'correct'), customerImpact = yesNo(a, 'customer-impact'), note = opt(a, 'note');
+  if (correct === undefined && customerImpact === undefined) usage('govern outcome <slug> [--correct yes|no] [--customer-impact yes|no] [--note T]: name at least one');
+  const o = recordOutcome(checkSlug(a._[1]), { ...(correct !== undefined ? { correct } : {}), ...(customerImpact !== undefined ? { customerImpact } : {}), ...(note ? { note } : {}) });
+  out(`${o.slug}: correct ${o.correct ?? '-'}, customer harmed ${o.customerImpact ?? '-'}`);
+}
+function cmdMetrics(a: Args): void {
+  const name = a._[1] ?? usage('govern metrics <process> [--since ISO] [--by revision|arm] [--json]');
+  const by = opt(a, 'by'), since = opt(a, 'since');
+  if (by !== undefined && by !== 'revision' && by !== 'arm') usage('--by must be revision or arm');
+  if (since !== undefined && Number.isNaN(Date.parse(since))) usage('--since must be an ISO date');
+  const rows = metrics(name!, { ...(since ? { since } : {}), ...(by ? { by: by as 'revision' | 'arm' } : {}) });
+  out(flag(a, 'json') ? JSON.stringify({ process: name, ...(since ? { since } : {}), groups: rows }, null, 2) : rows.map(summaryLine).join('\n') || `(no cases of ${name})`);
+}
 
 function cmdData(a:Args):void {
   const p=load(a._[1]), text=opt(a,'set');
@@ -94,6 +130,14 @@ export const docs: ExtDoc[] = [
 export const manpage = MANPAGE;
 /** `govern drive`: one pass over the agent and service stages, or one every --interval seconds with --loop. */
 async function cmdDrive(a: Args): Promise<void> {
+  const close = opt(a, 'close-breaker');
+  if (close !== undefined) {
+    const quote = opt(a, 'quote');
+    if (!close || !quote || quote.trim().length < 2) usage('govern drive --close-breaker <process> --quote "<your own words>": only a person closes an open breaker');
+    const source = closeBreaker(close, quote!);
+    out(`${close}: breaker closed by ${source.kind === 'terminal' ? source.user : source.kind === 'device' ? source.device : 'the person'} (${source.kind})`);
+    return;
+  }
   const lanes = many(a, 'lane'), interval = Number(opt(a, 'interval') ?? 30);
   if (!Number.isInteger(interval) || interval < 5) usage('--interval must be a whole number of seconds, 5 or more');
   const once = () => { const r = drive(lanes.length ? { lanes } : {}); out(r.lines.join('\n') || '(no agent or service stage is active)'); return r.failed.length === 0; };
@@ -105,7 +149,7 @@ async function cmdDrive(a: Args): Promise<void> {
 }
 
 export const commands: Cmd[] = [
-  {name:'drive',section:1,flags:{multi:['lane'],value:['interval'],bool:['loop']},lines:[["[--lane S]... [--loop --interval 30]","run the stages a process gives to an agent or a command: send the task when the stage is active, apply the\nreply's typed outputs and advance through the stage's check; failures are retried up to the stage's attempts, then\nleft to the operator (exit 1)"]],run:cmdDrive},
+  {name:'drive',section:1,flags:{multi:['lane'],value:['interval','close-breaker','quote'],bool:['loop']},lines:[["[--lane S]... [--loop --interval 30]","run the stages a process gives to an agent or a command: send the task when the stage is active, apply the\nreply's typed outputs and advance through the stage's check; failures are retried up to the stage's attempts, then\nleft to the operator (exit 1)"],["--close-breaker PROCESS --quote \"…\"","close a process's open breaker (its service stages held after too many failures), in your own words"]],run:cmdDrive},
   {name:'event',section:1,flags:{value:['id','correlation','data','generation']},lines:[["<slug> <name> --id ID --correlation JSON [--data JSON] [--generation N]","deliver a deduplicated event to one matching active stage; adapters supply a stable id"]],run:cmdEvent},
   {name:'event-listen',section:1,flags:{value:['port']},lines:[["[--port 5001]","loopback POST /events listener; Bearer token comes from GOVERN_WEBHOOK_TOKEN (minimum 16 characters)"]],run:a=>{
     const token=process.env.GOVERN_WEBHOOK_TOKEN??fail('GOVERN_WEBHOOK_TOKEN is not set; configure it securely before starting the listener');
@@ -125,6 +169,58 @@ export const commands: Cmd[] = [
     lines: [["<slug> [list | claim|delegate|complete STAGE] [--as PERSON] [--to PERSON] [--quote Q]", "list, claim, delegate or complete stage tasks; person identity is mapped to the current OS account; mutations require verified human words"]], run: cmdHuman },
   { name: "human-inbox", section: 1, flags: { value: ["as"] },
     lines: [["[--as PERSON]", "active tasks assigned to this OS account or claimable through its process roles"]], run: cmdHumanInbox },
+  { name: "outcome", section: 1, flags: { value: ["correct", "customer-impact", "note"] },
+    lines: [["<slug> [--correct yes|no] [--customer-impact yes|no] [--note T]", "record what became of a case after the fact (it was right; its customer was harmed); the latest entry wins over the process's outcome fields"]], run: cmdOutcome },
+  { name: "metrics", section: 1, flags: { value: ["since", "by"], bool: ["json"] },
+    lines: [["<process> [--since ISO] [--by revision|arm] [--json]", "a process's business outcomes per revision or canary arm: correct share, customer harm, exceptions and those with no destination, cases a person touched, time"]], run: cmdMetrics },
+  { name: "canary", section: 1, noSub: "govern canary start|status|check|stop",
+    subs: {
+      start: { flags: { value: ["file", "fraction", "min", "tolerance", "quote"] },
+        lines: [["<process> --file F [--fraction 0.1] [--min 20] [--tolerance 0.05] [--quote Q]", "give revision F of the process a share of the new cases, judged against the current revision's cases meanwhile;\na change beyond what an agent is told and how stages retry (policy), or limits beyond --fraction 0.5, --min 10, --tolerance 0.1, needs --quote"]],
+        run: (a) => {
+          const name = processArg(a, 'start'), file = opt(a, 'file') ?? usage('govern canary start <process> --file F: the candidate revision');
+          const fraction = numberOpt(a, 'fraction'), min = numberOpt(a, 'min'), tolerance = numberOpt(a, 'tolerance'), quote = opt(a, 'quote');
+          const c = startCanary(name, file, { ...(fraction !== undefined ? { fraction } : {}), ...(min !== undefined ? { min } : {}), ...(tolerance !== undefined ? { tolerance } : {}), ...(quote ? { quote } : {}) });
+          out(`${name}: canary ${c.id} started: revision ${c.base.revision} → ${c.candidate.revision} (${c.kind} change) on ${Math.round(c.fraction * 100)}% of new cases; judged after ${c.min} finished`);
+        } },
+      status: { flags: { bool: ["json"] },
+        lines: [["<process> [--json]", "the canary's two arms and its verdict: promote, revert or continue"]],
+        run: (a) => { const r = canaryReport(processArg(a, 'status')); out(flag(a, 'json') ? JSON.stringify(r, (k, v) => (k === 'definition' ? undefined : v), 2) : reportText(r)); } },
+      check: { lines: [["<process>", "apply the verdict: promote (the candidate becomes the process file; exit 0), revert (exit 65) or not yet (exit 75), for a polling service stage"]],
+        run: (a) => { const r = checkCanary(processArg(a, 'check')); out(r.text); if (r.code) process.exitCode = r.code; } },
+      stop: { flags: { value: ["quote"] },
+        lines: [["<process> --quote Q", "revert the running canary: new cases go back to the current revision"]],
+        run: (a) => {
+          const name = processArg(a, 'stop'), quote = opt(a, 'quote') ?? usage('govern canary stop <process> --quote Q');
+          const c = stopCanary(name, quote);
+          out(`${name}: canary ${c.id} stopped; revision ${c.candidate.revision} reverted`);
+        } },
+    } },
+  { name: "replay", section: 1, noSub: "govern replay start|report",
+    subs: {
+      start: { flags: { value: ["file", "cases", "since"], multi: ["lane"] },
+        lines: [["<process> [--file F] [--cases 20] [--since ISO] [--lane L]...", "run past finished cases again on revision F (default the current one), as replay/<run>/… lanes that\ngovern drive moves on: agents work, commands are never run (their outputs are the original's), and a replay\nstops where a person, a gate, an event or a sub-case would be needed; prints the run's id (as a service\nstage: its output replay)"]],
+        run: (a) => {
+          const name = a._[2] ?? usage('govern replay start <process>'), file = opt(a, 'file'), since = opt(a, 'since'), cases = numberOpt(a, 'cases'), lanes = many(a, 'lane');
+          // Run by a service stage: its idempotency key starts one run however often the stage runs, and the run's id is
+          // the stage's `replay` output.
+          const key = process.env.GOVERN_IDEMPOTENCY_KEY, outputs = process.env.GOVERN_OUTPUTS;
+          const r = startReplay(name, { ...(file ? { file } : {}), ...(since ? { since } : {}), ...(cases !== undefined ? { cases } : {}), ...(lanes.length ? { lanes } : {}), ...(key ? { key } : {}) });
+          if (outputs) writeFileSync(outputs, JSON.stringify({ replay: r.id }) + '\n', { mode: 0o600 });
+          const refused = r.cases.filter((c) => c.refused);
+          out(`${r.id}`);
+          process.stderr.write(`replay ${r.id} of ${name} revision ${r.revision}: ${r.cases.length - refused.length} cases started${refused.length ? `, ${refused.length} refused (${refused.map((c) => `${c.of}: ${c.refused}`).join('; ')})` : ''}; govern replay report ${r.id}\n`);
+        } },
+      report: { flags: { value: ["fields", "min"], bool: ["json"] },
+        lines: [["<run> [--fields a,b] [--min 0.9] [--json]", "compare the replayed cases with their originals: exit 0 when they agree (no case running, agreement\nat or above --min, no divergence, no case finished without the person its original had), 65 when not, 75 while\ncases still run"]],
+        run: (a) => {
+          const id = a._[2] ?? usage('govern replay report <run>'), fields = opt(a, 'fields'), min = numberOpt(a, 'min');
+          const rep = replayReport(id, { ...(fields ? { fields: fields.split(',').map((f) => f.trim()).filter(Boolean) } : {}), ...(min !== undefined ? { min } : {}) });
+          out(flag(a, 'json') ? JSON.stringify(rep, null, 2) : replayText(rep));
+          const code = replayExit(rep);
+          if (code) process.exitCode = code;
+        } },
+    } },
   { name: "data", section: 1, flags: { value: ["set"] },
     lines: [["<slug> [--set JSON]", "read or merge typed case fields; changed data invalidates policy votes and active human task completion"]], run: cmdData },
   { name: "reject", section: 1, flags: { value: ["quote", "by"] },

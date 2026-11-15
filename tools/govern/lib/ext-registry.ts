@@ -46,16 +46,16 @@ export const EXTENSIONS: readonly ExtInfo[] = [
     files: ["ext/conversation/index.ts", "ext/conversation/conversation-cli.ts", "ext/conversation/conversation-runtime.ts", "ext/conversation/conversation-adapters.ts", "ext/conversation/conversation-host.ts", "ext/conversation/conversation-worker.ts"],
     flags: ["action", "adapter", "after", "bg", "estimate-usd", "follow", "lane", "max-context-chars", "message", "message-file", "mode", "note", "once", "profile", "reason", "request-id", "run", "summary", "through", "timeout", "title"] },
   { name: "business", description: "business events and lifecycle commands: events, timers, alerts, subprocesses, recovery, case data and human tasks",
-    commands: ["drive", "event", "event-listen", "tick", "alerts", "subprocess", "recover", "human", "human-inbox", "data", "reject"],
+    commands: ["drive", "event", "event-listen", "tick", "alerts", "subprocess", "recover", "human", "human-inbox", "outcome", "metrics", "canary", "replay", "data", "reject"],
     docs: [{ title: "typed case data, conditional routes, parallel joins, human tasks, quorum approval policies", path: "BUSINESS.md" },
       { title: "timers, business calendars, events, recovery, subprocesses, process revisions", path: "LIFECYCLE.md" }],
-    files: ["ext/business/index.ts", "ext/business/event-server.ts", "ext/business/drive.ts"],
-    flags: ["ack", "action", "advance", "as", "by", "correlation", "data", "generation", "id", "interval", "lane", "loop", "port", "quote", "set", "stage", "to"] },
+    files: ["ext/business/index.ts", "ext/business/event-server.ts", "ext/business/drive.ts", "ext/business/canary.ts", "ext/business/replay.ts"],
+    flags: ["ack", "action", "advance", "as", "by", "cases", "close-breaker", "correct", "correlation", "customer-impact", "data", "fields", "file", "fraction", "generation", "id", "interval", "json", "lane", "loop", "min", "note", "port", "quote", "set", "since", "stage", "to", "tolerance"] },
   { name: "slack", description: "Slack: decisions people make with buttons in Slack, verified by Slack's signature",
     commands: ["slack"],
     docs: [{ title: "Slack: decisions from Slack buttons, signature checks, people mapping", path: "SLACK.md" }],
     files: ["ext/slack/index.ts", "ext/slack/slack.ts", "ext/slack/notify.ts", "ext/slack/channel.ts", "ext/slack/commands.ts", "ext/slack/digest.ts", "ext/slack/route.ts", "ext/slack/service.ts", "ext/slack/manpage.ts", "ext/slack/triage.ts", "ext/slack/heartbeat.ts"],
-    flags: ["all", "check", "delivered", "dry-run", "file", "interval", "json", "key", "kind", "lane", "loop", "not-delivered", "once", "port", "reason", "text", "thread", "title", "ts"] },
+    flags: ["alerts", "all", "check", "delivered", "dry-run", "file", "interval", "json", "key", "kind", "lane", "loop", "not-delivered", "once", "port", "reason", "text", "thread", "title", "ts"] },
 ];
 
 /** The extension names, in registry order. */

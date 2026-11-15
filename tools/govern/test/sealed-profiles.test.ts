@@ -247,6 +247,14 @@ test("negativeCandidate skips an absent capability whose tools a held one alread
   assert.equal(negativeCandidate(b.reg, b.prof), undefined, "nothing left to ask for");
   const bare = reg([cap("shell", ["Bash"]), cap("ls", ["Bash(ls:*)"])], { capabilities: ["shell"] });
   assert.equal(negativeCandidate(bare.reg, bare.prof), undefined, "Bash(ls) is already granted by Bash");
+  // Probes act on a file in the task's folder, so a folder-scoped file grant (Read(./**)) already does what the probe of the
+  // bare tool asks: asking for it would "leak" without any grant being wrong. Shell and web stay candidates.
+  const scoped = reg([cap("read", ["Read", "Grep", "Glob"]), cap("edit", ["Edit", "Write"]), cap("repo-read", ["Read(./**)", "Grep(./**)", "Glob(./**)"]), cap("shell", ["Bash"])], { capabilities: ["repo-read"] });
+  assert.equal(negativeCandidate(scoped.reg, scoped.prof)?.name, "edit", "read is covered inside the folder by repo-read");
+  const scopedAll = reg([cap("read", ["Read"]), cap("edit", ["Edit", "Write"]), cap("repo-read", ["Read(./**)"]), cap("repo-edit", ["Edit(./**)", "Write(./**)"]), cap("shell", ["Bash"])], { capabilities: ["repo-read", "repo-edit"] });
+  assert.equal(negativeCandidate(scopedAll.reg, scopedAll.prof)?.name, "shell");
+  const narrow = reg([cap("shell", ["Bash"]), cap("git", ["Bash(git status:*)"])], { capabilities: ["git"] });
+  assert.equal(negativeCandidate(narrow.reg, narrow.prof)?.name, "shell", "a narrowed shell grant does not cover the bare shell");
   const g = reg([cap("read", ["Read"], true, ["Read"]), cap("wt-edit", ["Edit"], true, ["Edit", "Write"]), cap("edit", ["Edit"], true, ["Edit", "Write"])], { engine: "grok", capabilities: ["read", "wt-edit"] });
   assert.equal(negativeCandidate(g.reg, g.prof), undefined, "grok: the same tools are held");
   const cx = reg(caps, { engine: "codex", capabilities: ["read"] });

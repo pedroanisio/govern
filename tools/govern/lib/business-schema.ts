@@ -103,16 +103,33 @@ export interface Human {
 }
 export const HUMAN = obj({}, { assignee: name, role: name });
 /** A stage an agent does (ext/business/drive.ts): its task goes through the queue to `to` (a runner or profile); the
- *  reply's body is the JSON of the stage's `outputs` (case fields). summary and body may use {lane}, {stage}, {title} and
- *  {data.FIELD}. `attempts` (default 1) bounds the tries before the stage is left to the operator. */
-export interface AgentDef { to: string; task: string; summary: string; body: string; outputs?: string[]; write?: boolean; profile?: string;
-  files?: string[]; check?: string[]; verify?: string[]; timeout?: number; attempts?: number }
+ *  reply's body is the JSON of the stage's `outputs` (case fields). summary, body and project may use {lane}, {stage},
+ *  {title} and {data.FIELD}. `project` is the task's project folder (default: the lane's own, {lane}), e.g. "{lane}/repo" so
+ *  the model sees only the lane's clone. `attempts` (default 1) bounds the tries before the stage is left to the operator,
+ *  or routed to `onExhausted.to` when declared. */
+export interface AgentDef { to: string; task: string; summary: string; body: string; project?: string; outputs?: string[]; write?: boolean; profile?: string;
+  files?: string[]; check?: string[]; verify?: string[]; timeout?: number; attempts?: number; onExhausted?: Exhausted }
+/** Where govern drive sends a case whose agent or service stage gave up, instead of leaving the lane to the operator: stage
+ *  `to` (an exception route, as onError's), with the failure's reason written to the string field `field` when named. */
+export interface Exhausted { to: string; field?: string }
+export const EXHAUSTED = obj({ to: name }, { field: name });
 export const AGENT = obj({ to: name, task: name, summary: str, body: str },
-  { outputs: arr(name), write: bool, profile: name, files: arr(str), check: arr(name, { nonEmpty: true }), verify: arr(str, { nonEmpty: true }), timeout: posInt, attempts: posInt });
+  { project: str, outputs: arr(name), write: bool, profile: name, files: arr(str), check: arr(name, { nonEmpty: true }), verify: arr(str, { nonEmpty: true }), timeout: posInt, attempts: posInt, onExhausted: EXHAUSTED });
 /** A stage a command does (ext/business/drive.ts): the lane command `command`, which writes the JSON of the stage's
- *  `outputs` to the file $GOVERN_OUTPUTS names. */
-export interface ServiceDef { command: string; outputs?: string[]; attempts?: number }
-export const SERVICE = obj({ command: name }, { outputs: arr(name), attempts: posInt });
+ *  `outputs` to the file $GOVERN_OUTPUTS names. Its exit code classes the failure (CONNECTORS.md): 75 is transient
+ *  (retried after `backoffSeconds`, default 30, doubled per transient failure), 65 permanent (never retried). `probe`
+ *  names a lane command (usually `command` itself) that, run as a dry run, writes {"done": boolean} to $GOVERN_PROBE: when
+ *  the last attempt ends with its outcome uncertain, a definite answer buys the stage `attempts` more tries with the same
+ *  idempotency key, up to `recoveries` times (default 1), instead of a person deciding (CONNECTORS.md, Recovery). `money`
+ *  says the effect moves the amount in the case's number field `field`, in `currency`: it is reserved against the lane's
+ *  money allowance before the command runs, and a case over the ceiling is not run (CONNECTORS.md, Money). `poll` makes
+ *  the command a wait for something outside the case (a canary, a replay): its exit 75 means "not yet", and it runs again
+ *  after `poll` seconds, without using an attempt or counting toward the breaker. */
+export interface ServiceDef { command: string; outputs?: string[]; attempts?: number; backoffSeconds?: number; onExhausted?: Exhausted;
+  probe?: string; recoveries?: number; money?: MoneyEffect; poll?: number }
+export interface MoneyEffect { field: string; currency: string }
+export const SERVICE = obj({ command: name }, { outputs: arr(name), attempts: posInt, backoffSeconds: posInt, onExhausted: EXHAUSTED,
+  probe: name, recoveries: posInt, money: obj({ field: name, currency: name }), poll: posInt });
 /** One approve choice of a gate (ext/slack): its button label and the case fields the choice sets; a string value may
  *  use {data.FIELD}, filled when the choice is offered. `edit` names the string fields of `set` an approver may change
  *  before approving (a Slack form, with `slack.forms`). */
@@ -340,15 +357,32 @@ export function validateBusinessProcess(p: BusinessProcess): void {
       const gate = p.gates.find((g) => g.stage === s.name);
       if (gate && ((s.agent ?? s.service)!.outputs ?? []).length)
         reject(`${at}.${doer}.outputs`, `the ${gate.name} gate holds this stage: writing outputs would clear its approval (put the gate on a decision stage before it)`);
+      if (s.service?.recoveries !== undefined && !s.service.probe) reject(`${at}.service.recoveries`, "recoveries needs a probe to tell whether the effect happened");
+      const money = s.service?.money;
+      if (money && !["number", "integer"].includes(fields[money.field]?.type ?? ""))
+        reject(`${at}.service.money.field`, `${money.field} is not a declared number field: the amount the effect moves is read from it`);
+      const ex = (s.agent ?? s.service)!.onExhausted;
+      if (ex) {
+        if (!stages.has(ex.to)) reject(`${at}.${doer}.onExhausted.to`, `unknown stage ${ex.to}`);
+        if (ex.to === s.name) reject(`${at}.${doer}.onExhausted.to`, "exception route cannot target itself");
+        if (stages.get(ex.to)!.join) reject(`${at}.${doer}.onExhausted.to`, "exception route cannot bypass a join");
+        if (ex.field !== undefined && fields[ex.field]?.type !== "string")
+          reject(`${at}.${doer}.onExhausted.field`, `${ex.field} is not a declared string field`);
+      }
     }
     if (s.agent)
-      for (const k of ["summary", "body"] as const)
-        for (const m of s.agent[k].matchAll(/\{([A-Za-z][\w.-]*)\}/g)) {
+      for (const k of ["summary", "body", "project"] as const)
+        for (const m of (s.agent[k] ?? "").matchAll(/\{([A-Za-z][\w.-]*)\}/g)) {
           const w = m[1]!, field = /^data\.(.+)$/.exec(w)?.[1];
           if (AGENT_VARS.includes(w)) continue;
           if (field === undefined) reject(`${at}.agent.${k}`, `unknown placeholder {${w}} (an agent's text has {lane}, {stage}, {title} and {data.FIELD})`);
           if (!Object.hasOwn(fields, field!)) reject(`${at}.agent.${k}`, `{data.${field}} names no declared field`);
         }
+    if (s.agent?.project !== undefined) {
+      const shape = s.agent.project.replace(/\{[^}]*\}/g, "x");
+      if (!/^[a-z0-9][a-z0-9.\/-]*$/.test(shape) || shape.split("/").some((x) => x === ".." || x === "" || x === "."))
+        reject(`${at}.agent.project`, "must be a project folder under the workspace's projects: lowercase, digits, dots, dashes and /, no . or .. segment");
+    }
     if (s.join) {
       if (new Set(s.join.stages).size !== s.join.stages.length) reject(at + ".join", "duplicate join predecessors");
       for (const prev of s.join.stages) {
@@ -417,7 +451,7 @@ export function validateBusinessProcess(p: BusinessProcess): void {
       changed = false;
       for (const id of [...reachable]) {
         const s = stages.get(id)!;
-        for (const to of [...(s.next ?? []).flatMap(routeTargets), s.onError?.to, s.timer?.escalate?.to].filter(
+        for (const to of [...(s.next ?? []).flatMap(routeTargets), s.onError?.to, s.timer?.escalate?.to, (s.agent ?? s.service)?.onExhausted?.to].filter(
           (x): x is string => x !== undefined
         ))
           if (stages.has(to) && !reachable.has(to)) {

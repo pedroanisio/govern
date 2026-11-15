@@ -5,10 +5,11 @@ import { pending } from "./pending.ts";
 import { LIMIT } from "./channel.ts";
 
 /** Render a fixed read-only workspace view, bounded to Slack’s message limit. */
-export function commandText(command: string): string {
+export function commandText(command: string, triggers: string[] = []): string {
   let text: string;
   try {
-    if (command === "help") text = "status — lane status\npending — gates and human tasks waiting on people\nlane <slug> — lane brief\nhelp — these commands";
+    if (command === "help") text = "status — lane status\npending — gates and human tasks waiting on people\nlane <slug> — lane brief\n"
+      + triggers.map(t => `run ${t} — start ${t}\n`).join("") + "help — these commands";
     else if (command === "status") text = status().text;
     else if (command === "pending") text = laneSlugs().flatMap(slug => pending(load(slug)).map(p => `${p.lane}: ${"gate" in p.target ? `gate ${p.target.gate}` : `task ${p.target.task}`} — ${p.people.join(", ") || "nobody eligible"}`)).join("\n") || "Nothing pending.";
     else if (/^lane [a-z0-9][a-z0-9_-]*$/.test(command)) text = brief(load(command.slice(5)));

@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { recordDelegation, listDelegations } from "./lib/delegation.ts";
 import { installSystemUnit } from "./lib/dispatch-service.ts";
-import { workingDirectory } from "./lib/systemd.ts";
+import { unitGovern, workingDirectory } from "./lib/systemd.ts";
 import * as lifecycle from './lib/lifecycle.ts';
 import { enterRuntime } from './lib/lifecycle-runtime.ts';
 import { withLaneLock } from './lib/lane-lock.ts';
@@ -16,7 +16,7 @@ import { join, dirname, resolve, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import { randomUUID, createHash } from "node:crypto";
 import { GovernError, EXIT_STATE, fail, usage, parseArgs, opt, flag, many, flagNames, secondsOpt, nowIso, readJsonl, kTok, clip, type Args, type FlagSpec } from "./lib/util.ts";
-import { stagesOf, load, save, create, stageOf, brief, appendLedger, resolveFile, ledgerFile, projectDir, checkSlug, checkOf, pendingCheckChanges, importUnaccepted, importQuarantined, quarantineDetail, blockedBy, laneState, driftWarning, laneSlugs, laneRows, stateFile, argvOf, commandLine, frozenMessage, type Project, type Command } from "./lib/project.ts";
+import { stagesOf, load, save, create, stageOf, brief, appendLedger, resolveFile, ledgerFile, projectDir, checkSlug, checkOf, pendingCheckChanges, importUnaccepted, importQuarantined, quarantineDetail, blockedBy, laneState, driftWarning, laneSlugs, ledgerSlugs, laneRows, stateFile, argvOf, commandLine, frozenMessage, type Project, type Command } from "./lib/project.ts";
 import { importBundle } from "./lib/importlane.ts";
 import * as conversation from "./lib/conversation.ts";
 import { processes, getProcess, processOf, listLine, show, manualOf } from "./lib/process.ts";
@@ -51,6 +51,7 @@ import * as artifacts from "./lib/artifacts.ts";
 import { checkRecipient, requireAs, resolveAs, resolveCaller } from "./lib/sessions.ts";
 import { installSkill, skillDrift, sha256File, approxTokens, BYTES_PER_TOKEN } from "./lib/skill.ts";
 import { HELP_RULES, TOPICS } from "./lib/helprules.ts";
+import { verifyLedger, exportLedger } from "./lib/ledgerchain.ts";
 import { writeFileSync, existsSync, unlinkSync, statSync } from "node:fs";
 import { basename } from "node:path";
 import { constants, homedir, tmpdir, userInfo } from "node:os";
@@ -931,7 +932,7 @@ async function cmdTask(a: Args): Promise<void> {
   if (sub === "install-service") {
     // A user systemd service, so the dispatcher survives sessions and reboots. It runs a model only when a message waits.
     const system = flag(a, "system");
-    const bin = resolve(HERE, "..", "..", "bin", "govern");
+    const bin = unitGovern(resolve(HERE, "..", "..", "bin", "govern"));
     const text = serviceUnit(bin, String(secondsOpt(a, "interval") ?? 30), secondsOpt(a, "reap-every"), system, parallelOpt(a));
     if (system) return out(installSystemUnit(text, flag(a, "write")));
     const unit = join(homedir(), ".config", "systemd", "user", "govern-dispatch.service");
@@ -964,7 +965,7 @@ function cmdBpmn(a: Args): void {
   if (processes().has(name)) {
     p = getProcess(name);
     overlay = stat ? undefined : { now, lanes: readLanes({ now }).lanes.filter((l) => l.process.name === name) };
-  } else if (laneSlugs().includes(name)) {
+  } else if (laneSlugs({ replays: true }).includes(name)) {
     p = processOf(load(name));
     const sel = readLane(name, { now });
     overlay = stat ? undefined : { now, lanes: [sel], selected: sel };
@@ -1171,6 +1172,32 @@ export const COMMANDS: readonly Cmd[] = [
     } },
   { name: "log", section: 2, flags: { value: ["tail", "grep"] }, lines: [["<slug> [<job>] [--tail 40] [--grep RE]", "a job's log"]],
     run: (a) => { const p = load(a._[1]); const id = jobs.find(p.slug, a._[2]); out(jobs.tail(p.slug, id, Number(opt(a, "tail") ?? 40), opt(a, "grep")).join("\n") || "(empty log)"); } },
+  { name: "ledger", section: 2, noSub: "govern ledger verify|export",
+    subs: {
+      verify: { flags: { value: ["against"] },
+        lines: [["[<slug>...] [--against DIR]", "check each lane's ledger hash chain (every lane by default): an entry changed, removed or inserted breaks it at its line;\n--against DIR also checks that the ledger still begins with what govern ledger export copied there (catches a cut tail); exit 1 when any is broken"]],
+        run: (a) => {
+          const against = opt(a, "against"), slugs = a._.slice(2);
+          let broken = false;
+          for (const slug of slugs.length ? slugs : ledgerSlugs()) {
+            const v = verifyLedger(slug, against ? { against } : {});
+            if (!v.ok) broken = true;
+            out(v.ok ? `${slug}: ok, ${v.entries} entries${v.unsealed ? ` (${v.unsealed} from before the chain)` : ""}${v.head ? `, head ${v.head.slice(0, 12)}` : ""}` : `${slug}: BROKEN: ${v.problem}`);
+          }
+          if (broken) process.exitCode = 1;
+        } },
+      export: { flags: { value: ["to"] },
+        lines: [["--to DIR [<slug>...]", "append each lane's new ledger entries to DIR/<lane>.jsonl (DIR on append-only storage: a WORM bucket's sync folder, a chattr +a mount);\nrefuses a lane whose ledger no longer begins with what DIR holds, or whose chain is broken; exit 1 then"]],
+        run: (a) => {
+          const to = opt(a, "to") ?? usage("govern ledger export --to DIR [<slug>...]"), slugs = a._.slice(2);
+          let refused = false;
+          for (const slug of slugs.length ? slugs : ledgerSlugs()) {
+            try { const r = exportLedger(slug, to); out(`${slug}: ${r.copied} new entries copied${r.head ? `, head ${r.head.slice(0, 12)}` : ""}`); }
+            catch (e) { refused = true; out(`${slug}: REFUSED: ${(e as Error).message}`); }
+          }
+          if (refused) process.exitCode = 1;
+        } },
+    } },
   { name: "kill", section: 2,
     lines: [["<slug> [<job>]", "stop a job (default: the latest running) and what it started: its process tree, a --bg job's group,\n" +
       "and (Linux) every process marked with its GOVERN_JOB_DIR; its own pid only while still that job"]],

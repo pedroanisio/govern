@@ -17,6 +17,7 @@ import {
   setData
 } from "../lib/business.ts";
 import { parseProject, type Project } from "../lib/project.ts";
+import * as queue from "../lib/queue.ts";
 
 const definition = () => ({
   version: 1,
@@ -567,3 +568,27 @@ for (const [label, patch, path] of [
     });
   });
 }
+
+test("an agent stage's project folder renders like its body (default: the lane's own) and is checked when the process loads", () => {
+  const def = (project?: string) => ({
+    version: 1, name: "build", fields: { area: { type: "string" } },
+    stages: [
+      { name: "build", agent: { to: "codex", task: "build", summary: "Build {lane}", body: "Work on {data.area}.", ...(project === undefined ? {} : { project }) }, next: [{ to: ["done"] }] },
+      { name: "done", next: [] },
+    ],
+  });
+  const e = makeEnv("business-agent-project");
+  write(join(e.root, "PALS-Notes/processes/build.json"), JSON.stringify(def("{lane}/repo/{data.area}")));
+  ok(e, ["new", "p", "--process", "build"]);
+  ok(e, ["data", "p", "--set", JSON.stringify({ area: "api" })]);
+  ok(e, ["drive"]);
+  const sent = context(e, () => queue.all().filter((x) => x.m.kind === "TASK" && x.m.lane === "p"));
+  assert.deepEqual(sent.map((x) => x.m.project), ["p/repo/api"]);
+  for (const [bad, why] of [["{lane}/../other", /no \. or \.\. segment/], ["{lane}/{nope}", /unknown placeholder \{nope\}/], ["{lane}/{data.missing}", /names no declared field/]] as const)
+    assert.throws(() => parseProcess("/processes/build.json", JSON.stringify(def(bad))), (err: Error) => {
+      assert.match(err.message, /\$\.stages\[0\]\.agent\.project/);
+      assert.match(err.message, why);
+      return true;
+    });
+  assert.equal(parseProcess("/processes/build.json", JSON.stringify(def())).stages[0]!.agent!.project, undefined);
+});

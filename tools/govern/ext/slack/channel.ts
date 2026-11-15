@@ -6,7 +6,7 @@ import { GovernError } from "../../lib/util.ts";
 import { obj, str, record, parseFile } from "../../lib/shape.ts";
 import type { WorkspaceConfig } from "../../lib/workspace.ts";
 
-export type ChannelConfig = Pick<NonNullable<WorkspaceConfig["slack"]>, "bot" | "requesters" | "tags"> & { channel: string };
+export type ChannelConfig = Pick<NonNullable<WorkspaceConfig["slack"]>, "bot" | "requesters" | "tags" | "triggers"> & { channel: string };
 // Structured arguments need JSON; scalar-only methods use Slack's form contract.
 const ENCODING = {
   "chat.postMessage": "json",
@@ -119,8 +119,10 @@ const stateShape = obj({ top: str, threads: record(str), edits: record(str) });
 /** Accept only an exact fixed command from a configured requester addressing our bot. */
 export function parseCommand(p: Post, cfg: ChannelConfig): string | undefined {
   if (!p.request) return undefined;
-  const match = /^<@([A-Z0-9]+)> (status|pending|help|lane [a-z0-9][a-z0-9_-]*)$/.exec(p.text);
-  return match && match[0] === p.text && cfg.bot?.includes(match[1]!) ? match[2] : undefined;
+  const match = /^<@([A-Z0-9]+)> (status|pending|help|lane [a-z0-9][a-z0-9_-]*|run [a-z][a-z0-9-]*)$/.exec(p.text);
+  if (!match || match[0] !== p.text || !cfg.bot?.includes(match[1]!)) return undefined;
+  // A run names only a configured trigger; any other "run x" is an ordinary post.
+  return match[2]!.startsWith("run ") && !Object.hasOwn(cfg.triggers ?? {}, match[2]!.slice(4)) ? undefined : match[2];
 }
 
 /** Exactly one history call, at most twenty changed thread reads; first run only seeds existing position. */

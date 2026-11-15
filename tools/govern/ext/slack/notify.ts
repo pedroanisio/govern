@@ -24,7 +24,7 @@ import type { Scalar } from "../../lib/business-schema.ts";
 
 export { pending, type Pending };
 
-export interface NotifyOptions { api?: string; token: string; channel: string; lanes?: string[]; dryRun?: boolean;
+export interface NotifyOptions { api?: string; token: string; channel: string; alertsChannel?: string; lanes?: string[]; dryRun?: boolean;
   labels?: Partial<Record<Decision, string>>;
   /** One card per case, updated in place; what the case waits on and its alerts are posted in the card's thread. */
   threads?: boolean;
@@ -266,13 +266,13 @@ export async function notify(o: NotifyOptions): Promise<NotifyReport> {
   const activeChannelKeys = new Set([...channelConditions.map(a => a.key), ...services.held.keys()]);
   for (const [key, ts] of Object.entries(state.alerts)) {
     if (!key.startsWith("channel:") || activeChannelKeys.has(key)) continue;
-    if (await send(key, "chat.update", { channel: o.channel, ts, ...cleared(key, "condition cleared") })) {
+    if (await send(key, "chat.update", { channel: o.alertsChannel ?? o.channel, ts, ...cleared(key, "condition cleared") })) {
       report.closed.push(key); if (!o.dryRun) delete state.alerts[key];
     }
   }
   for (const a of channelConditions) {
     if (state.alerts[a.key]) continue;
-    const result = await send(a.key, "chat.postMessage", { channel: o.channel, text: a.text });
+    const result = await send(a.key, "chat.postMessage", { channel: o.alertsChannel ?? o.channel, text: a.text });
     if (result) { report.alerts.push(a.key); if (!o.dryRun) state.alerts[a.key] = result.ts; }
   }
   // Routed replies whose content check passed, offered to the publishers in the review channel (publish.ts), and the

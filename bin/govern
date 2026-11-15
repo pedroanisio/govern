@@ -10,6 +10,7 @@
 #     govern new SLUG (--process NAME | --kind long|short|ops) [--title T] [--lang L] [--parent SLUG] [--pin]
 #     govern work SLUG STAGE [--engine claude|codex|grok] [--open]  |  brief SLUG  |  status [SLUG]
 #     govern note SLUG TEXT  |  approve SLUG GATE --quote "owner's words"  |  done SLUG [--engine E]
+#     govern delegate PROCESS GATE|* --to PERSON --quote "owner's words" [--revoke]  |  delegate --list
 #     govern freeze SLUG --quote "owner's words" [--continued-as TEXT]  |  unfreeze SLUG --quote "owner's words"
 #     govern export SLUG [--template] [--out FILE] [--exclude GLOB]... [--freeze --quote "owner's words"]
 #     govern import BUNDLE [--as SLUG] [--drop-deps]  |  clone SLUG --as NEW [--template] [--exclude GLOB]...
@@ -21,6 +22,7 @@
 #     govern slice SLUG RECIPE [--machines N] [--estimate HOURS] [--bg]
 #     govern up RESOURCE [--lane SLUG] [--count N] [--timeout S]  |  down TAG|ID [--forget] [--timeout S]  |  reap [RESOURCE] [--yes] [--timeout S]
 #     govern log SLUG [JOB] [--tail N] [--grep RE]
+#     govern ledger verify [SLUG...] [--against DIR]  |  ledger export --to DIR [SLUG...]
 #     govern prompts [PROCESS]  |  ask SLUG STEP [--file F]... [--var K=V]... [--image PNG]... [--effort E] [--model M]
 #     govern usage [SLUG...] [--since DATE]  |  ctx  |  desk  |  tune  |  publish SLUG
 #     govern artifact add SLUG FILE [--name N] [--title T] [--caption C]  |  artifact list SLUG
@@ -152,7 +154,7 @@
 #     --engine E              work, done: claude, codex or grok (default: claude inside a Claude Code session, grok inside a
 #                             grok session, else codex)
 #     --open                  work: launch a fresh interactive claude, codex or grok session for this lane
-#     --quote Q               approve, allow, process migrate, check, freeze, unfreeze, export: the decision owner's own words (in
+#     --quote Q               approve, delegate, allow, process migrate, check, freeze, unfreeze, export: the decision owner's own words (in
 #                             a Claude session, from a message the person typed; a Codex or Grok session is refused); allow: it must contain N
 #     --continued-as TEXT     freeze: a free-text pointer to where the work continued (e.g. workspace-b:ops/new-slug); on
 #                             an already-frozen lane this is the only thing a further freeze call records
@@ -163,6 +165,8 @@
 #     --drop-deps             import: drop a dependency (--after) on a lane this workspace does not have, instead of refusing
 #     --by NAME               approve, allow: the decision owner, required when the gate or allowance names one other
 #                             than owner; on a policy gate, the process person this OS account is mapped to
+#     --list                  delegate: the standing delegations and their revocation history
+#     --revoke                delegate: revoke the standing authority on that gate from --to (with --quote)
 #     --extra N               allow: raise the allowance's limit by N for its current period
 #     --timeout S             cmd, wait, up, down, reap, task send, task retry: cmd: the command's foreground limit (default 1800); wait: block at most S seconds (default
 #                             540), exit 124 if the job still runs; up, down, reap: the provider command's limit (default 120);
@@ -175,8 +179,8 @@
 #     --accept                check: the owner accepts that stage's flagged check changes (with --quote)
 #     --accept-import         check: the owner accepts an imported lane (with --quote): lifts the quarantine jobs.start
 #                             holds every one of its commands under until then, and counts as --accept for every stage
-#     --note T                advance, task retry, task close, task reclaim: advance: the evidence that a stage with no check is done (also recorded
-#                             as a decision); task retry: what was fixed before sending again (required, recorded on both messages);
+#     --note T                approve, advance, task retry, task close, task reclaim: advance: the evidence that a stage with no check is done (also recorded
+#                             as a decision); approve: the decision evidence under an active standing delegation, in place of --quote; task retry: what was fixed before sending again (required, recorded on both messages);
 #                             task close: a note recorded with the close; task reclaim: what was checked
 #                             before releasing an abandoned claim
 #     --after X               dep: LANE[:STAGE], the lane this one waits on (all of it, or past STAGE)
@@ -204,9 +208,10 @@
 #                             claims-cited, or one the profile or config.json defines)
 #     --verify                task send: run the command after -- in the project folder once the reply is filed and the checks
 #                             pass; the reply is [checked] only on exit 0
-#     --to X                  task send, task list, task triage, task retry, task forward: send:
+#     --against DIR           ledger verify: also check that each ledger still begins with the copy govern ledger export made in DIR
+#     --to X                  delegate, ledger export, task send, task list, task triage, task retry, task forward: ledger export: the append-only folder; send:
 #                             codex, claude, grok, a queue config runner, a profile, auto, owner, a live session or NAME@PEER; list, triage: only messages to X; retry: send to X
-#                             instead of the original recipient; forward: the new recipient
+#                             instead of the original recipient; forward: the new recipient; delegate: the person the standing authority goes to
 #     --project P             task send, task list, task triage: the message's project; list, triage: only that project's messages
 #     --task T                task send: the task the message belongs to
 #     --summary S             task send, task reply: the one-line summary
@@ -264,7 +269,9 @@
 #     · GROK_HOME (the user's grok home, where the login is read from; default ~/.grok) · GOVERN_CODEX_HOME (govern's private
 #     codex home; default $XDG_STATE_HOME, else ~/.local/state, /govern/codex-home) · CODEX_HOME (the user's codex home, where
 #     the login is read from; default ~/.codex).
-#     Programs: SCENE_RENDER (the scene-render engine bpmn --png runs) · GOVERN_CODEX_BIN (codex) · GOVERN_CLAUDE_BIN (claude) · GOVERN_GROK_BIN (grok) · GOVERN_PYTHON (python3;
+#     Programs: GOVERN_BIN (an absolute path: the govern that task install-service and slack install write into units,
+#     instead of this copy's bin/govern; an installed release sets it to its stable command) ·
+#     SCENE_RENDER (the scene-render engine bpmn --png runs) · GOVERN_CODEX_BIN (codex) · GOVERN_CLAUDE_BIN (claude) · GOVERN_GROK_BIN (grok) · GOVERN_PYTHON (python3;
 #     fills {python}). SCENE_RENDER_BIN (scene-render; the engine the infographic process's pipeline.py render stage runs).
 #     Limits and models: GOVERN_CTX_WARN (150000) · GOVERN_TARGET_CTX (150000, tune) · GOVERN_MAX_INLINE (60000, ask)
 #     · GOVERN_QUEUE_MAX_INLINE (40000) · GOVERN_QUEUE_CLAUDE_MODEL (sonnet) · GOVERN_QUEUE_CODEX_EFFORT (medium)
@@ -281,7 +288,10 @@
 #     Set for what govern runs: GOVERN_JOB_ID, GOVERN_JOB_DIR (every job; slice and up read GOVERN_JOB_DIR to find the
 #     job they run in) · GOVERN_TAG, GOVERN_LANE, GOVERN_RESOURCE, GOVERN_COUNT, GOVERN_ID (a resource's up, down and
 #     list commands) · GOVERN_PIECES, GOVERN_OUT, GOVERN_TAG, GOVERN_PIECE, GOVERN_ID (a slice recipe's steps)
-#     · GOVERN_OUTPUTS (a service stage's command under govern drive: the file it writes its outputs to)
+#     · GOVERN_OUTPUTS (a service stage's command under govern drive: the file it writes its outputs to), GOVERN_STAGE,
+#     GOVERN_ROUND, GOVERN_ATTEMPT, GOVERN_IDEMPOTENCY_KEY and GOVERN_INTERRUPTED (the same command: which entry and
+#     attempt it is, the key its outside effect is deduplicated by, and 1 after an interrupted attempt) · GOVERN_DRY_RUN=1
+#     and GOVERN_PROBE (a service's probe under govern drive: check only, and the file it writes {"done": true|false} to)
 #     · GOVERN_REPLY_FILE (a reply check) · GOVERN_TASK_FILES (a reply check: the task's attached files, a JSON array of paths). task install-service writes PATH, GOVERN_REPO and GOVERN_QUEUE into
 #     the unit, and GOVERN_STATE and GOVERN_PROJECTS when they are set; a queued run drops CLAUDECODE and the other
 #     CLAUDE_CODE_ variables. A sealed grok run (a queued one, or a conversation worker on grok) gets HOME (a private

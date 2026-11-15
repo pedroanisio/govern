@@ -20,7 +20,7 @@ export interface StageDef { name: string; exit?: string; check?: string; require
 /** `owner`: who decides the gate (default "owner"); `govern approve --by` must name them. */
 export interface GateDef { name: string; stage?: string; needs?: string[]; message?: string; owner?: string; policy?: Policy; options?: GateOption[] }
 /** What a new lane of the process starts with: commands and named files, each group optionally only when a file already
- *  exists in the lane's folder (`ifFile`). A command's argv may use {repo}, {dir}, {python} and {paths.NAME}. */
+ *  exists in the lane's folder (`ifFile`). A command's argv may use {repo}, {dir}, {python}, {paths.NAME} and {data.FIELD}. */
 export interface SetupGroup { ifFile?: string; commands?: Record<string, string[]>; files?: Record<string, string> }
 /** A recipe job (`govern slice`): machines of `resource` started under one tag, a `split` that names the pieces, a
  *  `piece` run once per piece on the machine that claims it, then `join` and `verify`. Every step is an argv list.
@@ -58,6 +58,12 @@ export interface Process {
   prompts?: string;
   fields?: Record<string, Field>;
   people?: Record<string, Person>;
+  /** govern drive's circuit breaker for the process's service stages (CONNECTORS.md, Breaker): open once `failures` of the
+   *  last `window` outcomes failed; after `cooldown` seconds (default 300) one case runs as a trial. */
+  breaker?: { failures: number; window: number; cooldown?: number };
+  /** Where a case's business outcome is read (`govern metrics`): boolean case fields saying the case was concluded
+   *  correctly and that its customer was harmed. A later `govern outcome` entry overrides them. */
+  outcomes?: { correct?: string; customerImpact?: string };
   setup?: SetupGroup[];
   recipes?: Record<string, Recipe>;
   /** The folder of the process file (not a key of it): what manual and prompts are relative to. */
@@ -106,7 +112,7 @@ const PUBLISH = obj({ gates: arr(name), commands: arr(name, { nonEmpty: true }) 
 });
 const PROCESS = obj({ version: literal(1), name, stages: arr(STAGE, { nonEmpty: true }) },
   { publish: PUBLISH, revision:posInt, calendars:CALENDARS, description: str, kinds: arr(name, { nonEmpty: true }), exitFrom: literal("workflow"), gates: arr(GATE), manual: str, prompts: str,
-    fields: record(FIELD), people: PEOPLE, setup: arr(obj({}, { ifFile: str, commands: record(arr(str)), files: record(str) })), recipes: RECIPES });
+    fields: record(FIELD), people: PEOPLE, breaker: obj({ failures: posInt, window: posInt }, { cooldown: posInt }), outcomes: obj({}, { correct: name, customerImpact: name }), setup: arr(obj({}, { ifFile: str, commands: record(arr(str)), files: record(str) })), recipes: RECIPES });
 
 /** Names unique within a list: the second one is refused at its path. */
 function unique(items: { name: string }[], what: string, at: string): void {
@@ -119,6 +125,9 @@ function unique(items: { name: string }[], what: string, at: string): void {
 function resolveRefs(p: ReturnType<typeof PROCESS>): void {
   const stages = p.stages, gates = p.gates ?? [];
   unique(stages, "stage", "$.stages");
+  if (p.breaker && p.breaker.failures > p.breaker.window) reject("$.breaker.failures", `${p.breaker.failures} failures cannot happen in a window of ${p.breaker.window} outcomes`);
+  for (const [k, f] of Object.entries(p.outcomes ?? {}))
+    if (p.fields?.[f]?.type !== "boolean") reject(`$.outcomes.${k}`, `${f} is not a declared boolean field: the outcome is read from it`);
   unique(gates, "gate", "$.gates");
   const names = new Set(stages.map((s) => s.name)), byName = new Map(gates.map((g) => [g.name, g]));
   if (p.publish) {
@@ -166,7 +175,8 @@ export function parseProcess(file: string, text: string): Process {
 
 function readDir(dir: string | undefined): Process[] {
   if (!dir || !existsSync(dir)) return [];
-  return readdirSync(dir).filter((f) => f.endsWith(".json")).sort().map((f) => parseProcess(join(dir, f), readFileSync(join(dir, f), "utf8")));
+  // A candidate revision waiting for its canary (govern canary start --file) is not a process of its own.
+  return readdirSync(dir).filter((f) => f.endsWith(".json") && !f.endsWith(".candidate.json")).sort().map((f) => parseProcess(join(dir, f), readFileSync(join(dir, f), "utf8")));
 }
 
 /** Every process by name; a workspace process overrides a built-in of the same name. */
