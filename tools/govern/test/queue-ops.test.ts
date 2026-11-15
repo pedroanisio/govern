@@ -7,7 +7,8 @@ import { join } from "node:path";
 import { createRequire, syncBuiltinESMExports } from "node:module";
 import * as queue from "../lib/queue.ts";
 import { identity } from "../lib/locks.ts";
-import { makeEnv, govern, write, reply, present, seedChecks, type Env } from "./helpers.ts";
+import { spawn } from "node:child_process";
+import { makeEnv, govern, write, reply, present, seedChecks, childEnv, GOVERN, type Env } from "./helpers.ts";
 
 const answer = { kind: "REVIEW", summary: "two claims unsupported", body: "Claim 3 and 7 have no source." };
 function env(): Env {
@@ -425,6 +426,27 @@ test("--max bounds the messages a dispatch starts, with --parallel 1 and with --
   assert.equal(two.out.trim().split("\n").length, 1);
   assert.equal(stored(e, "done", b).id, b);
   assert.equal(existsSync(join(e.root, "queue", "open", `${c}.json`)), true);
+});
+
+test("a --parallel pass takes a message sent while its runs are under way, when the runner has a free slot", async () => {
+  const e = env();
+  queueConfig(e, { concurrency: { codex: 2 } });
+  const first = send(e);
+  const times = join(e.root, "times.log");
+  // each run waits until two runs have started: the first ends early (by the barrier's cap) only if the late one never starts
+  const extra = { FAKE_CODEX_SCRIPTS: reply(e, "ok", answer), FAKE_CODEX_BARRIER: `${join(e.root, "barrier")}:2`, FAKE_CODEX_TIMES_OUT: times };
+  const back = process.env;
+  process.env = childEnv(e, extra);
+  try { seedChecks(); } finally { process.env = back; }
+  const child = spawn(process.execPath, ["--disable-warning=ExperimentalWarning", GOVERN, "task", "dispatch", "--parallel", "2"], { env: childEnv(e, extra) });
+  let out = "";
+  child.stdout.on("data", (c) => { out += c; });
+  const closed = new Promise<number | null>((done) => child.on("close", done));
+  for (let i = 0; i < 500 && !(existsSync(times) && readFileSync(times, "utf8").includes("start")); i++) await new Promise((r) => setTimeout(r, 20));
+  const late = send(e);
+  assert.equal(await closed, 0);
+  assert.equal(overlap(times), 2, readFileSync(times, "utf8"));
+  for (const id of [first, late]) assert.match(out, new RegExp(`${id} → codex: REVIEW`));
 });
 
 test("--parallel must be a whole number, 1 or more", () => {
