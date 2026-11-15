@@ -1,5 +1,7 @@
 # Observability example: Grafana insights in Slack
 
+Part of [super-tools](../../../../README.md); the tool is [govern](../../README.md).
+
 [grafana-watch.ts](grafana-watch.ts) reads Grafana through its datasource proxy with a service account token (Viewer).
 A timer runs it. It posts to a Slack channel; nothing else is written anywhere.
 
