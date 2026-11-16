@@ -16,7 +16,7 @@ import { stateDir, slackConfig, repo, inRepo, FOLDER_OVERRIDES } from "../../lib
 import { withLaneLock } from "../../lib/lane-lock.ts";
 import { BadRequest, Forbidden, NotFound, TooLarge } from "../../lib/http-errors.ts";
 import { GovernError, fail, nowIso } from "../../lib/util.ts";
-import type { Source } from "../../lib/approval.ts";
+import type { SlackSource } from "../../lib/approval.ts";
 import { setData } from "../../lib/business.ts";
 import type { Scalar } from "../../lib/business-schema.ts";
 import { optionSet, pending, settled, standing } from "./pending.ts";
@@ -24,6 +24,8 @@ import { isControl, parseControl, performControl, type Control } from "./control
 import { FormRefusal, editedSet, firstBlock, formView, parseSubmission, postedMessage, reasonOf, type FormMeta, type Submission } from "./forms.ts";
 import type { Call } from "./channel.ts";
 import { PUBLISH_ID, approvePublish, parsePublish } from "./publish.ts";
+import { allowedUrl, forServer, serverOf, type SlackServer } from "./server.ts";
+import { markAnswered } from "./answered.ts";
 
 export { optionSet };
 
@@ -127,8 +129,9 @@ export function decisionValue(p: Project, target: Target, decision: Decision, se
 }
 
 const seenDir = () => join(stateDir(), "slack");
-/** Remember `signature` until it can no longer pass the clock check; fails (Unauthorized) when it was already received. */
-function remember(signature: string, now: number): void {
+/** Remember `signature` (or a Socket Mode click's identity) for `ttl` seconds, by default until it can no longer pass the
+ *  clock check; fails (Unauthorized) when it was already received. */
+function remember(signature: string, now: number, ttl = SEEN_SECONDS): void {
   mkdirSync(seenDir(), { recursive: true, mode: 0o700 });
   withLaneLock(join(seenDir(), "lock"), () => {
     const f = join(seenDir(), "seen.json");
@@ -139,7 +142,7 @@ function remember(signature: string, now: number): void {
     for (const [k, until] of Object.entries(seen)) if (until < now) delete seen[k];
     const key = createHash("sha256").update(signature).digest("hex");
     if (Object.hasOwn(seen, key)) throw new Unauthorized("this request was already received (replayed)");
-    seen[key] = now + SEEN_SECONDS;
+    seen[key] = now + ttl;
     const tmp = `${f}.tmp-${process.pid}`;
     writeFileSync(tmp, JSON.stringify(seen) + "\n", { mode: 0o600 });
     renameSync(tmp, f);
@@ -172,7 +175,7 @@ function laneRepo(slug: string): string {
  *  policy's rejectTo), the owner's approval of a gate without a policy, or the completion of a human task (claimed first
  *  when nobody holds it). The lane may live in another workspace this server decides for (slack.serveRepos); there its
  *  own slack.team must be the request's team and its own process's people decide. Returns the line the server replies with. */
-export function perform(a: SlackAction, source: Extract<Source, { kind: "slack" }>): string {
+export function perform(a: SlackAction, source: SlackSource): string {
   return inLaneWorkspace(a.team, a.lane, (slug) => decide(a, slug, source));
 }
 
@@ -191,7 +194,7 @@ function inLaneWorkspace<T>(team: string, lane: string, f: (slug: string) => T):
   });
 }
 
-function decide(a: SlackAction, slug: string, source: Extract<Source, { kind: "slack" }>): string {
+function decide(a: SlackAction, slug: string, source: SlackSource): string {
   return transaction(slug, () => {
     const p = load(slug), person = personOf(p, a.user);
     if (caseDigest(p) !== a.digest) fail(`${slug} has changed since this button was made (its data or a loop): decide on a new message`);
@@ -283,46 +286,56 @@ const STATUS = (e: unknown): number =>
   e instanceof Unauthorized ? 401 : e instanceof BadRequest ? 400 : e instanceof Forbidden ? 403 : e instanceof NotFound ? 404
     : e instanceof TooLarge ? 413 : e instanceof GovernError ? 409 : 500;
 
-interface InteractionOptions { now?: () => number; request?: typeof fetch;
+export interface InteractionOptions { now?: () => number; request?: typeof fetch;
   /** The Slack Web API under the bot token, to open forms (views.open); without it a form button is refused. */
-  call?: Call }
+  call?: Call;
+  /** The server the workspace talks to (server.ts): its API base names the other host a response URL may be on, and a
+   *  single-answer server gets edits without buttons. Default: the workspace's slack.server and slack.api. */
+  server?: SlackServer }
 /** `reply`, when set, is what the server answers Slack instead of `value` (a form submission's response_action). */
 interface InteractionResult { status: number; value: { ok: boolean; text?: string; error?: string }; reply?: unknown }
 
 const payloadOf = (body: Buffer): unknown => JSON.parse(new URLSearchParams(body.toString("utf8")).get("payload") ?? "null");
 
 /** Only an authenticated payload can provide a response capability. Never follow redirects or send an API token. */
-function responseUrl(body: Buffer): string | undefined {
+function responseUrl(body: Buffer, api: string): string | undefined {
   const raw = payloadOf(body);
-  return record(raw) && raw.response_url !== undefined ? safeUrl(raw.response_url) : undefined;
+  return record(raw) && raw.response_url !== undefined ? safeUrl(raw.response_url, api) : undefined;
 }
-function safeUrl(v: unknown): string {
+function safeUrl(v: unknown, api: string): string {
+  const refuse = () => new BadRequest("response_url must be an https://hooks.slack.com/ URL, or on the configured API's own address");
   let url: URL;
-  try { url = new URL(typeof v === "string" ? v : ""); }
-  catch { throw new BadRequest("response_url must be an https://hooks.slack.com/ URL"); }
-  if (url.protocol !== "https:" || url.hostname !== "hooks.slack.com" || url.username || url.password || url.port || url.hash)
-    throw new BadRequest("response_url must be an https://hooks.slack.com/ URL");
+  try { url = new URL(typeof v === "string" ? v : ""); } catch { throw refuse(); }
+  if (!allowedUrl(url, "hooks.slack.com", api)) throw refuse();
   return url.href;
 }
 
 /** The clicked message once `a` is recorded: what it asked, as Slack sent it with the click, with one line saying where the
  *  decision stands. Its buttons stay while the same target still waits on others (a gate short of its quorum) on the case
- *  version they are bound to; otherwise they go. Without the clicked message's blocks, the bare `line` replaces it. */
-function decided(body: Buffer, a: SlackAction, line: string): { text: string; blocks: unknown[] } {
+ *  version they are bound to, unless the server closes a message on its first click (`single`); otherwise they go. Without
+ *  the clicked message's blocks, the bare `line` replaces it. */
+function decided(body: Buffer, a: SlackAction, line: string, single = false): { text: string; blocks: unknown[] } {
   const raw = payloadOf(body);
-  return decidedMessage(record(raw) && record(raw.message) ? raw.message : undefined, a, line);
+  return decidedMessage(record(raw) && record(raw.message) ? raw.message : undefined, a, line, single);
 }
-function decidedMessage(message: { text?: unknown; blocks?: unknown } | undefined, a: SlackAction, line: string): { text: string; blocks: unknown[] } {
+function decidedMessage(message: { text?: unknown; blocks?: unknown } | undefined, a: SlackAction, line: string, single = false): { text: string; blocks: unknown[] } {
   const p = load(checkSlug(a.lane)), key = "task" in a.target ? `task:${a.target.task}` : `gate:${a.target.gate}`;
-  const open = caseDigest(p) === a.digest && pending(p).some((i) => i.key === `${p.slug}:${key}`);
-  const blocks = settled(message?.blocks, standing(p, a.target) ?? line, open);
+  const open = !single && caseDigest(p) === a.digest && pending(p).some((i) => i.key === `${p.slug}:${key}`);
+  const blocks = settled(blocksOf(message, single), standing(p, a.target) ?? line, open);
   return blocks ? { text: typeof message?.text === "string" && message.text ? message.text : line, blocks } : { text: line, blocks: [] };
 }
 
+/** The clicked message's blocks; on a single-answer server, whose reads carry no blocks (Tayet), its text as one section,
+ *  so the edit keeps what the message asked. */
+function blocksOf(message: { text?: unknown; blocks?: unknown } | undefined, single: boolean): unknown {
+  if (message?.blocks !== undefined || !single) return message?.blocks;
+  return typeof message?.text === "string" && message.text ? [{ type: "section", text: { type: "mrkdwn", text: message.text } }] : undefined;
+}
+
 /** The clicked message with its buttons gone and `line` saying what was done; the bare line without the message's blocks. */
-function closed(body: Buffer, line: string): { text: string; blocks: unknown[] } {
+function closed(body: Buffer, line: string, single = false): { text: string; blocks: unknown[] } {
   const raw = payloadOf(body), message = record(raw) && record(raw.message) ? raw.message : undefined;
-  const blocks = settled(message?.blocks, line, false);
+  const blocks = settled(blocksOf(message, single), line, false);
   return blocks ? { text: typeof message?.text === "string" && message.text ? message.text : line, blocks } : { text: line, blocks: [] };
 }
 
@@ -346,59 +359,103 @@ function controlOf(body: Buffer): { team: string; user: string; control: Control
   return { team, user, control: parseControl(a.action_id as string, a.value), quote };
 }
 
+/** How a click proves where it came from: Slack's signature over the request (HTTP), or the Socket Mode connection
+ *  `govern slack serve` opened with the app-level token (nothing signs the payload: the connection is the proof). */
+type Proof = { kind: "signed"; secret: string; timestamp: string | undefined; signature: string | undefined }
+  | { kind: "socket"; envelope: string };
+
+/** How long a Socket Mode click is remembered: a Tayet sidecar sends a click decided while nobody was connected to the
+ *  first connection that opens, however late, so the clock cannot refuse a repeat as it does a signed request's. */
+export const SOCKET_SEEN_SECONDS = 7 * 24 * 3600;
+
+/** What makes one Socket Mode click unique: the clicked message, the person, the button and the click's time (a block
+ *  action), or the envelope (anything else). A redelivered click has the same identity and is refused as a repeat. */
+function clickIdentity(raw: unknown, envelope: string): string {
+  if (record(raw) && raw.type === "block_actions" && Array.isArray(raw.actions) && record(raw.actions[0])) {
+    const container = record(raw.container) ? raw.container : {}, act = raw.actions[0];
+    const parts = [record(raw.channel) ? raw.channel.id : container.channel_id, container.message_ts, record(raw.user) ? raw.user.id : undefined,
+      act.action_id, act.action_ts];
+    if (parts.every((x) => typeof x === "string" && x)) return `socket:click:${parts.join(":")}`;
+  }
+  return `socket:envelope:${envelope}`;
+}
+
+/** The message a click closed on a single-answer server: its channel and ts, when the payload says. */
+function clickedMessage(raw: unknown): { channel: string; ts: string } | undefined {
+  if (!record(raw) || raw.type !== "block_actions") return undefined;
+  const container = record(raw.container) ? raw.container : {};
+  const channel = record(raw.channel) && typeof raw.channel.id === "string" ? raw.channel.id : container.channel_id;
+  const ts = container.message_ts ?? (record(raw.message) ? raw.message.ts : undefined);
+  return typeof channel === "string" && typeof ts === "string" ? { channel, ts } : undefined;
+}
+
 /** Verify, record, then report the outcome through Slack's response URL. Failed feedback never reverses a decision. */
 export async function handleInteraction(secret: string, body: Buffer, ts: string | undefined, sig: string | undefined,
   o: InteractionOptions = {}): Promise<InteractionResult> {
+  return interact(body, { kind: "signed", secret, timestamp: ts, signature: sig }, o);
+}
+
+/** A Socket Mode `interactive` envelope's payload (socket.ts), decided as a signed request is, minus the signature. */
+export async function handleSocketInteraction(payload: unknown, envelope: string, o: InteractionOptions = {}): Promise<InteractionResult> {
+  return interact(Buffer.from(new URLSearchParams({ payload: JSON.stringify(payload) }).toString(), "utf8"), { kind: "socket", envelope }, o);
+}
+
+async function interact(body: Buffer, proof: Proof, o: InteractionOptions): Promise<InteractionResult> {
+  const server = o.server ?? serverOf(slackConfig());
   let url: string | undefined, update: (() => { text: string; blocks: unknown[] }) | undefined, result: InteractionResult;
   /** Set while a form submission is being decided: a refusal is then shown in the form (under this input). */
   let form: string | undefined;
+  let raw: unknown;
   try {
     const at = (o.now ?? (() => Math.floor(Date.now() / 1000)))();
-    verifySignature(secret, ts, sig, body, at);
-    // Extract feedback before action parsing so signed payload refusals can explain themselves too.
-    try { url = responseUrl(body); } catch (e) {
+    if (proof.kind === "signed") verifySignature(proof.secret, proof.timestamp, proof.signature, body, at);
+    // Extract feedback before action parsing so authenticated payload refusals can explain themselves too.
+    try { url = responseUrl(body, server.api); raw = payloadOf(body); } catch (e) {
       if (e instanceof SyntaxError) throw new BadRequest("the payload is not JSON");
       throw e;
     }
-    const raw = payloadOf(body), c = controlOf(body);
+    const admit = () => proof.kind === "signed" ? remember(proof.signature!, at) : remember(clickIdentity(raw, proof.envelope), at, SOCKET_SEEN_SECONDS);
+    const source = (team: string, user: string): SlackSource => proof.kind === "signed"
+      ? { kind: "slack", team, user, timestamp: proof.timestamp!, signedBody: body.toString("utf8"), signature: proof.signature! }
+      : { kind: "slack-socket", team, user, envelope: proof.envelope, payload: JSON.stringify(raw) };
+    const c = controlOf(body);
     if (record(raw) && raw.type === "view_submission") {
-      remember(sig!, at);
+      admit();
       const s = parseSubmission(raw);
       form = firstBlock(raw) ?? "";
       const a = submitted(s);
-      const line = perform(a, { kind: "slack", team: a.team, user: a.user, timestamp: ts!, signedBody: body.toString("utf8"), signature: sig! });
+      const line = perform(a, source(a.team, a.user));
       result = { status: 200, value: { ok: true, text: line }, reply: { response_action: "clear" } };
-      try { url = s.meta.url ? safeUrl(s.meta.url) : undefined; } catch { url = undefined; }
-      update = () => decidedMessage(postedMessage(`${a.lane}:gate:${s.meta.gate}`, s.meta.ts), a, line);
+      try { url = s.meta.url ? safeUrl(s.meta.url, server.api) : undefined; } catch { url = undefined; }
+      update = () => decidedMessage(postedMessage(`${a.lane}:gate:${s.meta.gate}`, s.meta.ts), a, line, server.singleAnswer);
       form = undefined;
     } else if (publishOf(raw)) {
       const { team, user, value } = publishOf(raw)!;
-      remember(sig!, at);
+      admit();
       const cfg = slackConfig() ?? (() => { throw new Forbidden("the workspace config names no slack.team"); })();
       if (team !== cfg.team) throw new Forbidden(`the request comes from Slack team ${team}, not ${cfg.team}`);
       if (!cfg.route?.publishers?.includes(user) || !cfg.inbox) throw new Forbidden(`Slack user ${user} is not one of slack.route.publishers`);
       const { reply, digest } = parsePublish(value);
-      approvePublish(cfg.inbox, reply, digest, user, { kind: "slack", team, user, timestamp: ts!, signedBody: body.toString("utf8"), signature: sig! });
+      approvePublish(cfg.inbox, reply, digest, user, source(team, user));
       const line = `Approved by <@${user}> · govern slack listen posts it in the request's thread`;
       result = { status: 200, value: { ok: true, text: line } };
-      update = () => closed(body, line);
+      update = () => closed(body, line, server.singleAnswer);
     } else if (c) {
-      remember(sig!, at);
-      const line = inLaneWorkspace(c.team, c.control.lane, () => performControl(c.control, (p) => personOf(p, c.user),
-        { kind: "slack", team: c.team, user: c.user, timestamp: ts!, signedBody: body.toString("utf8"), signature: sig! }, c.quote, at));
+      admit();
+      const line = inLaneWorkspace(c.team, c.control.lane, () => performControl(c.control, (p) => personOf(p, c.user), source(c.team, c.user), c.quote, at));
       result = { status: 200, value: { ok: true, text: line } };
-      update = () => closed(body, line);
+      update = () => closed(body, line, server.singleAnswer);
     } else {
       const a = parseAction(body);
-      remember(sig!, at);
+      admit();
       if (a.form) {
         result = { status: 200, value: { ok: true, text: await openForm(a, raw as Record<string, unknown>, url, o.call) } };
         url = undefined;
         return result;
       }
-      const line = perform(a, { kind: "slack", team: a.team, user: a.user, timestamp: ts!, signedBody: body.toString("utf8"), signature: sig! });
+      const line = perform(a, source(a.team, a.user));
       result = { status: 200, value: { ok: true, text: line } };
-      update = () => decided(body, a, line);
+      update = () => decided(body, a, line, server.singleAnswer);
     }
   } catch (e) {
     const status = STATUS(e), error = status === 500 ? "decision failed" : (e as Error).message;
@@ -411,13 +468,23 @@ export async function handleInteraction(secret: string, body: Buffer, ts: string
       url = undefined;
     }
   }
+  // A single-answer server closed the clicked message whatever happened here: notify posts a new one for anything it asked
+  // that still waits on people. An unauthenticated request marks nothing.
+  const clicked = server.singleAnswer && result.status !== 401 ? clickedMessage(raw) : undefined;
+  if (clicked) {
+    try { markAnswered(clicked.channel, clicked.ts); } catch { process.stderr.write("slack: could not mark the closed message; notify will not repost it\n"); }
+  }
   if (url) {
+    // A single-answer server has no ephemeral messages: a refusal replaces the closed message, saying a new one follows.
+    const refusal = server.singleAnswer
+      ? { replace_original: true, ...forServer(server, closed(body, `Refused: ${result.value.error} · a new message follows if this still waits on someone`, true)) }
+      : { replace_original: false, response_type: "ephemeral", text: `Refused: ${result.value.error}` };
     try {
       const response = await (o.request ?? fetch)(url, { method: "POST", redirect: "error", signal: AbortSignal.timeout(2000),
         headers: { "Content-Type": "application/json; charset=utf-8" },
         body: JSON.stringify(result.value.ok && update
-          ? { replace_original: true, response_type: "in_channel", ...update() }
-          : { replace_original: false, response_type: "ephemeral", text: `Refused: ${result.value.error}` }) });
+          ? { replace_original: true, response_type: "in_channel", ...forServer(server, update()) }
+          : refusal) });
       if (!response.ok) throw new Error("refused");
     } catch { process.stderr.write("slack: response update failed; decision outcome retained; notify will reconcile\n"); }
   }

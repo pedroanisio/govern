@@ -8,8 +8,8 @@ import { slackConfig, configFile } from "../../lib/workspace.ts";
 import { clip, GovernError } from "../../lib/util.ts";
 import type { DoctorTarget, Finding, Status, Remedy } from "../../lib/doctor.ts";
 import { slackCall, SlackError } from "./channel.ts";
-import { SLACK_API } from "./notify.ts";
-import { botTokenVar, findBotToken } from "./secrets.ts";
+import { SLACK_API, serverOf } from "./server.ts";
+import { botTokenVar, findBotToken, secret } from "./secrets.ts";
 
 /** How old the listener's heartbeat may be when slack.alerts gives no listenStaleSec. */
 const LISTEN_STALE_SEC = 300;
@@ -67,18 +67,20 @@ export async function doctor(t: DoctorTarget): Promise<Finding[]> {
   else add("token", "ok", `${variable} from ${mode !== undefined && !process.env[variable] ? cfg.envFile : "the environment"}`);
 
   // Slack's answer for the token, then for the channel.
-  const call = slackCall(process.env.GOVERN_SLACK_API ?? SLACK_API, token, t.request);
+  const server = serverOf(cfg), where = server.kind === "tayet" ? `the Tayet sidecar at ${server.api}` : server.api === SLACK_API ? "Slack" : server.api;
+  const apiFix = "Check that slack.api (or GOVERN_SLACK_API, which overrides it) points at the server's Web API.";
+  const call = slackCall(server.api, token, t.request);
   let bot: string | undefined;
   try {
     const a = await call("auth.test", {});
     const team = text(a, "team_id"), user = text(a, "user") ?? text(a, "user_id");
-    if (!team) add("auth", "fail", "auth.test answered without a team_id string", { fix: "Check that GOVERN_SLACK_API, when set, points at Slack's API." });
+    if (!team) add("auth", "fail", "auth.test answered without a team_id string", { fix: apiFix });
     else if (team !== cfg.team) add("auth", "fail", `the token is of team ${team}; slack.team is ${cfg.team}`, { actor: "operator", fix: `Use the bot token of team ${cfg.team}, or correct slack.team in ${configFile()}.` });
     else { bot = user ?? "the bot"; add("auth", "ok", `${bot} in team ${team}`); }
   } catch (e) {
     add("auth", "fail", clip(reason(e), 200), { actor: "operator", fix: `Reinstall the Slack app to the workspace and put its new bot token in ${cfg.envFile ?? variable}.` });
   }
-  if (bot === undefined) add("channel", "skip", "Slack did not accept the token");
+  if (bot === undefined) add("channel", "skip", `${where} did not accept the token`);
   else {
     try {
       const c = await call("conversations.info", { channel: cfg.channel });
@@ -86,12 +88,21 @@ export async function doctor(t: DoctorTarget): Promise<Finding[]> {
       const label = text(ch, "name") ? `#${text(ch, "name")}` : cfg.channel;
       if (member === true) add("channel", "ok", `${bot} is a member of ${label}`);
       else if (member === false) add("channel", "fail", `${bot} is not a member of ${label}: notify cannot post there`, { actor: "operator", fix: `In Slack, open ${label} and type /invite @${bot}.` });
-      else add("channel", "fail", "conversations.info answered without channel.is_member", { fix: "Check that GOVERN_SLACK_API, when set, points at Slack's API." });
+      else add("channel", "fail", "conversations.info answered without channel.is_member", { fix: apiFix });
     } catch (e) {
       const why = reason(e);
       if (/missing_scope/.test(why)) add("channel", "skip", "the token lacks channels:read (groups:read for a private channel): membership not verified");
       else add("channel", "fail", clip(why, 200), { actor: "operator", fix: `Check that slack.channel ${cfg.channel} exists and the bot can see it.` });
     }
+  }
+
+  // Socket Mode: serve connects with the app-level token instead of receiving signed requests.
+  if (cfg.transport === "socket") {
+    const app = secret("SLACK_APP_TOKEN", process.env.SLACK_APP_TOKEN, cfg.envFile);
+    if (app) add("socket", "ok", `SLACK_APP_TOKEN set: slack serve connects to ${where} over Socket Mode`);
+    else add("socket", "fail", "slack.transport is \"socket\" but SLACK_APP_TOKEN is not set", { actor: "operator",
+      fix: server.kind === "tayet" ? `Put the sidecar's local token in ${cfg.envFile ?? "a file named by slack.envFile"} as SLACK_APP_TOKEN (the same value as ${variable}).`
+        : `Put the app-level token (xapp-…, scope connections:write) in ${cfg.envFile ?? "a file named by slack.envFile"} as SLACK_APP_TOKEN.` });
   }
 
   // The listener: it writes heartbeat.json in the inbox after each successful poll.

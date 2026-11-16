@@ -19,7 +19,10 @@ person's own, after checking Slack's request signature, the clock, replays, the 
 Enable it with `govern ext enable slack`.
 
 - [index.ts](index.ts): the command, and the signing secret from `SLACK_SIGNING_SECRET` or the config's `slack.envFile`.
-- [slack.ts](slack.ts): signature checks, payload parsing, case digest, recorded decisions, immediate validated response-URL feedback and the HTTP server.
+- [slack.ts](slack.ts): signature checks, payload parsing, case digest, recorded decisions, immediate validated response-URL feedback and the HTTP server; Socket Mode clicks go through the same path without the signature.
+- [socket.ts](socket.ts): Socket Mode for `slack serve` (`slack.transport` `"socket"`): the connection, acks and reconnects.
+- [server.ts](server.ts): the server a workspace talks to (`slack.server`, `slack.api`): Slack, or a Tayet sidecar ([TAYET.md](../../TAYET.md)), with its button limit, single-answer cards and allowed URL hosts.
+- [answered.ts](answered.ts): cards a click closed on a single-answer server, for `notify` to post again while the decision waits.
 
 - [channel.ts](channel.ts): poller-compatible private inbox and state, heartbeat, API errors/retries, journaled posts and constrained media uploads.
 - [commands.ts](commands.ts): fixed read-only channel command views shared with the terminal's status, brief and pending decisions.

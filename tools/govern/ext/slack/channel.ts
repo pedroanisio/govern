@@ -5,6 +5,7 @@ import { randomUUID, createHash } from "node:crypto";
 import { GovernError } from "../../lib/util.ts";
 import { obj, str, record, parseFile } from "../../lib/shape.ts";
 import type { WorkspaceConfig } from "../../lib/workspace.ts";
+import { allowedUrl, SLACK_API } from "./server.ts";
 
 export type ChannelConfig = Pick<NonNullable<WorkspaceConfig["slack"]>, "bot" | "requesters" | "tags" | "triggers"> & { channel: string };
 // Structured arguments need JSON; scalar-only methods use Slack's form contract.
@@ -14,6 +15,7 @@ const ENCODING = {
   "views.open": "json",
   "files.completeUploadExternal": "json",
   "auth.test": "form",
+  "apps.connections.open": "form",
   "conversations.info": "form",
   "conversations.history": "form",
   "conversations.replies": "form",
@@ -319,7 +321,9 @@ async function sendMessage(call: Call, d: string, channel: string, o: Send): Pro
 }
 
 
-export interface Upload { file: string; thread: string; title?: string; text?: string; key?: string }
+export interface Upload { file: string; thread: string; title?: string; text?: string; key?: string;
+  /** The Web API base (server.ts): an upload URL on its own address is accepted when it is not Slack's (a Tayet sidecar). */
+  api?: string }
 const MEDIA = new Set([".png", ".jpg", ".jpeg", ".gif", ".webp", ".mp4", ".mov", ".webm", ".m4v", ".pdf"]);
 /** The transfer's limit: the 30 s every API call gets, plus a second per 256 KB (a floor of about 2 Mbit/s). */
 export const transferMs = (bytes: number): number => 30_000 + Math.ceil(bytes / 262_144) * 1000;
@@ -355,11 +359,17 @@ export async function uploadFile(call: Call, d: string, channel: string, policy:
     const upload = await call("files.getUploadURLExternal", { filename: basename(path), length: bytes.length });
     let url: URL;
     try { url = new URL(String(upload.upload_url)); } catch { throw new SlackError("invalid upload URL", false); }
-    if (url.protocol !== "https:" || url.hostname !== "files.slack.com" || url.username || url.password || url.port || url.hash) throw new SlackError("invalid upload URL", false);
+    if (!allowedUrl(url, "files.slack.com", o.api ?? SLACK_API)) throw new SlackError("invalid upload URL", false);
+    // Slack's upload URL takes the raw bytes; a Tayet sidecar's takes one multipart file field, as Slack's SDKs send it.
+    const raw = url.hostname === "files.slack.com";
+    const boundary = `govern-${randomUUID()}`;
+    const payload = raw ? new Uint8Array(bytes) : new Uint8Array(Buffer.concat([
+      Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="${basename(path).replace(/["\r\n\\]/g, "_")}"\r\nContent-Type: application/octet-stream\r\n\r\n`),
+      bytes, Buffer.from(`\r\n--${boundary}--\r\n`)]));
     if (typeof upload.file_id !== "string" || !/^F[A-Z0-9]+$/.test(upload.file_id)) throw new SlackError("invalid upload file id", false);
     // Manual redirects: a 3xx is reported as itself, and the bytes never follow it to another host.
     let response: Response;
-    try { response = await request(url.href, { method: "POST", body: new Uint8Array(bytes), headers: { "Content-Type": "application/octet-stream" }, redirect: "manual", signal: AbortSignal.timeout(transferMs(bytes.length)) }); }
+    try { response = await request(url.href, { method: "POST", body: payload, headers: { "Content-Type": raw ? "application/octet-stream" : `multipart/form-data; boundary=${boundary}` }, redirect: "manual", signal: AbortSignal.timeout(transferMs(bytes.length)) }); }
     catch (e) { throw new SlackError(`file upload: network failure (${networkReason(e)})`, false); }
     await response.body?.cancel().catch(() => undefined);
     if (!response.ok) throw new SlackError(`file upload: HTTP ${response.status}`, false);

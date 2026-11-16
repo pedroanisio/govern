@@ -17,7 +17,13 @@ export type Source =
   | { kind: "device"; device: string; signedBody: string; signature: string }
   /** A button the person clicked in Slack (ext/slack): Slack's team and user ids, and the request Slack signed with the app's
    *  signing secret (its timestamp, body and v0 signature), so the record can be verified again with that secret. */
-  | { kind: "slack"; team: string; user: string; timestamp: string; signedBody: string; signature: string };
+  | { kind: "slack"; team: string; user: string; timestamp: string; signedBody: string; signature: string }
+  /** A button the person clicked, delivered over a Socket Mode connection govern opened with the app-level token (Slack, or
+   *  a Tayet sidecar): nothing signs it, so the record keeps the envelope's id and the payload as received. */
+  | { kind: "slack-socket"; team: string; user: string; envelope: string; payload: string };
+
+/** A click's source, either transport. */
+export type SlackSource = Extract<Source, { kind: "slack" | "slack-socket" }>;
 
 /** Variables a Codex shell sets. Read from the codex binary's strings (CODEX_THREAD_ID, CODEX_SESSION_ID,
  *  CODEX_SANDBOX_NETWORK_DISABLED), not observed in a live Codex shell: unverified, so a Claude check does not rely on them alone. */
@@ -152,5 +158,6 @@ export function SOURCE(v: unknown, at: string): Source {
   return k === "terminal" ? obj({ kind: literal("terminal"), user: str })(v, at) : k === "session" ? obj({ kind: literal("session"), sessionId: str, message: str, messageAt: str })(v, at)
     : k === "device" ? obj({ kind: literal("device"), device: str, signedBody: str, signature: str })(v, at)
     : k === "slack" ? obj({ kind: literal("slack"), team: str, user: str, timestamp: str, signedBody: str, signature: str })(v, at)
-    : reject(at, `must be {kind: "terminal", user}, {kind: "session", sessionId, message, messageAt}, {kind: "device", device, signedBody, signature} or {kind: "slack", team, user, timestamp, signedBody, signature}`);
+    : k === "slack-socket" ? obj({ kind: literal("slack-socket"), team: str, user: str, envelope: str, payload: str })(v, at)
+    : reject(at, `must be {kind: "terminal", user}, {kind: "session", sessionId, message, messageAt}, {kind: "device", device, signedBody, signature}, {kind: "slack", team, user, timestamp, signedBody, signature} or {kind: "slack-socket", team, user, envelope, payload}`);
 }

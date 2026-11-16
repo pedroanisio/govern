@@ -1,8 +1,10 @@
 // Slack: decisions people make with buttons in Slack, verified by Slack's request signature and recorded as the mapped
 // person's own (SLACK.md). A workspace turns this extension on with `govern ext enable slack`.
 import { readFileSync } from "node:fs";
-import { slackServer } from "./slack.ts";
-import { notify, SLACK_API, type NotifyReport } from "./notify.ts";
+import { slackServer, handleSocketInteraction } from "./slack.ts";
+import { runSocket } from "./socket.ts";
+import { serverOf } from "./server.ts";
+import { notify, type NotifyReport } from "./notify.ts";
 import { slackConfig, configFile } from "../../lib/workspace.ts";
 import { fail, usage, opt, flag, many } from "../../lib/util.ts";
 import type { Args } from "../../lib/util.ts";
@@ -22,18 +24,33 @@ import { secret, botToken } from "./secrets.ts";
 import { doctor } from "./doctor.ts";
 
 
-/** `govern slack serve`: the interactivity server on loopback, once the team and the signing secret are configured. */
-function cmdServe(a: Args): void {
+/** `govern slack serve`: decide clicks, once the team is configured: an interactivity server on loopback for Slack's signed
+ *  requests (slack.transport "http"), or a Socket Mode connection govern opens with the app-level token ("socket"). */
+async function cmdServe(a: Args): Promise<void> {
   const cfg = slackConfig() ?? fail(`${configFile()} names no slack.team: the Slack team whose requests count`);
+  const server = serverOf(cfg);
+  // Forms (slack.forms) open a modal with views.open under the bot token, within the click's 3 s trigger window.
+  const call = cfg.forms ? slackCall(server.api, botToken(cfg)) : undefined;
+  if (cfg.transport === "socket") {
+    if (opt(a, "port") !== undefined) usage("--port is for slack.transport \"http\"; Socket Mode listens on no port");
+    const token = secret("SLACK_APP_TOKEN", process.env.SLACK_APP_TOKEN, cfg.envFile)
+      ?? fail(`SLACK_APP_TOKEN is not set: export it, or put it in the dotenv file slack.envFile names in ${configFile()} (Slack: the app-level token xapp-… with connections:write; Tayet: the sidecar's local token)`);
+    out(`govern slack (team ${cfg.team}) over Socket Mode at ${server.api}`);
+    await runSocket({ api: server.api, token, log: (l) => process.stderr.write(`${l}\n`),
+      handle: async (payload, envelope) => {
+        const r = await handleSocketInteraction(payload, envelope, { server, ...(call ? { call } : {}) });
+        if (!r.value.ok) process.stderr.write(`slack: click refused (${r.value.error})\n`);
+        return r.reply !== undefined ? { reply: r.reply } : {};
+      } });
+    return;
+  }
   const signing = secret("SLACK_SIGNING_SECRET", process.env.SLACK_SIGNING_SECRET, cfg.envFile)
     ?? fail(`SLACK_SIGNING_SECRET is not set: export it, or name a dotenv file holding it as slack.envFile in ${configFile()}`);
-  // Forms (slack.forms) open a modal with views.open under the bot token, within the click's 3 s trigger window.
-  const call = cfg.forms ? slackCall(process.env.GOVERN_SLACK_API ?? SLACK_API, botToken(cfg)) : undefined;
-  const server = slackServer(signing, call ? { call } : {});
+  const http = slackServer(signing, { server, ...(call ? { call } : {}) });
   const port = Number(opt(a, "port") ?? 5003);
   if (!Number.isInteger(port) || port < 0 || port > 65535) usage("--port must be 0..65535");
-  server.on("error", (e) => { process.stderr.write(`slack: ${e.message}\n`); process.exitCode = 1; });
-  server.listen(port, "127.0.0.1", () => out(`govern slack (team ${cfg.team}) on http://127.0.0.1:${port}/slack/actions`));
+  http.on("error", (e) => { process.stderr.write(`slack: ${e.message}\n`); process.exitCode = 1; });
+  http.listen(port, "127.0.0.1", () => out(`govern slack (team ${cfg.team}) on http://127.0.0.1:${port}/slack/actions`));
 }
 
 const summary = (r: NotifyReport): string =>
@@ -48,7 +65,7 @@ async function cmdNotify(a: Args): Promise<void> {
   const lanes = many(a, "lane"), interval = Number(opt(a, "interval") ?? 30);
   if (!Number.isInteger(interval) || interval < 5) usage("--interval must be a whole number of seconds, 5 or more");
   const once = async () => {
-    const r = await notify({ api: process.env.GOVERN_SLACK_API ?? SLACK_API, token, channel, alertsChannel: cfg.alertsChannel, dryRun: flag(a, "dry-run"),
+    const r = await notify({ api: serverOf(cfg).api, server: serverOf(cfg), token, channel, alertsChannel: cfg.alertsChannel, dryRun: flag(a, "dry-run"),
       ...(lanes.length ? { lanes } : {}), ...(cfg.labels ? { labels: cfg.labels } : {}), ...(cfg.threads ? { threads: true } : {}), ...(cfg.forms ? { forms: true } : {}) });
     out(summary(r));
     return r.failed.length === 0;
@@ -66,7 +83,7 @@ function channelSettings() {
   const channel = cfg.channel || fail(`${configFile()} names no slack.channel`);
   const inbox = cfg.inbox || fail(`${configFile()} names no slack.inbox`);
   const token = botToken(cfg);
-  return { cfg: { ...cfg, channel }, inbox, call: slackCall(process.env.GOVERN_SLACK_API ?? SLACK_API, token) };
+  return { cfg: { ...cfg, channel }, inbox, call: slackCall(serverOf(cfg).api, token), api: serverOf(cfg).api };
 }
 
 async function cmdListen(a: Args): Promise<void> {
@@ -114,8 +131,8 @@ async function cmdPost(a: Args): Promise<void> {
 async function cmdUpload(a: Args): Promise<void> {
   const file = opt(a, "file") ?? usage("upload requires --file");
   const thread = opt(a, "thread") ?? usage("upload requires --thread");
-  const { cfg, inbox, call } = channelSettings();
-  const receipt = await uploadFile(call, inbox, cfg.channel, cfg.upload, { file, thread, title: opt(a, "title"), text: opt(a, "text"), key: opt(a, "key") });
+  const { cfg, inbox, call, api } = channelSettings();
+  const receipt = await uploadFile(call, inbox, cfg.channel, cfg.upload, { file, thread, title: opt(a, "title"), text: opt(a, "text"), key: opt(a, "key"), api });
   out(`slack upload: ${receipt.ts}`);
 }
 

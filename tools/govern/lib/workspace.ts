@@ -5,7 +5,7 @@
 import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join, dirname, resolve } from "node:path";
 import { fail } from "./util.ts";
-import { obj, str, bool, posInt, record, arr, parseFile, reject, type Shape } from "./shape.ts";
+import { obj, str, bool, posInt, record, arr, parseFile, reject, literal, type Shape } from "./shape.ts";
 import { RESOURCES } from "./resources.ts";
 import { EXTENSION_NAMES } from "./ext-registry.ts";
 
@@ -63,7 +63,15 @@ export interface WorkspaceConfig {
     /** One card per case in the channel, updated in place, with what the case waits on and its alerts in its thread. */
     threads?: boolean;
     /** Send back asks for a reason and editable gate options get an Edit button, both as Slack forms (serve needs the bot token). */
-    forms?: boolean };
+    forms?: boolean;
+    /** The Slack-compatible server (ext/slack/server.ts): "slack" (default) or "tayet", a Tayet agent's sidecar (TAYET.md). */
+    server?: "slack" | "tayet";
+    /** The Web API base (default https://slack.com/api; GOVERN_SLACK_API overrides it). A Tayet sidecar's is
+     *  http://127.0.0.1:7878/slack/api. */
+    api?: string;
+    /** How `slack serve` receives clicks: "http" (default; Slack posts signed requests to /slack/actions) or "socket"
+     *  (Socket Mode: serve opens the connection, with the app-level token SLACK_APP_TOKEN). Tayet needs "socket". */
+    transport?: "http" | "socket" };
 }
 /** A file path, or the list shape lib/resources.ts checks (kept as written: resources() builds the registry). */
 const resourcesShape: Shape<unknown> = (v, p) => (typeof v === "string" ? v : (RESOURCES(v, p), v));
@@ -91,7 +99,27 @@ const CONFIG = obj({}, {
   projects: str, queue: str, processes: str, workflow: str, tuningLog: str, packages: str, prompts: str, paths: record(str),
   baseline: obj({ mainMedianCtx: posInt, subagentMedianCtx: posInt, source: str }),
   capabilities: str, resources: resourcesShape, allowances: (v: unknown) => v, state: str, decide: obj({}, { shadow: bool, envFile: str }),
-  slack: obj({ team: str }, { envFile: str, channel: str, alertsChannel: str, labels: obj({}, { complete: str, approve: str, reject: str }),
+  slack: (v: unknown, p: string) => slackServerRules(SLACK(v, p), p),
+  conversationAdapters: record(obj({argv: arr(str, {nonEmpty: true})})),
+});
+
+/** What slack.server allows of the other slack settings: a Tayet sidecar has no forms and delivers clicks over Socket Mode only. */
+function slackServerRules<T extends { server?: string; forms?: boolean; transport?: string }>(s: T, p: string): T {
+  if (s.server === "tayet" && s.forms) reject(`${p}.forms`, "must be off with slack.server \"tayet\": a Tayet sidecar has no Slack forms (views.open)");
+  if (s.server === "tayet" && s.transport !== "socket") reject(`${p}.transport`, "must be \"socket\" with slack.server \"tayet\": a Tayet sidecar delivers clicks over Socket Mode only");
+  return s;
+}
+
+/** An http(s) URL with no credentials or fragment. */
+const httpUrl: Shape<string> = (v, p) => {
+  const s = str(v, p);
+  let u: URL | undefined;
+  try { u = new URL(s); } catch { u = undefined; }
+  if (!u || (u.protocol !== "http:" && u.protocol !== "https:") || u.username || u.password || u.hash) reject(p, "must be an http:// or https:// URL without credentials");
+  return s;
+};
+
+const SLACK = obj({ team: str }, { envFile: str, channel: str, alertsChannel: str, labels: obj({}, { complete: str, approve: str, reject: str }),
     botTokenVar: (v: unknown, p: string) => { const n = str(v, p); if (/^[A-Za-z_][A-Za-z0-9_]*$/.exec(n)?.[0] !== n) reject(p, "must name an environment variable"); return n; },
     bot: arr(str), requesters: record(str), tags: arr(str), inbox: str,
     route: obj({ to: str, profile: str, maxPerHour: posInt }, { publishers: arr(str, { nonEmpty: true }), review: str }),
@@ -111,9 +139,10 @@ const CONFIG = obj({}, {
     heartbeat: obj({ file: nonEmpty("a non-empty path") }, { staleSeconds: posInt, name: nonEmpty("a non-empty name") }),
     threads: bool,
     forms: bool,
-  }),
-  conversationAdapters: record(obj({argv: arr(str, {nonEmpty: true})})),
-});
+    server: literal("slack", "tayet"),
+    api: httpUrl,
+    transport: literal("http", "socket"),
+  });
 
 const isDir = (p: string): boolean => { try { return statSync(p).isDirectory(); } catch { return false; } };
 /** Which marker `dir` holds: "config" (govern.config.json), "dot" (a .govern/ folder) or none; both is refused. */

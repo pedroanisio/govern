@@ -13,7 +13,10 @@ export const MANPAGE = `SYNOPSIS
     govern slack post --kind ack|blocked|delivered|question|note (--text T | --file F) [--thread TS | --alerts] [--key K]
 DESCRIPTION
     slack serve takes Slack's interactivity requests on loopback (POST /slack/actions; put an HTTPS proxy in front for
-    Slack to reach it). A request counts only when its X-Slack-Signature is the app's signing secret's HMAC of the body,
+    Slack to reach it), or, with slack.transport "socket", opens a Socket Mode connection with SLACK_APP_TOKEN and takes
+    clicks there (no port, no signature: a repeated click is refused by its message, person, button and time). slack.server
+    "tayet" with slack.api pointed at a Tayet agent's sidecar talks to Tayet instead (TAYET.md): at most three buttons a
+    card, a card closes on its first click and notify posts a new one while the decision still waits. A request counts only when its X-Slack-Signature is the app's signing secret's HMAC of the body,
     its timestamp is within 300 s and it was never received before. The clicking Slack user must be a process person
     (people.<id>.slack) of the config's slack.team. A govern.decide button approves or rejects a gate, or completes a
     human task, as that person, with the signed request as the decision's source; a button made before the case data or
@@ -75,7 +78,7 @@ OPTIONS
     --all                   slack triage: list every disposition, not only open ones
     --json                  slack triage, slack heartbeat: print the items (triage) or the status (heartbeat) as JSON
     --check                 slack triage: exit 1 while any request or review is open
-    --port N                slack serve: the loopback port (default 5003)
+    --port N                slack serve: the loopback port (default 5003; not with slack.transport "socket")
     --lane S                slack notify: only this lane (repeatable)
     --dry-run               slack notify: send nothing and leave notification receipts unchanged
 ENVIRONMENT
@@ -83,7 +86,10 @@ ENVIRONMENT
     Slack (slack): SLACK_SIGNING_SECRET (the Slack app's signing secret, at least 16 characters) and SLACK_BOT_TOKEN
     (xoxb-, scopes chat:write and files:write for upload). slack.botTokenVar names a user-selected environment variable
     instead of SLACK_BOT_TOKEN for notify, listen, post, upload and digest. Read that variable from the environment
-    first, then the config's slack.envFile; token values never appear in errors. GOVERN_SLACK_API (https://slack.com/api).
+    first, then the config's slack.envFile; token values never appear in errors. SLACK_APP_TOKEN: the app-level token for
+    slack.transport "socket" (Slack: xapp-, connections:write; Tayet: the sidecar's local token). GOVERN_SLACK_API
+    overrides slack.api (default https://slack.com/api).
 EXAMPLES
     govern slack serve --port 5003   # behind an HTTPS proxy whose /slack/actions is the Slack app's interactivity URL
+    govern slack serve               # slack.transport "socket": Slack's Socket Mode, or a Tayet sidecar (TAYET.md)
 `;

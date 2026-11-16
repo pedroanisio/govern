@@ -9,6 +9,12 @@ All notable changes to govern are documented here, following Keep a Changelog.
 
 ## [Unreleased]
 
+### Added
+
+- Socket Mode for `govern slack serve` (`slack.transport: "socket"`, `SLACK_APP_TOKEN`). serve opens the connection itself, so a Slack app needs no public interactivity URL and no tunnel. A click carries no signature there: it is recorded with the source `{"kind": "slack-socket", "team", "user", "envelope", "payload"}`, and a repeat of the same click is refused for seven days.
+- Tayet support ([TAYET.md](TAYET.md)): `slack.server: "tayet"` and `slack.api` point the slack extension at a Tayet agent's sidecar. Each card has at most three buttons, and a decision with more choices is split across cards. A card closes on its first click, so `notify` posts a new one while the decision still waits on someone, for example a quorum short of a vote or a refused click. The card's text carries the whole message. The config refuses forms and HTTP clicks with Tayet. Response and upload URLs on the sidecar's own address are accepted, and uploads to it are sent as one multipart file field.
+- `slack.api` sets the Web API base in the workspace config. `GOVERN_SLACK_API` still overrides it. `govern doctor` probes that address, and checks `SLACK_APP_TOKEN` when Socket Mode is on.
+
 ### Changed
 
 - `govern onboard` is a next-next-finish wizard. Entering a step runs its automatic pass (`POST /api/auto`): the server checks the group, applies every action its own probes attached that needs nothing from a person (at most 3 rounds, each action once), and checks again. Only what needs a person is left on the page (a login, an invite, the Slack token field), with Continue, Skip for now, and a Finish summary.

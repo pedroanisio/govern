@@ -39,8 +39,14 @@ not changed since the button was made.
    ```
 
 3. Run `govern slack serve [--port 5003]`. It listens on loopback only. Put an HTTPS proxy or tunnel in front, and set the
-   Slack app's Interactivity Request URL to its `/slack/actions`. Socket Mode is not supported: its payloads carry no
-   per-request signature, so govern could not verify them itself.
+   Slack app's Interactivity Request URL to its `/slack/actions`.
+
+   Or use Socket Mode, which needs no public URL. Set `"transport": "socket"`, turn Socket Mode on in the Slack app, and give
+   serve an app-level token (`xapp-…`, scope `connections:write`) as `SLACK_APP_TOKEN`. serve then opens the connection
+   itself. Socket Mode payloads carry no signature, so a click there is proven by the connection, not by the request; see
+   [Socket Mode](#socket-mode).
+
+   A [Tayet](TAYET.md) workspace works the same way: `"server": "tayet"` and its sidecar's `"api"`, always over Socket Mode.
 
 4. A Slack app has one Interactivity Request URL. When lanes of other workspaces post buttons through the same app (each
    runs its own `govern slack notify`), list those workspaces in the serving workspace's `slack.serveRepos`, relative to
@@ -156,6 +162,16 @@ Button labels come from `slack.labels` (`complete`, `approve`, `reject`; default
 
 A recorded decision replies 200 `{"ok": true, "text": "…"}`; every refusal replies `{"ok": false, "error": "…"}`.
 
+### Socket Mode
+
+With `slack.transport` `"socket"`, `govern slack serve` calls `apps.connections.open` with `SLACK_APP_TOKEN` and keeps the
+WebSocket open. It reconnects when the server asks to, when the connection drops, and every 30 minutes. It stops when the
+token is refused (`invalid_auth`, `token_revoked` and the like). The connection URL must be Slack's (`wss://…slack.com`) or
+on the configured API's own address. Each `interactive` envelope goes through the checks above, except the three about the
+signature and size. Instead, a repeat of the same click is refused: the same message, person, button and click time, remembered for
+seven days under the state folder's `slack/`. Every envelope is acked within 2.5 s. Envelopes of other types (events,
+slash commands) are acked and ignored: `govern slack listen` reads the channel itself.
+
 ## What is recorded
 
 The decision goes through the same rules as one made at a terminal ([BUSINESS.md](BUSINESS.md)):
@@ -166,7 +182,9 @@ The decision goes through the same rules as one made at a terminal ([BUSINESS.md
 
 The ledger entry (and, for an owner approval, `approvals.<gate>.source` in govern.json) carries the source
 `{"kind": "slack", "team", "user", "timestamp", "signedBody", "signature"}`. Anyone holding the signing secret can check the
-signature against the recorded body and timestamp again.
+signature against the recorded body and timestamp again. A click over Socket Mode carries
+`{"kind": "slack-socket", "team", "user", "envelope", "payload"}` instead: the envelope id and the payload as received.
+Nothing in it can be checked again, because Socket Mode signs nothing.
 
 ## What this does not guarantee
 
@@ -178,7 +196,7 @@ signature against the recorded body and timestamp again.
   It rebuilds the message from the copy Slack sends with the click: what it asked stays, and one line says where the
   decision stands. A policy gate short of its quorum keeps its buttons, with progress above them (`1/2 approvals: @ana`),
   while the case is still the version the buttons are bound to; otherwise the buttons go. Without that copy the bare
-  outcome line replaces the message. Refusals explain why in an ephemeral reply to the clicker. Only HTTPS `hooks.slack.com` URLs without credentials or nondefault ports are accepted; redirects are refused. A failed callback never undoes a decision; `notify` still reconciles on its next run. Payloads without a response URL retain HTTP-only feedback.
+  outcome line replaces the message. Refusals explain why in an ephemeral reply to the clicker. Only HTTPS `hooks.slack.com` URLs without credentials or nondefault ports are accepted, or, when `slack.api` names a server other than Slack (a Tayet sidecar), URLs on that API's own origin. Redirects are refused. A failed callback never undoes a decision; `notify` still reconciles on its next run. Payloads without a response URL retain HTTP-only feedback.
 
 ## Reading a channel and sending messages
 

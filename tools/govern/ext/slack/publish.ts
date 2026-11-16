@@ -9,7 +9,7 @@ import { createHash } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import * as queue from "../../lib/queue.ts";
-import type { Source } from "../../lib/approval.ts";
+import type { SlackSource } from "../../lib/approval.ts";
 import { BadRequest } from "../../lib/http-errors.ts";
 import { fail, nowIso } from "../../lib/util.ts";
 import { withLaneLock } from "../../lib/lane-lock.ts";
@@ -26,7 +26,7 @@ export const publishKey = (reply: string): string => `publish:${reply}`;
 
 /** A reply that may be offered: the routed request it answers (its ts and thread), its text and the text's digest. */
 export interface Offer { reply: queue.Message; request: string; thread: string; text: string; digest: string }
-interface Approval { digest: string; by: string; at: string; source: Extract<Source, { kind: "slack" }> }
+interface Approval { digest: string; by: string; at: string; source: SlackSource }
 
 const object = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
 const TS = /^\d{1,12}\.\d{6}$/;
@@ -97,7 +97,7 @@ const approvals = (d: string): Record<string, Approval> => json(d, "publish.json
 
 /** Record Slack user `by`'s approval to publish `reply` as offered (`digest`), with the signed click as its source.
  *  Refused (GovernError) when the reply is no longer offered as that text, or was approved already. Posts nothing. */
-export function approvePublish(d: string, reply: string, digest: string, by: string, source: Extract<Source, { kind: "slack" }>): void {
+export function approvePublish(d: string, reply: string, digest: string, by: string, source: SlackSource): void {
   directory(d);
   withLaneLock(join(d, "publish.lock"), () => {
     const o = offers(d).find((x) => x.reply.id === reply) ?? fail(`reply ${reply} is not a checked reply to a routed request (any more)`);

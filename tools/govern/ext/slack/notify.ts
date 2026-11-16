@@ -13,6 +13,8 @@ import { GovernError, fail } from "../../lib/util.ts";
 import { channelAlerts } from "./route.ts";
 import { watched, serviceAlerts } from "../../lib/services.ts";
 import { slackCall } from "./channel.ts";
+import { SLACK_API, forServer, serverOf, type SlackServer } from "./server.ts";
+import { answered, answeredKey, claimAnswered } from "./answered.ts";
 import { checkHeartbeat, heartbeatSettings } from "./heartbeat.ts";
 import { ACTION_ID, caseDigest, decisionValue, type Decision, type Form, type Target } from "./slack.ts";
 import { pending, settled, standing, targetOf, ACTIONS_BLOCK, type Pending } from "./pending.ts";
@@ -29,17 +31,22 @@ export interface NotifyOptions { api?: string; token: string; channel: string; a
   /** One card per case, updated in place; what the case waits on and its alerts are posted in the card's thread. */
   threads?: boolean;
   /** Send back asks for a reason, and an option with `edit` fields gets an Edit button (Slack forms, forms.ts). */
-  forms?: boolean }
+  forms?: boolean;
+  /** The server (server.ts): how many buttons a message may carry, and whether a click closes a message (a Tayet card).
+   *  Default: Slack's. */
+  server?: SlackServer }
 /** What one run did, by key (`lane:task:stage`, `lane:gate:name`, `lane:alert:id`); failed lines name the key and the reason;
  *  heartbeat lines say what the session heartbeat check posted (heartbeat.ts) and any state it rebuilt. */
 export interface NotifyReport { posted: string[]; closed: string[]; superseded: string[]; alerts: string[]; failed: string[]; heartbeat: string[] }
 
-export const SLACK_API = "https://slack.com/api";
+export { SLACK_API };
 const LABELS: Record<Decision, string> = { complete: "Done", approve: "Approve", reject: "Send back" };
 
 /** A posted decision message: where it is, the case version its buttons are bound to, and its text and blocks as posted
  *  (records from before blocks were kept have none, and close as text). */
-interface Posted { lane: string; channel: string; ts: string; digest: string; text: string; blocks?: unknown[] }
+interface Posted { lane: string; channel: string; ts: string; digest: string; text: string; blocks?: unknown[];
+  /** The further messages that carry the rest of the buttons, when the server allows fewer than the decision has. */
+  parts?: { channel: string; ts: string; text: string; blocks: unknown[] }[] }
 /** A case's card (slack.threads): where it is and the text it shows now. */
 interface Card { channel: string; ts: string; text: string }
 /** An alert's message while it can still close (its buttons gone once the alert is settled anywhere). */
@@ -92,8 +99,9 @@ const what = (t: Target) => ("task" in t ? `task *${t.task}*` : `decision *${t.g
 const plain = (t: Target) => ("task" in t ? `task ${t.task}` : `decision ${t.gate}`);
 const heading = (p: Project) => `*${p.title}* (\`${p.slug}\`)`;
 
-/** The message asking for `item`: who decides, what the stage or gate says, and one button per decision. */
-function message(p: Project, item: Pending, labels: Record<Decision, string>, forms = false): { text: string; blocks: unknown[] } {
+/** The message asking for `item`: who decides, what the stage or gate says, and one button per decision. A decision with
+ *  more buttons than the server allows (`max`) gets further messages, each with the next buttons, under `more`. */
+function message(p: Project, item: Pending, labels: Record<Decision, string>, forms = false, max = 25): { text: string; blocks: unknown[]; more: { text: string; blocks: unknown[] }[] } {
   const pr = processOf(p), slack = item.people.map((id) => pr.people?.[id]?.slack).filter((u): u is string => !!u);
   const detail = "task" in item.target ? pr.stages.find((s) => s.name === (item.target as { task: string }).task)?.exit
     : pr.gates.find((g) => g.name === (item.target as { gate: string }).gate)?.message;
@@ -107,13 +115,19 @@ function message(p: Project, item: Pending, labels: Record<Decision, string>, fo
       ...item.decisions.filter((d) => d === "reject").map(reject)]
     : item.decisions.map(reject);
   const options = (item.options ?? []).map((o) => `*${o.label}*\n${Object.values(o.set).map((v) => `> ${String(v).replace(/\n/g, "\n> ")}`).join("\n")}`);
+  const groups: unknown[][] = [];
+  for (let i = 0; i < buttons.length; i += max) groups.push(buttons.slice(i, i + max));
+  const text = `${p.title} (${p.slug}): ${plain(item.target)}`;
   return {
-    text: `${p.title} (${p.slug}): ${plain(item.target)}`,
+    text,
     blocks: [
       { type: "section", text: { type: "mrkdwn", text: `${heading(p)} · ${what(item.target)}${detail ? `\n${detail}` : ""}\n${slack.length ? slack.map((u) => `<@${u}>`).join(" ") : "_nobody with a Slack id may decide this_"}` } },
       ...options.map((t) => ({ type: "section", text: { type: "mrkdwn", text: t.slice(0, 2900) } })),
-      { type: "actions", block_id: ACTIONS_BLOCK, elements: buttons },
+      { type: "actions", block_id: ACTIONS_BLOCK, elements: groups[0] ?? [] },
     ],
+    more: groups.slice(1).map((g, i) => ({ text: `${text} (choices, ${i + 2} of ${groups.length})`,
+      blocks: [{ type: "section", text: { type: "mrkdwn", text: `${heading(p)} · ${what(item.target)} · more choices (${i + 2} of ${groups.length})` } },
+        { type: "actions", block_id: ACTIONS_BLOCK, elements: g }] })),
   };
 }
 
@@ -141,13 +155,27 @@ const cleared = (text: string, why: string) => ({ text: `${text} — ${why}`, bl
  *  or changed, post each open alert once. A failed call is reported and retried on the next run; with dryRun nothing is
  *  sent or recorded. */
 export async function notify(o: NotifyOptions): Promise<NotifyReport> {
-  const api = o.api ?? SLACK_API, labels = { ...LABELS, ...o.labels };
+  const server = o.server ?? serverOf(undefined, { GOVERN_SLACK_API: o.api }), api = o.api ?? server.api, labels = { ...LABELS, ...o.labels };
   const report: NotifyReport = { posted: [], closed: [], superseded: [], alerts: [], failed: [], heartbeat: [] };
   const state = readState(), slugs = o.lanes ?? laneSlugs(), failures = driveFailures();
   const send = async (key: string, method: string, body: Record<string, unknown>) => {
     if (o.dryRun) return { ts: "dry-run", channel: o.channel };
-    try { return await call(api, o.token, method, body); } catch (e) { report.failed.push(`${key}: ${(e as Error).message}`); return undefined; }
+    try { return await call(api, o.token, method, forServer(server, body as { text?: string; blocks?: unknown[] })); }
+    catch (e) { report.failed.push(`${key}: ${(e as Error).message}`); return undefined; }
   };
+  /** Close a decision message and the further messages that carried the rest of its buttons; true when all were updated. */
+  const closeRecord = async (key: string, rec: Posted, why: string, p?: Project) => {
+    let ok = !!(await send(key, "chat.update", { channel: rec.channel, ts: rec.ts, ...closing(rec, key, why, p) }));
+    for (const part of rec.parts ?? []) {
+      const blocks = settled(part.blocks, `_${why}_`, false);
+      ok = !!(await send(key, "chat.update", { channel: part.channel, ts: part.ts, text: `${part.text} — ${why}`, ...(blocks ? { blocks } : {}) })) && ok;
+    }
+    return ok;
+  };
+  // A single-answer server closed these messages on a click (answered.ts): what they asked is posted again while it waits.
+  const clicked = server.singleAnswer ? answered() : new Set<string>(), claimed: string[] = [];
+  /** The marks of `rec`'s messages; claimed (forgotten) only once the record they concern is closed or replaced. */
+  const clicksOf = (rec: Posted) => [rec, ...(rec.parts ?? [])].map((m) => answeredKey(m.channel, m.ts)).filter((k) => clicked.has(k));
   for (const slug of slugs) {
     let p: Project;
     try { p = load(slug); } catch (e) { report.failed.push(`${slug}: ${(e as Error).message}`); continue; }
@@ -155,7 +183,8 @@ export async function notify(o: NotifyOptions): Promise<NotifyReport> {
     for (const [key, rec] of Object.entries(state.posted)) {
       if (rec.lane !== slug || keys.has(key)) continue;
       const why = p.finished ? "decided; the case is finished" : `decided; no longer waiting (now at ${p.stage})`;
-      if (await send(key, "chat.update", { channel: rec.channel, ts: rec.ts, ...closing(rec, key, why, p) })) {
+      if (await closeRecord(key, rec, why, p)) {
+        claimed.push(...clicksOf(rec));
         report.closed.push(key);
         if (!o.dryRun) delete state.posted[key];
       }
@@ -180,17 +209,25 @@ export async function notify(o: NotifyOptions): Promise<NotifyReport> {
     const inThread = thread ? { thread_ts: thread } : {};
     for (const item of items) {
       const rec = state.posted[item.key];
-      if (rec?.digest === digest) continue;
+      const reopen = !!rec && clicksOf(rec).length > 0;
+      if (rec?.digest === digest && !reopen) continue;
       if (rec) {
-        if (!(await send(item.key, "chat.update", { channel: rec.channel, ts: rec.ts, ...closing(rec, item.key, "the case changed: see the newer message") }))) continue;
+        const why = reopen ? "answered here; still waiting: see the newer message" : "the case changed: see the newer message";
+        if (!(await closeRecord(item.key, rec, why, p))) continue;
+        claimed.push(...clicksOf(rec));
         report.superseded.push(item.key);
         if (!o.dryRun) delete state.posted[item.key];
       }
-      const m = message(p, item, labels, !!o.forms);
+      const { more, ...m } = message(p, item, labels, !!o.forms, server.maxButtons);
       const sent = await send(item.key, "chat.postMessage", { channel: o.channel, ...inThread, ...m });
       if (!sent) continue;
+      const parts: NonNullable<Posted["parts"]> = [];
+      for (const x of more) {
+        const extra = await send(item.key, "chat.postMessage", { channel: o.channel, ...inThread, ...x });
+        if (extra) parts.push({ channel: extra.channel, ts: extra.ts, ...x });
+      }
       report.posted.push(item.key);
-      if (!o.dryRun) state.posted[item.key] = { lane: slug, channel: sent.channel, ts: sent.ts, digest, text: m.text, blocks: m.blocks };
+      if (!o.dryRun) state.posted[item.key] = { lane: slug, channel: sent.channel, ts: sent.ts, digest, text: m.text, blocks: m.blocks, ...(parts.length ? { parts } : {}) };
     }
     /** Post an alert with its buttons, once under `key`; `open` is the key its message is kept under while it can close. */
     const postAlert = async (key: string, open: string, text: string, actions: unknown) => {
@@ -248,7 +285,8 @@ export async function notify(o: NotifyOptions): Promise<NotifyReport> {
     const known = new Set(slugs);
     for (const [key, rec] of Object.entries(state.posted)) {
       if (known.has(rec.lane)) continue;
-      if (await send(key, "chat.update", { channel: rec.channel, ts: rec.ts, ...closing(rec, key, "the case no longer exists") })) {
+      if (await closeRecord(key, rec, "the case no longer exists")) {
+        claimed.push(...clicksOf(rec));
         report.closed.push(key);
         if (!o.dryRun) delete state.posted[key];
       }
@@ -295,6 +333,7 @@ export async function notify(o: NotifyOptions): Promise<NotifyReport> {
     }
   }
   if (!o.dryRun) writeState(state);
+  if (!o.dryRun && server.singleAnswer) claimAnswered(claimed);
   // The session heartbeat keeps its own state (heartbeat.ts); a check that cannot run is reported and the rest stands.
   try {
     const beat = channelCfg && heartbeatSettings(channelCfg);

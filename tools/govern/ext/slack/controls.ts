@@ -8,7 +8,7 @@ import { humanAction } from "../../lib/business.ts";
 import { transaction } from "../../lib/lifecycle.ts";
 import { retryFailed } from "../business/drive.ts";
 import type { Alert } from "../../lib/lifecycle-schema.ts";
-import type { Source } from "../../lib/approval.ts";
+import type { SlackSource } from "../../lib/approval.ts";
 import { BadRequest, NotFound } from "../../lib/http-errors.ts";
 import { fail, nowIso } from "../../lib/util.ts";
 import { existsSync } from "node:fs";
@@ -75,7 +75,7 @@ export const when = (iso: string): string => `<!date^${Math.floor(Date.parse(iso
 /** Record `c` as `person`'s (`personOf` maps the Slack user, Forbidden otherwise) and return the line saying what was
  *  done. `quote` is the button's label. A retry clears the drive failure before the lane is locked, so it never waits on
  *  the lane while holding the driver's lock (the driver takes them in the other order). */
-export function performControl(c: Control, personOf: (p: Project) => string, source: Extract<Source, { kind: "slack" }>,
+export function performControl(c: Control, personOf: (p: Project) => string, source: SlackSource,
   quote: string, now: number): string {
   let slug: string;
   try { slug = checkSlug(c.lane); } catch (e) { return bad((e as Error).message); }
