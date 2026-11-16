@@ -20,8 +20,11 @@ checked against the sidecar's source at release v0.1.0 (`tayethq/tayet`, `sideca
 
 ## Setup
 
-1. In Tayet, an admin creates the agent under People. Start its sidecar on the machine that runs govern, and keep the local
-   token it prints (`<store>/api.json`).
+1. In Tayet, an admin creates the agent under People; Tayet shows its credential once. Start the sidecar on the machine
+   that runs govern (`tayet-agent --server https://chat.<domain> --store <dir>`, with the credential in `TAYET_AGENT_TOKEN`).
+   The sidecar never prints its local token. It writes it to `<store>/local.token`, and the API's address to
+   `<store>/api.json`. Keep the store on persistent storage: it holds the agent's credential once the sidecar has reissued
+   it. The credential runs one store at a time, so starting it elsewhere moves the agent.
 2. Enable the slack extension and configure the workspace:
 
    ```json
@@ -33,8 +36,8 @@ checked against the sidecar's source at release v0.1.0 (`tayethq/tayet`, `sideca
 
    `team` is the `team_id` that `auth.test` answers through the sidecar. `channel` is a conversation the agent is in.
    Process people map to Tayet's `U…` ids, as with Slack.
-3. Put the sidecar's local token in `secrets/tayet.env` (mode 600) twice: as `SLACK_BOT_TOKEN`, used for the Web API, and as
-   `SLACK_APP_TOKEN`, used for Socket Mode. The sidecar uses one token for both.
+3. Put the contents of `<store>/local.token` in the dotenv file `slack.envFile` names (mode 600) twice: as `SLACK_BOT_TOKEN`,
+   used for the Web API, and as `SLACK_APP_TOKEN`, used for Socket Mode. The sidecar uses one token for both.
 4. Run `govern slack serve`. It connects to the sidecar over Socket Mode. Nothing listens on a port and no tunnel is needed.
    Run `govern slack notify --loop` and `govern slack listen --loop` as usual. `govern doctor` checks the token, the team,
    the channel and the app token.
