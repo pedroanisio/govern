@@ -124,6 +124,8 @@ export interface ChatBot {
   idle(): Promise<void>;
 }
 
+/** The chat for one channel: questions from `o.chat.users` become turns of the channel's or the thread's conversation,
+ *  and each answer, or the reason a turn failed, is posted where the question was asked. */
 export function chatBot(o: ChatOptions): ChatBot {
   const log = o.log ?? (() => undefined), pending = new Set<Promise<void>>(), seen = new Set<string>(), chains = new Map<string, Promise<void>>();
   const track = (p: Promise<void>) => {

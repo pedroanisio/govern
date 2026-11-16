@@ -9,6 +9,14 @@ All notable changes to govern are documented here, following Keep a Changelog.
 
 ## [Unreleased]
 
+## [0.3.4] - 2026-11-16
+
+### Fixed
+
+- A Claude API failure in a conversation turn (an expired login, a refused request) fails the turn with what Claude said, e.g. `Claude API error (authentication_failed): …`, instead of `unknown key "error"`. Claude Code 2.1.325 reports it as an assistant event with `error` and `is_api_error_message`. A result marked as an error carries its text too.
+- Claude Code 2.1.325's occasional `wire_ingest_context` on assistant and user events is accepted and not read.
+- SKILL.md names `govern slack chat`, and `chatBot` has its doc comment.
+
 ## [0.3.3] - 2026-11-16
 
 ### Fixed

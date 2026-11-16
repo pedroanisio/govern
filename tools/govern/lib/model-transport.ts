@@ -94,9 +94,12 @@ export interface TransportEvent extends Omit<TransportResult, "type"> {
   type: string;
   thread_id?: string;
   message?: string | null | { content: Content[] };
-  error?: { message: string };
+  /** Codex: why the turn failed. Claude: the API error an assistant event reports (2.1.325). */
+  error?: { message: string } | string;
   item?: { type: string; id?: string; text?: string; status?: string };
   event?: { type: string; delta?: { type: string; text?: string } };
+  /** Claude: the API error an assistant event reports. */
+  is_api_error_message?: boolean;
 }
 /** Reject primitives and missing discriminators before deciding whether an event type is ignored. */
 function eventType(raw: unknown, p = "$"): string {
@@ -128,7 +131,12 @@ export function transportEvent(engine: "codex" | "claude" | "grok", raw: unknown
       id: text, type: text, role: text, model: text, stop_reason: nullable(text), stop_sequence: nullable(text), usage: usageShape(policy),
       container: opaque, context_management: opaque, diagnostics: opaque, stop_details: opaque, input_transformations: opaque,
     }) }, { ...metadata, request_id: opaque, timestamp: opaque, tool_use_result: opaque, tool_result_meta: opaque, wire_tool_inputs: opaque,
-      thinking_display: opaque, thinking_duration_ms: opaque })(raw, "$");
+      thinking_display: opaque, thinking_duration_ms: opaque,
+      // Claude Code 2.1.325 sometimes adds how it took in the wire input; not read.
+      wire_ingest_context: opaque,
+      // Claude Code 2.1.325: an API failure (an expired login, a refused request) is an assistant event naming the error,
+      // its text what Claude says about it. Read: the turn fails with it.
+      error: nonempty, is_api_error_message: bool })(raw, "$");
     if (type === "stream_event") {
       const delta: Shape<{ type: string; text?: string }> = (v, p) => {
         const t = eventType(v, p);

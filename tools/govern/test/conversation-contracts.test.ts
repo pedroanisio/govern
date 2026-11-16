@@ -98,6 +98,15 @@ test("Claude adapter deduplicates streamed text and handles tool results and uns
     assert.equal(result?.text, "final");
     assert.equal(result?.usage?.input, 9);
     assert.deepEqual(a.parse({ type: "system" }), []);
+    // Claude Code 2.1.325 sometimes sends how it took in the wire input; it is named and not read.
+    assert.deepEqual(a.parse({ type: "assistant", wire_ingest_context: { any: "shape" }, message: { content: [] } }), []);
+    assert.deepEqual(a.parse({ type: "user", wire_ingest_context: null, message: { content: [] } }), []);
+    // Claude Code 2.1.325 reports an API failure (an expired login, a refused request) as an assistant event with `error`:
+    // the turn fails with what Claude said, not with a parse error.
+    const failed = a.parse({ type: "assistant", error: "authentication_failed", is_api_error_message: true,
+      message: { content: [{ type: "text", text: "Failed to authenticate: OAuth session expired and could not be refreshed" }] } });
+    assert.deepEqual(failed, [{ type: "error", text: "Claude API error (authentication_failed): Failed to authenticate: OAuth session expired and could not be refreshed" }]);
+    assert.match(a.parse({ type: "result", subtype: "success", is_error: true, result: "Failed to authenticate" })[0]?.text ?? "", /did not finish successfully: Failed to authenticate/);
   } finally { a.finish(); }
 }));
 

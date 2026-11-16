@@ -126,7 +126,7 @@ export function build(
       },
       parse: checked("codex", (o) => {
         if (o.type === "turn.failed" || o.type === "error")
-          return [{ type: "error", text: o.error?.message ?? (typeof o.message === "string" ? o.message : "codex failed") }];
+          return [{ type: "error", text: (typeof o.error === "object" ? o.error.message : undefined) ?? (typeof o.message === "string" ? o.message : "codex failed") }];
         if (o.type === "turn.completed") {
           if (!o.usage || o.usage.input_tokens === undefined || o.usage.output_tokens === undefined) return [{ type: "done", text: final }];
           const u = usage(o.usage),
@@ -188,6 +188,11 @@ export function build(
           streamed += text;
           return [{ type: "assistant.delta", text }];
         }
+        if (o.type === "assistant" && typeof o.error === "string") {
+          const said = ((typeof o.message === "object" ? o.message?.content : undefined) ?? [])
+            .map((c) => (c.type === "text" && typeof c.text === "string" ? c.text : "")).join(" ").trim();
+          return [{ type: "error", text: `Claude API error (${o.error})${said ? `: ${said}` : ""}` }];
+        }
         if (o.type === "assistant") {
           const events: Normalized[] = [];
           for (const c of (typeof o.message === "object" ? o.message?.content : undefined) ?? []) {
@@ -213,7 +218,7 @@ export function build(
         }
         if (o.type === "result") {
           if (o.is_error || o.subtype !== "success")
-            return [{ type: "error", text: "claude did not finish successfully" }];
+            return [{ type: "error", text: `claude did not finish successfully${typeof o.result === "string" && o.result.trim() ? `: ${o.result.trim()}` : ""}` }];
           const u = o.usage?.input_tokens !== undefined && o.usage.output_tokens !== undefined ? usage(o.usage, o.total_cost_usd) : undefined;
           if (u) u.input += u.cached + u.cacheWrite;
           return [

@@ -48,7 +48,7 @@ export function parseEvents(jsonl: string): Events {
       ev.usage.input += usage.input; ev.usage.cached += usage.cached;
       ev.usage.cacheWrite += usage.cacheWrite; ev.usage.output += usage.output; ev.usage.reasoning += usage.reasoning;
     } else if (o?.type === "item.completed" && o.item?.type === "agent_message") ev.message = o.item.text;
-    else if (o?.type === "turn.failed" || o?.type === "error") ev.errors.push(o.error?.message ?? (typeof o.message === "string" ? o.message : JSON.stringify(o)));
+    else if (o?.type === "turn.failed" || o?.type === "error") ev.errors.push((typeof o.error === "object" ? o.error.message : undefined) ?? (typeof o.message === "string" ? o.message : JSON.stringify(o)));
   }
   if (!ev.turns || !validUsage(ev.usage)) ev.spendUnknown = true;
   return ev;
