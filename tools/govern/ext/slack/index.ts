@@ -59,14 +59,14 @@ async function cmdChat(): Promise<void> {
   const cfg = slackConfig() ?? fail(`${configFile()} names no slack.team: the Slack team whose requests count`);
   const chat = cfg.chat ?? fail(`${configFile()} names no slack.chat: the people (slack.chat.users) whose messages in slack.channel the agent answers`);
   const channel = cfg.channel ?? fail(`${configFile()} names no slack.channel: the channel slack.chat answers in`);
-  const server = serverOf(cfg), call = slackCall(server.api, botToken(cfg));
+  const server = serverOf(cfg), botKey = botToken(cfg), call = slackCall(server.api, botKey);
   const token = secret("SLACK_APP_TOKEN", process.env.SLACK_APP_TOKEN, cfg.envFile)
     ?? fail(`SLACK_APP_TOKEN is not set: export it, or put it in the dotenv file slack.envFile names in ${configFile()} (Slack: the app-level token xapp-… with connections:write; Tayet: the sidecar's local token)`);
   const self = (await call("auth.test", {})).user_id;
   if (typeof self !== "string" || !self) fail("auth.test answered no user_id: the agent's own id is needed to tell its messages apart");
   const log = (l: string) => process.stderr.write(`${l}\n`), stop = new AbortController();
   // A reply's files go through slack.upload, journaled in slack.inbox as `govern slack upload` journals them.
-  const upload = cfg.upload && cfg.inbox ? { inbox: cfg.inbox, ...cfg.upload, api: server.api } : undefined;
+  const upload = cfg.upload && cfg.inbox ? { inbox: cfg.inbox, ...cfg.upload, api: server.api, token: botKey } : undefined;
   const bot = chatBot({ call, channel, self, chat, log, ...(upload ? { upload } : {}) });
   for (const sig of ["SIGTERM", "SIGINT"] as const) process.once(sig, () => stop.abort());
   out(`govern slack chat in ${channel} as ${self} at ${server.api}, answering ${chat.users.join(", ")}`);
@@ -105,7 +105,7 @@ function channelSettings() {
   const channel = cfg.channel || fail(`${configFile()} names no slack.channel`);
   const inbox = cfg.inbox || fail(`${configFile()} names no slack.inbox`);
   const token = botToken(cfg);
-  return { cfg: { ...cfg, channel }, inbox, call: slackCall(serverOf(cfg).api, token), api: serverOf(cfg).api };
+  return { cfg: { ...cfg, channel }, inbox, token, call: slackCall(serverOf(cfg).api, token), api: serverOf(cfg).api };
 }
 
 async function cmdListen(a: Args): Promise<void> {
@@ -153,8 +153,8 @@ async function cmdPost(a: Args): Promise<void> {
 async function cmdUpload(a: Args): Promise<void> {
   const file = opt(a, "file") ?? usage("upload requires --file");
   const thread = opt(a, "thread") ?? usage("upload requires --thread");
-  const { cfg, inbox, call, api } = channelSettings();
-  const receipt = await uploadFile(call, inbox, cfg.channel, cfg.upload, { file, thread, title: opt(a, "title"), text: opt(a, "text"), key: opt(a, "key"), api });
+  const { cfg, inbox, token, call, api } = channelSettings();
+  const receipt = await uploadFile(call, inbox, cfg.channel, cfg.upload, { file, thread, title: opt(a, "title"), text: opt(a, "text"), key: opt(a, "key"), api, token });
   out(`slack upload: ${receipt.ts}`);
 }
 

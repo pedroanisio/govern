@@ -9,6 +9,13 @@ All notable changes to govern are documented here, following Keep a Changelog.
 
 ## [Unreleased]
 
+## [0.3.7] - 2026-11-16
+
+### Fixed
+
+- `govern slack upload` and the chat's attachments work with a Tayet sidecar: its upload URL asks for the bot token, which is now sent to it (and still never to Slack's `files.slack.com`). The sidecar answered 401 before.
+- `govern slack chat` no longer retries a reply the server refuses, at every start and never visibly: a refused part (a Tayet leak filter took `user@host:path` for a Matrix id) is replaced by a notice saying why and naming the conversation, and the question gets ❌. A server that takes nothing (down) still leaves the delivery for the next start.
+
 ## [0.3.6] - 2026-11-16
 
 ### Added

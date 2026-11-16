@@ -325,7 +325,9 @@ async function sendMessage(call: Call, d: string, channel: string, o: Send): Pro
 
 export interface Upload { file: string; thread: string; title?: string; text?: string; key?: string;
   /** The Web API base (server.ts): an upload URL on its own address is accepted when it is not Slack's (a Tayet sidecar). */
-  api?: string }
+  api?: string;
+  /** The bot token, sent with the bytes only to such a sidecar URL, which asks for it; Slack's upload URL never gets it. */
+  token?: string }
 const MEDIA = new Set([".png", ".jpg", ".jpeg", ".gif", ".webp", ".mp4", ".mov", ".webm", ".m4v", ".pdf"]);
 /** The transfer's limit: the 30 s every API call gets, plus a second per 256 KB (a floor of about 2 Mbit/s). */
 export const transferMs = (bytes: number): number => 30_000 + Math.ceil(bytes / 262_144) * 1000;
@@ -371,7 +373,7 @@ export async function uploadFile(call: Call, d: string, channel: string, policy:
     if (typeof upload.file_id !== "string" || !/^F[A-Z0-9]+$/.test(upload.file_id)) throw new SlackError("invalid upload file id", false);
     // Manual redirects: a 3xx is reported as itself, and the bytes never follow it to another host.
     let response: Response;
-    try { response = await request(url.href, { method: "POST", body: payload, headers: { "Content-Type": raw ? "application/octet-stream" : `multipart/form-data; boundary=${boundary}` }, redirect: "manual", signal: AbortSignal.timeout(transferMs(bytes.length)) }); }
+    try { response = await request(url.href, { method: "POST", body: payload, headers: { "Content-Type": raw ? "application/octet-stream" : `multipart/form-data; boundary=${boundary}`, ...(!raw && o.token ? { Authorization: `Bearer ${o.token}` } : {}) }, redirect: "manual", signal: AbortSignal.timeout(transferMs(bytes.length)) }); }
     catch (e) { throw new SlackError(`file upload: network failure (${networkReason(e)})`, false); }
     await response.body?.cancel().catch(() => undefined);
     if (!response.ok) throw new SlackError(`file upload: HTTP ${response.status}`, false);

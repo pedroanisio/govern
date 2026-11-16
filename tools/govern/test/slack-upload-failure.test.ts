@@ -58,7 +58,8 @@ const toLoopback = (f: Fake, init: Partial<RequestInit> = {}) =>
 function setup(f: Fake) {
   const d = tempDir("upload-fail"), root = join(d, "media"), file = write(join(root, "cover.jpg"), "bytes");
   const call = slackCall(`${f.url}/api`, "secret-token", fetch, async () => {});
-  const policy = { roots: [root], maxBytes: 100 }, o = { file, thread: "1.000001", key: "k" };
+  // The token is offered as a sidecar would need it: Slack's upload URL must still never get it.
+  const policy = { roots: [root], maxBytes: 100 }, o = { file, thread: "1.000001", key: "k", token: "secret-token" };
   const upload = (request = toLoopback(f)) => uploadFile(call, d, "C1", policy, o, request);
   const intents = (): Record<string, string> => { const p = join(d, "send-intents.json"); return existsSync(p) ? JSON.parse(readFileSync(p, "utf8")) as Record<string, string> : {}; };
   const seed = (value: string) => writeFileSync(join(d, "send-intents.json"), JSON.stringify({ k: value }));

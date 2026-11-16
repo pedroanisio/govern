@@ -179,8 +179,8 @@ test("a reply's local Markdown images are files to attach, named by a 📎 line;
 
 test("a reply's files are attached in the reply's thread, once each; one that cannot be is named in the channel", () => scenario(async (e) => {
   const media = join(e.root, "media"), shot = write(join(media, "shot.png"), "png bytes"), outside = write(join(e.root, "secret.png"), "no");
-  const got: { url: string; body: string }[] = [];
-  const server = createServer((req, res) => { let b = ""; req.on("data", (c) => { b += c; }); req.on("end", () => { got.push({ url: req.url ?? "", body: b }); res.end("OK"); }); });
+  const got: { url: string; body: string; auth?: string }[] = [];
+  const server = createServer((req, res) => { let b = ""; req.on("data", (c) => { b += c; }); req.on("end", () => { got.push({ url: req.url ?? "", body: b, auth: req.headers.authorization }); res.end("OK"); }); });
   await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
   const base = `http://127.0.0.1:${(server.address() as { port: number }).port}/slack`;
   try {
@@ -194,7 +194,7 @@ test("a reply's files are attached in the reply's thread, once each; one that ca
       if (method === "files.completeUploadExternal") return { ok: true, files: [{ id: "F0SHOT0001" }] };
       return { ok: true };
     };
-    const upload = { inbox: join(e.root, "inbox"), roots: [media], maxBytes: 1000, api: `${base}/api` };
+    const upload = { inbox: join(e.root, "inbox"), roots: [media], maxBytes: 1000, api: `${base}/api`, token: "xoxb-local" };
     const bot = chatBot({ call, channel: CH, self: BOT, chat: settings(), upload });
     bot.onEvent(message(`see ![the shot](${shot}) and ![leak](${outside})`));
     await bot.idle();
@@ -205,6 +205,7 @@ test("a reply's files are attached in the reply's thread, once each; one that ca
     assert.deepEqual(done, { files: [{ id: "F0SHOT0001", title: "the shot" }], channel_id: CH, thread_ts: "1795000000.000001" }, "in the reply's thread");
     assert.equal(got.length, 1);
     assert.ok(got[0]!.body.includes("png bytes"));
+    assert.equal(got[0]!.auth, "Bearer xoxb-local", "the sidecar's upload URL gets the bot token");
 
     // Started again on the same journal, nothing is posted or attached twice.
     const again = chatBot({ call, channel: CH, self: BOT, chat: settings(), upload });
@@ -219,6 +220,24 @@ test("a reply's files are attached in the reply's thread, once each; one that ca
     await plain.idle();
     assert.match(String(posts(sent).at(-1)!.text), /^⚠️ again not attached .*: this chat has no slack\.upload and slack\.inbox/);
   } finally { server.closeAllConnections(); await new Promise<void>((r) => server.close(() => r())); }
+}));
+
+test("a reply the server refuses is reported as not posted, with ❌, and not tried again", () => scenario(async () => {
+  const { call: base, sent } = fakeCall();
+  // A Tayet sidecar refuses text its leak filter matches; everything else goes through.
+  const call: Call = async (method, body) => {
+    if (method === "chat.postMessage" && String(body.text).includes("LEAK")) { sent.push({ method: "refused", body }); throw new Error("chat.postMessage: internal_error"); }
+    return base(method, body);
+  };
+  const bot = chatBot({ call, channel: CH, self: BOT, chat: settings() });
+  bot.onEvent(message("LEAK"));
+  await bot.idle();
+  assert.deepEqual(posts(sent).map((p) => p.text), [`❌ The reply could not be posted: chat.postMessage: internal_error. It is in the conversation ${chatId(CH, 1)}; ask for it again, worded differently.`]);
+  assert.deepEqual(reactions(sent).at(-1), "add:x@1794000000.000100");
+  const again = chatBot({ call, channel: CH, self: BOT, chat: settings() });
+  again.resume();
+  await again.idle();
+  assert.equal(sent.filter((s) => s.method === "refused").length, 1, "not tried again");
 }));
 
 test("a long reply goes out in parts, split at line ends, each under the size limit", () => {

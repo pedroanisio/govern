@@ -129,6 +129,8 @@ interface Entry {
   replyTs?: string;
   /** The reply's files already attached or reported as not attached. */
   attached?: number;
+  /** The server refused a part of the reply, and a notice saying so was posted instead. */
+  refused?: boolean;
   /** Moved to a new conversation once already (its context budget). */
   moved?: boolean;
   done?: number;
@@ -177,7 +179,7 @@ export interface ChatOptions {
   chat: ChatSettings;
   /** Where the files a reply shows go through (slack.inbox journals them; slack.upload limits them); without it a reply's
    *  files are named as not attached. */
-  upload?: { inbox: string; roots: string[]; maxBytes: number; api?: string };
+  upload?: { inbox: string; roots: string[]; maxBytes: number; api?: string; token?: string };
   log?: (line: string) => void;
 }
 
@@ -231,7 +233,8 @@ export function chatBot(o: ChatOptions): ChatBot {
         if (!o.upload) throw new Error("this chat has no slack.upload and slack.inbox");
         if (!wasSent(o.upload.inbox, fileKey)) {
           await uploadFile(o.call, o.upload.inbox, e.channel, { roots: o.upload.roots, maxBytes: o.upload.maxBytes },
-            { file: f.path, thread: e.thread ?? e.replyTs ?? e.ts, title: f.title, key: fileKey, ...(o.upload.api ? { api: o.upload.api } : {}) });
+            { file: f.path, thread: e.thread ?? e.replyTs ?? e.ts, title: f.title, key: fileKey,
+              ...(o.upload.api ? { api: o.upload.api } : {}), ...(o.upload.token ? { token: o.upload.token } : {}) });
         }
       } catch (err) {
         log(`slack chat: ${key}: ${f.path}: ${(err as Error).message}`);
@@ -272,19 +275,32 @@ export function chatBot(o: ChatOptions): ChatBot {
     if (r.state === "completed") {
       const reply = s.messages.find((m) => m.runId === r.id && m.role === "assistant")!.content;
       const { text, files } = attachments(reply, s.cwd), parts = chunks(mrkdwn(text));
-      for (let i = e.posted ?? 0; i < parts.length; i++) {
-        const sent = await post(e, parts[i]!), ts = typeof sent.ts === "string" ? sent.ts : undefined;
+      let refused: string | undefined;
+      for (let i = e.posted ?? 0; i < parts.length && !refused; i++) {
+        let sent: Record<string, unknown>;
+        try { sent = await post(e, parts[i]!); }
+        catch (err) {
+          // The server would not take this part (a Tayet leak filter, say). If it takes a short notice, the reply is
+          // reported as not posted; if it takes nothing, it is down, and the delivery is tried again later.
+          refused = (err as Error).message;
+          await post(e, `❌ The reply could not be posted${parts.length > 1 ? ` (part ${i + 1} of ${parts.length})` : ""}: ${refused.slice(0, ERROR_CHARS)}. It is in the conversation ${e.conv}; ask for it again, worded differently.`);
+          log(`slack chat: ${key}: part ${i + 1} refused: ${refused}`);
+          save(key, (x) => { x.posted = parts.length; x.refused = true; });
+          break;
+        }
+        const ts = typeof sent.ts === "string" ? sent.ts : undefined;
         save(key, (x) => { x.posted = i + 1; if (i === 0 && ts) x.replyTs = ts; });
         if (i === 0 && ts) e.replyTs = ts;
       }
-      await attach(key, e, files);
+      if (refused) e.refused = true;
+      if (!e.refused) await attach(key, e, files);
     } else {
       const why = (r.error ?? r.reason ?? r.state).slice(0, ERROR_CHARS);
       if (!e.posted) await post(e, `❌ The turn ${r.state === "failed" ? "failed" : `was ${r.state}`}: ${why}`);
       save(key, (x) => { x.posted = 1; });
     }
     await react(false, "eyes", e.ts);
-    await react(true, r.state === "completed" ? "white_check_mark" : "x", e.ts);
+    await react(true, r.state === "completed" && !e.refused ? "white_check_mark" : "x", e.ts);
     save(key, (x) => { x.done = Date.now(); });
     return true;
   };

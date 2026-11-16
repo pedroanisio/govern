@@ -485,6 +485,9 @@ is a code block; code stays as it is).
   one) and the image becomes a `📎 title` line. This needs `slack.upload` (roots, maxBytes) and `slack.inbox`, as
   `govern slack upload` does, with the same checks; each file is sent once, and one that cannot be is named in the channel
   with why. At most 10 files a reply.
+- A reply part the server refuses (a Tayet sidecar's leak filter, say) is reported in its place: `❌ The reply could not
+  be posted: <why>`, naming the conversation that holds it, and the question gets ❌. Only when the server takes nothing
+  (down) is the delivery left for the next start.
 - A mention of the agent is dropped from the question. Edits, deletions, bots, the agent itself, other people and other
   channels are not questions.
 - `<state folder>/slack/chat.json` records each question by its channel and ts. A question the server sends again is not
