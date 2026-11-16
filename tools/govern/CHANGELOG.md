@@ -9,6 +9,8 @@ All notable changes to govern are documented here, following Keep a Changelog.
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-11-16
+
 ### Added
 
 - Socket Mode for `govern slack serve` (`slack.transport: "socket"`, `SLACK_APP_TOKEN`). serve opens the connection itself, so a Slack app needs no public interactivity URL and no tunnel. A click carries no signature there: it is recorded with the source `{"kind": "slack-socket", "team", "user", "envelope", "payload"}`, and a repeat of the same click is refused for seven days.
