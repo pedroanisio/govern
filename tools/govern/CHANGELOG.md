@@ -9,6 +9,12 @@ All notable changes to govern are documented here, following Keep a Changelog.
 
 ## [Unreleased]
 
+## [0.3.3] - 2026-11-16
+
+### Fixed
+
+- Conversation turns on Claude Code 2.1.325 no longer fail with `unknown key "ttft_ms"`: its partial-message events (`stream_event`) add `api_message_id`, `thinking_display` and `ttft_ms`, now accepted and not read. A captured 2.1.325 stream with partial messages joins the transport fixtures.
+
 ## [0.3.2] - 2026-11-16
 
 ### Added

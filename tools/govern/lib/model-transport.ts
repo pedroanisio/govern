@@ -138,7 +138,8 @@ export function transportEvent(engine: "codex" | "claude" | "grok", raw: unknown
         const t = eventType(v, p);
         return t === "content_block_delta" ? obj({ type: text, delta }, { index: count })(v, p) : { type: t };
       };
-      return obj({ type: text, event }, metadata)(raw, "$");
+      // Claude Code 2.1.325 adds the API message id, the thinking display mode and time to first token; none is read.
+      return obj({ type: text, event }, { ...metadata, api_message_id: opaque, thinking_display: opaque, ttft_ms: opaque })(raw, "$");
     }
   }
   return { type };
