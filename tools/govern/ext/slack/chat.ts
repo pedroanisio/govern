@@ -8,7 +8,7 @@
 // and its post. A journal (<state dir>/slack/chat.json) records each question by its channel and ts: a question already
 // there is not asked again, and one whose reply was not yet posted is delivered when the chat starts again (resume).
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
-import { basename, isAbsolute, join, resolve } from "node:path";
+import { basename, extname, isAbsolute, join, resolve } from "node:path";
 import { stateDir } from "../../lib/workspace.ts";
 import { withLaneLock } from "../../lib/lane-lock.ts";
 import * as sessions from "../../lib/conversation.ts";
@@ -28,6 +28,9 @@ export interface ChatSettings {
   /** A file whose text opens each new conversation, before its first question: what the agent should know about where it
    *  runs (what it may run, how to ask for more). Read when a conversation starts, so an edit applies to the next one. */
   brief?: string;
+  /** Attach each image a reply shows a second time, as a download of the full file under `<name>.original`: a server
+   *  whose clients show images only as a preview (Tayet's web client) then still hands over the original. */
+  originals?: boolean;
 }
 
 /** A chat conversation's context budget unless slack.chat sets one: a channel holds a long exchange. */
@@ -39,6 +42,7 @@ export const KEEP_MS = 7 * 24 * 3600 * 1000;
 const ERROR_CHARS = 1500;
 /** At most this many files are attached to one reply. */
 export const ATTACH_MAX = 10;
+const IMAGES = new Set([".png", ".jpg", ".jpeg", ".gif", ".webp"]);
 
 /** The conversation of `channel`'s top-level messages in generation `where`, or of the thread whose parent is at `where`. */
 export const chatId = (channel: string, where: number | string): string =>
@@ -225,20 +229,29 @@ export function chatBot(o: ChatOptions): ChatBot {
     return sessions.send(conv, text, { requestId }).run.id;
   };
   const post = (e: Entry, text: string) => o.call("chat.postMessage", { channel: e.channel, text, ...(e.thread ? { thread_ts: e.thread } : {}) });
-  /** Attach the reply's files to its thread (the question's, or the reply's own), each once: a key per file. */
+  /** Attach the reply's files to its thread (the question's, or the reply's own), each once: a key per file, and one per
+   *  image's original (slack.chat.originals). */
   const attach = async (key: string, e: Entry, files: { path: string; title: string }[]) => {
     for (let i = e.attached ?? 0; i < files.length; i++) {
       const f = files[i]!, fileKey = `${key}:file:${i + 1}`;
-      try {
-        if (!o.upload) throw new Error("this chat has no slack.upload and slack.inbox");
-        if (!wasSent(o.upload.inbox, fileKey)) {
-          await uploadFile(o.call, o.upload.inbox, e.channel, { roots: o.upload.roots, maxBytes: o.upload.maxBytes },
-            { file: f.path, thread: e.thread ?? e.replyTs ?? e.ts, title: f.title, key: fileKey,
-              ...(o.upload.api ? { api: o.upload.api } : {}), ...(o.upload.token ? { token: o.upload.token } : {}) });
+      const copies: { key: string; title: string; name?: string }[] = [{ key: fileKey, title: f.title }];
+      if (o.chat.originals && IMAGES.has(extname(f.path).toLowerCase())) {
+        copies.push({ key: `${fileKey}:original`, title: `${f.title} (full size)`, name: `${basename(f.path)}.original` });
+      }
+      for (const c of copies) {
+        try {
+          if (!o.upload) throw new Error("this chat has no slack.upload and slack.inbox");
+          if (!wasSent(o.upload.inbox, c.key)) {
+            await uploadFile(o.call, o.upload.inbox, e.channel, { roots: o.upload.roots, maxBytes: o.upload.maxBytes },
+              { file: f.path, thread: e.thread ?? e.replyTs ?? e.ts, title: c.title, key: c.key, ...(c.name ? { name: c.name } : {}),
+                ...(o.upload.api ? { api: o.upload.api } : {}), ...(o.upload.token ? { token: o.upload.token } : {}) });
+          }
+        } catch (err) {
+          log(`slack chat: ${key}: ${f.path}: ${(err as Error).message}`);
+          await post(e, `⚠️ ${c.title} not attached (${f.path}): ${(err as Error).message.slice(0, ERROR_CHARS)}`);
+          // A file that failed once is not tried again as its original: one notice per file.
+          break;
         }
-      } catch (err) {
-        log(`slack chat: ${key}: ${f.path}: ${(err as Error).message}`);
-        await post(e, `⚠️ ${f.title} not attached (${f.path}): ${(err as Error).message.slice(0, ERROR_CHARS)}`);
       }
       save(key, (x) => { x.attached = i + 1; });
     }

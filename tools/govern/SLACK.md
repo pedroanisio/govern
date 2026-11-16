@@ -485,6 +485,10 @@ is a code block; code stays as it is).
   one) and the image becomes a `📎 title` line. This needs `slack.upload` (roots, maxBytes) and `slack.inbox`, as
   `govern slack upload` does, with the same checks; each file is sent once, and one that cannot be is named in the channel
   with why. At most 10 files a reply.
+- `chat.originals: true` attaches each such image (png, jpg, gif, webp) a second time, as `<name>.original` titled
+  `<title> (full size)`: a name no server shows as an image, so it arrives as a download of the full file. Tayet's web
+  client shows an image only as a preview, with no way to open or save the original; this hands it over. Slack needs
+  none of it. Renaming the download back to `<name>` gives the image.
 - A reply part the server refuses (a Tayet sidecar's leak filter, say) is reported in its place: `❌ The reply could not
   be posted: <why>`, naming the conversation that holds it, and the question gets ❌. Only when the server takes nothing
   (down) is the delivery left for the next start.

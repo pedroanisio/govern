@@ -59,6 +59,8 @@ on the same token. Tayet has no typing indicator; the 👀 reaction says a quest
 | Response and upload URLs | `hooks.slack.com`, `files.slack.com` (HTTPS) | On the sidecar's own address (`slack.api`'s origin) |
 | Upload body | Raw bytes | One multipart file field |
 | Upload authorization | None: the URL is the credential | The bot token, as for the Web API |
+| Shared file id | The one `files.getUploadURLExternal` gave | A new one, the completion's only file; govern journals it |
+| An image's original | Opened from the preview | Not offered by the web client (preview only): set `slack.chat.originals` |
 
 A card closes on its first click, so `slack serve` marks every clicked card under the state folder (`slack/answered.json`).
 `notify` posts a new card for anything the closed one asked that still waits on someone:

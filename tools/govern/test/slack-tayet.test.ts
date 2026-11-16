@@ -297,16 +297,18 @@ test("runSocket stops on a token the server will never accept, and refuses a con
     assert.throws(() => socketUrl(u, a), /connection URL/);
 });
 
-test("an upload to a Tayet sidecar goes to its own address as one multipart file field, with the bot token", async () => {
+test("an upload to a Tayet sidecar goes to its own address as one multipart file field, with the bot token, and is shared under a new id", async () => {
   const d = tempDir("slack-tayet-upload"), root = join(d, "media"), file = write(join(root, "clip.mp4"), "video bytes");
   const call: Call = async (method) => {
     if (method === "conversations.replies") return { messages: [{ ts: "2.000002", thread_ts: "1.000001" }] };
     if (method === "files.getUploadURLExternal") return { upload_url: "http://127.0.0.1:7878/slack/upload/" + "b".repeat(43), file_id: "FABCDEFGHIJ" };
-    return { files: [{ id: "FABCDEFGHIJ" }] };
+    // The sidecar shares the file under a new id.
+    return { files: [{ id: "FSHARED0001" }] };
   };
   const puts: { url: string; init: RequestInit }[] = [];
   const request = (async (url: unknown, init: RequestInit) => { puts.push({ url: String(url), init }); return new Response("OK"); }) as typeof fetch;
-  await uploadFile(call, d, "C0SUP", { roots: [root], maxBytes: 100 }, { file, thread: "2.000002", api: SIDECAR, token: "xoxb-local" }, request);
+  const receipt = await uploadFile(call, d, "C0SUP", { roots: [root], maxBytes: 100 }, { file, thread: "2.000002", api: SIDECAR, token: "xoxb-local" }, request);
+  assert.equal(receipt.ts, "FSHARED0001", "the id the file was shared under");
   const type = (puts[0]!.init.headers as Record<string, string>)["Content-Type"]!, boundary = /boundary=(.+)$/.exec(type)?.[1];
   // The sidecar's upload URL asks for the bot token, as its Web API does.
   assert.equal((puts[0]!.init.headers as Record<string, string>).Authorization, "Bearer xoxb-local");

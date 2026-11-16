@@ -9,6 +9,16 @@ All notable changes to govern are documented here, following Keep a Changelog.
 
 ## [Unreleased]
 
+## [0.3.8] - 2026-11-16
+
+### Added
+
+- `slack.chat.originals`: the chat attaches each image a reply shows a second time, as `<name>.original`, which a server shows as a download of the full file. Tayet's web client shows images only as a preview, with no way to save the original.
+
+### Fixed
+
+- An upload to a Tayet sidecar is no longer reported as failed after it was shared: the sidecar shares the file under a new id, which govern now accepts when it is the completion's only file, and journals. Slack must still name the id it gave the upload. The chat said `⚠️ … not attached: invalid upload completion` under an image it had attached.
+
 ## [0.3.7] - 2026-11-16
 
 ### Fixed

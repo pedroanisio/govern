@@ -327,7 +327,9 @@ export interface Upload { file: string; thread: string; title?: string; text?: s
   /** The Web API base (server.ts): an upload URL on its own address is accepted when it is not Slack's (a Tayet sidecar). */
   api?: string;
   /** The bot token, sent with the bytes only to such a sidecar URL, which asks for it; Slack's upload URL never gets it. */
-  token?: string }
+  token?: string;
+  /** The name the file is shared under (default the file's own): the server picks how to show it by this name. */
+  name?: string }
 const MEDIA = new Set([".png", ".jpg", ".jpeg", ".gif", ".webp", ".mp4", ".mov", ".webm", ".m4v", ".pdf"]);
 /** The transfer's limit: the 30 s every API call gets, plus a second per 256 KB (a floor of about 2 Mbit/s). */
 export const transferMs = (bytes: number): number => 30_000 + Math.ceil(bytes / 262_144) * 1000;
@@ -340,6 +342,7 @@ export async function uploadFile(call: Call, d: string, channel: string, policy:
   if (!stamp(o.thread)) return error("--thread must be seconds.micros");
   if (o.text !== undefined && (!o.text.trim() || [...o.text].length > LIMIT)) return error(`upload text must be nonempty and at most ${LIMIT} characters`);
   if (o.title !== undefined && (!o.title.trim() || [...o.title].length > 255)) return error("upload title must be 1..255 characters");
+  if (o.name !== undefined && (!o.name.trim() || [...o.name].length > 255 || /[\/\\\x00-\x1f]/.test(o.name))) return error("upload name must be 1..255 characters, without / or \\");
   let path: string, roots: string[];
   try { path = realpathSync(o.file); roots = policy.roots.map(r => realpathSync(r)); } catch { return error("upload path or roots could not resolve"); }
   if (!roots.some(root => { const r = relative(root, path); return r === "" || (r !== ".." && !r.startsWith(`..${process.platform === "win32" ? "\\" : "/"}`) && !isAbsolute(r)); })) return error("upload path must be inside slack.upload.roots");
@@ -360,7 +363,8 @@ export async function uploadFile(call: Call, d: string, channel: string, policy:
   if (o.key) reserve(d, o.key, STAGING);
   let issued = false;
   try {
-    const upload = await call("files.getUploadURLExternal", { filename: basename(path), length: bytes.length });
+    const name = o.name ?? basename(path);
+    const upload = await call("files.getUploadURLExternal", { filename: name, length: bytes.length });
     let url: URL;
     try { url = new URL(String(upload.upload_url)); } catch { throw new SlackError("invalid upload URL", false); }
     if (!allowedUrl(url, "files.slack.com", o.api ?? SLACK_API)) throw new SlackError("invalid upload URL", false);
@@ -368,7 +372,7 @@ export async function uploadFile(call: Call, d: string, channel: string, policy:
     const raw = url.hostname === "files.slack.com";
     const boundary = `govern-${randomUUID()}`;
     const payload = raw ? new Uint8Array(bytes) : new Uint8Array(Buffer.concat([
-      Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="${basename(path).replace(/["\r\n\\]/g, "_")}"\r\nContent-Type: application/octet-stream\r\n\r\n`),
+      Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="${name.replace(/["\r\n\\]/g, "_")}"\r\nContent-Type: application/octet-stream\r\n\r\n`),
       bytes, Buffer.from(`\r\n--${boundary}--\r\n`)]));
     if (typeof upload.file_id !== "string" || !/^F[A-Z0-9]+$/.test(upload.file_id)) throw new SlackError("invalid upload file id", false);
     // Manual redirects: a 3xx is reported as itself, and the bytes never follow it to another host.
@@ -380,8 +384,13 @@ export async function uploadFile(call: Call, d: string, channel: string, policy:
     if (o.key) reserve(d, o.key, completing(upload.file_id, thread));
     issued = true;
     const result = await call("files.completeUploadExternal", { files: [{ id: upload.file_id, ...(o.title ? { title: o.title } : {}) }], channel_id: channel, thread_ts: thread, ...(o.text ? { initial_comment: o.text } : {}) });
-    if (!Array.isArray(result.files) || !result.files.some(f => object(f) && f.id === upload.file_id)) throw new SlackError("invalid upload completion", true);
-    const row: Sent = { ts: upload.file_id, thread, kind: "upload", key: o.key ?? null };
+    const files = Array.isArray(result.files) ? result.files.filter(object) : [];
+    // Slack shares the file under the id it gave the upload; a Tayet sidecar shares it under a new one, the only file of
+    // the completion.
+    const shared = files.find(f => f.id === upload.file_id)
+      ?? (!raw && files.length === 1 && typeof files[0]!.id === "string" && /^F[A-Z0-9]+$/.test(files[0]!.id) ? files[0] : undefined);
+    if (!shared) throw new SlackError("invalid upload completion", true);
+    const row: Sent = { ts: String(shared.id), thread, kind: "upload", key: o.key ?? null };
     append(d, "sent.jsonl", [row]);
     if (o.key) release(d, o.key);
     return row;

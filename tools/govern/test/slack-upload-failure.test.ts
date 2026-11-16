@@ -67,6 +67,13 @@ function setup(f: Fake) {
 }
 const AGO = (ms: number) => new Date(Date.now() - ms).toISOString();
 
+test("Slack's completion must name the file it was given; another id is an uncertain completion", async (t) => {
+  const f = await fake(t), s = setup(f);
+  f.complete = (_q, res) => { res.setHeader("Content-Type", "application/json"); res.end(JSON.stringify({ ok: true, files: [{ id: "F999" }] })); };
+  await assert.rejects(s.upload(), /invalid upload completion/);
+  assert.match(s.intents().k ?? "", /^completing F123 /, "left for govern slack resolve");
+});
+
 test("the transfer POSTs the raw bytes to the upload URL, without the token", async (t) => {
   const f = await fake(t), s = setup(f);
   const receipt = await s.upload();

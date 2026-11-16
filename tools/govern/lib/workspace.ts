@@ -74,8 +74,10 @@ export interface WorkspaceConfig {
     transport?: "http" | "socket";
     /** `govern slack chat` (ext/slack/chat.ts): the people whose messages in `channel` are turns of a conversation, and the
      *  profile (default codex-read) or conversation adapter that answers; the reply is posted without a Publish click.
-     *  brief: a file (relative to the config's folder) whose text opens each new conversation. */
-    chat?: { users: string[]; profile?: string; adapter?: string; timeoutSeconds?: number; maxContextChars?: number; brief?: string } };
+     *  brief: a file (relative to the config's folder) whose text opens each new conversation; originals: each image a
+     *  reply shows is also attached as a download of the full file. */
+    chat?: { users: string[]; profile?: string; adapter?: string; timeoutSeconds?: number; maxContextChars?: number; brief?: string;
+      originals?: boolean } };
 }
 /** A file path, or the list shape lib/resources.ts checks (kept as written: resources() builds the registry). */
 const resourcesShape: Shape<unknown> = (v, p) => (typeof v === "string" ? v : (RESOURCES(v, p), v));
@@ -148,7 +150,7 @@ const SLACK = obj({ team: str }, { envFile: str, channel: str, alertsChannel: st
     transport: literal("http", "socket"),
     // `govern slack chat` (ext/slack/chat.ts): who may talk to the agent in slack.channel, and what answers.
     chat: (v: unknown, p: string) => {
-      const c = obj({ users: arr(str, { nonEmpty: true }) }, { profile: str, adapter: str, timeoutSeconds: posInt, maxContextChars: posInt, brief: str })(v, p);
+      const c = obj({ users: arr(str, { nonEmpty: true }) }, { profile: str, adapter: str, timeoutSeconds: posInt, maxContextChars: posInt, brief: str, originals: bool })(v, p);
       if (c.profile !== undefined && c.adapter !== undefined) reject(p, "takes a profile or a conversation adapter, not both");
       return c;
     },

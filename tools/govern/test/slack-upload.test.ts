@@ -95,7 +95,7 @@ test("upload CLI reads configured credentials, validates required arguments and 
     await assert.rejects(async () => sub.run!(parseArgs(["--file", file, "--thread", "1.000001"], sub.flags!, "slack upload")), e => /redacted/.test(String(e)) && !String(e).includes("private_bot_token"));
     assert.equal(calls.length, 2);
     const f = fixture();
-    for (const extra of [{ text: " " }, { text: "x".repeat(40001) }, { title: "" }, { title: "x".repeat(256) }])
-      await assert.rejects(uploadFile(f.call, f.d, "C1", f.policy, { file: f.file, thread: "2.000002", ...extra }, f.request), /text|title/);
+    for (const extra of [{ text: " " }, { text: "x".repeat(40001) }, { title: "" }, { title: "x".repeat(256) }, { name: " " }, { name: "a/b.png" }, { name: "a\\b.png" }, { name: "x".repeat(256) }])
+      await assert.rejects(uploadFile(f.call, f.d, "C1", f.policy, { file: f.file, thread: "2.000002", ...extra }, f.request), /text|title|name/);
   } finally { process.env = before; }
 });

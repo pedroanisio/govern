@@ -222,6 +222,43 @@ test("a reply's files are attached in the reply's thread, once each; one that ca
   } finally { server.closeAllConnections(); await new Promise<void>((r) => server.close(() => r())); }
 }));
 
+test("slack.chat.originals attaches each image again as a download of the full file; other files once", () => scenario(async (e) => {
+  setConfig(e, { extensions: ["slack"], slack: { team: "T0TEAM", channel: CH, chat: { users: [ME], adapter: "echo", originals: true } } });
+  assert.equal(slackConfig()?.chat?.originals, true);
+  const media = join(e.root, "media"), shot = write(join(media, "shot.png"), "png bytes"), doc = write(join(media, "spec.pdf"), "pdf bytes");
+  const got: string[] = [];
+  const server = createServer((req, res) => { let b = ""; req.on("data", (c) => { b += c; }); req.on("end", () => { got.push(b); res.end("OK"); }); });
+  await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+  const base = `http://127.0.0.1:${(server.address() as { port: number }).port}/slack`;
+  try {
+    const sent: Sent[] = [];
+    let n = 0, f = 0;
+    const call: Call = async (method, body) => {
+      sent.push({ method, body });
+      if (method === "chat.postMessage") return { ok: true, ts: `1795000000.${String(++n).padStart(6, "0")}` };
+      if (method === "conversations.replies") return { ok: true, messages: [{ ts: body.ts }] };
+      if (method === "files.getUploadURLExternal") { const id = `F0FILE000${++f}`; return { ok: true, upload_url: `${base}/upload/${id}`, file_id: id }; }
+      if (method === "files.completeUploadExternal") return { ok: true, files: [{ id: `F0SHARED${f}` }] };
+      return { ok: true };
+    };
+    const upload = { inbox: join(e.root, "inbox"), roots: [media], maxBytes: 1000, api: `${base}/api`, token: "xoxb-local" };
+    const bot = chatBot({ call, channel: CH, self: BOT, chat: settings({ originals: true }), upload });
+    bot.onEvent(message(`![the shot](${shot}) and ![the spec](${doc})`));
+    await bot.idle();
+    const names = sent.filter((s) => s.method === "files.getUploadURLExternal").map((s) => s.body.filename);
+    assert.deepEqual(names, ["shot.png", "shot.png.original", "spec.pdf"]);
+    const titles = sent.filter((s) => s.method === "files.completeUploadExternal").map((s) => (s.body.files as { title: string }[])[0]!.title);
+    assert.deepEqual(titles, ["the shot", "the shot (full size)", "the spec"]);
+    assert.match(got[1]!, /filename="shot\.png\.original"\r\nContent-Type: application\/octet-stream\r\n\r\npng bytes/, "the same bytes, under a name no server shows as an image");
+    assert.equal(posts(sent).length, 1, "no notice: everything attached");
+
+    const again = chatBot({ call, channel: CH, self: BOT, chat: settings({ originals: true }), upload });
+    again.resume();
+    await again.idle();
+    assert.equal(sent.filter((s) => s.method === "files.completeUploadExternal").length, 3, "nothing attached twice");
+  } finally { server.closeAllConnections(); await new Promise<void>((r) => server.close(() => r())); }
+}));
+
 test("a reply the server refuses is reported as not posted, with ❌, and not tried again", () => scenario(async () => {
   const { call: base, sent } = fakeCall();
   // A Tayet sidecar refuses text its leak filter matches; everything else goes through.
