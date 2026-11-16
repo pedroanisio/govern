@@ -22,6 +22,7 @@ import { triage, open, dismiss, type Item } from "./triage.ts";
 import { heartbeatSettings, heartbeatStatus, clock } from "./heartbeat.ts";
 import { secret, botToken } from "./secrets.ts";
 import { doctor } from "./doctor.ts";
+import { chatBot } from "./chat.ts";
 
 
 /** `govern slack serve`: decide clicks, once the team is configured: an interactivity server on loopback for Slack's signed
@@ -51,6 +52,25 @@ async function cmdServe(a: Args): Promise<void> {
   if (!Number.isInteger(port) || port < 0 || port > 65535) usage("--port must be 0..65535");
   http.on("error", (e) => { process.stderr.write(`slack: ${e.message}\n`); process.exitCode = 1; });
   http.listen(port, "127.0.0.1", () => out(`govern slack (team ${cfg.team}) on http://127.0.0.1:${port}/slack/actions`));
+}
+
+/** `govern slack chat`: answer the people slack.chat.users names in slack.channel, over Socket Mode, until stopped. */
+async function cmdChat(): Promise<void> {
+  const cfg = slackConfig() ?? fail(`${configFile()} names no slack.team: the Slack team whose requests count`);
+  const chat = cfg.chat ?? fail(`${configFile()} names no slack.chat: the people (slack.chat.users) whose messages in slack.channel the agent answers`);
+  const channel = cfg.channel ?? fail(`${configFile()} names no slack.channel: the channel slack.chat answers in`);
+  const server = serverOf(cfg), call = slackCall(server.api, botToken(cfg));
+  const token = secret("SLACK_APP_TOKEN", process.env.SLACK_APP_TOKEN, cfg.envFile)
+    ?? fail(`SLACK_APP_TOKEN is not set: export it, or put it in the dotenv file slack.envFile names in ${configFile()} (Slack: the app-level token xapp-… with connections:write; Tayet: the sidecar's local token)`);
+  const self = (await call("auth.test", {})).user_id;
+  if (typeof self !== "string" || !self) fail("auth.test answered no user_id: the agent's own id is needed to tell its messages apart");
+  const log = (l: string) => process.stderr.write(`${l}\n`), stop = new AbortController();
+  const bot = chatBot({ call, channel, self, chat, log });
+  for (const sig of ["SIGTERM", "SIGINT"] as const) process.once(sig, () => stop.abort());
+  out(`govern slack chat in ${channel} as ${self} at ${server.api}, answering ${chat.users.join(", ")}`);
+  bot.resume();
+  await runSocket({ api: server.api, token, log, signal: stop.signal, onEvent: (p) => bot.onEvent(p) });
+  await bot.idle();
 }
 
 const summary = (r: NotifyReport): string =>
@@ -195,7 +215,7 @@ export const manpage = MANPAGE;
 export { doctor };
 
 export const commands: Cmd[] = [
-  { name: "slack", section: 7, noSub: "govern slack serve|notify|listen|post|upload|resolve|digest|triage|dismiss|heartbeat|install-service (the protocol: tools/govern/SLACK.md)",
+  { name: "slack", section: 7, noSub: "govern slack serve|chat|notify|listen|post|upload|resolve|digest|triage|dismiss|heartbeat|install-service (the protocol: tools/govern/SLACK.md)",
     subs: {
       "install-service": { lines: [["", "write user units for listen, notify and a daily digest timer; print enable instructions without starting them"]], run: () => out(installServices()) },
       upload: { flags: { value: ["thread", "file", "title", "text", "key"] },
@@ -215,6 +235,7 @@ export const commands: Cmd[] = [
         lines: [["--kind ack|blocked|delivered|question|note (--text T | --file F) [--thread TS | --alerts] [--key K]", "send a prefixed message to slack.channel (or slack.alertsChannel with --alerts), resolve a thread parent and journal the send in slack.inbox/sent.jsonl"]], run: cmdPost },
       serve: { flags: { value: ["port"] },
         lines: [["[--port 5003]", "serve Slack's interactivity requests on loopback (POST /slack/actions); the signing secret comes from\nSLACK_SIGNING_SECRET or the config's slack.envFile, the team from slack.team"]], run: cmdServe },
+      chat: { lines: [["", "answer the people slack.chat.users names in slack.channel over Socket Mode: each message is a turn of a\ngovern conversation (slack.chat.profile or .adapter), its reply posted in the channel or its thread; runs until stopped"]], run: cmdChat },
       notify: { flags: { multi: ["lane"], value: ["interval"], bool: ["loop", "dry-run"] },
         lines: [["[--lane S]... [--loop --interval 30] [--dry-run]", "post to slack.channel what the lanes wait on from people (human tasks, gates) and open timer alerts, once each,\nwith buttons bound to the case; update a message when its decision is made or the case changes; with\nslack.heartbeat, post blocked: when the session heartbeat goes stale and note: when it returns. The bot token is\nSLACK_BOT_TOKEN or the config's slack.envFile; --dry-run sends no notifications and leaves notification receipts unchanged"]], run: cmdNotify },
     } },

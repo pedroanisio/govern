@@ -71,7 +71,10 @@ export interface WorkspaceConfig {
     api?: string;
     /** How `slack serve` receives clicks: "http" (default; Slack posts signed requests to /slack/actions) or "socket"
      *  (Socket Mode: serve opens the connection, with the app-level token SLACK_APP_TOKEN). Tayet needs "socket". */
-    transport?: "http" | "socket" };
+    transport?: "http" | "socket";
+    /** `govern slack chat` (ext/slack/chat.ts): the people whose messages in `channel` are turns of a conversation, and the
+     *  profile (default codex-read) or conversation adapter that answers; the reply is posted without a Publish click. */
+    chat?: { users: string[]; profile?: string; adapter?: string; timeoutSeconds?: number; maxContextChars?: number } };
 }
 /** A file path, or the list shape lib/resources.ts checks (kept as written: resources() builds the registry). */
 const resourcesShape: Shape<unknown> = (v, p) => (typeof v === "string" ? v : (RESOURCES(v, p), v));
@@ -142,6 +145,12 @@ const SLACK = obj({ team: str }, { envFile: str, channel: str, alertsChannel: st
     server: literal("slack", "tayet"),
     api: httpUrl,
     transport: literal("http", "socket"),
+    // `govern slack chat` (ext/slack/chat.ts): who may talk to the agent in slack.channel, and what answers.
+    chat: (v: unknown, p: string) => {
+      const c = obj({ users: arr(str, { nonEmpty: true }) }, { profile: str, adapter: str, timeoutSeconds: posInt, maxContextChars: posInt })(v, p);
+      if (c.profile !== undefined && c.adapter !== undefined) reject(p, "takes a profile or a conversation adapter, not both");
+      return c;
+    },
   });
 
 const isDir = (p: string): boolean => { try { return statSync(p).isDirectory(); } catch { return false; } };

@@ -1,7 +1,8 @@
 // Socket Mode for `govern slack serve` (slack.transport "socket"): govern opens the connection, so nothing has to reach it
 // from outside: no request URL, no tunnel. Slack, and a Tayet sidecar (TAYET.md), send clicks as `interactive` envelopes
-// on it; each is decided as a signed request is (slack.ts handleSocketInteraction) and acked. Other envelopes (events,
-// slash commands) are acked and left alone: `govern slack listen` reads the channel itself.
+// on it; each is decided as a signed request is (slack.ts handleSocketInteraction) and acked. Events (events_api) are
+// acked at once and passed to `onEvent` when there is one (`govern slack chat`, chat.ts); slash commands, and anything a
+// client has no handler for, are acked and left alone: `govern slack listen` reads the channel itself.
 //
 // The wire, as Slack documents it and Tayet's sidecar implements it: apps.connections.open (app-level token) answers a
 // one-use ws(s):// URL; the server sends {type: "hello"}, then envelopes {envelope_id, type, payload,
@@ -30,8 +31,12 @@ export interface SocketOptions {
   api: string;
   /** The app-level token (Slack: xapp-…; Tayet: the sidecar's local token). */
   token: string;
-  /** Decide one interactive payload; `reply` goes back in the ack (a form submission's response_action). */
-  handle: (payload: unknown, envelope: string) => Promise<{ reply?: unknown }>;
+  /** Decide one interactive payload; `reply` goes back in the ack (a form submission's response_action). Without it,
+   *  clicks are acked and ignored. */
+  handle?: (payload: unknown, envelope: string) => Promise<{ reply?: unknown }>;
+  /** Take one events_api payload ({event, …}). The envelope is acked before it is called, so a slow handler never gets
+   *  the event sent again; it must not throw, and what it starts it finishes on its own. */
+  onEvent?: (payload: unknown, envelope: string) => void;
   /** Open a WebSocket (default: the runtime's). */
   connect?: (url: string) => SocketLike;
   request?: typeof fetch;
@@ -86,12 +91,18 @@ function session(url: string, o: SocketOptions): Promise<"closed" | "refresh" | 
         if (done) return;
         try { ws.send(JSON.stringify({ envelope_id: envelope, ...(payload !== undefined ? { payload } : {}) })); } catch { /* closed: the server sends it again */ }
       };
-      if (f.type !== "interactive") { ack(); return; }
+      if (f.type === "events_api" && o.onEvent) {
+        ack();
+        try { o.onEvent(f.payload, envelope); } catch (err) { log(`slack socket: an event failed (${(err as Error).message})`); }
+        return;
+      }
+      const handle = o.handle;
+      if (f.type !== "interactive" || !handle) { ack(); return; }
       // Ack once the click is decided (a repeat is refused by its identity), or after ACK_WITHIN_MS whatever happens.
       let acked = false;
       const once = (payload?: unknown) => { if (!acked) { acked = true; ack(payload); } };
       const late = setTimeout(() => once(), ACK_WITHIN_MS);
-      o.handle(f.payload, envelope).then((r) => { clearTimeout(late); once(r.reply); },
+      handle(f.payload, envelope).then((r) => { clearTimeout(late); once(r.reply); },
         (err: unknown) => { clearTimeout(late); once(); log(`slack socket: a click failed (${(err as Error).message})`); });
     });
   });

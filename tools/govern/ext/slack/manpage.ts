@@ -3,6 +3,7 @@
 /** SYNOPSIS, DESCRIPTION, OPTIONS, ENVIRONMENT and EXAMPLES of the slack command, in the layout of the core manpage (bin/govern). */
 export const MANPAGE = `SYNOPSIS
     govern slack serve [--port 5003]  |  slack notify [--lane S]... [--loop --interval 30] [--dry-run]
+    govern slack chat
     govern slack upload --thread TS --file PATH [--title T] [--text T] [--key K]
     govern slack resolve --key K [--delivered [--ts TS] | --not-delivered]
     govern slack install-service
@@ -27,6 +28,12 @@ DESCRIPTION
     drive left to the operator, once each; it updates a message without its buttons once its decision is made or the case
     changes. Recorded clicks also update immediately through an HTTPS hooks.slack.com response_url; refusals explain
     why to the clicker. Failed feedback never rolls back a decision; notify still reconciles.
+    slack chat answers the people slack.chat.users names in slack.channel, over Socket Mode (SLACK_APP_TOKEN). Each
+    message of theirs is a turn of a govern conversation run with slack.chat.profile (default codex-read) or
+    slack.chat.adapter; the reply is posted where it was asked, with no Publish click. The channel's top-level messages
+    are one conversation and each thread is its own; a full channel conversation (maxContextChars, default 400000)
+    moves on to a new one. The question gets 👀 while it runs, then ✅, or ❌ and a message with the reason. A journal
+    (slack/chat.json under the state folder) asks each message once and posts a reply left unposted when chat starts again.
     slack listen records new posts in slack.inbox using the poller-compatible state.json and inbox.jsonl. First run
     marks existing posts seen; subsequent runs follow at most twenty changed threads. Only configured requesters can
     ask a fixed command after an exact bot mention: status, pending, lane <slug>, help, and run <name> for each
@@ -92,4 +99,5 @@ ENVIRONMENT
 EXAMPLES
     govern slack serve --port 5003   # behind an HTTPS proxy whose /slack/actions is the Slack app's interactivity URL
     govern slack serve               # slack.transport "socket": Slack's Socket Mode, or a Tayet sidecar (TAYET.md)
+    govern slack chat                # slack.chat: answer its people in slack.channel with a conversation profile
 `;

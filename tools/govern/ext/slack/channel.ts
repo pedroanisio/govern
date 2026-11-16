@@ -20,6 +20,8 @@ const ENCODING = {
   "conversations.history": "form",
   "conversations.replies": "form",
   "files.getUploadURLExternal": "form",
+  "reactions.add": "form",
+  "reactions.remove": "form",
 } as const satisfies Record<string, "json" | "form">;
 export type Call = (method: string, body: Record<string, unknown>) => Promise<Record<string, unknown>>;
 export interface Post { ts: string; thread_ts: string | null; user: string; text: string; files: string[]; tag: string | null; request: boolean; edited: boolean }

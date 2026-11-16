@@ -169,8 +169,9 @@ WebSocket open. It reconnects when the server asks to, when the connection drops
 token is refused (`invalid_auth`, `token_revoked` and the like). The connection URL must be Slack's (`wss://…slack.com`) or
 on the configured API's own address. Each `interactive` envelope goes through the checks above, except the three about the
 signature and size. Instead, a repeat of the same click is refused: the same message, person, button and click time, remembered for
-seven days under the state folder's `slack/`. Every envelope is acked within 2.5 s. Envelopes of other types (events,
-slash commands) are acked and ignored: `govern slack listen` reads the channel itself.
+seven days under the state folder's `slack/`. Every envelope is acked within 2.5 s. Events are acked at once; `govern
+slack chat` reads them ([Chat](#chat-govern-slack-chat)) and `serve` ignores them. Slash commands are acked and ignored:
+`govern slack listen` reads the channel itself.
 
 ## What is recorded
 
@@ -452,6 +453,37 @@ Upload requires `slack.channel`, `slack.inbox`, a bot token with `files:write`, 
 
 The command calls `files.getUploadURLExternal`, POSTs the raw bytes without the bot token to an HTTPS `files.slack.com` upload URL, then calls `files.completeUploadExternal` to share the file in the thread. A redirect is never followed and fails as `file upload: HTTP 3xx`. The transfer's limit is 30 seconds plus one per 256 KB. The private `sent.jsonl` receipt has `kind: "upload"`, the resolved thread and key; its `ts` is the Slack file id rather than an assumed chat message timestamp. Keyed uploads use the same send-intent reservation as posts. A failure before completion frees the key, because only completion shares a file and each attempt gets a new file id; the unshared file is never posted. After completion is issued an uncertain result never retries automatically and `govern slack resolve` settles it. No upload URL, token or file bytes are journaled.
 
+
+## Chat: `govern slack chat`
+
+`slack.chat` makes `slack.channel` a place to talk to an agent:
+
+```json
+"slack": { "team": "T…", "channel": "C…", "transport": "socket",
+           "chat": { "users": ["U…"], "profile": "ops-chat" } }
+```
+
+`govern slack chat` opens its own Socket Mode connection (`SLACK_APP_TOKEN`, as `serve` does, and alongside it; Slack and a
+Tayet sidecar send every event to every open connection). Each message a person in `chat.users` posts in the channel is a
+turn of a govern conversation ([CONVERSATIONS.md](CONVERSATIONS.md)) run with `chat.profile` (default `codex-read`) or a
+configured `chat.adapter`, with `timeoutSeconds` and `maxContextChars` (default 400,000) as the conversation takes them.
+The reply is posted where the question was asked, in parts of at most 3,500 characters.
+
+- The channel's top-level messages are one conversation (`chat-<channel>-<n>`); each thread is its own
+  (`chat-<channel>-t-<thread ts>`) and is answered in the thread. When the channel's conversation goes past its context
+  budget, the question that found it full moves to the next one, with a line saying the new one does not see the old.
+- The question gets 👀 while it runs, then ✅, or ❌ with a message saying why the turn failed. Nothing the model
+  half-said is posted.
+- A mention of the agent is dropped from the question. Edits, deletions, bots, the agent itself, other people and other
+  channels are not questions.
+- `<state folder>/slack/chat.json` records each question by its channel and ts. A question the server sends again is not
+  asked again; a reply left unposted (chat stopped, the server was down) is posted when chat starts again. Delivered
+  questions are forgotten after seven days.
+
+**This is the one place govern posts a model's reply without a person clicking Publish.** A workspace opts in by naming
+the people. Everything they write is a prompt with the profile's tools, so the profile is the limit: a profile with a
+shell can do what its account can, on that person's word alone. The usual conversation guards still apply (self-test
+record, allowances, the profile's own output check). Run `govern caps --check <profile>` once before the first question.
 
 ## User services
 

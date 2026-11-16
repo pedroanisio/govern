@@ -42,6 +42,10 @@ checked against the sidecar's source at release v0.1.0 (`tayethq/tayet`, `sideca
    Run `govern slack notify --loop` and `govern slack listen --loop` as usual. `govern doctor` checks the token, the team,
    the channel and the app token.
 
+`govern slack chat` ([SLACK.md](SLACK.md#chat-govern-slack-chat)) works on Tayet unchanged: the sidecar sends every
+message of a conversation the agent is in as an event, to every open connection, so `serve` and `chat` run side by side
+on the same token. Tayet has no typing indicator; the 👀 reaction says a question is being answered.
+
 ## What differs from Slack
 
 | | Slack | Tayet |
