@@ -480,6 +480,11 @@ is a code block; code stays as it is).
   first question: what the agent should know about where it runs, such as what it may run and that a message cannot widen
   that. Claude runs without settings files or CLAUDE.md, so this is where such notes go. It is read when a conversation
   starts; a brief that cannot be read stops the question with ❌.
+- A reply's Markdown images of local files (`![title](path)`, the path relative to the conversation's folder; not URLs,
+  not inside code) are attached: each file is uploaded into the reply's thread (the question's thread, for a question in
+  one) and the image becomes a `📎 title` line. This needs `slack.upload` (roots, maxBytes) and `slack.inbox`, as
+  `govern slack upload` does, with the same checks; each file is sent once, and one that cannot be is named in the channel
+  with why. At most 10 files a reply.
 - A mention of the agent is dropped from the question. Edits, deletions, bots, the agent itself, other people and other
   channels are not questions.
 - `<state folder>/slack/chat.json` records each question by its channel and ts. A question the server sends again is not

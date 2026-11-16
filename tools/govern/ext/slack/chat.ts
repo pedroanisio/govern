@@ -8,12 +8,12 @@
 // and its post. A journal (<state dir>/slack/chat.json) records each question by its channel and ts: a question already
 // there is not asked again, and one whose reply was not yet posted is delivered when the chat starts again (resume).
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { basename, isAbsolute, join, resolve } from "node:path";
 import { stateDir } from "../../lib/workspace.ts";
 import { withLaneLock } from "../../lib/lane-lock.ts";
 import * as sessions from "../../lib/conversation.ts";
 import { run } from "../conversation/conversation-runtime.ts";
-import type { Call } from "./channel.ts";
+import { uploadFile, wasSent, type Call } from "./channel.ts";
 
 /** What slack.chat configures. */
 export interface ChatSettings {
@@ -37,10 +37,30 @@ export const PART_CHARS = 3500;
 /** Delivered questions are forgotten after this long; the server does not resend an event that old. */
 export const KEEP_MS = 7 * 24 * 3600 * 1000;
 const ERROR_CHARS = 1500;
+/** At most this many files are attached to one reply. */
+export const ATTACH_MAX = 10;
 
 /** The conversation of `channel`'s top-level messages in generation `where`, or of the thread whose parent is at `where`. */
 export const chatId = (channel: string, where: number | string): string =>
   typeof where === "number" ? `chat-${channel.toLowerCase()}-${where}` : `chat-${channel.toLowerCase()}-t-${where}`;
+
+/** The local files a reply shows as Markdown images (`![title](path)`, a path and not a URL, outside code), relative
+ *  paths resolved against `cwd`; each image becomes a 📎 line naming it, since the file is attached instead. */
+export function attachments(md: string, cwd: string): { text: string; files: { path: string; title: string }[] } {
+  const files: { path: string; title: string }[] = [];
+  let fence = false;
+  const lines = md.split("\n").map((line) => {
+    if (/^\s*```/.test(line)) { fence = !fence; return line; }
+    if (fence) return line;
+    return line.split(/(`[^`\n]+`)/).map((part, i) => i % 2 ? part : part.replace(/!\[([^\]\n]*)\]\(<?([^)\s>]+)>?\)/g, (all, title: string, target: string) => {
+      if (/^[a-z][a-z0-9+.-]*:/i.test(target) || files.length >= ATTACH_MAX) return all;
+      const path = isAbsolute(target) ? target : resolve(cwd, target), name = title.trim() || basename(path);
+      files.push({ path, title: name });
+      return `📎 ${name}`;
+    })).join("");
+  });
+  return { text: lines.join("\n"), files };
+}
 
 /** `text` in parts of at most `limit` characters, split at line ends; a line longer than the limit is cut. */
 export function chunks(text: string, limit = PART_CHARS): string[] {
@@ -104,8 +124,11 @@ interface Entry {
   conv: string;
   runId: string;
   text: string;
-  /** Reply parts already posted. */
+  /** Reply parts already posted, and the first one's ts (the thread its files go to). */
   posted?: number;
+  replyTs?: string;
+  /** The reply's files already attached or reported as not attached. */
+  attached?: number;
   /** Moved to a new conversation once already (its context budget). */
   moved?: boolean;
   done?: number;
@@ -152,6 +175,9 @@ export interface ChatOptions {
   /** The agent's own user id (auth.test): its messages are not questions, and a mention of it is not part of one. */
   self: string;
   chat: ChatSettings;
+  /** Where the files a reply shows go through (slack.inbox journals them; slack.upload limits them); without it a reply's
+   *  files are named as not attached. */
+  upload?: { inbox: string; roots: string[]; maxBytes: number; api?: string };
   log?: (line: string) => void;
 }
 
@@ -197,6 +223,23 @@ export function chatBot(o: ChatOptions): ChatBot {
     return sessions.send(conv, text, { requestId }).run.id;
   };
   const post = (e: Entry, text: string) => o.call("chat.postMessage", { channel: e.channel, text, ...(e.thread ? { thread_ts: e.thread } : {}) });
+  /** Attach the reply's files to its thread (the question's, or the reply's own), each once: a key per file. */
+  const attach = async (key: string, e: Entry, files: { path: string; title: string }[]) => {
+    for (let i = e.attached ?? 0; i < files.length; i++) {
+      const f = files[i]!, fileKey = `${key}:file:${i + 1}`;
+      try {
+        if (!o.upload) throw new Error("this chat has no slack.upload and slack.inbox");
+        if (!wasSent(o.upload.inbox, fileKey)) {
+          await uploadFile(o.call, o.upload.inbox, e.channel, { roots: o.upload.roots, maxBytes: o.upload.maxBytes },
+            { file: f.path, thread: e.thread ?? e.replyTs ?? e.ts, title: f.title, key: fileKey, ...(o.upload.api ? { api: o.upload.api } : {}) });
+        }
+      } catch (err) {
+        log(`slack chat: ${key}: ${f.path}: ${(err as Error).message}`);
+        await post(e, `⚠️ ${f.title} not attached (${f.path}): ${(err as Error).message.slice(0, ERROR_CHARS)}`);
+      }
+      save(key, (x) => { x.attached = i + 1; });
+    }
+  };
   const save = (key: string, f: (e: Entry) => void) => journal((j) => { const e = j.requests[key]; if (e) f(e); });
 
   /** Post what the question's run ended with, once its run has ended; true when the question needs nothing more. */
@@ -227,11 +270,14 @@ export function chatBot(o: ChatOptions): ChatBot {
       return true;
     }
     if (r.state === "completed") {
-      const reply = s.messages.find((m) => m.runId === r.id && m.role === "assistant")!.content, parts = chunks(mrkdwn(reply));
+      const reply = s.messages.find((m) => m.runId === r.id && m.role === "assistant")!.content;
+      const { text, files } = attachments(reply, s.cwd), parts = chunks(mrkdwn(text));
       for (let i = e.posted ?? 0; i < parts.length; i++) {
-        await post(e, parts[i]!);
-        save(key, (x) => { x.posted = i + 1; });
+        const sent = await post(e, parts[i]!), ts = typeof sent.ts === "string" ? sent.ts : undefined;
+        save(key, (x) => { x.posted = i + 1; if (i === 0 && ts) x.replyTs = ts; });
+        if (i === 0 && ts) e.replyTs = ts;
       }
+      await attach(key, e, files);
     } else {
       const why = (r.error ?? r.reason ?? r.state).slice(0, ERROR_CHARS);
       if (!e.posted) await post(e, `❌ The turn ${r.state === "failed" ? "failed" : `was ${r.state}`}: ${why}`);

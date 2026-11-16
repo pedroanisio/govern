@@ -9,6 +9,12 @@ All notable changes to govern are documented here, following Keep a Changelog.
 
 ## [Unreleased]
 
+## [0.3.6] - 2026-11-16
+
+### Added
+
+- `govern slack chat` attaches the local files a reply shows as Markdown images (`![title](path)`, relative to the conversation's folder; not URLs or code): each is uploaded into the reply's thread through `slack.upload` and `slack.inbox`, with `govern slack upload`'s checks, once, and the image becomes a `📎 title` line. A file that cannot be attached is named in the channel with why. At most 10 a reply.
+
 ## [0.3.5] - 2026-11-16
 
 ### Added

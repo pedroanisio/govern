@@ -7,7 +7,7 @@ import { join, dirname, isAbsolute } from "node:path";
 import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { makeEnv, childEnv, govern, setConfig, write, type Env } from "./helpers.ts";
-import { chatBot, chatId, chunks, mrkdwn, type ChatSettings } from "../ext/slack/chat.ts";
+import { attachments, ATTACH_MAX, chatBot, chatId, chunks, mrkdwn, type ChatSettings } from "../ext/slack/chat.ts";
 import { runSocket } from "../ext/slack/socket.ts";
 import type { Call } from "../ext/slack/channel.ts";
 import * as sessions from "../lib/conversation.ts";
@@ -166,6 +166,59 @@ test("the agent's reply is posted as mrkdwn", () => scenario(async () => {
   bot.onEvent(message("**bold**"));
   await bot.idle();
   assert.equal(posts(sent)[0]!.text, "reply:*bold*:previous=0");
+}));
+
+test("a reply's local Markdown images are files to attach, named by a 📎 line; URLs and code are left as they are", () => {
+  const md = ["Here: ![golden](test/goldens/a.png) and ![](/abs/b.pdf)", "web ![x](https://example.com/x.png) `![c](code.png)`",
+    "```", "![f](fenced.png)", "```", "![spaced](<dir/c d.png>)"].join("\n");
+  const { text, files } = attachments(md, "/w/squad");
+  assert.deepEqual(files, [{ path: "/w/squad/test/goldens/a.png", title: "golden" }, { path: "/abs/b.pdf", title: "b.pdf" }]);
+  assert.equal(text, ["Here: 📎 golden and 📎 b.pdf", "web ![x](https://example.com/x.png) `![c](code.png)`", "```", "![f](fenced.png)", "```", "![spaced](<dir/c d.png>)"].join("\n"));
+  assert.equal(attachments(Array.from({ length: 12 }, (_, i) => `![${i}](f${i}.png)`).join(" "), "/w").files.length, ATTACH_MAX);
+});
+
+test("a reply's files are attached in the reply's thread, once each; one that cannot be is named in the channel", () => scenario(async (e) => {
+  const media = join(e.root, "media"), shot = write(join(media, "shot.png"), "png bytes"), outside = write(join(e.root, "secret.png"), "no");
+  const got: { url: string; body: string }[] = [];
+  const server = createServer((req, res) => { let b = ""; req.on("data", (c) => { b += c; }); req.on("end", () => { got.push({ url: req.url ?? "", body: b }); res.end("OK"); }); });
+  await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+  const base = `http://127.0.0.1:${(server.address() as { port: number }).port}/slack`;
+  try {
+    const sent: Sent[] = [];
+    let n = 0;
+    const call: Call = async (method, body) => {
+      sent.push({ method, body });
+      if (method === "chat.postMessage") return { ok: true, ts: `1795000000.${String(++n).padStart(6, "0")}` };
+      if (method === "conversations.replies") return { ok: true, messages: [{ ts: body.ts }] };
+      if (method === "files.getUploadURLExternal") return { ok: true, upload_url: `${base}/upload/F0SHOT0001`, file_id: "F0SHOT0001" };
+      if (method === "files.completeUploadExternal") return { ok: true, files: [{ id: "F0SHOT0001" }] };
+      return { ok: true };
+    };
+    const upload = { inbox: join(e.root, "inbox"), roots: [media], maxBytes: 1000, api: `${base}/api` };
+    const bot = chatBot({ call, channel: CH, self: BOT, chat: settings(), upload });
+    bot.onEvent(message(`see ![the shot](${shot}) and ![leak](${outside})`));
+    await bot.idle();
+    const texts = posts(sent).map((p) => String(p.text));
+    assert.equal(texts[0], "reply:see 📎 the shot and 📎 leak:previous=0");
+    assert.match(texts[1]!, /^⚠️ leak not attached \(.*secret\.png\): upload path must be inside slack\.upload\.roots/);
+    const done = sent.find((s) => s.method === "files.completeUploadExternal")!.body;
+    assert.deepEqual(done, { files: [{ id: "F0SHOT0001", title: "the shot" }], channel_id: CH, thread_ts: "1795000000.000001" }, "in the reply's thread");
+    assert.equal(got.length, 1);
+    assert.ok(got[0]!.body.includes("png bytes"));
+
+    // Started again on the same journal, nothing is posted or attached twice.
+    const again = chatBot({ call, channel: CH, self: BOT, chat: settings(), upload });
+    again.resume();
+    await again.idle();
+    assert.equal(sent.filter((s) => s.method === "files.completeUploadExternal").length, 1);
+    assert.equal(posts(sent).length, 2);
+
+    // A chat without slack.upload names the file instead of attaching it.
+    const plain = chatBot({ call, channel: CH, self: BOT, chat: settings() });
+    plain.onEvent(message(`![again](${shot})`, { ts: "1794000000.000900" }));
+    await plain.idle();
+    assert.match(String(posts(sent).at(-1)!.text), /^⚠️ again not attached .*: this chat has no slack\.upload and slack\.inbox/);
+  } finally { server.closeAllConnections(); await new Promise<void>((r) => server.close(() => r())); }
 }));
 
 test("a long reply goes out in parts, split at line ends, each under the size limit", () => {

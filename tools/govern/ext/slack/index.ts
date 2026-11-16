@@ -65,7 +65,9 @@ async function cmdChat(): Promise<void> {
   const self = (await call("auth.test", {})).user_id;
   if (typeof self !== "string" || !self) fail("auth.test answered no user_id: the agent's own id is needed to tell its messages apart");
   const log = (l: string) => process.stderr.write(`${l}\n`), stop = new AbortController();
-  const bot = chatBot({ call, channel, self, chat, log });
+  // A reply's files go through slack.upload, journaled in slack.inbox as `govern slack upload` journals them.
+  const upload = cfg.upload && cfg.inbox ? { inbox: cfg.inbox, ...cfg.upload, api: server.api } : undefined;
+  const bot = chatBot({ call, channel, self, chat, log, ...(upload ? { upload } : {}) });
   for (const sig of ["SIGTERM", "SIGINT"] as const) process.once(sig, () => stop.abort());
   out(`govern slack chat in ${channel} as ${self} at ${server.api}, answering ${chat.users.join(", ")}`);
   bot.resume();

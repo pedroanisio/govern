@@ -32,7 +32,9 @@ DESCRIPTION
     message of theirs is a turn of a govern conversation run with slack.chat.profile (default codex-read) or
     slack.chat.adapter; the reply is posted where it was asked, with no Publish click. The channel's top-level messages
     are one conversation and each thread is its own; a full channel conversation (maxContextChars, default 400000)
-    moves on to a new one. slack.chat.brief names a file whose text opens each new conversation. The question gets 👀 while it runs, then ✅, or ❌ and a message with the reason. A journal
+    moves on to a new one. slack.chat.brief names a file whose text opens each new conversation. A reply's Markdown
+    images of local files are uploaded into its thread (slack.upload and slack.inbox). The question gets 👀 while it
+    runs, then ✅, or ❌ and a message with the reason. A journal
     (slack/chat.json under the state folder) asks each message once and posts a reply left unposted when chat starts again.
     slack listen records new posts in slack.inbox using the poller-compatible state.json and inbox.jsonl. First run
     marks existing posts seen; subsequent runs follow at most twenty changed threads. Only configured requesters can
