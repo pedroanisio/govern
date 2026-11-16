@@ -9,6 +9,8 @@ All notable changes to govern are documented here, following Keep a Changelog.
 
 ## [Unreleased]
 
+## [0.3.2] - 2026-11-16
+
 ### Added
 
 - `govern slack chat` and `slack.chat` ([SLACK.md](SLACK.md#chat-govern-slack-chat)): the people `slack.chat.users` names talk to an agent in `slack.channel`. Each message of theirs is a turn of a govern conversation run with `slack.chat.profile` or `.adapter`, and the reply is posted where it was asked, without a Publish click. The channel's top-level messages are one conversation and each thread is its own; a full channel conversation moves on to a new one. 👀 while a turn runs, then ✅, or ❌ with the reason. A journal asks each message once and posts replies left unposted after a restart.
