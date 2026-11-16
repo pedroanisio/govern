@@ -73,8 +73,9 @@ export interface WorkspaceConfig {
      *  (Socket Mode: serve opens the connection, with the app-level token SLACK_APP_TOKEN). Tayet needs "socket". */
     transport?: "http" | "socket";
     /** `govern slack chat` (ext/slack/chat.ts): the people whose messages in `channel` are turns of a conversation, and the
-     *  profile (default codex-read) or conversation adapter that answers; the reply is posted without a Publish click. */
-    chat?: { users: string[]; profile?: string; adapter?: string; timeoutSeconds?: number; maxContextChars?: number } };
+     *  profile (default codex-read) or conversation adapter that answers; the reply is posted without a Publish click.
+     *  brief: a file (relative to the config's folder) whose text opens each new conversation. */
+    chat?: { users: string[]; profile?: string; adapter?: string; timeoutSeconds?: number; maxContextChars?: number; brief?: string } };
 }
 /** A file path, or the list shape lib/resources.ts checks (kept as written: resources() builds the registry). */
 const resourcesShape: Shape<unknown> = (v, p) => (typeof v === "string" ? v : (RESOURCES(v, p), v));
@@ -147,7 +148,7 @@ const SLACK = obj({ team: str }, { envFile: str, channel: str, alertsChannel: st
     transport: literal("http", "socket"),
     // `govern slack chat` (ext/slack/chat.ts): who may talk to the agent in slack.channel, and what answers.
     chat: (v: unknown, p: string) => {
-      const c = obj({ users: arr(str, { nonEmpty: true }) }, { profile: str, adapter: str, timeoutSeconds: posInt, maxContextChars: posInt })(v, p);
+      const c = obj({ users: arr(str, { nonEmpty: true }) }, { profile: str, adapter: str, timeoutSeconds: posInt, maxContextChars: posInt, brief: str })(v, p);
       if (c.profile !== undefined && c.adapter !== undefined) reject(p, "takes a profile or a conversation adapter, not both");
       return c;
     },
@@ -257,7 +258,8 @@ export const slackConfig = (): NonNullable<WorkspaceConfig["slack"]> | undefined
     ...(c.inbox ? { inbox: resolve(base(), c.inbox) } : {}),
     ...(c.heartbeat ? { heartbeat: { ...c.heartbeat, file: resolve(base(), c.heartbeat.file) } } : {}),
     ...(c.upload ? { upload: { ...c.upload, roots: c.upload.roots.map(r => resolve(base(), r)) } } : {}),
-    ...(c.serveRepos ? { serveRepos: c.serveRepos.map(r => resolve(base(), r)) } : {}) };
+    ...(c.serveRepos ? { serveRepos: c.serveRepos.map(r => resolve(base(), r)) } : {}),
+    ...(c.chat?.brief ? { chat: { ...c.chat, brief: resolve(base(), c.chat.brief) } } : {}) };
 };
 /** The config's decide settings, envFile absolute. */
 export const decideConfig = (): { shadow: boolean; envFile?: string } => {

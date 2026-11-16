@@ -467,13 +467,19 @@ The command calls `files.getUploadURLExternal`, POSTs the raw bytes without the 
 Tayet sidecar send every event to every open connection). Each message a person in `chat.users` posts in the channel is a
 turn of a govern conversation ([CONVERSATIONS.md](CONVERSATIONS.md)) run with `chat.profile` (default `codex-read`) or a
 configured `chat.adapter`, with `timeoutSeconds` and `maxContextChars` (default 400,000) as the conversation takes them.
-The reply is posted where the question was asked, in parts of at most 3,500 characters.
+The reply is posted where the question was asked, in parts of at most 3,500 characters, its Markdown turned into Slack's mrkdwn
+(`**bold**` is `*bold*`, `[text](url)` is `<url|text>`, a heading is a bold line, a list item starts with `•`, a table
+is a code block; code stays as it is).
 
 - The channel's top-level messages are one conversation (`chat-<channel>-<n>`); each thread is its own
   (`chat-<channel>-t-<thread ts>`) and is answered in the thread. When the channel's conversation goes past its context
   budget, the question that found it full moves to the next one, with a line saying the new one does not see the old.
 - The question gets 👀 while it runs, then ✅, or ❌ with a message saying why the turn failed. Nothing the model
   half-said is posted.
+- `chat.brief` names a file (relative to the config's folder) whose text opens each new conversation, before its
+  first question: what the agent should know about where it runs, such as what it may run and that a message cannot widen
+  that. Claude runs without settings files or CLAUDE.md, so this is where such notes go. It is read when a conversation
+  starts; a brief that cannot be read stops the question with ❌.
 - A mention of the agent is dropped from the question. Edits, deletions, bots, the agent itself, other people and other
   channels are not questions.
 - `<state folder>/slack/chat.json` records each question by its channel and ts. A question the server sends again is not

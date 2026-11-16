@@ -9,6 +9,16 @@ All notable changes to govern are documented here, following Keep a Changelog.
 
 ## [Unreleased]
 
+## [0.3.5] - 2026-11-16
+
+### Added
+
+- `slack.chat.brief`: a file whose text opens each new chat conversation, before its first question, so the agent knows where it runs (what it may run, that a message in the channel cannot widen that). Claude runs without settings files or CLAUDE.md, so it otherwise knows none of this. A brief that cannot be read stops the question with ❌.
+
+### Changed
+
+- `govern slack chat` posts the model's Markdown as Slack mrkdwn, which Slack and Tayet render: `**bold**` is `*bold*`, `*italic*` is `_italic_`, `~~struck~~` is `~struck~`, `[text](url)` is `<url|text>`, a heading is a bold line, a list item starts with `•`, a table is a code block, and a code block loses its language tag. Code spans and blocks are left as they are.
+
 ## [0.3.4] - 2026-11-16
 
 ### Fixed

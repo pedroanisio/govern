@@ -25,6 +25,9 @@ export interface ChatSettings {
   timeoutSeconds?: number;
   /** The context budget of each conversation (default CONTEXT_CHARS). */
   maxContextChars?: number;
+  /** A file whose text opens each new conversation, before its first question: what the agent should know about where it
+   *  runs (what it may run, how to ask for more). Read when a conversation starts, so an edit applies to the next one. */
+  brief?: string;
 }
 
 /** A chat conversation's context budget unless slack.chat sets one: a channel holds a long exchange. */
@@ -52,6 +55,43 @@ export function chunks(text: string, limit = PART_CHARS): string[] {
   }
   if (cur !== undefined) out.push(cur);
   return out;
+}
+
+/** Emphasis, links and strikethrough of one line's text outside code spans, in mrkdwn. */
+function inline(text: string): string {
+  return text.split(/(`[^`\n]+`)/).map((part, i) => i % 2 ? part : part
+    .replace(/!?\[([^\]\n]+)\]\((\S+?)\)/g, "<$2|$1>")
+    .replace(/\*\*(?=\S)(.+?)\*\*/g, "\u0001$1\u0001")
+    .replace(/__(?=\S)(.+?)__/g, "\u0001$1\u0001")
+    .replace(/(^|[^*\w])\*(?=\S)([^*\n]*?\S)\*(?![*\w])/g, "$1_$2_")
+    .replace(/~~(?=\S)(.+?)~~/g, "~$1~")
+    .replace(/\u0001/g, "*")).join("");
+}
+
+/** The model's Markdown as Slack mrkdwn, which Slack and Tayet's Slack layer render: **bold** is *bold*, *italic* is _italic_,
+ *  ~~struck~~ is ~struck~, [text](url) is <url|text>, a heading is a bold line, a list item starts with •, a table is a
+ *  code block. Code blocks lose their language tag; code is left as it is. */
+export function mrkdwn(md: string): string {
+  const out: string[] = [];
+  let fence = false, table = false;
+  for (const line of md.split("\n")) {
+    if (/^\s*```/.test(line)) {
+      if (table) { out.push("```"); table = false; }
+      fence = !fence;
+      out.push(fence ? line.replace(/```.*$/, "```") : line);
+      continue;
+    }
+    if (fence) { out.push(line); continue; }
+    const row = /^\s*\|.*\|\s*$/.test(line);
+    if (row !== table) { out.push("```"); table = row; }
+    if (row) { out.push(line); continue; }
+    const heading = /^\s*#{1,6}\s+(.+?)\s*#*\s*$/.exec(line);
+    if (heading) { out.push(`*${inline(heading[1]!).replace(/^\*(.*)\*$/, "$1")}*`); continue; }
+    const item = /^(\s*)[-*+]\s+(.*)$/.exec(line);
+    out.push(item ? `${item[1]}• ${inline(item[2]!)}` : inline(line));
+  }
+  if (table) out.push("```");
+  return out.join("\n");
 }
 
 /** One question: where it was asked, the conversation and run answering it, and how much of the answer is posted. */
@@ -124,6 +164,12 @@ export interface ChatBot {
   idle(): Promise<void>;
 }
 
+/** slack.chat.brief's text, trimmed; a brief that cannot be read stops the question, which is answered with why. */
+function readBrief(file: string): string {
+  try { return readFileSync(file, "utf8").trim(); }
+  catch (e) { throw new Error(`slack.chat.brief ${file} cannot be read: ${(e as Error).message}`); }
+}
+
 /** The chat for one channel: questions from `o.chat.users` become turns of the channel's or the thread's conversation,
  *  and each answer, or the reason a turn failed, is posted where the question was asked. */
 export function chatBot(o: ChatOptions): ChatBot {
@@ -143,7 +189,11 @@ export function chatBot(o: ChatOptions): ChatBot {
   });
   /** Queue `text` in the question's conversation, creating it the first time. */
   const ask = (conv: string, text: string, requestId: string): string => {
-    if (!existsSync(join(sessions.directory(conv), "session.json"))) sessions.create(conv, { ...settings(), title: `chat in ${o.channel}` });
+    if (!existsSync(join(sessions.directory(conv), "session.json"))) {
+      const brief = o.chat.brief === undefined ? undefined : readBrief(o.chat.brief);
+      sessions.create(conv, { ...settings(), title: `chat in ${o.channel}` });
+      if (brief) text = `${brief}\n\n---\n\n${text}`;
+    }
     return sessions.send(conv, text, { requestId }).run.id;
   };
   const post = (e: Entry, text: string) => o.call("chat.postMessage", { channel: e.channel, text, ...(e.thread ? { thread_ts: e.thread } : {}) });
@@ -177,7 +227,7 @@ export function chatBot(o: ChatOptions): ChatBot {
       return true;
     }
     if (r.state === "completed") {
-      const reply = s.messages.find((m) => m.runId === r.id && m.role === "assistant")!.content, parts = chunks(reply);
+      const reply = s.messages.find((m) => m.runId === r.id && m.role === "assistant")!.content, parts = chunks(mrkdwn(reply));
       for (let i = e.posted ?? 0; i < parts.length; i++) {
         await post(e, parts[i]!);
         save(key, (x) => { x.posted = i + 1; });

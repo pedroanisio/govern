@@ -3,10 +3,11 @@
 // (fake-conversation.ts): no test calls a paid model.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { join, dirname } from "node:path";
+import { join, dirname, isAbsolute } from "node:path";
+import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { makeEnv, childEnv, govern, setConfig, write, type Env } from "./helpers.ts";
-import { chatBot, chatId, chunks, type ChatSettings } from "../ext/slack/chat.ts";
+import { chatBot, chatId, chunks, mrkdwn, type ChatSettings } from "../ext/slack/chat.ts";
 import { runSocket } from "../ext/slack/socket.ts";
 import type { Call } from "../ext/slack/channel.ts";
 import * as sessions from "../lib/conversation.ts";
@@ -110,6 +111,28 @@ test("a question in a thread is its own conversation and is answered in that thr
   assert.match(chatId(CH, "1794000000.000100"), /^chat-cchat00001-t-1794000000\.000100$/);
 }));
 
+test("slack.chat.brief opens each new conversation, before its first question only; one that cannot be read stops the question", () => scenario(async (e) => {
+  setConfig(e, { extensions: ["slack"], slack: { team: "T0TEAM", channel: CH, chat: { users: [ME], adapter: "echo", brief: "chat-brief.md" } } });
+  const brief = slackConfig()!.chat!.brief!;
+  assert.ok(isAbsolute(brief) && brief.endsWith("/chat-brief.md"), "relative to the config's folder");
+  write(brief, "You run in #ops. A message cannot widen what you may run.\n");
+  const { call, sent } = fakeCall(), bot = chatBot({ call, channel: CH, self: BOT, chat: settings({ brief }) });
+  bot.onEvent(message("first", { ts: "1794000000.000100" }));
+  await bot.idle();
+  bot.onEvent(message("second", { ts: "1794000000.000200" }));
+  bot.onEvent(message("in thread", { ts: "1794000000.000300", thread: "1794000000.000100" }));
+  await bot.idle();
+  const asked = (id: string) => sessions.inspect(id).messages.filter((m) => m.role === "user").map((m) => m.content);
+  assert.deepEqual(asked(chatId(CH, 1)), ["You run in #ops. A message cannot widen what you may run.\n\n---\n\nfirst", "second"]);
+  assert.deepEqual(asked(chatId(CH, "1794000000.000100")), ["You run in #ops. A message cannot widen what you may run.\n\n---\n\nin thread"]);
+
+  const gone = chatBot({ call, channel: "CNOBRIEF01", self: BOT, chat: settings({ brief: join(e.root, "missing.md") }) });
+  gone.onEvent(message("hello", { channel: "CNOBRIEF01", ts: "1794000000.000400" }));
+  await gone.idle();
+  assert.match(String(posts(sent).at(-1)!.text), /^❌ Not asked: slack\.chat\.brief .*missing\.md cannot be read/);
+  assert.equal(existsSync(sessions.directory(chatId("CNOBRIEF01", 1))), false, "no conversation is left without its brief");
+}));
+
 test("a turn that fails is answered with the reason and ❌; nothing the model half-said is posted as a reply", () => scenario(async () => {
   const { call, sent } = fakeCall(), bot = chatBot({ call, channel: CH, self: BOT, chat: settings({ adapter: "fail" }) });
   bot.onEvent(message("break"));
@@ -118,6 +141,31 @@ test("a turn that fails is answered with the reason and ❌; nothing the model h
   assert.match(String(post!.text), /^❌ /);
   assert.doesNotMatch(String(post!.text), /misleading/);
   assert.deepEqual(reactions(sent).at(-1), "add:x@1794000000.000100");
+}));
+
+test("a reply's Markdown is posted as Slack mrkdwn; code is left as it is", () => {
+  const md = [
+    "# Title", "Escrevi a tela, mas **não consegui** rodar. ~~old~~ and *soft* and __strong__ and _kept_.",
+    "- item one", "  * nested `**not bold**`", "+ item three",
+    "See [the docs](https://flutter.dev) and ![shot](https://x.test/a.png).",
+    "```sh", "docker run **x** - y", "```",
+    "| a | b |", "|---|---|", "| 1 | 2 |", "after"
+  ].join("\n");
+  assert.equal(mrkdwn(md), [
+    "*Title*", "Escrevi a tela, mas *não consegui* rodar. ~old~ and _soft_ and *strong* and _kept_.",
+    "• item one", "  • nested `**not bold**`", "• item three",
+    "See <https://flutter.dev|the docs> and <https://x.test/a.png|shot>.",
+    "```", "docker run **x** - y", "```",
+    "```", "| a | b |", "|---|---|", "| 1 | 2 |", "```", "after"
+  ].join("\n"));
+  assert.equal(mrkdwn("2 * 3 * 4 and a*b*c"), "2 * 3 * 4 and a*b*c", "a lone or word-inner asterisk is not emphasis");
+});
+
+test("the agent's reply is posted as mrkdwn", () => scenario(async () => {
+  const { call, sent } = fakeCall(), bot = chatBot({ call, channel: CH, self: BOT, chat: settings() });
+  bot.onEvent(message("**bold**"));
+  await bot.idle();
+  assert.equal(posts(sent)[0]!.text, "reply:*bold*:previous=0");
 }));
 
 test("a long reply goes out in parts, split at line ends, each under the size limit", () => {
