@@ -134,9 +134,9 @@
 #     logged in, each workspace's config, processes and profile self-tests, its systemd user units and linger, its Slack
 #     token, team, channel membership and listener, and the images and check commands the manifest declares. It reads
 #     only, except those check commands; every failure names its fix and who applies it, the agent or the operator
-#     (tools/govern/BOX.md). `onboard` serves the same probes as a guided setup page: each group a step, each failure
-#     with a Fix it button for what the box can do itself or the operator's part to copy; it accepts loopback host names
-#     only and prints its address with a fresh token in the fragment.
+#     (tools/govern/BOX.md). `onboard` serves the same probes as a next-next-finish setup page: each group a step that,
+#     on entry, applies every fix the box can make itself and then asks only for the operator's part (a login, a token);
+#     it accepts loopback host names only and prints its address with a fresh token in the fragment.
 #     Standard host setup includes task install-service and its printed enable command. --system previews a system
 #     unit with current User=; --system --write requires root, otherwise prints the refusal and unit, never escalates.
 # OPTIONS

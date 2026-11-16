@@ -34,7 +34,8 @@ export type Action =
   | { kind: "enable-extension"; workspace: string; extension: "slack" }
   | { kind: "self-test"; workspace: string }
   | { kind: "slack-token"; file: string; variable: string };
-export interface Finding { id: string; group: Group; status: Status; actor: Actor; evidence: string; fix?: string; action?: Action }
+/** `fix` says in words what to do; `command`, when there is one, is the exact shell command to run (what the page copies). */
+export interface Finding { id: string; group: Group; status: Status; actor: Actor; evidence: string; fix?: string; command?: string; action?: Action }
 
 export type Engine = "claude" | "codex" | "grok";
 export interface BoxCheck { name: string; argv: [string, ...string[]]; timeoutSec?: number; actor?: Actor }
@@ -92,8 +93,13 @@ export function loadBox(file?: string): Box | undefined {
 }
 
 const wsName = (w: BoxWorkspace): string => w.name ?? basename(w.path);
-const finding = (group: Group, id: string, status: Status, evidence: string, o: { actor?: Actor; fix?: string; action?: Action } = {}): Finding =>
-  ({ id, group, status, actor: o.actor ?? "agent", evidence, ...(o.fix && status === "fail" ? { fix: o.fix } : {}), ...(o.action && status === "fail" ? { action: o.action } : {}) });
+/** What a probe may say about a failure; kept on the finding only when it fails. */
+export interface Remedy { actor?: Actor; fix?: string; command?: string; action?: Action }
+const finding = (group: Group, id: string, status: Status, evidence: string, o: Remedy = {}): Finding =>
+  ({ id, group, status, actor: o.actor ?? "agent", evidence, ...(status === "fail" ? remedy(o) : {}) });
+/** The fix, command and action of `o` that are set. */
+export const remedy = (o: Remedy): Pick<Finding, "fix" | "command" | "action"> =>
+  ({ ...(o.fix ? { fix: o.fix } : {}), ...(o.command ? { command: o.command } : {}), ...(o.action ? { action: o.action } : {}) });
 
 /** A program's run: its exit code (null when it did not start or was stopped), its output, and why it did not run. */
 interface Ran { code: number | null; out: string; err: string; error?: string }
@@ -110,26 +116,44 @@ const firstLine = (s: string): string => clip(s.split("\n").map((l) => l.trim())
 
 // ---------------------------------------------------------------- govern
 
+/** The govern the box's units and scripts run: GOVERN_BIN when it is an absolute path (an installed release sets it), else
+ *  `govern` on PATH. Its `version --json` must be {"name": "govern", "version": "x.y.z"}; anything else is no version. */
+function installedGovern(): { bin: string; version?: string; problem?: string } {
+  const b = process.env.GOVERN_BIN, bin = b && isAbsolute(b) ? b : "govern";
+  const r = runProgram(bin, ["version", "--json"]);
+  if (r.error || r.code !== 0) return { bin, problem: r.error ?? `version --json exited ${r.code}: ${tail(r, 1)}` };
+  let v: unknown;
+  try { v = JSON.parse(r.out); } catch { return { bin, problem: "version --json did not print JSON" }; }
+  const o = v as { name?: unknown; version?: unknown };
+  if (typeof v !== "object" || v === null || o.name !== "govern" || typeof o.version !== "string" || !/^\d+\.\d+\.\d+$/.test(o.version))
+    return { bin, problem: "version --json did not print {\"name\": \"govern\", \"version\": \"x.y.z\"}" };
+  return { bin, version: o.version };
+}
+
 function governGroup(box: Box): Finding[] {
   const here = resolve(dirname(fileURLToPath(import.meta.url)), "..");
   const running = (JSON.parse(readFileSync(join(here, "package.json"), "utf8")) as { version: string }).version;
-  const want = box.govern?.version;
+  const want = box.govern?.version, inst = installedGovern();
   const major = Number(process.versions.node.split(".")[0]);
+  // The box runs the installed govern; the copy running these probes may be a checkout of another version, which is only context.
+  const also = inst.version !== running ? ` (these checks run ${running} from ${here})` : "";
+  const install = { fix: `Install govern ${want} with jumpserver (playbooks/govern.yml, govern_version=${want}) or from the govern-v${want} release tarball, or set govern.version in the box manifest to the release this box should run.` };
   return [
-    finding("govern", "govern:version", !want || want === running ? "ok" : "fail",
-      want && want !== running ? `runs ${running}; the box wants ${want}` : `govern ${running} (${here})`,
-      { fix: `install govern ${want} (jumpserver: playbooks/govern.yml with govern_version=${want}; or the govern-v${want} release tarball)` }),
+    inst.version === undefined
+      ? finding("govern", "govern:version", want ? "fail" : "skip", `no installed govern answers at ${inst.bin}: ${inst.problem}`, want ? install : {})
+      : finding("govern", "govern:version", !want || want === inst.version ? "ok" : "fail",
+        `${inst.bin} is ${inst.version}${want && want !== inst.version ? `; the box wants ${want}` : ""}${also}`, install),
     finding("govern", "govern:node", major >= 24 ? "ok" : "fail", `node ${process.versions.node}${major >= 24 ? "" : "; govern needs 24 or newer"}`,
-      { fix: "install Node 24 or newer (the release's /opt/govern/node, or nodejs.org)" }),
+      { fix: "Install Node 24 or newer (the release brings one in /opt/govern/node; or nodejs.org)." }),
   ];
 }
 
 // ---------------------------------------------------------------- engines
 
-const INSTALL: Record<Engine, string> = {
-  claude: "npm install -g @anthropic-ai/claude-code (jumpserver: playbooks/ai-cli.yml)",
-  codex: "npm install -g @openai/codex (jumpserver: playbooks/ai-cli.yml)",
-  grok: "install the grok CLI and put it on PATH, or set GOVERN_GROK_BIN",
+const INSTALL: Record<Engine, Remedy> = {
+  claude: { fix: "Install Claude Code (jumpserver: playbooks/ai-cli.yml does it on fleet hosts).", command: "npm install -g @anthropic-ai/claude-code" },
+  codex: { fix: "Install the Codex CLI (jumpserver: playbooks/ai-cli.yml does it on fleet hosts).", command: "npm install -g @openai/codex" },
+  grok: { fix: "Install the grok CLI and put it on PATH, or set GOVERN_GROK_BIN." },
 };
 const binOf = (e: Engine): string => ({ claude: process.env.GOVERN_CLAUDE_BIN, codex: process.env.GOVERN_CODEX_BIN, grok: process.env.GOVERN_GROK_BIN })[e] ?? e;
 
@@ -149,18 +173,18 @@ function engineGroup(box: Box): Finding[] {
     const bin = binOf(e), v = runProgram(bin, ["--version"]);
     const installed = !v.error && v.code === 0;
     out.push(finding("engines", `engines:${e}:installed`, installed ? "ok" : "fail",
-      installed ? `${bin}: ${firstLine(v.out) || "answers --version"}` : `${bin}: ${v.error ?? `--version exited ${v.code}: ${tail(v, 1)}`}`, { fix: INSTALL[e] }));
+      installed ? `${bin}: ${firstLine(v.out) || "answers --version"}` : `${bin}: ${v.error ?? `--version exited ${v.code}: ${tail(v, 1)}`}`, INSTALL[e]));
     const id = `engines:${e}:login`;
     if (!installed) { out.push(finding("engines", id, "skip", `${e} is not installed`)); continue; }
     if (e === "grok") { out.push(finding("engines", id, "skip", "grok has no login probe; caps --check of a grok profile proves it")); continue; }
     if (e === "claude") {
       const l = claudeLogin(runProgram(bin, ["auth", "status"]));
-      out.push(finding("engines", id, l.ok ? "ok" : "fail", l.evidence, { actor: "operator", fix: `claude auth login (or run claude and /login) as ${userInfo().username}` }));
+      out.push(finding("engines", id, l.ok ? "ok" : "fail", l.evidence, { actor: "operator", fix: `Sign Claude Code in as ${userInfo().username}: run this, or start claude and type /login.`, command: "claude auth login" }));
     } else {
       const l = runProgram(bin, ["login", "status"]);
       const ok = !l.error && l.code === 0;
       out.push(finding("engines", id, ok ? "ok" : "fail", ok ? firstLine(l.out || l.err) || "logged in" : `not logged in: ${l.error ?? tail(l, 1)}`,
-        { actor: "operator", fix: `codex login as ${userInfo().username} (on a headless box: codex login --device-auth)` }));
+        { actor: "operator", fix: `Sign Codex in as ${userInfo().username}. On a box without a browser this prints a code to enter on another device.`, command: "codex login --device-auth" }));
     }
   }
   return out;
@@ -170,10 +194,10 @@ function engineGroup(box: Box): Finding[] {
 
 const isWorkspace = (p: string): boolean => existsSync(join(p, ".govern")) || existsSync(join(p, CONFIG_FILE));
 /** `f` inside workspace `w`, a GovernError turned into a failing finding. */
-function attempt(group: Group, id: string, w: BoxWorkspace, f: () => { evidence: string; problem?: string; fix?: string; action?: Action }, fixDefault?: string): Finding {
+function attempt(group: Group, id: string, w: BoxWorkspace, f: () => { evidence: string; problem?: string } & Remedy, fixDefault?: string): Finding {
   try {
     const r = inRepo(w.path, f);
-    return finding(group, id, r.problem ? "fail" : "ok", r.problem ?? r.evidence, { fix: r.fix ?? fixDefault, ...(r.action ? { action: r.action } : {}) });
+    return finding(group, id, r.problem ? "fail" : "ok", r.problem ?? r.evidence, { ...r, fix: r.fix ?? fixDefault });
   } catch (e) {
     if (e instanceof GovernError) return finding(group, id, "fail", clip(e.message, 400), { fix: fixDefault });
     throw e;
@@ -186,14 +210,14 @@ function workspaceGroup(ws: BoxWorkspace[]): Finding[] {
     const n = wsName(w), id = (k: string) => `workspaces:${n}:${k}`;
     if (!isWorkspace(w.path)) {
       out.push(finding("workspaces", id("found"), "fail", `${w.path} is not a govern workspace (no .govern/ or ${CONFIG_FILE})`,
-        { fix: `copy the squad's definitions (jumpserver: playbooks/govern-squad.yml), or govern init ${w.path}` }));
+        { fix: "Copy the squad's definitions here (jumpserver: playbooks/govern-squad.yml), or make an empty workspace:", command: `govern init ${w.path}` }));
       continue;
     }
     out.push(finding("workspaces", id("found"), "ok", w.path));
-    const cfg = attempt("workspaces", id("config"), w, () => { config(); return { evidence: "config parses" }; }, "correct the field the evidence names");
+    const cfg = attempt("workspaces", id("config"), w, () => { config(); return { evidence: "config parses" }; }, "Correct the field the message names.");
     out.push(cfg);
     if (cfg.status === "fail") continue;
-    out.push(attempt("workspaces", id("processes"), w, () => ({ evidence: `${processes().size} processes load` }), "correct the process file the evidence names"));
+    out.push(attempt("workspaces", id("processes"), w, () => ({ evidence: `${processes().size} processes load` }), "Correct the process file the message names."));
     out.push(attempt("workspaces", id("profiles"), w, () => {
       const reg = registry(), dir = extraDir(), q = QUEUE();
       const mine = [...reg.profiles.values()].filter((p) => dir !== undefined && p.file.startsWith(dir + sep));
@@ -204,9 +228,10 @@ function workspaceGroup(ws: BoxWorkspace[]): Finding[] {
         .filter(([, ns]) => ns!.length).map(([what, ns]) => `${what}: ${(ns as string[]).join(", ")}`);
       return bad.length
         ? { evidence: "", problem: `${bad.length} of ${mine.length} profiles are not verified (${parts.join("; ")}); the dispatcher tests one before its first message and holds its work if it fails`,
-          fix: `GOVERN_REPO=${w.path} govern caps --check --all`, action: { kind: "self-test", workspace: w.path } }
+          fix: "Run each profile's self-test: one small model call per capability.", command: `GOVERN_REPO=${w.path} govern caps --check --all`,
+          action: { kind: "self-test", workspace: w.path } }
         : { evidence: mine.length ? `${mine.length} profile${mine.length === 1 ? "" : "s"} with a passing self-test of their current definition` : "no profiles of its own" };
-    }, "correct the capabilities file the evidence names"));
+    }, "Correct the capabilities file the message names."));
   }
   return out;
 }
@@ -215,23 +240,25 @@ function workspaceGroup(ws: BoxWorkspace[]): Finding[] {
 
 /** A unit is healthy for the box when a timer, socket, path or target is active, a long-running service is up and stable, and
  *  a oneshot service is running or last exited 0. */
-function judgeUnit(p: Record<string, string>, u: string, now: number): { ok: boolean; state: string; fix: string; start?: boolean } {
-  const restart = `systemctl --user enable --now ${u}`, logs = `journalctl --user -u ${u} -n 50`;
+function judgeUnit(p: Record<string, string>, u: string, now: number): { ok: boolean; state: string; start?: boolean } & Remedy {
+  const restart = { fix: "Start it, and start it at every boot.", command: `systemctl --user enable --now ${u}` };
+  const logs = { fix: "Read its log, fix the cause, then restart it.", command: `journalctl --user -u ${u} -n 50` };
   if (p.LoadState !== "loaded")
     return { ok: false, state: p.LoadState === "not-found" ? "not found: the unit file is not installed" : `load state ${p.LoadState || "unknown"}`,
-      fix: `install ${u} (the squad's systemd/ folder, govern task install-service, govern slack install-service), then systemctl --user daemon-reload && ${restart}` };
+      fix: `Install the unit file (the squad's systemd/ folder, govern task install-service or govern slack install-service), then load and start it.`,
+      command: `systemctl --user daemon-reload && systemctl --user enable --now ${u}` };
   const c = classify(p, now);
-  if (c.health === "problem") return { ok: false, state: c.state, fix: `${logs}; fix the cause, then systemctl --user restart ${u}` };
+  if (c.health === "problem") return { ok: false, state: c.state, ...logs };
   const active = p.ActiveState === "active";
-  if (!u.endsWith(".service")) return { ok: active, state: p.ActiveState || "unknown", fix: restart, start: p.ActiveState === "inactive" };
+  if (!u.endsWith(".service")) return { ok: active, state: p.ActiveState || "unknown", ...restart, start: p.ActiveState === "inactive" };
   if (active) {
     const up = /^@(\d+)$/.exec(p.ActiveEnterTimestamp ?? "")?.[1];
-    if (p.Type !== "oneshot" && up !== undefined && now - Number(up) * 1000 < STABLE_MS) return { ok: false, state: "up for less than 60 s: run doctor again to see it stay up", fix: logs };
-    return { ok: true, state: "active", fix: restart };
+    if (p.Type !== "oneshot" && up !== undefined && now - Number(up) * 1000 < STABLE_MS) return { ok: false, state: "up for less than 60 s: run doctor again to see it stay up", ...logs };
+    return { ok: true, state: "active" };
   }
-  if (p.ActiveState === "activating") return { ok: true, state: "running now", fix: restart };
-  if (p.ActiveState === "inactive" && p.Type === "oneshot") return { ok: p.Result === "success", state: p.Result === "success" ? "inactive; last run succeeded" : `inactive; last result ${p.Result || "unknown"}`, fix: logs };
-  return { ok: false, state: `${p.ActiveState || "unknown"}: not running`, fix: restart, start: p.ActiveState === "inactive" };
+  if (p.ActiveState === "activating") return { ok: true, state: "running now" };
+  if (p.ActiveState === "inactive" && p.Type === "oneshot") return { ok: p.Result === "success", state: p.Result === "success" ? "inactive; last run succeeded" : `inactive; last result ${p.Result || "unknown"}`, ...logs };
+  return { ok: false, state: `${p.ActiveState || "unknown"}: not running`, ...restart, start: p.ActiveState === "inactive" };
 }
 
 function serviceGroup(box: Box, ws: BoxWorkspace[], now: number): Finding[] {
@@ -247,12 +274,12 @@ function serviceGroup(box: Box, ws: BoxWorkspace[], now: number): Finding[] {
   const lingers = !linger.error && linger.code === 0 && linger.out.trim() === "yes";
   const out = [finding("services", "services:linger", lingers ? "ok" : "fail",
     lingers ? `${user} lingers: user units run without a login` : `${user} does not linger (${linger.error ?? (linger.out.trim() || tail(linger, 1))}): user units stop at logout`,
-    { actor: "operator", fix: `sudo loginctl enable-linger ${user}` })];
+    { actor: "operator", fix: "Let this account's services run without a login (needs sudo).", command: `sudo loginctl enable-linger ${user}` })];
   for (const { n, u } of all) {
     const p = unitProperties("user", u);
-    if ("gap" in p) { out.push(finding("services", `services:${n}:${u}`, "fail", `user units not readable: ${p.gap}`, { fix: "run doctor in the box user's session (systemctl --user needs its bus)" })); continue; }
+    if ("gap" in p) { out.push(finding("services", `services:${n}:${u}`, "fail", `user units not readable: ${p.gap}`, { fix: "Run this check in the box user's own session: systemctl --user needs its bus." })); continue; }
     const j = judgeUnit(p, u, now);
-    out.push(finding("services", `services:${n}:${u}`, j.ok ? "ok" : "fail", j.state, { fix: j.fix, ...(j.start ? { action: { kind: "enable-unit", unit: u } as const } : {}) }));
+    out.push(finding("services", `services:${n}:${u}`, j.ok ? "ok" : "fail", j.state, { ...j, ...(j.start ? { action: { kind: "enable-unit", unit: u } as const } : {}) }));
   }
   return out;
 }
@@ -272,7 +299,7 @@ async function slackGroup(ws: BoxWorkspace[], now: number, request: typeof fetch
     catch (e) { if (e instanceof GovernError) { out.push(finding("slack", `slack:${n}`, "skip", "config unreadable (see workspaces)")); continue; } throw e; }
     if (!on) {
       out.push(w.slack ? finding("slack", `slack:${n}:enabled`, "fail", "the box wants Slack here; the workspace does not enable the slack extension",
-          { fix: `GOVERN_REPO=${w.path} govern ext enable slack`, action: { kind: "enable-extension", workspace: w.path, extension: "slack" } })
+          { fix: "Turn on govern's Slack extension in this workspace.", command: `GOVERN_REPO=${w.path} govern ext enable slack`, action: { kind: "enable-extension", workspace: w.path, extension: "slack" } })
         : finding("slack", `slack:${n}`, "skip", "the workspace does not enable slack"));
       continue;
     }
@@ -284,7 +311,7 @@ async function slackGroup(ws: BoxWorkspace[], now: number, request: typeof fetch
       out.push(...await x.doctor({ name: n, path: w.path, now, request }));
     } catch (e) {
       if (!(e instanceof GovernError)) throw e;
-      out.push(finding("slack", `slack:${n}:config`, "fail", clip(e.message, 400), { fix: "correct the slack section of the workspace config" }));
+      out.push(finding("slack", `slack:${n}:config`, "fail", clip(e.message, 400), { fix: "Correct the slack section of the workspace config." }));
     } finally { if (old === undefined) delete process.env.GOVERN_REPO; else process.env.GOVERN_REPO = old; }
   }
   return out;
@@ -300,7 +327,7 @@ function checkGroup(ws: BoxWorkspace[]): Finding[] {
       const r = runProgram("docker", ["image", "inspect", "--format", "{{.Id}}", image]);
       const ok = !r.error && r.code === 0;
       out.push(finding("checks", `checks:${n}:image:${image}`, ok ? "ok" : "fail", ok ? `${image} ${clip(r.out.trim(), 24)}` : `${image}: ${r.error ? `docker ${r.error}` : tail(r, 1)}`,
-        { fix: `build it on this box (its Dockerfile is under ~/govern/squad/docker/; jumpserver: govern_squad_images), or docker pull ${image}` }));
+        { fix: "Build it on this box from its Dockerfile under ~/govern/squad/docker/ (jumpserver: govern_squad_images), or pull it.", command: `docker pull ${image}` }));
     }
     for (const c of w.checks ?? []) {
       if (!existsSync(w.path) || !statSync(w.path).isDirectory()) { out.push(finding("checks", `checks:${n}:${c.name}`, "skip", `${w.path} is not there (see workspaces)`)); continue; }
@@ -309,7 +336,7 @@ function checkGroup(ws: BoxWorkspace[]): Finding[] {
       const r = runProgram(program, args, { cwd: w.path, timeoutMs: (c.timeoutSec ?? CHECK_TIMEOUT_SEC) * 1000 });
       const ok = !r.error && r.code === 0;
       out.push(finding("checks", `checks:${n}:${c.name}`, ok ? "ok" : "fail", ok ? tail(r, 1) || "exit 0" : r.error ? `${c.argv.join(" ")}: ${r.error}` : `exit ${r.code}: ${tail(r)}`,
-        { actor: c.actor ?? "agent", fix: `run ${c.argv.join(" ")} in ${w.path} and fix what it reports` }));
+        { actor: c.actor ?? "agent", fix: "Run the check by hand and fix what it reports.", command: `cd ${w.path} && ${c.argv.join(" ")}` }));
     }
   }
   return out;
@@ -352,11 +379,11 @@ export function parseOnly(text: string | undefined): Group[] | undefined {
 }
 
 const MARK: Record<Status, string> = { ok: "✔", fail: "✖", skip: "–" };
-/** The text report: one count line, then each finding, a failure followed by its fix and who can apply it. */
+/** The text report: one count line, then each finding, a failure followed by its fix, who can apply it and its command. */
 export function report(fs: readonly Finding[]): string {
   const count = (s: Status) => fs.filter((f) => f.status === s).length;
   const failed = fs.filter((f) => f.status === "fail"), op = failed.filter((f) => f.actor === "operator").length;
   const width = Math.min(Math.max(0, ...fs.map((f) => f.id.length)), 56);
   return [`govern doctor: ${count("ok")} ok, ${failed.length} failed${op ? ` (${op} for the operator)` : ""}, ${count("skip")} skipped`,
-    ...fs.flatMap((f) => [`${MARK[f.status]} ${f.id.padEnd(width)}  ${f.evidence}`, ...(f.fix ? [`    fix (${f.actor}): ${f.fix}`] : [])])].join("\n");
+    ...fs.flatMap((f) => [`${MARK[f.status]} ${f.id.padEnd(width)}  ${f.evidence}`, ...(f.fix ? [`    fix (${f.actor}): ${f.fix}`] : []), ...(f.command ? [`      $ ${f.command}`] : [])])].join("\n");
 }

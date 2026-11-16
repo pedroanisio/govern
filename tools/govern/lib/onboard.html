@@ -8,87 +8,86 @@
 :root {
   --bg: #f6f7f9; --card: #ffffff; --ink: #16181d; --muted: #5d6470; --line: #e3e6eb;
   --accent: #3b5bdb; --accent-ink: #ffffff; --ok: #1f8a4c; --ok-bg: #e7f5ec; --bad: #c92a2a; --bad-bg: #fdecec;
-  --you: #b35c00; --you-bg: #fff3e0; --skip: #868e96; --code: #f1f3f5; --shadow: 0 1px 2px rgba(0,0,0,.05), 0 4px 16px rgba(0,0,0,.05);
+  --you: #b35c00; --you-bg: #fff3e0; --code: #f1f3f5; --shadow: 0 1px 2px rgba(0,0,0,.05), 0 8px 24px rgba(0,0,0,.06);
 }
 @media (prefers-color-scheme: dark) {
   :root { --bg: #111317; --card: #1a1d23; --ink: #e9ecef; --muted: #a0a7b3; --line: #2b2f37; --accent: #748ffc; --accent-ink: #0b0d12;
-    --ok: #51cf66; --ok-bg: #16281c; --bad: #ff8787; --bad-bg: #2d1a1a; --you: #ffa94d; --you-bg: #2d2214; --skip: #868e96; --code: #22262e;
+    --ok: #51cf66; --ok-bg: #16281c; --bad: #ff8787; --bad-bg: #2d1a1a; --you: #ffa94d; --you-bg: #2d2214; --code: #22262e;
     --shadow: 0 1px 2px rgba(0,0,0,.4); }
 }
 * { box-sizing: border-box; }
 body { margin: 0; background: var(--bg); color: var(--ink); font: 16px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
-header { max-width: 1040px; margin: 0 auto; padding: 28px 16px 8px; display: flex; gap: 20px; align-items: center; flex-wrap: wrap; }
-header h1 { font-size: 26px; margin: 0; letter-spacing: -.01em; }
-header p { margin: 2px 0 0; color: var(--muted); }
-.ring { width: 64px; height: 64px; flex: none; }
-.ring circle { fill: none; stroke-width: 7; }
-.ring .track { stroke: var(--line); }
-.ring .fill { stroke: var(--ok); stroke-linecap: round; transform: rotate(-90deg); transform-origin: 50% 50%; }
-.ring text { font-size: 15px; font-weight: 700; fill: var(--ink); text-anchor: middle; dominant-baseline: central; }
-main > *, .row .what, .cmd code { min-width: 0; }
-main { max-width: 1040px; margin: 0 auto; padding: 8px 16px 48px; display: grid; grid-template-columns: 260px 1fr; gap: 20px; }
-@media (max-width: 760px) { main { grid-template-columns: 1fr; } }
-nav ol { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
-@media (max-width: 760px) { nav ol { flex-direction: row; overflow-x: auto; padding-bottom: 4px; } nav li { flex: none; } }
-nav button { width: 100%; display: flex; gap: 12px; align-items: center; text-align: left; background: transparent; border: 1px solid transparent;
-  border-radius: 12px; padding: 10px 12px; color: var(--ink); font: inherit; cursor: pointer; }
-nav button:hover { background: var(--card); }
-nav button[aria-current="step"] { background: var(--card); border-color: var(--line); box-shadow: var(--shadow); font-weight: 600; }
-.dot { width: 28px; height: 28px; flex: none; border-radius: 50%; display: grid; place-items: center; font-size: 14px; font-weight: 700;
-  background: var(--line); color: var(--muted); }
-.dot.ok { background: var(--ok-bg); color: var(--ok); } .dot.fail { background: var(--bad-bg); color: var(--bad); }
-.dot.you { background: var(--you-bg); color: var(--you); } .dot.busy { animation: pulse 1s infinite alternate; }
-@keyframes pulse { from { opacity: .4; } to { opacity: 1; } }
-.card { background: var(--card); border: 1px solid var(--line); border-radius: 16px; box-shadow: var(--shadow); padding: 24px; }
-.card h2 { margin: 0 0 4px; font-size: 22px; } .lead { margin: 0 0 18px; color: var(--muted); }
-.item { border: 1px solid var(--line); border-radius: 12px; padding: 14px 16px; margin: 10px 0; }
-.item.fail { border-color: color-mix(in srgb, var(--bad) 40%, var(--line)); background: color-mix(in srgb, var(--bad-bg) 55%, var(--card)); }
-.item.you { border-color: color-mix(in srgb, var(--you) 40%, var(--line)); background: color-mix(in srgb, var(--you-bg) 55%, var(--card)); }
-.row { display: flex; gap: 10px; align-items: flex-start; }
-.row .what { flex: 1; min-width: 0; }
-@media (max-width: 520px) { .row { flex-direction: column-reverse; gap: 4px; } } .what b { display: block; } .ev { color: var(--muted); font-size: 14px; overflow-wrap: anywhere; }
-.tag { font-size: 12px; font-weight: 700; padding: 2px 8px; border-radius: 99px; white-space: nowrap; }
-.tag.fail { background: var(--bad-bg); color: var(--bad); } .tag.you { background: var(--you-bg); color: var(--you); }
-.do { margin-top: 12px; display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
-.cmd { display: flex; gap: 8px; align-items: stretch; width: 100%; }
+.wrap { max-width: 760px; margin: 0 auto; padding: 28px 16px 48px; }
+.wrap > *, .what, .cmd code { min-width: 0; }
+.brand { color: var(--muted); font-size: 14px; font-weight: 600; letter-spacing: .02em; margin: 0 0 14px; }
+/* The stepper: one dot per step, then Finish. */
+ol.steps { list-style: none; margin: 0 0 18px; padding: 0; display: flex; gap: 4px; align-items: center; }
+ol.steps li { flex: 1; display: flex; align-items: center; gap: 4px; min-width: 0; } ol.steps li:last-child { flex: none; }
+ol.steps li:not(:last-child)::after { content: ""; flex: 1; height: 2px; background: var(--line); border-radius: 2px; }
+ol.steps li.done:not(:last-child)::after { background: var(--ok); }
+.dot { width: 30px; height: 30px; flex: none; border-radius: 50%; display: grid; place-items: center; font-size: 14px; font-weight: 700;
+  background: var(--line); color: var(--muted); border: 2px solid transparent; }
+.dot.ok { background: var(--ok-bg); color: var(--ok); } .dot.you { background: var(--you-bg); color: var(--you); }
+.dot.here { border-color: var(--accent); color: var(--accent); background: var(--card); }
+.steplabel { font-size: 14px; color: var(--muted); margin: -8px 0 16px; }
+.card { background: var(--card); border: 1px solid var(--line); border-radius: 18px; box-shadow: var(--shadow); padding: 28px; }
+@media (max-width: 520px) { .card { padding: 20px 16px; } .dot { width: 24px; height: 24px; font-size: 12px; } }
+.card h1 { font-size: 26px; margin: 0 0 6px; letter-spacing: -.01em; } .card h2 { font-size: 22px; margin: 0 0 6px; }
+.lead { margin: 0 0 18px; color: var(--muted); }
+.hero { text-align: center; padding: 12px 0 4px; } .hero .big { font-size: 52px; line-height: 1.1; }
+.spin { width: 44px; height: 44px; margin: 8px auto 14px; border-radius: 50%; border: 4px solid var(--line); border-top-color: var(--accent); animation: spin 0.9s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .spin { animation-duration: 3s; } }
+ul.plan { list-style: none; padding: 0; margin: 0 0 8px; display: grid; gap: 8px; }
+ul.plan li { display: flex; gap: 12px; align-items: baseline; } ul.plan .n { font-weight: 700; color: var(--accent); width: 18px; flex: none; }
+ul.plan .t { font-weight: 600; } ul.plan .d { color: var(--muted); font-size: 14px; display: block; }
+ul.fixed { list-style: none; padding: 0; margin: 14px 0 0; display: grid; gap: 6px; }
+ul.fixed li { background: var(--ok-bg); color: var(--ok); border-radius: 10px; padding: 8px 12px; font-size: 15px; }
+.item { border: 1px solid color-mix(in srgb, var(--you) 40%, var(--line)); background: color-mix(in srgb, var(--you-bg) 55%, var(--card));
+  border-radius: 14px; padding: 16px; margin: 12px 0; }
+.item b { display: block; font-size: 17px; } .item p { margin: 6px 0 0; }
+.cmd { display: flex; gap: 8px; align-items: stretch; margin-top: 10px; }
 .cmd code { flex: 1; background: var(--code); border-radius: 8px; padding: 8px 10px; font: 13px/1.4 ui-monospace, Menlo, Consolas, monospace; overflow-wrap: anywhere; }
-button.primary, button.ghost { font: inherit; font-weight: 600; border-radius: 10px; padding: 9px 16px; cursor: pointer; border: 1px solid var(--accent); }
+.form { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
+input[type=password] { flex: 1; min-width: 200px; font: inherit; padding: 9px 12px; border-radius: 10px; border: 1px solid var(--line); background: var(--card); color: var(--ink); }
+.note { font-size: 14px; color: var(--muted); } .msg { margin-top: 8px; font-size: 14px; } .msg.bad { color: var(--bad); } .msg.ok { color: var(--ok); }
+details { margin-top: 16px; } details summary { cursor: pointer; color: var(--muted); font-size: 14px; }
+details ul { margin: 8px 0 0; padding-left: 20px; color: var(--muted); font-size: 14px; overflow-wrap: anywhere; }
+.foot { display: flex; gap: 10px; margin-top: 24px; align-items: center; flex-wrap: wrap; }
+.foot .grow { flex: 1; }
+button { font: inherit; font-weight: 600; border-radius: 10px; padding: 10px 18px; cursor: pointer; border: 1px solid var(--accent); }
 button.primary { background: var(--accent); color: var(--accent-ink); } button.ghost { background: transparent; color: var(--accent); }
+button.link { border: 0; background: transparent; color: var(--muted); padding: 10px 8px; font-weight: 500; }
+button.big { padding: 12px 26px; font-size: 17px; }
 button:disabled { opacity: .55; cursor: progress; }
 button:focus-visible, input:focus-visible { outline: 3px solid color-mix(in srgb, var(--accent) 45%, transparent); outline-offset: 2px; }
-input[type=password] { flex: 1; min-width: 220px; font: inherit; padding: 8px 10px; border-radius: 8px; border: 1px solid var(--line); background: var(--card); color: var(--ink); }
-details.good { margin-top: 14px; } details.good summary { cursor: pointer; color: var(--ok); font-weight: 600; }
-details.good ul { margin: 8px 0 0; padding-left: 20px; color: var(--muted); font-size: 14px; }
-.foot { display: flex; justify-content: space-between; gap: 10px; margin-top: 20px; flex-wrap: wrap; }
-.note { font-size: 14px; color: var(--muted); } .msg { margin-top: 8px; font-size: 14px; } .msg.ok { color: var(--ok); } .msg.bad { color: var(--bad); }
-.done { text-align: center; padding: 40px 24px; } .done .big { font-size: 56px; }
-.empty { color: var(--muted); }
+ul.summary { list-style: none; padding: 0; margin: 18px 0 0; display: grid; gap: 8px; text-align: left; }
+ul.summary li { display: flex; gap: 12px; align-items: center; border: 1px solid var(--line); border-radius: 12px; padding: 10px 14px; }
+ul.summary li .what { flex: 1; } ul.summary .note { display: block; }
 </style>
 </head>
 <body>
-<header>
-  <svg class="ring" viewBox="0 0 64 64" aria-hidden="true"><circle class="track" cx="32" cy="32" r="27"/><circle class="fill" id="ringFill" cx="32" cy="32" r="27" stroke-dasharray="0 170"/><text x="32" y="32" id="ringText">…</text></svg>
-  <div>
-    <h1>Set up this box</h1>
-    <p id="sub">Checking what this machine needs to run your squads…</p>
-  </div>
-</header>
-<main>
-  <nav aria-label="Setup steps"><ol id="steps"></ol></nav>
-  <section class="card" id="panel" aria-live="polite"><p class="empty">Checking your box. This takes a few seconds.</p></section>
-</main>
+<div class="wrap">
+  <p class="brand">govern · box setup</p>
+  <ol class="steps" id="steps" aria-label="Setup steps"></ol>
+  <p class="steplabel" id="steplabel"></p>
+  <section class="card" id="card" aria-live="polite"></section>
+</div>
 <script>
 "use strict";
+// A next-next-finish wizard. Entering a step asks the server for its automatic pass (POST /api/auto): the server checks
+// the step, fixes what the box can fix on its own, and checks again. The page shows what is left for a person, if
+// anything; it never chooses a command, it names findings by id.
 const STEPS = {
-  govern:     { title: "Govern", lead: "The engine that runs your lanes. It must be the release this box expects, on a recent Node." },
-  engines:    { title: "AI assistants", lead: "Claude and Codex do the work. Each must be installed and signed in on this machine." },
-  workspaces: { title: "Squads", lead: "Each squad's settings, processes and AI profiles must load, and every profile must pass its self-test." },
-  services:   { title: "Background services", lead: "Dispatchers, drivers and timers keep work moving while nobody is logged in." },
-  slack:      { title: "Slack", lead: "Where people approve work and follow progress. We test the bot token, the team, the channel and the listener." },
-  checks:     { title: "Tools & access", lead: "The Docker images and access checks each squad needs, such as reaching the code host." },
+  govern:     { title: "Govern", what: "The engine that runs your squads", working: "Checking govern and Node.js…" },
+  engines:    { title: "AI assistants", what: "Claude and Codex, installed and signed in", working: "Checking Claude and Codex…" },
+  workspaces: { title: "Squads", what: "Each squad's settings, and a self-test of its AI profiles", working: "Checking your squads and self-testing their AI profiles. The first time this can take a few minutes…" },
+  services:   { title: "Background services", what: "Dispatchers, drivers and timers that keep work moving", working: "Checking the background services and starting any that are stopped…" },
+  slack:      { title: "Slack", what: "The bot token, the team, the channel and the listener", working: "Checking Slack…" },
+  checks:     { title: "Tools & access", what: "Docker images and access each squad needs", working: "Checking tools and access…" },
 };
-const NAMES = { installed: "is installed", login: "is signed in", found: "exists", config: "settings load", processes: "processes load",
-  profiles: "AI profiles self-tested", token: "bot token is in place", auth: "Slack accepts the token", channel: "bot is in the channel",
+const NAMES = { installed: "is installed", login: "is signed in", found: "exists", config: "settings", processes: "processes",
+  profiles: "AI profiles", token: "bot token", auth: "Slack accepts the token", channel: "bot is in the channel",
   listener: "listener is reading the channel", enabled: "Slack is turned on" };
 const cap = (s) => s.charAt(0).toUpperCase() + s.slice(1);
 function label(id) {
@@ -98,17 +97,37 @@ function label(id) {
   if (id === "services:linger") return "Services keep running after you log out";
   if (p[0] === "engines") return `${cap(p[1])} ${NAMES[p[2]] || p[2]}`;
   if (p[0] === "services") return `${p.slice(2).join(":").replace(/\.service$/, "")} is running`;
-  if (p[0] === "checks" && p[2] === "image") return `Image ${p.slice(3).join(":")} is available`;
-  if (p[0] === "checks") return `${p[1]}: ${p.slice(2).join(":")} check passes`;
+  if (p[0] === "checks" && p[2] === "image") return `Image ${p.slice(3).join(":")}`;
+  if (p[0] === "checks") return `${p[1]}: ${p.slice(2).join(":")} check`;
   if (p.length >= 3) return `${p[1]}: ${NAMES[p[2]] || p[2]}`;
-  return cap(id);
+  return cap(id.replace(/^[a-z]+:/, ""));
 }
+/** A failing finding as a thing to do. */
+function todoLabel(id) {
+  const p = id.split(":"), who = cap(p[1] || "");
+  if (p[0] === "engines" && p[2] === "login") return `Sign in to ${who}`;
+  if (p[0] === "engines" && p[2] === "installed") return `Install ${who}`;
+  if (id === "services:linger") return "Keep services running after you log out";
+  if (p[0] === "slack" && p[2] === "token") return `Slack bot token for ${p[1]}`;
+  if (p[0] === "slack" && p[2] === "channel") return `Invite the bot to ${p[1]}'s channel`;
+  return label(id);
+}
+const fixedText = (a) => {
+  const l = label(a.id);
+  return a.id.startsWith("services:") && a.id !== "services:linger" ? `Started ${l.replace(/ is running$/, "")}`
+    : a.id.endsWith(":profiles") ? `Self-tested ${l.split(":")[0]}'s AI profiles`
+    : a.id.endsWith(":enabled") ? `Turned on Slack for ${a.id.split(":")[1]}`
+    : a.id.endsWith(":token") ? (a.saved ? "Saved the Slack bot token" : "Made the Slack token file private") : `Fixed: ${l}`;
+};
+
 const token = (() => {
   const m = /token=([A-Za-z0-9_-]+)/.exec(location.hash);
   try { if (m) { sessionStorage.setItem("onboard-token", m[1]); history.replaceState(null, "", location.pathname); } return m ? m[1] : sessionStorage.getItem("onboard-token"); }
   catch { return m ? m[1] : null; }
 })();
-let groups = Object.keys(STEPS), findings = [], current = null, busy = new Set(), messages = {}, flash = {};
+let groups = Object.keys(STEPS);
+// at: "welcome", a group, or "finish". results[g]: { findings, applied, error? } of the step's last pass.
+let at = "welcome", results = {}, working = null, errors = {}, skipped = new Set();
 
 async function api(path, body) {
   const r = await fetch(path, { method: body ? "POST" : "GET", headers: { Authorization: `Bearer ${token}`, ...(body ? { "Content-Type": "application/json" } : {}) }, body: body ? JSON.stringify(body) : undefined });
@@ -116,124 +135,146 @@ async function api(path, body) {
   if (!r.ok && !j.findings) throw new Error(j.error || `HTTP ${r.status}`);
   return j;
 }
-function merge(j, group) {
-  if (j.groups) groups = j.groups;
-  findings = group ? findings.filter((f) => f.group !== group).concat(j.findings) : j.findings;
-  findings.sort((a, b) => groups.indexOf(a.group) - groups.indexOf(b.group));
-}
-const of = (g) => findings.filter((f) => f.group === g);
-function stateOf(g) {
-  if (busy.has(g)) return "busy";
-  const fs = of(g);
-  if (!fs.length) return "wait";
-  const bad = fs.filter((f) => f.status === "fail");
-  if (!bad.length) return "ok";
-  return bad.some((f) => f.action || f.actor === "agent") ? "fail" : "you";
-}
 const el = (tag, attrs = {}, ...kids) => {
   const e = document.createElement(tag);
   for (const [k, v] of Object.entries(attrs)) if (k === "class") e.className = v; else if (k.startsWith("on")) e.addEventListener(k.slice(2), v); else if (v !== undefined && v !== false) e.setAttribute(k, v === true ? "" : v);
-  for (const k of kids.flat()) if (k !== null && k !== undefined) e.append(k);
+  for (const k of kids.flat()) if (k !== null && k !== undefined && k !== false) e.append(k);
   return e;
 };
+const show = (...kids) => document.getElementById("card").replaceChildren(...kids.flat().filter((k) => k !== null && k !== undefined && k !== false));
+const failing = (g) => (results[g]?.findings || []).filter((f) => f.status === "fail");
+const ready = (g) => results[g] && !failing(g).length;
 
-function renderNav() {
+function renderSteps() {
   const ol = document.getElementById("steps"); ol.replaceChildren();
-  groups.forEach((g, i) => {
-    const s = stateOf(g), mark = { ok: "✓", fail: "!", you: "✋", busy: "…", wait: String(i + 1) }[s];
-    const sr = { ok: "ready", fail: "needs a fix", you: "needs you", busy: "checking", wait: "not checked yet" }[s];
-    ol.append(el("li", {}, el("button", { "aria-current": g === current ? "step" : false, onclick: () => { current = g; render(); } },
-      el("span", { class: `dot ${s}`, "aria-hidden": "true" }, mark), el("span", {}, STEPS[g]?.title || g, el("span", { class: "note", style: "display:block" }, sr)))));
+  [...groups, "finish"].forEach((g, i) => {
+    const here = g === at, done = g === "finish" ? false : ready(g), you = g !== "finish" && results[g] && !done;
+    const mark = done ? "✓" : you ? "!" : g === "finish" ? "★" : String(i + 1);
+    const name = g === "finish" ? "Finish" : STEPS[g]?.title || g;
+    ol.append(el("li", { class: done ? "done" : "" }, el("span", { class: `dot ${done ? "ok" : you ? "you" : ""} ${here ? "here" : ""}`, title: name,
+      "aria-label": `${name}: ${done ? "ready" : you ? "needs you" : "not done yet"}`, "aria-current": here ? "step" : false }, mark)));
   });
-  const ready = groups.filter((g) => stateOf(g) === "ok").length, total = groups.length;
-  document.getElementById("ringFill").setAttribute("stroke-dasharray", `${(ready / total) * 169.6} 170`);
-  document.getElementById("ringText").textContent = `${ready}/${total}`;
-  const youCount = findings.filter((f) => f.status === "fail" && f.actor === "operator" && !f.action).length;
-  document.getElementById("sub").textContent = !findings.length ? "Checking what this machine needs to run your squads…"
-    : ready === total ? "Everything is ready. This box can run your squads."
-    : `${ready} of ${total} steps ready${youCount ? ` · ${youCount} thing${youCount > 1 ? "s" : ""} only you can do` : ""}.`;
+  const i = groups.indexOf(at);
+  document.getElementById("steplabel").textContent = i >= 0 ? `Step ${i + 1} of ${groups.length} · ${STEPS[at]?.title || at}` : at === "finish" ? "Finish" : "Welcome";
 }
+const focusPrimary = () => requestAnimationFrame(() => document.querySelector("#card [data-primary]")?.focus());
+function go(where) { at = where; render(); window.scrollTo({ top: 0 }); if (groups.includes(where) && !results[where] && !working) pass(where); }
+const next = (g) => groups[groups.indexOf(g) + 1] || "finish";
+const prev = (g) => groups[groups.indexOf(g) - 1] || "welcome";
 
-/** The command part of a fix: a trailing note in parentheses is for reading, not for the terminal. */
-const commandOf = (text) => text.replace(/\s+\([^()]*\)\s*$/, "");
 function copyButton(text) {
   return el("button", { class: "ghost", onclick: async (ev) => { try { await navigator.clipboard.writeText(text); ev.target.textContent = "Copied"; setTimeout(() => (ev.target.textContent = "Copy"), 1500); } catch { ev.target.textContent = "Select and copy"; } } }, "Copy");
 }
-function itemView(f) {
-  const you = !f.action && f.actor === "operator";
-  const box = el("div", { class: `item ${you ? "you" : "fail"}` },
-    el("div", { class: "row" }, el("div", { class: "what" }, el("b", {}, label(f.id)), el("span", { class: "ev" }, f.evidence)),
-      el("span", { class: `tag ${you ? "you" : "fail"}` }, you ? "Your part" : "Needs a fix")));
-  const act = el("div", { class: "do" });
-  if (f.action && f.action.kind === "slack-token") {
-    const input = el("input", { type: "password", autocomplete: "off", spellcheck: "false", placeholder: "xoxb-…", "aria-label": "Slack bot token" });
-    act.append(el("span", { class: "note", style: "width:100%" }, "Paste the bot token from your Slack app (OAuth & Permissions → Bot User OAuth Token). It is saved on this box only, readable by you alone."),
-      input, el("button", { class: "primary", onclick: () => fix(f, input.value) }, "Save token"));
-  } else if (f.action) {
-    const what = { "enable-unit": "Start it", "chmod-private": "Make it private", "enable-extension": "Turn it on", "self-test": "Run the self-tests" }[f.action.kind] || "Fix it";
-    act.append(el("button", { class: "primary", onclick: () => fix(f) }, `${what} for me`));
-    if (f.action.kind === "self-test") act.append(el("span", { class: "note" }, "Uses a few small AI calls, about a minute per profile."));
+/** One thing left for a person. A failed automatic fix says what it tried. */
+function todoView(f, tried) {
+  const box = el("div", { class: "item" }, el("b", {}, todoLabel(f.id)));
+  if (f.action?.kind === "slack-token") {
+    box.append(el("p", {}, "Paste your Slack app's bot token (in Slack: your app → OAuth & Permissions → Bot User OAuth Token). It is saved on this box only, readable by you alone."),
+      el("div", { class: "form" }, el("input", { type: "password", autocomplete: "off", spellcheck: "false", placeholder: "xoxb-…", "aria-label": "Slack bot token", "data-token": f.id })));
+  } else {
+    box.append(el("p", {}, f.fix || "See the details below."));
+    if (f.command) box.append(el("div", { class: "cmd" }, el("code", {}, f.command), copyButton(f.command)));
   }
-  if (f.fix && !(f.action && f.action.kind === "slack-token")) {
-    act.append(el("span", { class: "note", style: "width:100%" }, f.action ? "Or do it yourself:" : you ? "Here is what to do:" : "To fix it:"),
-      el("div", { class: "cmd" }, el("code", {}, f.fix), copyButton(commandOf(f.fix))));
-  }
-  box.append(act);
-  if (messages[f.id]) box.append(el("div", { class: `msg ${messages[f.id].ok ? "ok" : "bad"}`, role: "status" }, messages[f.id].text));
+  if (tried && !tried.ok) box.append(el("p", { class: "msg bad" }, `We tried to fix this automatically, but it did not work: ${tried.output}`));
+  box.append(el("details", {}, el("summary", {}, "What we found"), el("ul", {}, el("li", {}, f.evidence))));
   return box;
 }
 
 function render() {
-  renderNav();
-  const panel = document.getElementById("panel");
-  if (!token) { panel.replaceChildren(el("h2", {}, "Open the link govern printed"), el("p", { class: "lead" }, "This page needs the address with #token=… that `govern onboard` printed in the terminal.")); return; }
-  if (!findings.length) return;
-  if (groups.every((g) => stateOf(g) === "ok")) {
-    panel.replaceChildren(el("div", { class: "done" }, el("div", { class: "big", "aria-hidden": "true" }, "🎉"), el("h2", {}, "This box is ready"),
-      el("p", { class: "lead" }, "Govern, the AI assistants, your squads, their services and Slack all passed. You can close this page."),
-      el("button", { class: "ghost", onclick: () => recheck() }, "Check everything again")));
+  renderSteps();
+  if (!token) { show(el("h1", {}, "Open the link govern printed"), el("p", { class: "lead" }, "This page needs the address with #token=… that govern onboard printed in the terminal.")); return; }
+
+  if (at === "welcome") {
+    show(el("h1", {}, "Let's set up this box"),
+      el("p", { class: "lead" }, "We'll go through six steps. In each one we check what this machine needs to run your squads and fix what we can on our own. You'll only be asked for what needs a person, like signing in or pasting a token."),
+      el("ul", { class: "plan" }, groups.map((g, i) => el("li", {}, el("span", { class: "n" }, String(i + 1)), el("span", {}, el("span", { class: "t" }, STEPS[g]?.title || g), el("span", { class: "d" }, STEPS[g]?.what || ""))))),
+      el("div", { class: "foot" }, el("span", { class: "grow" }), el("button", { class: "primary big", "data-primary": true, onclick: () => go(groups[0]) }, "Start setup →")));
+    return focusPrimary();
+  }
+
+  if (at === "finish") {
+    const left = groups.filter((g) => !ready(g));
+    const hero = left.length
+      ? [el("div", { class: "big", "aria-hidden": "true" }, "✋"), el("h1", {}, "Almost there"), el("p", { class: "lead" }, `${left.length === 1 ? "One step still needs" : `${left.length} steps still need`} you. Open it, do what it asks, and come back here.`)]
+      : [el("div", { class: "big", "aria-hidden": "true" }, "🎉"), el("h1", {}, "Your box is ready"), el("p", { class: "lead" }, "Govern, the AI assistants, your squads, their services and Slack all passed. You can close this page.")];
+    show(el("div", { class: "hero" }, ...hero),
+      el("ul", { class: "summary" }, groups.map((g) => el("li", {}, el("span", { class: `dot ${ready(g) ? "ok" : "you"}`, "aria-hidden": "true" }, ready(g) ? "✓" : "!"),
+        el("span", { class: "what" }, STEPS[g]?.title || g, el("span", { class: "note" }, ready(g) ? "Ready" : !results[g] ? "Not checked" : `${failing(g).length} thing${failing(g).length > 1 ? "s" : ""} to do`)),
+        ready(g) ? null : el("button", { class: "ghost", onclick: () => go(g) }, "Open")))),
+      el("div", { class: "foot" }, el("button", { class: "link", onclick: () => go(groups[groups.length - 1]) }, "← Back"), el("span", { class: "grow" }),
+        el("button", { class: left.length ? "primary" : "ghost", "data-primary": left.length ? true : false, disabled: !!working, onclick: () => checkAll() }, working ? "Checking…" : "Check everything again")));
+    return focusPrimary();
+  }
+
+  const g = at, s = STEPS[g] || { title: g, what: "", working: "Checking…" }, r = results[g];
+  const back = el("button", { class: "link", disabled: !!working, onclick: () => go(prev(g)) }, "← Back");
+  const nextLabel = next(g) === "finish" ? "Finish" : `Next: ${STEPS[next(g)]?.title || next(g)} →`;
+  if (working === g || !r) {
+    show(el("div", { class: "hero" }, el("div", { class: "spin", role: "img", "aria-label": "Working" }), el("h2", {}, s.title), el("p", { class: "lead" }, s.working)),
+      el("div", { class: "foot" }, back));
     return;
   }
-  const g = current || groups.find((x) => stateOf(x) !== "ok") || groups[0];
-  current = g;
-  const fs = of(g), bad = fs.filter((f) => f.status === "fail"), good = fs.filter((f) => f.status === "ok"), skipped = fs.filter((f) => f.status === "skip");
-  const i = groups.indexOf(g), next = groups.slice(i + 1).find((x) => stateOf(x) !== "ok") || groups.find((x) => stateOf(x) !== "ok" && x !== g);
-  const kids = [el("h2", {}, `Step ${i + 1}. ${STEPS[g]?.title || g}`), el("p", { class: "lead" }, STEPS[g]?.lead || "")];
-  if (flash[g]) kids.push(el("p", { class: "msg ok", role: "status" }, flash[g]));
-  if (busy.has(g)) kids.push(el("p", { class: "empty" }, "Checking…"));
-  else if (!bad.length) kids.push(el("p", { class: "msg ok" }, good.length ? "✓ All good here." : "Nothing to check here on this box."));
-  bad.sort((a, b) => (a.action ? 0 : 1) - (b.action ? 0 : 1)).forEach((f) => kids.push(itemView(f)));
-  if (good.length) kids.push(el("details", { class: "good", open: !bad.length && good.length < 6 }, el("summary", {}, `${good.length} thing${good.length > 1 ? "s" : ""} look${good.length > 1 ? "" : "s"} good`),
-    el("ul", {}, good.map((f) => el("li", {}, `${label(f.id)}: ${f.evidence}`)))));
-  if (skipped.length) kids.push(el("details", { class: "good" }, el("summary", { style: "color:var(--muted)" }, `${skipped.length} not checked`),
-    el("ul", {}, skipped.map((f) => el("li", {}, `${label(f.id)}: ${f.evidence}`)))));
-  kids.push(el("div", { class: "foot" }, el("button", { class: "ghost", disabled: busy.has(g), onclick: () => recheck(g) }, "Check this step again"),
-    next ? el("button", { class: "primary", onclick: () => { current = next; render(); window.scrollTo({ top: 0, behavior: "smooth" }); } }, `Next: ${STEPS[next]?.title || next} →`) : null));
-  panel.replaceChildren(...kids);
+  if (errors[g]) {
+    show(el("h2", {}, `${s.title}: we could not check this step`), el("p", { class: "lead" }, errors[g]),
+      el("div", { class: "foot" }, back, el("span", { class: "grow" }), el("button", { class: "primary", "data-primary": true, onclick: () => pass(g) }, "Try again")));
+    return focusPrimary();
+  }
+  const fixed = (r.applied || []).filter((a) => a.ok && !failing(g).some((f) => f.id === a.id));
+  const fixedList = fixed.length ? el("ul", { class: "fixed" }, fixed.map((a) => el("li", {}, `✓ ${fixedText(a)}`))) : null;
+  const checked = r.findings.filter((f) => f.status !== "fail");
+  const details = checked.length ? el("details", {}, el("summary", {}, `What we checked (${checked.length})`),
+    el("ul", {}, checked.map((f) => el("li", {}, `${f.status === "skip" ? "Not checked" : "✓"} ${label(f.id)}: ${f.evidence}`)))) : null;
+
+  if (ready(g)) {
+    show(el("div", { class: "hero" }, el("div", { class: "big", "aria-hidden": "true" }, "✅"), el("h2", {}, `${s.title}: all set`),
+      el("p", { class: "lead" }, fixed.length ? `We fixed ${fixed.length === 1 ? "one thing" : `${fixed.length} things`} for you.` : "Nothing to fix here.")),
+      fixedList, details,
+      el("div", { class: "foot" }, back, el("span", { class: "grow" }), el("button", { class: "primary big", "data-primary": true, onclick: () => go(next(g)) }, nextLabel)));
+    return focusPrimary();
+  }
+
+  const todo = failing(g), hasToken = todo.some((f) => f.action?.kind === "slack-token");
+  const tried = (id) => (r.applied || []).find((a) => a.id === id);
+  show(el("h2", {}, `Your turn: ${s.title}`),
+    el("p", { class: "lead" }, `${fixed.length ? `We fixed ${fixed.length === 1 ? "one thing" : `${fixed.length} things`} on our own. ` : ""}${todo.length === 1 ? "One thing needs" : `${todo.length} things need`} a person. Do ${todo.length === 1 ? "it" : "them"}, then press ${hasToken ? "Save and continue" : "Continue"}.`),
+    ...todo.map((f) => todoView(f, tried(f.id))),
+    r.message ? el("p", { class: "msg bad", role: "status" }, r.message) : null,
+    fixedList, details,
+    el("div", { class: "foot" }, back, el("span", { class: "grow" }),
+      el("button", { class: "link", onclick: () => { skipped.add(g); go(next(g)); } }, "Skip for now"),
+      el("button", { class: "primary big", "data-primary": true, onclick: () => continueStep(g) }, hasToken ? "Save and continue" : "Continue")));
+  if (!hasToken) focusPrimary(); else requestAnimationFrame(() => document.querySelector("#card [data-token]")?.focus());
 }
 
-async function recheck(group) {
-  if (group) delete flash[group]; else flash = {};
-  const gs = group ? [group] : groups;
-  gs.forEach((g) => busy.add(g)); render();
-  try { merge(group ? await api("/api/check", { group }) : await api("/api/state"), group); }
-  catch (e) { document.getElementById("sub").textContent = `Could not check: ${e.message}`; }
-  finally { gs.forEach((g) => busy.delete(g)); render(); }
-}
-async function fix(f, value) {
-  busy.add(f.group); delete messages[f.id]; render();
+/** The step's automatic pass. `notes` carries the outcome of saved tokens into the step's result. */
+async function pass(g, notes = []) {
+  working = g; delete errors[g]; render();
   try {
-    const j = await api("/api/fix", value === undefined ? { id: f.id } : { id: f.id, value });
-    merge(j, f.group);
-    const still = findings.find((x) => x.id === f.id && x.status === "fail");
-    if (j.applied && j.applied.ok && !still) flash[f.group] = `✓ Fixed: ${label(f.id)}`;
-    messages[f.id] = j.applied ? { ok: j.applied.ok && !still, text: j.applied.ok ? (still ? `Done, but it still fails: ${j.applied.output}` : "Fixed ✓") : `That did not work: ${j.applied.output}` }
-      : { ok: false, text: j.error || "Nothing was done." };
-  } catch (e) { messages[f.id] = { ok: false, text: e.message }; }
-  finally { busy.delete(f.group); render(); }
+    const j = await api("/api/auto", { group: g });
+    if (j.groups) groups = j.groups;
+    results[g] = { findings: j.findings, applied: [...notes, ...(j.applied || [])] };
+  } catch (e) { errors[g] = e.message; results[g] = results[g] || { findings: [], applied: [] }; }
+  finally { working = null; render(); }
+}
+/** Continue: save any pasted token, run the step again, and move on when it passes. */
+async function continueStep(g) {
+  const inputs = [...document.querySelectorAll("#card [data-token]")], notes = [];
+  let message = "";
+  working = g; render();
+  for (const input of inputs) {
+    if (!input.value.trim()) { message = "Paste the token first."; continue; }
+    try { const j = await api("/api/fix", { id: input.dataset.token, value: input.value }); if (!j.applied?.ok) message = j.applied?.output || j.error || "The token was not saved."; else notes.push({ id: input.dataset.token, ok: true, output: j.applied.output, saved: true }); }
+    catch (e) { message = e.message; }
+  }
+  await pass(g, notes);
+  const done = ready(g) && !errors[g];
+  if (!done && results[g]) results[g].message = message || "Still not done. Check the steps above, then press Continue again, or skip it for now.";
+  if (done) { skipped.delete(g); go(next(g)); } else render();
+}
+async function checkAll() {
+  for (const g of groups) await pass(g);
 }
 render();
-if (token) recheck();
 </script>
 </body>
 </html>

@@ -1,6 +1,7 @@
-// govern onboard: the box's guided setup as a web page. The page walks the doctor's groups as steps; each failure shows
-// what is wrong, and either a "Fix it" button (an action the probe attached, which the server runs) or the operator's part
-// (a command to copy, or a secret to paste). Safety rests on three rules: the browser names a finding by id only, and the
+// govern onboard: the box's guided setup as a web page, a next-next-finish wizard over the doctor's groups. Entering a
+// step runs its automatic pass: the server checks the group, applies every action its own probes attached that needs no
+// value from a person, and checks again, for a bounded number of rounds. What is left is the operator's part (a login to
+// run, a secret to paste), shown with what to do. Safety rests on three rules: the browser names a finding by id only, and the
 // server runs an action only when its own fresh doctor run says that finding fails and carries it, so a page can never
 // choose a command; every API call needs the session's bearer token (in the URL fragment, which browsers never send); and
 // every request must name a loopback host, so another site cannot reach the API through a rebound DNS name.
@@ -78,12 +79,39 @@ export interface OnboardDeps { check: (only?: readonly Group[]) => Promise<Findi
 export const defaultDeps = (box: Box | undefined): OnboardDeps => ({ check: (only) => doctor(box, only ? { only } : {}), apply });
 
 const REQUEST = obj({ id: name }, { value: str });
-const CHECK = obj({}, { group: (v: unknown, p: string) => { const g = name(v, p); if (!(GROUPS as readonly string[]).includes(g)) throw new GovernError(`${p}: unknown group`); return g as Group; } });
+const CHECK_GROUP = (v: unknown, p: string): Group => { const g = name(v, p); if (!(GROUPS as readonly string[]).includes(g)) throw new GovernError(`${p}: unknown group`); return g as Group; };
+const CHECK = obj({}, { group: CHECK_GROUP });
+const AUTO = obj({ group: CHECK_GROUP });
 const MAX_BODY = 8192;
+/** Rounds of the automatic pass: a fix may reveal another failure (turning Slack on reveals its token probe), but the
+ *  pass stops after this many whatever the probes report. */
+const AUTO_ROUNDS = 3;
+
+/** One applied action of the automatic pass: the finding it fixed and what applying it did. */
+export interface AutoApplied extends Applied { id: string }
+
+/** The automatic pass over `group`: check it, apply the action of every failing finding that needs no value (each finding
+ *  at most once), check again; repeat while a round finds a new one, at most AUTO_ROUNDS rounds. */
+export async function autoPass(deps: OnboardDeps, group: Group): Promise<{ applied: AutoApplied[]; findings: Finding[] }> {
+  let findings = await deps.check([group]);
+  const applied: AutoApplied[] = [], tried = new Set<string>();
+  for (let round = 0; round < AUTO_ROUNDS; round++) {
+    const todo = findings.filter((f) => f.status === "fail" && f.action && f.action.kind !== "slack-token" && !tried.has(f.id));
+    if (!todo.length) break;
+    for (const f of todo) {
+      tried.add(f.id);
+      let r: Applied;
+      try { r = deps.apply(f.action!); } catch (e) { r = { ok: false, output: clip((e as Error).message, 300) }; }
+      applied.push({ id: f.id, ...r });
+    }
+    findings = await deps.check([group]);
+  }
+  return { applied, findings };
+}
 
 /** The onboarding server. GET / is the page; GET /api/state runs every group; POST /api/check {group?} runs again;
- *  POST /api/fix {id, value?} applies the action of a failing finding and runs its group again. Work is serialized:
- *  one doctor run or action at a time. */
+ *  POST /api/auto {group} runs the group's automatic pass; POST /api/fix {id, value?} applies the action of a failing
+ *  finding (the Slack token form) and runs its group again. Work is serialized: one doctor run or action at a time. */
 export function onboardServer(o: { token: string; deps: OnboardDeps; manifest?: string }): Server {
   let chain: Promise<unknown> = Promise.resolve();
   const serial = <T>(f: () => Promise<T>): Promise<T> => { const p = chain.then(f, f); chain = p.catch(() => undefined); return p; };
@@ -101,7 +129,7 @@ export function onboardServer(o: { token: string; deps: OnboardDeps; manifest?: 
     const url = new URL(req.url ?? "/", "http://loopback");
     if (req.method === "GET" && url.pathname === "/") { req.resume(); return send(200, "text/html; charset=utf-8", PAGE()); }
     const route = `${req.method} ${url.pathname}`;
-    if (!["GET /api/state", "POST /api/check", "POST /api/fix"].includes(route)) { req.resume(); return json(404, { error: "not found" }); }
+    if (!["GET /api/state", "POST /api/check", "POST /api/auto", "POST /api/fix"].includes(route)) { req.resume(); return json(404, { error: "not found" }); }
     const given = /^Bearer (.+)$/.exec(req.headers.authorization ?? "")?.[1] ?? "";
     if (!timingSafeEqual(digest(given), digest(o.token))) { req.resume(); return json(401, { error: "missing or wrong token: open the address govern onboard printed" }); }
 
@@ -120,6 +148,11 @@ export function onboardServer(o: { token: string; deps: OnboardDeps; manifest?: 
         let group: Group | undefined;
         try { group = check("request", body, CHECK).group; } catch (e) { return json(400, { error: (e as Error).message }); }
         return void serial(() => o.deps.check(group ? [group] : undefined)).then((f) => json(200, state(f)), fail500);
+      }
+      if (route === "POST /api/auto") {
+        let group: Group;
+        try { group = check("request", body, AUTO).group; } catch (e) { return json(400, { error: (e as Error).message }); }
+        return void serial(() => autoPass(o.deps, group)).then(({ applied, findings }) => json(200, { applied, ...state(findings) }), fail500);
       }
       let r: { id: string; value?: string };
       try { r = check("request", body, REQUEST); } catch (e) { return json(400, { error: (e as Error).message }); }

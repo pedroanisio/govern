@@ -107,6 +107,63 @@ test("a fix is refused for an unknown, passing or action-less finding, a forged 
   } finally { await s.close(); }
 });
 
+test("a step's automatic pass applies each action that takes no value once, then checks again; tokens and people's parts wait", async () => {
+  const fs = [F("services:x:a.service", "fail", { action: UNIT }), F("services:x:b.service", "fail", { action: { kind: "enable-unit", unit: "b.service" } }),
+    F("services:linger", "fail", { actor: "operator", fix: "ask for linger" }), F("slack:x:token", "fail", { actor: "operator", action: { kind: "slack-token", file: "/nope", variable: "V" } })];
+  const s = await serve(fs, (a) => {
+    if (a.kind === "enable-unit" && a.unit === UNIT.unit) { fs[0] = F("services:x:a.service", "ok"); return { ok: true, output: "started" }; }
+    return { ok: false, output: "unit not found" };
+  });
+  try {
+    const r = await s.call("/api/auto", { body: { group: "services" } });
+    assert.equal(r.status, 200, r.text);
+    assert.deepEqual(s.applied.map((x) => x.action), [UNIT, { kind: "enable-unit", unit: "b.service" }], "each once, the failed one not retried");
+    assert.deepEqual(r.json.applied, [{ id: "services:x:a.service", ok: true, output: "started" }, { id: "services:x:b.service", ok: false, output: "unit not found" }]);
+    assert.deepEqual(r.json.findings.map((f: Finding) => `${f.id}=${f.status}`), ["services:x:a.service=ok", "services:x:b.service=fail", "services:linger=fail"]);
+    assert.deepEqual(s.checked, [["services"], ["services"]]);
+    const slack = await s.call("/api/auto", { body: { group: "slack" } });
+    assert.deepEqual(slack.json.applied, [], "a token is never applied without the operator's value");
+    assert.equal(s.applied.length, 2);
+  } finally { await s.close(); }
+});
+
+test("the automatic pass applies what a fix reveals, within three rounds even when every fix reveals another", async () => {
+  const ext: Action = { kind: "enable-extension", workspace: "/w", extension: "slack" }, chmod: Action = { kind: "chmod-private", file: "/w/slack.env" };
+  const fs = [F("slack:x:enabled", "fail", { action: ext })];
+  const s = await serve(fs, (a) => {
+    if (a.kind === "enable-extension") fs.splice(0, 1, F("slack:x:config", "ok"), F("slack:x:token", "fail", { action: chmod }));
+    else fs[1] = F("slack:x:token", "ok");
+    return { ok: true, output: "done" };
+  });
+  try {
+    const r = await s.call("/api/auto", { body: { group: "slack" } });
+    assert.deepEqual(s.applied.map((x) => x.action.kind), ["enable-extension", "chmod-private"]);
+    assert.equal(r.json.ok, true);
+    assert.equal(s.checked.length, 3);
+  } finally { await s.close(); }
+  let n = 0;
+  const endless = [F("checks:x:0", "fail", { action: UNIT })];
+  const e = await serve(endless, () => { n++; endless.push(F(`checks:x:${n}`, "fail", { action: UNIT })); return { ok: true, output: "done" }; });
+  try {
+    const r = await e.call("/api/auto", { body: { group: "checks" } });
+    assert.equal(r.status, 200);
+    assert.equal(e.applied.length, 3, "one new action a round, three rounds, then it stops");
+    assert.equal(e.checked.length, 4);
+    assert.equal(r.json.ok, false);
+  } finally { await e.close(); }
+});
+
+test("the automatic pass needs the token and a known group", async () => {
+  const s = await serve([F("services:x:u.service", "fail", { action: UNIT })]);
+  try {
+    assert.equal((await s.call("/api/auto", { body: { group: "services" }, token: null })).status, 401);
+    assert.equal((await s.call("/api/auto", { body: { group: "nonsense" } })).status, 400);
+    assert.equal((await s.call("/api/auto", { body: {} })).status, 400);
+    assert.equal((await s.call("/api/auto", { body: { group: "services", id: "x" } })).status, 400);
+    assert.deepEqual(s.applied, []);
+  } finally { await s.close(); }
+});
+
 test("an action that throws is reported as not applied, and the group is checked again", async () => {
   const s = await serve([F("services:x:u.service", "fail", { action: UNIT })], () => { throw new Error("bus unreachable"); });
   try {

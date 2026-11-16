@@ -9,6 +9,15 @@ All notable changes to govern are documented here, following Keep a Changelog.
 
 ## [Unreleased]
 
+### Changed
+
+- `govern onboard` is a next-next-finish wizard. Entering a step runs its automatic pass (`POST /api/auto`): the server checks the group, applies every action its own probes attached that needs nothing from a person (at most 3 rounds, each action once), and checks again. Only what needs a person is left on the page (a login, an invite, the Slack token field), with Continue, Skip for now, and a Finish summary.
+
+### Fixed
+
+- `govern doctor`'s `govern:version` checks the govern the box runs (`$GOVERN_BIN`, else `govern` on PATH) against `govern.version`, not the copy running the checks; a checkout with a newer version no longer fails a box that runs the right release.
+- Findings carry the exact shell command in a separate `command` field; `fix` is the sentence for a person. The setup page's copy button copies only a command, never prose.
+
 ## [0.3.0] - 2026-11-15
 
 ### Added

@@ -19,8 +19,11 @@ function fakeBins(): string {
   // systemctl --user show ... -- UNIT: the properties in $FAKE_UNITS/UNIT, else not-found
   sh("systemctl", 'for a; do u="$a"; done\nif [ -f "$FAKE_UNITS/$u" ]; then cat "$FAKE_UNITS/$u"; else printf "LoadState=not-found\\nActiveState=inactive\\n"; fi');
   sh("loginctl", 'echo "${FAKE_LINGER:-yes}"');
+  // the box's installed govern (GOVERN_BIN): version --json prints $FAKE_GOVERN_JSON
+  sh("fake-govern", 'if [ -n "${FAKE_GOVERN_JSON+set}" ]; then printf "%s\\n" "$FAKE_GOVERN_JSON"; else echo \'{"name": "govern", "version": "0.2.0"}\'; fi');
   sh("docker", 'for a; do i="$a"; done\ncase " $FAKE_IMAGES " in *" $i "*) echo sha256:1;; *) echo "Error: No such image: $i" >&2; exit 1;; esac');
-  sh("fake-claude", 'case "$1" in --version) echo "2.1.0 (Claude Code)";; auth) echo "${FAKE_CLAUDE_STATUS-{\\"loggedIn\\": true, \\"authMethod\\": \\"claude.ai\\"}}";; esac');
+  // A JSON default inside ${VAR-…} would end at its first }, so each fake picks its default in a separate step.
+  sh("fake-claude", 'case "$1" in --version) echo "2.1.0 (Claude Code)";; auth) if [ -n "${FAKE_CLAUDE_STATUS+set}" ]; then printf "%s\\n" "$FAKE_CLAUDE_STATUS"; else echo \'{"loggedIn": true, "authMethod": "claude.ai"}\'; fi;; esac');
   sh("fake-codex", 'case "$1" in --version) echo "codex-cli 0.50.0";; login) [ "${FAKE_CODEX_LOGIN:-0}" = 0 ] && echo "Logged in using ChatGPT" || { echo "Not logged in" >&2; exit 1; };; esac');
   return d;
 }
@@ -35,7 +38,7 @@ function box(over: Record<string, string> = {}): { e: Env; bins: string; units: 
   writeFileSync(join(units, "govern-x-deliver.timer"), ACTIVE("timer"));
   const env = childEnv(e, {
     PATH: `${bins}:${process.env.PATH}`, FAKE_UNITS: units, FAKE_IMAGES: "govern-squad-flutter:1",
-    GOVERN_CLAUDE_BIN: join(bins, "fake-claude"), GOVERN_CODEX_BIN: join(bins, "fake-codex"), ...over,
+    GOVERN_CLAUDE_BIN: join(bins, "fake-claude"), GOVERN_CODEX_BIN: join(bins, "fake-codex"), GOVERN_BIN: join(bins, "fake-govern"), ...over,
   });
   return { e, bins, units, env };
 }
@@ -87,16 +90,34 @@ test("doctor --only takes known groups and refuses an unknown one (exit 2); a ba
 
 // ---------------------------------------------------------------- groups
 
-test("govern: the running version against the manifest's, and Node 24 or newer", async () => {
+test("govern: the box's installed govern (GOVERN_BIN) against the manifest's version, not the copy running the checks", async () => {
   const b = box();
-  const ok = await run(b, manifest(b.e), { only: ["govern"] });
-  assert.equal(one(ok, "govern:version").status, "ok");
+  const ok = await run(b, manifest(b.e, {}, { govern: { version: "0.2.0" } }), { only: ["govern"] });
+  const v = one(ok, "govern:version");
+  assert.equal(v.status, "ok", v.evidence);
+  assert.match(v.evidence, /fake-govern is 0\.2\.0/);
   assert.equal(one(ok, "govern:node").status, "ok");
-  const off = await run(b, manifest(b.e, {}, { govern: { version: "9.9.9" } }), { only: ["govern"] });
-  const v = one(off, "govern:version");
-  assert.equal(v.status, "fail");
-  assert.match(v.evidence, /runs \d+\.\d+\.\d+; the box wants 9\.9\.9/);
-  assert.equal(v.actor, "agent");
+  // 2026-11-15: a checkout at 0.3.0 served the page while the box's units ran the installed 0.2.0 the manifest wanted;
+  // the page said "runs 0.3.0; the box wants 0.2.0". The installed one decides; the running copy is only context.
+  const running = (JSON.parse(readFileSync(join(import.meta.dirname, "..", "package.json"), "utf8")) as { version: string }).version;
+  if (running !== "0.2.0") assert.match(v.evidence, new RegExp(`these checks run ${running.replaceAll(".", "\\.")} from`));
+
+  const off = one(await run(b, manifest(b.e, {}, { govern: { version: "9.9.9" } }), { only: ["govern"] }), "govern:version");
+  assert.equal(off.status, "fail");
+  assert.match(off.evidence, /is 0\.2\.0; the box wants 9\.9\.9/);
+  assert.match(off.fix ?? "", /govern_version=9\.9\.9.*or set govern\.version in the box manifest/);
+  assert.equal(off.command, undefined, "an install is no single command to copy");
+});
+
+test("govern: an installed govern that is missing or answers anything but its version JSON is no version", async () => {
+  for (const [over, want] of [[{ GOVERN_BIN: "/nonexistent/govern" }, /not found/], [{ FAKE_GOVERN_JSON: "govern 0.2.0" }, /did not print JSON/],
+    [{ FAKE_GOVERN_JSON: '{"name": "other", "version": "0.2.0"}' }, /did not print \{"name": "govern"/], [{ FAKE_GOVERN_JSON: '{"name": "govern", "version": "latest"}' }, /did not print/]] as const) {
+    const b = box(over);
+    const f = one(await run(b, manifest(b.e, {}, { govern: { version: "0.2.0" } }), { only: ["govern"] }), "govern:version");
+    assert.equal(f.status, "fail", JSON.stringify(over));
+    assert.match(f.evidence, want);
+    assert.equal(one(await run(b, manifest(b.e), { only: ["govern"] }), "govern:version").status, "skip", "no version wanted: nothing to fail");
+  }
 });
 
 test("engines: installed and logged in passes; a missing binary is the agent's, a logged-out engine the operator's", async () => {
@@ -107,11 +128,13 @@ test("engines: installed and logged in passes; a missing binary is the agent's, 
 
   const out = box({ FAKE_CLAUDE_STATUS: '{"loggedIn": false}', FAKE_CODEX_LOGIN: "1" });
   const bad = await run(out, manifest(out.e), { only: ["engines"] });
+  assert.equal(one(bad, "engines:claude:login").evidence, "not logged in", "read from the JSON, not a parse failure");
   for (const id of ["engines:claude:login", "engines:codex:login"]) {
     assert.equal(one(bad, id).status, "fail", id);
     assert.equal(one(bad, id).actor, "operator", id);
   }
-  assert.match(one(bad, "engines:claude:login").fix ?? "", /claude auth login|claude \/login/);
+  assert.equal(one(bad, "engines:claude:login").command, "claude auth login");
+  assert.equal(one(bad, "engines:codex:login").command, "codex login --device-auth");
 
   const gone = box({ GOVERN_CODEX_BIN: "/nonexistent/codex" });
   const g = await run(gone, manifest(gone.e), { only: ["engines"] });
@@ -148,7 +171,7 @@ test("workspaces: a missing folder, a broken config and a profile without a pass
   const p = one(w, "workspaces:x:profiles");
   assert.equal(p.status, "fail");
   assert.match(p.evidence, /sq-dev/);
-  assert.match(p.fix ?? "", /govern caps --check --all/);
+  assert.equal(p.command, `GOVERN_REPO=${c.e.root} govern caps --check --all`);
   assert.equal(p.actor, "agent");
 });
 
@@ -180,7 +203,8 @@ test("services: active units pass; a stopped service, a missing unit and a crash
   assert.equal(one(fs, "services:linger").status, "ok");
   for (const u of ["govern-x-dispatch.service", "govern-x-deliver.timer", "govern-x-oneshot.service"]) assert.equal(one(fs, `services:x:${u}`).status, "ok", u);
   for (const u of ["govern-x-stopped.service", "govern-x-missing.service", "govern-x-loop.service"]) assert.equal(one(fs, `services:x:${u}`).status, "fail", u);
-  assert.match(one(fs, "services:x:govern-x-stopped.service").fix ?? "", /systemctl --user enable --now govern-x-stopped\.service/);
+  assert.equal(one(fs, "services:x:govern-x-stopped.service").command, "systemctl --user enable --now govern-x-stopped.service");
+  assert.match(one(fs, "services:x:govern-x-loop.service").command ?? "", /^journalctl --user -u govern-x-loop\.service/);
   assert.match(one(fs, "services:x:govern-x-missing.service").evidence, /not found/);
 });
 
@@ -193,7 +217,7 @@ test("services: the workspace's own watch.user units are checked too; no linger 
   const linger = one(fs, "services:linger");
   assert.equal(linger.status, "fail");
   assert.equal(linger.actor, "operator");
-  assert.match(linger.fix ?? "", /loginctl enable-linger/);
+  assert.match(linger.command ?? "", /^sudo loginctl enable-linger \S+$/);
   const none = await run(b, manifest(b.e, { units: ["govern-x-dispatch.service"] }, { supervisor: "none" }), { only: ["services"] });
   assert.ok(none.length > 0 && none.every((f) => f.status === "skip"), JSON.stringify(none));
 });
@@ -262,7 +286,7 @@ test("slack: an env file others can read, a token of another team, a bot outside
   const fs = await run(b, manifest(b.e), { only: ["slack"], request: slackApi({ "auth.test": AUTH, "conversations.info": { ok: true, channel: { id: "C1", is_member: false } } }) });
   const token = one(fs, "slack:x:token");
   assert.equal(token.status, "fail");
-  assert.match(token.fix ?? "", /chmod 600/);
+  assert.equal(token.command, `chmod 600 ${join(b.e.root, "slack.env")}`);
   assert.equal(one(fs, "slack:x:auth").status, "ok", "a readable env file still holds a token Slack can be asked about");
   const other = await run(b, manifest(b.e), { only: ["slack"], request: slackApi({ "auth.test": { ...AUTH, team_id: "T9" } }) });
   assert.match(one(other, "slack:x:auth").evidence, /team T9.*slack\.team is T1/);
@@ -297,7 +321,7 @@ test("slack: a manifest that wants Slack for a workspace that does not enable it
   const b = box({ GOVERN_EXTENSIONS: "" });
   const want = await run(b, manifest(b.e, { slack: true }), { only: ["slack"] });
   assert.equal(one(want, "slack:x:enabled").status, "fail");
-  assert.match(one(want, "slack:x:enabled").fix ?? "", /govern ext enable slack/);
+  assert.equal(one(want, "slack:x:enabled").command, `GOVERN_REPO=${b.e.root} govern ext enable slack`);
   const not = await run(b, manifest(b.e), { only: ["slack"] });
   assert.deepEqual(not.map((f) => f.status), ["skip"]);
 });
@@ -307,12 +331,12 @@ test("slack: a manifest that wants Slack for a workspace that does not enable it
 test("the report counts each status, marks the operator's failures and shows each fix; --json is the findings and ok", () => {
   const fs: Finding[] = [
     { id: "govern:version", group: "govern", status: "ok", actor: "agent", evidence: "govern 0.2.0" },
-    { id: "engines:codex:login", group: "engines", status: "fail", actor: "operator", evidence: "not logged in", fix: "codex login" },
+    { id: "engines:codex:login", group: "engines", status: "fail", actor: "operator", evidence: "not logged in", fix: "Sign Codex in.", command: "codex login" },
     { id: "slack:x:listener", group: "slack", status: "skip", actor: "agent", evidence: "no slack.inbox" },
   ];
   const text = report(fs);
   assert.match(text, /^govern doctor: 1 ok, 1 failed \(1 for the operator\), 1 skipped$/m);
-  assert.match(text, /✖ engines:codex:login\s+not logged in\n\s+fix \(operator\): codex login/);
+  assert.match(text, /✖ engines:codex:login\s+not logged in\n\s+fix \(operator\): Sign Codex in\.\n\s+\$ codex login$/m);
 });
 
 test("govern doctor: exit 1 with a failure and 0 when everything passes; --json prints the findings", () => {
