@@ -348,7 +348,7 @@
 #     - tools/govern/SLACK.md (extension slack)
 #     - tools/govern/BUSINESS.md (extension business) - tools/govern/LIFECYCLE.md (extension business)
 # SEE ALSO
-#     st-man - tools/govern/SKILL.md (govern manual) - tools/govern/REFERENCE.md (govern manual --full) - tools/govern/processes/video/MANUAL.md (govern manual video)
+#     tools/govern/SKILL.md (govern manual) - tools/govern/REFERENCE.md (govern manual --full) - tools/govern/processes/video/MANUAL.md (govern manual video)
 #     - tools/govern/processes/infographic/MANUAL.md (govern manual infographic) - tools/govern/PURPOSE.md
 #     - tools/govern/PORTABILITY.md - tools/govern/BOX.md
 # MANPAGE <<<
@@ -376,8 +376,9 @@ ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 case "${1-}" in
   -h|--help)
     if [ -x "$ROOT/bin/st-man" ]; then exec "$ROOT/bin/st-man" govern; fi
-    require_node
-    exec node --disable-warning=ExperimentalWarning "$ROOT/tools/govern/govern.ts" help
+    # Without st-man, print the MANPAGE block above: no Node needed.
+    sed -n '/^# MANPAGE >>>$/,/^# MANPAGE <<<$/{/^# MANPAGE/d;s/^# \{0,1\}//;p;}' "$0"
+    exit 0
     ;;
 esac
 exec node --disable-warning=ExperimentalWarning "$ROOT/tools/govern/govern.ts" "$@"
