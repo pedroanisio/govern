@@ -9,6 +9,18 @@ All notable changes to govern are documented here, following Keep a Changelog.
 
 ## [Unreleased]
 
+## [0.3.9] - 2026-11-18
+
+### Added
+
+- Tayet (tayet-agent 0.3.0, Tayet server 0.1.2): `slack.forms` works on Tayet (Send back asks why; an editable option opens its fields), and `slack.transport` `"http"` takes the clicks the sidecar posts with `--slack-actions-url`, signed with its local token (`SLACK_SIGNING_SECRET`). A card carries up to 25 buttons, so a decision with up to 25 choices goes out on one card. The config no longer refuses either setting. `govern doctor` checks, for Tayet over HTTP, that the signing secret is the sidecar's local token.
+
+### Fixed
+
+- A click delivered twice no longer replaces its card with "Refused: already received". The Tayet sidecar redelivers a click whose ack was late; the repeat still decides nothing, and now leaves the card the first delivery decided as it is.
+- A signed click sent again with a new signature (a retry after a late ack) is refused as a repeat: govern also remembers a click by its message, person, button and time, as it did for Socket Mode.
+- On Tayet, a click that opens a form marks its card as answered: the card closed on that click, so notify posts a new one if the form is never sent.
+
 ## [0.3.8] - 2026-11-16
 
 ### Added

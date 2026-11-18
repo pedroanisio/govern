@@ -5,7 +5,7 @@ disclaimer:
     Any statement or premise not backed by a real logical definition
     or verifiable reference may be invalid, erroneous, or a hallucination.
   generated_by: "Claude Opus 5.5 via Claude Code"
-  date: "2026-11-16"
+  date: "2026-11-18"
 ---
 
 # govern on Tayet
@@ -15,8 +15,13 @@ a Tayet workspace instead of Slack.
 
 [Tayet](https://tayet.app/) is a self-hosted team chat built on Matrix, where agents are members. An agent runs as a
 sidecar (`npx tayet-agent`) on its operator's machine. The sidecar serves a local API on loopback that speaks part of
-Slack's Web API and Socket Mode. govern talks to that API the way it talks to Slack, with the differences below. They were
-checked against the sidecar's source at release v0.1.0 (`tayethq/tayet`, `sidecar/src/api/slack/`).
+Slack's Web API and Socket Mode, and can post clicks as signed HTTP requests. govern talks to that API the way it talks to
+Slack, with the differences below. They were checked against the sidecar's source at release tayet-agent-v0.3.0
+(`tayethq/tayet`, `sidecar/src/api/slack/`).
+
+govern expects **tayet-agent 0.3.0 or later and a Tayet server at 0.1.2 or later**. An older sidecar refuses a card with
+more than 3 buttons, opens no form and posts no click over HTTP; an older server shows such a card, or a form, as not
+displayable.
 
 ## Setup
 
@@ -30,17 +35,30 @@ checked against the sidecar's source at release v0.1.0 (`tayethq/tayet`, `sideca
    ```json
    "slack": {
      "team": "T…", "channel": "C…", "envFile": "secrets/tayet.env",
-     "server": "tayet", "api": "http://127.0.0.1:7878/slack/api", "transport": "socket"
+     "server": "tayet", "api": "http://127.0.0.1:7878/slack/api", "transport": "socket", "forms": true
    }
    ```
 
    `team` is the `team_id` that `auth.test` answers through the sidecar. `channel` is a conversation the agent is in.
    Process people map to Tayet's `U…` ids, as with Slack.
-3. Put the contents of `<store>/local.token` in the dotenv file `slack.envFile` names (mode 600) twice: as `SLACK_BOT_TOKEN`,
-   used for the Web API, and as `SLACK_APP_TOKEN`, used for Socket Mode. The sidecar uses one token for both.
-4. Run `govern slack serve`. It connects to the sidecar over Socket Mode. Nothing listens on a port and no tunnel is needed.
-   Run `govern slack notify --loop` and `govern slack listen --loop` as usual. `govern doctor` checks the token, the team,
-   the channel and the app token.
+3. Put the contents of `<store>/local.token` in the dotenv file `slack.envFile` names (mode 600): as `SLACK_BOT_TOKEN`,
+   used for the Web API, as `SLACK_APP_TOKEN`, used for Socket Mode, and, for clicks over HTTP, as `SLACK_SIGNING_SECRET`.
+   The sidecar uses one token for all three.
+4. Run `govern slack serve`. With `"transport": "socket"` it connects to the sidecar over Socket Mode, and nothing listens
+   on a port. Run `govern slack notify --loop` and `govern slack listen --loop` as usual. `govern doctor` checks the token,
+   the team, the channel, and the app token or the signing secret.
+
+### Clicks over HTTP
+
+With `"transport": "http"`, `govern slack serve` listens on `http://127.0.0.1:<port>/slack/actions` (`--port`, default
+5003), as for Slack. Start the sidecar with `--slack-actions-url http://127.0.0.1:<port>/slack/actions`: it then posts the
+clicks and form submissions there, signed with its local token, instead of sending them over Socket Mode. Events and
+slash commands stay on Socket Mode, so `govern slack chat` is unchanged.
+
+A signed click is a stronger record than a Socket Mode one: the ledger keeps the signature, which anyone holding the local
+token can check again ([What a click proves](#what-a-click-proves)). The sidecar sends a click again, signed anew, when
+govern does not answer within 3 seconds; govern also remembers each click by its message, person, button and time, so the
+second delivery decides nothing and does not touch the card.
 
 `govern slack chat` ([SLACK.md](SLACK.md#chat-govern-slack-chat)) works on Tayet unchanged: the sidecar sends every
 message of a conversation the agent is in as an event, to every open connection, so `serve` and `chat` run side by side
@@ -50,11 +68,11 @@ on the same token. Tayet has no typing indicator; the 👀 reaction says a quest
 
 | | Slack | Tayet |
 |---|---|---|
-| Clicks | Signed HTTP requests (`transport: "http"`), or Socket Mode | Socket Mode only |
-| Buttons per message | 25 | 3. A decision with more choices is sent as several cards |
+| Clicks | Signed HTTP requests (`transport: "http"`), or Socket Mode | The same. HTTP needs the sidecar's `--slack-actions-url`; the signing secret is the local token |
+| Buttons per message | 25 | 25 on one card. A decision with more choices is sent as several cards |
 | A clicked message | Keeps its buttons until govern edits it | Closes on the first click, whoever clicked. An edit cannot add buttons back |
 | Message text | A fallback for the blocks | The card's request. govern sends the blocks' text as `text` |
-| Forms (`slack.forms`) | Supported | Not available (no `views.open`): the config refuses them |
+| Forms (`slack.forms`) | Supported | Supported: Send back asks why, and an editable option opens its fields. The form's values are messages of the conversation, readable by its members |
 | Ephemeral replies | A refusal is shown to the clicker only | Not available: a refusal replaces the card for everyone |
 | Response and upload URLs | `hooks.slack.com`, `files.slack.com` (HTTPS) | On the sidecar's own address (`slack.api`'s origin) |
 | Upload body | Raw bytes | One multipart file field |
@@ -66,7 +84,10 @@ A card closes on its first click, so `slack serve` marks every clicked card unde
 `notify` posts a new card for anything the closed one asked that still waits on someone:
 
 - a policy gate short of its quorum (one approval recorded, the next approver needs a card);
-- a refused click (a person not in the process, or a case that changed), which would otherwise leave nobody a button.
+- a refused click (a person not in the process, or a case that changed), which would otherwise leave nobody a button;
+- a click that opened a form (`slack.forms`). The click closed the card, and only the form's submission decides: if the
+  person closes the form without sending it, the new card is where the gate can still be decided. The new card can appear
+  while the form is still open.
 
 The old card is edited to say that a newer one follows. A mark that no posted record claims is forgotten after a day.
 
@@ -92,4 +113,5 @@ govern was not connected.
 - `slack listen` polls `conversations.history` and `conversations.replies`. Tayet's ids and `ts` values have Slack's shape,
   so the inbox works unchanged.
 - `conversations.list` and `users.list` only return what the agent can see. govern uses neither.
-- The sidecar's Slack layer is version 0.1.0. Run `govern doctor` after upgrading it.
+- The sidecar's Slack layer was checked at tayet-agent 0.3.0. Run `govern doctor` after upgrading it.
+- A form's `trigger_id` is valid for 30 seconds and opens one form. govern opens the form while it answers the click.

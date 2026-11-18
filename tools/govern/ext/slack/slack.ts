@@ -40,6 +40,8 @@ export const ACTION_ID = "govern.decide";
 
 /** A request whose signature, timestamp or freshness does not prove it came from Slack (401). */
 export class Unauthorized extends GovernError {}
+/** A request, or a click, already received (401). Its response URL is left alone: the first delivery answered it. */
+export class Replayed extends Unauthorized {}
 
 /** What a decision applies to: a gate of the lane, or the human task of one of its stages. */
 export type Target = { gate: string } | { task: string };
@@ -141,7 +143,7 @@ function remember(signature: string, now: number, ttl = SEEN_SECONDS): void {
     }
     for (const [k, until] of Object.entries(seen)) if (until < now) delete seen[k];
     const key = createHash("sha256").update(signature).digest("hex");
-    if (Object.hasOwn(seen, key)) throw new Unauthorized("this request was already received (replayed)");
+    if (Object.hasOwn(seen, key)) throw new Replayed("this request was already received (replayed)");
     seen[key] = now + ttl;
     const tmp = `${f}.tmp-${process.pid}`;
     writeFileSync(tmp, JSON.stringify(seen) + "\n", { mode: 0o600 });
@@ -368,17 +370,19 @@ type Proof = { kind: "signed"; secret: string; timestamp: string | undefined; si
  *  first connection that opens, however late, so the clock cannot refuse a repeat as it does a signed request's. */
 export const SOCKET_SEEN_SECONDS = 7 * 24 * 3600;
 
-/** What makes one Socket Mode click unique: the clicked message, the person, the button and the click's time (a block
- *  action), or the envelope (anything else). A redelivered click has the same identity and is refused as a repeat. */
-function clickIdentity(raw: unknown, envelope: string): string {
+/** What makes one click unique: the clicked message, the person, the button and the click's time (a block action). A
+ *  redelivered click has the same identity, whatever envelope or signature carries it. */
+function clickKey(raw: unknown): string | undefined {
   if (record(raw) && raw.type === "block_actions" && Array.isArray(raw.actions) && record(raw.actions[0])) {
     const container = record(raw.container) ? raw.container : {}, act = raw.actions[0];
     const parts = [record(raw.channel) ? raw.channel.id : container.channel_id, container.message_ts, record(raw.user) ? raw.user.id : undefined,
       act.action_id, act.action_ts];
     if (parts.every((x) => typeof x === "string" && x)) return `socket:click:${parts.join(":")}`;
   }
-  return `socket:envelope:${envelope}`;
+  return undefined;
 }
+/** A Socket Mode delivery's identity: its click's, or the envelope (anything else). A repeat is refused. */
+const clickIdentity = (raw: unknown, envelope: string): string => clickKey(raw) ?? `socket:envelope:${envelope}`;
 
 /** The message a click closed on a single-answer server: its channel and ts, when the payload says. */
 function clickedMessage(raw: unknown): { channel: string; ts: string } | undefined {
@@ -414,7 +418,14 @@ async function interact(body: Buffer, proof: Proof, o: InteractionOptions): Prom
       if (e instanceof SyntaxError) throw new BadRequest("the payload is not JSON");
       throw e;
     }
-    const admit = () => proof.kind === "signed" ? remember(proof.signature!, at) : remember(clickIdentity(raw, proof.envelope), at, SOCKET_SEEN_SECONDS);
+    // A signed request is remembered by its signature, and a click also by its identity: a server that sends a click
+    // again after a late ack signs it anew (a Tayet sidecar with --slack-actions-url, Slack's retries).
+    const admit = () => {
+      if (proof.kind === "socket") return remember(clickIdentity(raw, proof.envelope), at, SOCKET_SEEN_SECONDS);
+      remember(proof.signature!, at);
+      const key = clickKey(raw);
+      if (key) remember(key, at, SOCKET_SEEN_SECONDS);
+    };
     const source = (team: string, user: string): SlackSource => proof.kind === "signed"
       ? { kind: "slack", team, user, timestamp: proof.timestamp!, signedBody: body.toString("utf8"), signature: proof.signature! }
       : { kind: "slack-socket", team, user, envelope: proof.envelope, payload: JSON.stringify(raw) };
@@ -449,17 +460,21 @@ async function interact(body: Buffer, proof: Proof, o: InteractionOptions): Prom
       const a = parseAction(body);
       admit();
       if (a.form) {
+        // The form decides; the click only opens it. On a single-answer server the click closed the card all the same,
+        // so it is marked below: a form left unsent gets a new card from notify.
         result = { status: 200, value: { ok: true, text: await openForm(a, raw as Record<string, unknown>, url, o.call) } };
         url = undefined;
-        return result;
+      } else {
+        const line = perform(a, source(a.team, a.user));
+        result = { status: 200, value: { ok: true, text: line } };
+        update = () => decided(body, a, line, server.singleAnswer);
       }
-      const line = perform(a, source(a.team, a.user));
-      result = { status: 200, value: { ok: true, text: line } };
-      update = () => decided(body, a, line, server.singleAnswer);
     }
   } catch (e) {
     const status = STATUS(e), error = status === 500 ? "decision failed" : (e as Error).message;
     result = { status, value: { ok: false, error } };
+    // A repeat changes nothing, and the first delivery already answered through the response URL.
+    if (e instanceof Replayed) url = undefined;
     if (status === 500) process.stderr.write(`slack: ${nowIso()} decision failed; inspect the lane ledger\n`);
     if (form !== undefined) {
       // Slack shows a form's errors only on a 200 answer naming an input.

@@ -103,6 +103,13 @@ export async function doctor(t: DoctorTarget): Promise<Finding[]> {
     else add("socket", "fail", "slack.transport is \"socket\" but SLACK_APP_TOKEN is not set", { actor: "operator",
       fix: server.kind === "tayet" ? `Put the sidecar's local token in ${cfg.envFile ?? "a file named by slack.envFile"} as SLACK_APP_TOKEN (the same value as ${variable}).`
         : `Put the app-level token (xapp-…, scope connections:write) in ${cfg.envFile ?? "a file named by slack.envFile"} as SLACK_APP_TOKEN.` });
+  } else if (server.kind === "tayet") {
+    // Signed HTTP clicks from a Tayet sidecar (--slack-actions-url): its local token is the signing secret.
+    const signing = secret("SLACK_SIGNING_SECRET", process.env.SLACK_SIGNING_SECRET, cfg.envFile);
+    const fix = `Put the sidecar's local token in ${cfg.envFile ?? "a file named by slack.envFile"} as SLACK_SIGNING_SECRET (the same value as ${variable}), and start the sidecar with --slack-actions-url http://127.0.0.1:<port>/slack/actions, the port slack serve listens on.`;
+    if (!signing) add("http", "fail", "slack.transport is \"http\" but SLACK_SIGNING_SECRET is not set", { actor: "operator", fix });
+    else if (signing !== token) add("http", "fail", `SLACK_SIGNING_SECRET is not the sidecar's local token (${variable}): every click would be refused`, { actor: "operator", fix });
+    else add("http", "ok", `the sidecar's clicks reach slack serve as signed requests (the sidecar needs --slack-actions-url)`);
   }
 
   // The listener: it writes heartbeat.json in the inbox after each successful poll.

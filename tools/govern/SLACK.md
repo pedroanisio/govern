@@ -46,7 +46,8 @@ not changed since the button was made.
    itself. Socket Mode payloads carry no signature, so a click there is proven by the connection, not by the request; see
    [Socket Mode](#socket-mode).
 
-   A [Tayet](TAYET.md) workspace works the same way: `"server": "tayet"` and its sidecar's `"api"`, always over Socket Mode.
+   A [Tayet](TAYET.md) workspace works the same way: `"server": "tayet"` and its sidecar's `"api"`, over Socket Mode or,
+   with the sidecar's `--slack-actions-url`, over signed HTTP.
 
 4. A Slack app has one Interactivity Request URL. When lanes of other workspaces post buttons through the same app (each
    runs its own `govern slack notify`), list those workspaces in the serving workspace's `slack.serveRepos`, relative to

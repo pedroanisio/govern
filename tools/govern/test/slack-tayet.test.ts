@@ -1,23 +1,24 @@
-// Tayet (TAYET.md): a Tayet agent's sidecar speaks part of Slack's Web API and Socket Mode on loopback. Clicks arrive over
-// Socket Mode (socket.ts) and are decided as signed requests are; a card closes on its first click, carries at most three
-// buttons and reads `text` as its request (server.ts), so notify splits, reposts and sends the blocks' text. The payloads
-// here follow the sidecar's own code (tayethq/tayet v0.1.0, sidecar/src/api/slack/interactive.ts).
+// Tayet (TAYET.md): a Tayet agent's sidecar speaks part of Slack's Web API and Socket Mode on loopback, and with
+// --slack-actions-url posts clicks as signed HTTP requests. Clicks are decided as signed requests are; a card closes on its
+// first click and reads `text` as its request (server.ts), so notify reposts and sends the blocks' text. The payloads here
+// follow the sidecar's own code (tayethq/tayet tayet-agent-v0.3.0, sidecar/src/api/slack/).
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createServer, type Server } from "node:http";
-import { createHash } from "node:crypto";
+import { createHash, createHmac } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { userInfo } from "node:os";
 import type { Duplex } from "node:stream";
 import { makeEnv, childEnv, govern, setConfig, write, tempDir, jsonl, type Env } from "./helpers.ts";
 import { create, load } from "../lib/project.ts";
-import { decisionValue, handleSocketInteraction } from "../ext/slack/slack.ts";
+import { decisionValue, handleInteraction, handleSocketInteraction } from "../ext/slack/slack.ts";
 import { notify } from "../ext/slack/notify.ts";
 import { serverOf, allowedUrl, blocksText } from "../ext/slack/server.ts";
 import { answered, markAnswered } from "../ext/slack/answered.ts";
 import { runSocket, socketUrl } from "../ext/slack/socket.ts";
 import { uploadFile, type Call } from "../ext/slack/channel.ts";
+import { slackConfig } from "../lib/workspace.ts";
 
 const SIDECAR = "http://127.0.0.1:7878/slack/api";
 const TAYET = serverOf({ server: "tayet", api: SIDECAR }, {});
@@ -74,8 +75,8 @@ const responses = () => {
   return { sent, request };
 };
 
-test("the server profile: Tayet takes three buttons, closes a card on its first click and talks over Socket Mode", () => {
-  assert.deepEqual(TAYET, { kind: "tayet", api: SIDECAR, maxButtons: 3, singleAnswer: true, socketOnly: true });
+test("the server profile: Tayet takes 25 buttons on a card and closes it on its first click", () => {
+  assert.deepEqual(TAYET, { kind: "tayet", api: SIDECAR, maxButtons: 25, singleAnswer: true });
   assert.equal(serverOf(undefined, {}).api, "https://slack.com/api");
   assert.equal(serverOf({ server: "tayet", api: SIDECAR }, { GOVERN_SLACK_API: "http://127.0.0.1:9/x" }).api, "http://127.0.0.1:9/x", "the environment wins");
   // A URL Slack hands out is Slack's own host over https, or on the configured non-Slack API's own origin; nothing else.
@@ -88,11 +89,14 @@ test("the server profile: Tayet takes three buttons, closes a card on its first 
     { type: "context", elements: [{ type: "mrkdwn", text: "b" }] }]), "a\n\nb");
 });
 
-test("the config refuses Tayet with Slack forms or without Socket Mode, and an API that is not an http(s) URL", () => {
+test("the config takes Tayet with forms and with HTTP clicks, and refuses an API that is not an http(s) URL", () => {
+  for (const slack of [{ server: "tayet", transport: "socket", forms: true }, { server: "tayet", transport: "http", forms: true }, { server: "tayet" }] as const) {
+    const e = makeEnv("slack-tayet-config-ok"), before = process.env;
+    setConfig(e, { slack: { team: "T0TEAM", channel: "C0SUP", ...slack } });
+    process.env = childEnv(e);
+    try { assert.deepEqual({ ...slackConfig() }, { team: "T0TEAM", channel: "C0SUP", ...slack }); } finally { process.env = before; }
+  }
   for (const [slack, why] of [
-    [{ server: "tayet", transport: "socket", forms: true }, /slack\.forms: must be off/],
-    [{ server: "tayet" }, /slack\.transport: must be "socket"/],
-    [{ server: "tayet", transport: "http" }, /slack\.transport: must be "socket"/],
     [{ api: "ftp://127.0.0.1/x" }, /slack\.api: must be an http/],
     [{ server: "mattermost" }, /slack\.server/],
   ] as const) {
@@ -121,6 +125,7 @@ test("a Socket Mode click is recorded with its envelope as the source; the card'
   const again = await handleSocketInteraction(click(value), "E2", { server: TAYET, request });
   assert.equal(again.status, 401); assert.match(String(again.value.error), /already received/);
   assert.equal(ledger(e).filter((x) => x.kind === "approve").length, 1);
+  assert.equal(sent.length, 1, "a repeat leaves the decided card alone: no refusal replaces it");
 }));
 
 test("a refused click on a Tayet card replaces the closed card with the reason; nothing is recorded", async () => scenario(async (e) => {
@@ -189,7 +194,7 @@ test("notify on Tayet: the card's text is the whole message, and a card a click 
   });
 }));
 
-test("notify on Tayet: five choices go out as two cards of at most three buttons, and both close when the gate is decided", async () => scenario(async (e) => {
+test("notify on Tayet: five choices go out on one card, which closes when the gate is decided", async () => scenario(async (e) => {
   // Lane t2 starts at the pick stage: its gate has four options and Send back.
   write(join(e.root, "PALS-Notes/processes/choices.json"), JSON.stringify({ ...PROCESS, name: "choices", stages: PROCESS.stages.slice(1), gates: PROCESS.gates.slice(1) }));
   create("t2", { process: "choices", title: "Ticket two" });
@@ -199,21 +204,76 @@ test("notify on Tayet: five choices go out as two cards of at most three buttons
     const r = await notify({ api, server, token: "local", channel: "C0SUP", lanes: ["t2"] });
     assert.deepEqual(r.failed, []);
     const posts = calls.filter((c) => c.method === "chat.postMessage");
-    assert.deepEqual(posts.map((c) => actionsOf(c.body).length), [3, 2]);
-    assert.match(String(posts[1]!.body.text), /more choices \(2 of 2\)/);
-    // Gil picks option 4, on the second card.
+    assert.deepEqual(posts.map((c) => actionsOf(c.body).length), [5]);
+    // Gil picks option 4.
     const { request } = responses();
     const v = decisionValue(load("t2"), { gate: "choose" }, "approve", { final: "D" });
-    const c = await handleSocketInteraction({ ...click(v, { user: "U0GIL", label: "Option 4", ts: "1793000000.000002", responseUrl: `${new URL(api).origin}/slack/response/y` }) }, "E9", { server, request });
+    const c = await handleSocketInteraction({ ...click(v, { user: "U0GIL", label: "Option 4", ts: "1793000000.000001", responseUrl: `${new URL(api).origin}/slack/response/y` }) }, "E9", { server, request });
     assert.equal(c.status, 200, JSON.stringify(c.value));
     assert.equal(load("t2").data?.["final"], "D");
     calls.length = 0;
     const done = await notify({ api, server, token: "local", channel: "C0SUP", lanes: ["t2"] });
     assert.deepEqual(done.closed, ["t2:gate:choose"]);
-    assert.deepEqual(calls.filter((x) => x.method === "chat.update").map((x) => x.body.ts).sort(), ["1793000000.000001", "1793000000.000002"]);
+    assert.deepEqual(calls.filter((x) => x.method === "chat.update").map((x) => x.body.ts), ["1793000000.000001"]);
     assert.equal(answered().size, 0);
   });
 }));
+
+// ---------------------------------------------------------------- Clicks over HTTP and forms (tayet-agent 0.3)
+
+/** The local token: the sidecar's bearer token and, with --slack-actions-url, its signing secret. */
+const LOCAL = "local-token-of-the-sidecar-0123456789";
+/** A click as the sidecar POSTs it with --slack-actions-url: form-encoded `payload`, signed as Slack signs. */
+function signed(payload: unknown, at: number): { body: Buffer; ts: string; sig: string } {
+  const body = new URLSearchParams({ payload: JSON.stringify(payload) }).toString(), ts = String(at);
+  return { body: Buffer.from(body), ts, sig: "v0=" + createHmac("sha256", LOCAL).update(`v0:${ts}:${body}`).digest("hex") };
+}
+
+test("a signed HTTP click from the sidecar is recorded with its signature; its retry, signed anew, decides nothing and leaves the card alone", async () => scenario(async (e) => {
+  const { sent, request } = responses();
+  const value = decisionValue(load("t1"), { gate: "go" }, "approve"), at = Math.floor(Date.now() / 1000);
+  const first = signed(click(value), at);
+  const r = await handleInteraction(LOCAL, first.body, first.ts, first.sig, { server: TAYET, request });
+  assert.equal(r.status, 200, JSON.stringify(r.value));
+  const vote = ledger(e).find((x) => x.kind === "approve" && x.gate === "go");
+  assert.equal(vote?.source.kind, "slack"); assert.equal(vote?.source.signature, first.sig);
+  assert.equal(sent.length, 1); assert.ok(answered().has(`C0SUP:${CARD_TS}`));
+  // No ack within 3 s: the sidecar sends the same click again, with a new timestamp and signature.
+  const retry = signed(click(value), at + 1);
+  const again = await handleInteraction(LOCAL, retry.body, retry.ts, retry.sig, { server: TAYET, request });
+  assert.equal(again.status, 401); assert.match(String(again.value.error), /already received/);
+  assert.equal(ledger(e).filter((x) => x.kind === "approve").length, 1);
+  assert.equal(sent.length, 1, "the retry posts no refusal over the decided card");
+  // A request signed with anything but the local token is refused before it is read.
+  const forged = signed(click(value, { at: "1793000002.000000" }), at);
+  const f = await handleInteraction("another-secret-of-32-characters!", forged.body, forged.ts, forged.sig, { server: TAYET, request });
+  assert.equal(f.status, 401); assert.equal(sent.length, 1);
+}));
+
+test("forms on Tayet: Send back opens the reason form and marks the closed card; the submission decides and edits the card", async () => scenario(async (e) => {
+  const { sent, request } = responses();
+  const opened: Record<string, unknown>[] = [];
+  const call = (async (method: string, body: Record<string, unknown>) => { assert.equal(method, "views.open"); opened.push(body); return { ok: true }; }) as Call;
+  const value = decisionValue(load("t1"), { gate: "go" }, "reject", undefined, "reason");
+  const r = await handleSocketInteraction(click(value, { label: "Send back" }), "E1", { server: TAYET, request, call });
+  assert.equal(r.status, 200, JSON.stringify(r.value)); assert.match(String(r.value.text), /reason form opened for ana/);
+  assert.equal(opened.length, 1); assert.equal(opened[0]!.trigger_id, "0".repeat(32));
+  assert.equal(sent.length, 0, "the click only opens the form");
+  assert.ok(answered().has(`C0SUP:${CARD_TS}`), "the card the click closed is marked: a form left unsent gets a new card");
+  assert.equal(ledger(e).filter((x) => x.kind === "reject").length, 0);
+  // The person sends the form: a view_submission over the same connection (or POSTed, with --slack-actions-url).
+  const view = opened[0]!.view as { callback_id: string; private_metadata: string };
+  const submission = { type: "view_submission", token: "", team: { id: "T0TEAM", domain: "" }, user: { id: "U0ANA", name: "Ana", team_id: "T0TEAM" },
+    api_app_id: "B0AGENT", response_urls: [],
+    view: { id: "V1", callback_id: view.callback_id, private_metadata: view.private_metadata,
+      state: { values: { reason: { text: { type: "plain_text_input", value: "the totals do not match" } } } } } };
+  const s = await handleSocketInteraction(submission, "E2", { server: TAYET, request, call });
+  assert.equal(s.status, 200, JSON.stringify(s.value)); assert.deepEqual(s.reply, { response_action: "clear" });
+  const reject = ledger(e).find((x) => x.kind === "reject" && x.gate === "go");
+  assert.ok(reject, "the submission records the rejection"); assert.match(JSON.stringify(reject), /the totals do not match/);
+  assert.equal(sent.length, 1); assert.equal(sent[0]!.url, "http://127.0.0.1:7878/slack/response/" + "a".repeat(64));
+  assert.ok(!(sent[0]!.body.blocks as { type: string }[]).some((b) => b.type === "actions"), "the closed card's edit carries no buttons");
+}, { forms: true }));
 
 // ---------------------------------------------------------------- Socket Mode on the wire
 

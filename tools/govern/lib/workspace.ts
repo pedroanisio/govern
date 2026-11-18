@@ -62,15 +62,18 @@ export interface WorkspaceConfig {
     triggers?: Record<string, { unit: string; minIntervalSec?: number }>;
     /** One card per case in the channel, updated in place, with what the case waits on and its alerts in its thread. */
     threads?: boolean;
-    /** Send back asks for a reason and editable gate options get an Edit button, both as Slack forms (serve needs the bot token). */
+    /** Send back asks for a reason and editable gate options get an Edit button, both as Slack forms (serve needs the bot
+     *  token). Tayet has them from tayet-agent 0.3 with a Tayet server at 0.1.2 or later. */
     forms?: boolean;
     /** The Slack-compatible server (ext/slack/server.ts): "slack" (default) or "tayet", a Tayet agent's sidecar (TAYET.md). */
     server?: "slack" | "tayet";
     /** The Web API base (default https://slack.com/api; GOVERN_SLACK_API overrides it). A Tayet sidecar's is
      *  http://127.0.0.1:7878/slack/api. */
     api?: string;
-    /** How `slack serve` receives clicks: "http" (default; Slack posts signed requests to /slack/actions) or "socket"
-     *  (Socket Mode: serve opens the connection, with the app-level token SLACK_APP_TOKEN). Tayet needs "socket". */
+    /** How `slack serve` receives clicks: "http" (default; the server posts signed requests to /slack/actions) or "socket"
+     *  (Socket Mode: serve opens the connection, with the app-level token SLACK_APP_TOKEN). On Tayet, "http" needs the
+     *  sidecar started with --slack-actions-url http://127.0.0.1:<port>/slack/actions, and its local token is the signing
+     *  secret (TAYET.md). */
     transport?: "http" | "socket";
     /** `govern slack chat` (ext/slack/chat.ts): the people whose messages in `channel` are turns of a conversation, and the
      *  profile (default codex-read) or conversation adapter that answers; the reply is posted without a Publish click.
@@ -105,16 +108,9 @@ const CONFIG = obj({}, {
   projects: str, queue: str, processes: str, workflow: str, tuningLog: str, packages: str, prompts: str, paths: record(str),
   baseline: obj({ mainMedianCtx: posInt, subagentMedianCtx: posInt, source: str }),
   capabilities: str, resources: resourcesShape, allowances: (v: unknown) => v, state: str, decide: obj({}, { shadow: bool, envFile: str }),
-  slack: (v: unknown, p: string) => slackServerRules(SLACK(v, p), p),
+  slack: (v: unknown, p: string) => SLACK(v, p),
   conversationAdapters: record(obj({argv: arr(str, {nonEmpty: true})})),
 });
-
-/** What slack.server allows of the other slack settings: a Tayet sidecar has no forms and delivers clicks over Socket Mode only. */
-function slackServerRules<T extends { server?: string; forms?: boolean; transport?: string }>(s: T, p: string): T {
-  if (s.server === "tayet" && s.forms) reject(`${p}.forms`, "must be off with slack.server \"tayet\": a Tayet sidecar has no Slack forms (views.open)");
-  if (s.server === "tayet" && s.transport !== "socket") reject(`${p}.transport`, "must be \"socket\" with slack.server \"tayet\": a Tayet sidecar delivers clicks over Socket Mode only");
-  return s;
-}
 
 /** An http(s) URL with no credentials or fragment. */
 const httpUrl: Shape<string> = (v, p) => {

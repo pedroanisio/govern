@@ -16,8 +16,10 @@ DESCRIPTION
     slack serve takes Slack's interactivity requests on loopback (POST /slack/actions; put an HTTPS proxy in front for
     Slack to reach it), or, with slack.transport "socket", opens a Socket Mode connection with SLACK_APP_TOKEN and takes
     clicks there (no port, no signature: a repeated click is refused by its message, person, button and time). slack.server
-    "tayet" with slack.api pointed at a Tayet agent's sidecar talks to Tayet instead (TAYET.md): at most three buttons a
-    card, a card closes on its first click and notify posts a new one while the decision still waits. A request counts only when its X-Slack-Signature is the app's signing secret's HMAC of the body,
+    "tayet" with slack.api pointed at a Tayet agent's sidecar talks to Tayet instead (TAYET.md; tayet-agent 0.3+): a card
+    closes on its first click and notify posts a new one while the decision still waits. Over HTTP, the sidecar runs with
+    --slack-actions-url http://127.0.0.1:<port>/slack/actions and its local token is the signing secret. A click is also
+    remembered by its message, person, button and time, so a retry signed anew decides nothing. A request counts only when its X-Slack-Signature is the app's signing secret's HMAC of the body,
     its timestamp is within 300 s and it was never received before. The clicking Slack user must be a process person
     (people.<id>.slack) of the config's slack.team. A govern.decide button approves or rejects a gate, or completes a
     human task, as that person, with the signed request as the decision's source; a button made before the case data or
@@ -102,5 +104,6 @@ ENVIRONMENT
 EXAMPLES
     govern slack serve --port 5003   # behind an HTTPS proxy whose /slack/actions is the Slack app's interactivity URL
     govern slack serve               # slack.transport "socket": Slack's Socket Mode, or a Tayet sidecar (TAYET.md)
+    govern slack serve --port 5003   # a Tayet sidecar with --slack-actions-url http://127.0.0.1:5003/slack/actions
     govern slack chat                # slack.chat: answer its people in slack.channel with a conversation profile
 `;

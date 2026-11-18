@@ -279,6 +279,20 @@ test("slack: a valid token in a private env file, the right team, a member bot a
   assert.ok(!JSON.stringify(fs).includes("xoxb-test-token"), "the token never appears in a finding");
 });
 
+test("slack: Tayet over HTTP needs the sidecar's local token as the signing secret", async () => {
+  const slack = { team: "T1", channel: "C1", envFile: "secrets/tayet.env", server: "tayet", api: "http://127.0.0.1:7878/slack/api", transport: "http" };
+  const b = slackBox(slack, { GOVERN_EXTENSIONS: "" });
+  const env = join(b.e.root, "secrets", "tayet.env"), request = slackApi({ "auth.test": AUTH, "conversations.info": CHANNEL });
+  const check = async (body: string) => { chmodSync(write(env, body), 0o600); return one(await run(b, manifest(b.e), { only: ["slack"], request }), "slack:x:http"); };
+  const missing = await check("SLACK_BOT_TOKEN=local-token\n");
+  assert.equal(missing.status, "fail"); assert.match(missing.evidence, /SLACK_SIGNING_SECRET is not set/); assert.match(missing.fix ?? "", /--slack-actions-url/);
+  const other = await check("SLACK_BOT_TOKEN=local-token\nSLACK_SIGNING_SECRET=another-secret\n");
+  assert.equal(other.status, "fail"); assert.match(other.evidence, /not the sidecar's local token/);
+  assert.ok(!JSON.stringify(other).includes("another-secret") && !JSON.stringify(other).includes("local-token"), "no secret in a finding");
+  const ok = await check("SLACK_BOT_TOKEN=local-token\nSLACK_SIGNING_SECRET=local-token\n");
+  assert.equal(ok.status, "ok", ok.evidence);
+});
+
 test("slack: an env file others can read, a token of another team, a bot outside the channel and a stale listener fail", async () => {
   const b = slackBox({ team: "T1", channel: "C1", envFile: "slack.env", inbox: "inbox", alerts: { listenStaleSec: 300, unansweredSec: 3600 } }, { GOVERN_EXTENSIONS: "" });
   chmodSync(write(join(b.e.root, "slack.env"), "SLACK_BOT_TOKEN=xoxb-test-token\n"), 0o644);
