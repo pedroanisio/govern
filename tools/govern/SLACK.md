@@ -106,6 +106,28 @@ card's thread; people mentioned there are still notified. A card that cannot be 
 until a later run, so they never land outside the thread. Without `threads`, every message is posted to the channel
 itself.
 
+### Cards: the case's place in Slack
+
+With `"cards": true` in `slack` (it implies `threads`), the card is where people follow and discuss the case:
+
+- The card also shows who holds the case's human tasks and the case's last note, and says that a reply in its thread is
+  a note.
+- Each new lane note (`govern note`, an agent's note, a decision's note) is posted in the card's thread, in order, once.
+  Notes from before the card was posted are not posted. A failed post is tried again on the next run.
+- A reply in the card's thread becomes a note of the lane, written by the process person mapped to the Slack user
+  (`people.<id>.slack`), with `by` and `via: "slack"`. The ledger records it as a `note` with its source (team, user,
+  channel, message ts). A note that came from the thread is not posted back. A reply longer than 4000 characters is cut.
+- A reply from someone who is no person of the lane's process, or from another team, adds nothing; the author is told so
+  privately (`chat.postEphemeral`). Edits, deletions, bot posts and top-level messages are ignored. Each message counts
+  once: Slack's retries of the same message are ignored for seven days.
+
+`govern slack serve` receives the replies as Slack events. Over HTTP they come signed to `POST /slack/events` on the same
+server as `/slack/actions` (same signing secret, same clock check; Slack's URL check is answered). Every delivery that
+passes the signature is answered 200, refused or not, so Slack does not retry a refusal. Over Socket Mode they come as
+`events_api` envelopes. The Slack app subscribes to the bot events `message.channels` (and `message.groups` for a private
+channel): see [slack-app-manifest.yml](slack-app-manifest.yml). Cards stay on the moving parts govern already has: the
+gate buttons in the thread still decide, and only the people who may.
+
 ### Alert buttons
 
 An alert button (`action_id` `govern.alert.ack`, `govern.alert.snooze`, `govern.alert.take`, `govern.drive.retry`) passes
@@ -171,7 +193,8 @@ token is refused (`invalid_auth`, `token_revoked` and the like). The connection 
 on the configured API's own address. Each `interactive` envelope goes through the checks above, except the three about the
 signature and size. Instead, a repeat of the same click is refused: the same message, person, button and click time, remembered for
 seven days under the state folder's `slack/`. Every envelope is acked within 2.5 s. Events are acked at once; `govern
-slack chat` reads them ([Chat](#chat-govern-slack-chat)) and `serve` ignores them. Slash commands are acked and ignored:
+slack chat` reads them ([Chat](#chat-govern-slack-chat)), and with `slack.cards` `serve` takes a reply in a card's thread
+as a lane note ([Cards](#cards-the-cases-place-in-slack)); `serve` ignores every other event. Slash commands are acked and ignored:
 `govern slack listen` reads the channel itself.
 
 ## What is recorded

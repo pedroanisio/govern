@@ -9,6 +9,12 @@ All notable changes to govern are documented here, following Keep a Changelog.
 
 ## [Unreleased]
 
+## [0.3.12] - 2026-11-25
+
+### Added
+
+- `slack.cards`: the case's card becomes the lane's place in Slack. The card shows who holds the case and its last note; each new lane note is posted in the card's thread; and a reply in the thread from a person of the lane's process becomes a lane note, with its author (`by`) and `via: "slack"`, recorded in the ledger with its Slack source. `govern slack serve` receives the replies at `POST /slack/events` (signed, same secret) or over Socket Mode. A reply from anyone else adds nothing and its author is told privately. Notes gain the optional `by` and `via` fields. The app manifest subscribes to `message.channels` and `message.groups`. This is the first part of cards that can replace an external tracker on a standalone install; creating, assigning and moving cards from Slack come next.
+
 ## [0.3.11] - 2026-11-25
 
 There is no 0.3.10 in this repository: 0.3.10 and 0.3.11 were tagged by mistake in pedroanisio/super-tools on

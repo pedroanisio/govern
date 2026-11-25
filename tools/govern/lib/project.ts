@@ -32,7 +32,9 @@ export const commandLine = (c: string[] | Command): string => {
 
 /** `by`: whose words (the gate's decision owner); `source`: where they were found (lib/approval.ts). Both absent on approvals recorded before they existed. */
 export interface Approval { at: string; quote: string; by?: string; source?: Source; note?: string; delegation?: Delegation }
-export interface Note { at: string; stage: string; text: string }
+/** A decision or comment on the lane. `by` and `via` are set when a person wrote it in Slack (a reply in the lane's card
+ *  thread, slack.cards): who, as the process's person, and that it came from Slack, so notify does not post it back. */
+export interface Note { at: string; stage: string; text: string; by?: string; via?: "slack" }
 /** A lane's freeze: when, who (always "owner": freezing is the owner's decision), their words and where they came from
  *  (lib/approval.ts), and, once named, a free-text pointer to where the work continued. */
 export interface Frozen { at: string; by: string; quote: string; source: Source; continuedAs?: string }
@@ -126,7 +128,7 @@ const IMPORTED_APPROVAL: Shape<ImportedApproval> = obj({ gate: name, at: iso, qu
 const PROJECT = obj(
   { version: literal(1), slug: name, title: str, kind: name, lang: name, stage: name, created: iso,
     commands: record(COMMAND), files: record(str), approvals: record(obj({ at: iso, quote: str }, { by: name, source: SOURCE, note: str, delegation: DELEGATION })),
-    notes: arr(obj({ at: iso, stage: name, text: str })) },
+    notes: arr(obj({ at: iso, stage: name, text: str }, { by: name, via: literal("slack") })) },
   {processSnapshot:SNAPSHOT, runtime:RUNTIME, events:EVENTS, alerts:ALERTS, invocation:INVOCATION, data: record(value), workflow: WORKFLOW, humanTasks: HUMAN_TASKS, votes: VOTES, process: name, parent: str, finished: iso, checks: record(name), after: arr(obj({ lane: name }, { stage: name })), frozen: FROZEN,
    importedFrom: IMPORTED_FROM, importedApprovals: arr(IMPORTED_APPROVAL),
    canary: obj({ id: name, arm: literal("candidate", "base") }), replay: obj({ run: name, of: str }), intake: record(value) },

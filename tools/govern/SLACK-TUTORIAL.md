@@ -80,7 +80,10 @@ decisions do not use it, but every person needs one, and each must be different.
 
    `chat:write` posts messages, `files:write` / `files:read` handle media, and `channels:history` / `groups:history` let `listen` read public / private channels the bot belongs to. `channels:manage`, `channels:read`, `pins:write` and `users:read` let squad setup create the channel, invite the owner and pin the progress card; without them a person creates the channel and invites the bot. Each scope is commented in the file: drop the ones for features you do not enable, and reinstall the app after changing scopes. `channels:manage` also lets the bot rename or archive channels it belongs to.
 
-   Socket Mode stays off: its payloads carry no per-request signature, and govern accepts only signed requests.
+   This tutorial keeps Socket Mode off and uses signed HTTP requests. govern also accepts Socket Mode (`slack.transport`
+   `"socket"`, [SLACK.md](SLACK.md#socket-mode)): it needs no public URL, but its payloads carry no per-request signature;
+   the open connection is the proof. The manifest's `event_subscriptions` block is for `slack.cards`
+   ([SLACK.md](SLACK.md#cards-the-cases-place-in-slack)); remove it if you do not turn cards on.
 3. **Install App → Install to Workspace**, and allow it. Copy the **Bot User OAuth Token** (`xoxb-…`).
 4. **Basic Information → App Credentials**: copy the **Signing Secret**.
 

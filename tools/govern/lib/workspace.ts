@@ -62,6 +62,10 @@ export interface WorkspaceConfig {
     triggers?: Record<string, { unit: string; minIntervalSec?: number }>;
     /** One card per case in the channel, updated in place, with what the case waits on and its alerts in its thread. */
     threads?: boolean;
+    /** The case's card as the lane's place in Slack (implies threads): it shows who holds the case and the last note, each
+     *  new lane note is posted in its thread, and a mapped person's reply in the thread becomes a lane note (slack serve
+     *  receives it as an event: POST /slack/events, or over Socket Mode). */
+    cards?: boolean;
     /** Send back asks for a reason and editable gate options get an Edit button, both as Slack forms (serve needs the bot
      *  token). Tayet has them from tayet-agent 0.3 with a Tayet server at 0.1.2 or later. */
     forms?: boolean;
@@ -140,6 +144,7 @@ const SLACK = obj({ team: str }, { envFile: str, channel: str, alertsChannel: st
     },
     heartbeat: obj({ file: nonEmpty("a non-empty path") }, { staleSeconds: posInt, name: nonEmpty("a non-empty name") }),
     threads: bool,
+    cards: bool,
     forms: bool,
     server: literal("slack", "tayet"),
     api: httpUrl,

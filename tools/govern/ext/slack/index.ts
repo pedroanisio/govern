@@ -1,7 +1,7 @@
 // Slack: decisions people make with buttons in Slack, verified by Slack's request signature and recorded as the mapped
 // person's own (SLACK.md). A workspace turns this extension on with `govern ext enable slack`.
 import { readFileSync } from "node:fs";
-import { slackServer, handleSocketInteraction } from "./slack.ts";
+import { slackServer, handleSocketInteraction, handleSocketEvent } from "./slack.ts";
 import { runSocket } from "./socket.ts";
 import { serverOf } from "./server.ts";
 import { notify, type NotifyReport } from "./notify.ts";
@@ -31,7 +31,8 @@ async function cmdServe(a: Args): Promise<void> {
   const cfg = slackConfig() ?? fail(`${configFile()} names no slack.team: the Slack team whose requests count`);
   const server = serverOf(cfg);
   // Forms (slack.forms) open a modal with views.open under the bot token, within the click's 3 s trigger window.
-  const call = cfg.forms ? slackCall(server.api, botToken(cfg)) : undefined;
+  // slack.cards: a refused thread reply is explained to its author with chat.postEphemeral, under the bot token too.
+  const call = cfg.forms || cfg.cards ? slackCall(server.api, botToken(cfg)) : undefined;
   if (cfg.transport === "socket") {
     if (opt(a, "port") !== undefined) usage("--port is for slack.transport \"http\"; Socket Mode listens on no port");
     const token = secret("SLACK_APP_TOKEN", process.env.SLACK_APP_TOKEN, cfg.envFile)
@@ -42,7 +43,10 @@ async function cmdServe(a: Args): Promise<void> {
         const r = await handleSocketInteraction(payload, envelope, { server, ...(call ? { call } : {}) });
         if (!r.value.ok) process.stderr.write(`slack: click refused (${r.value.error})\n`);
         return r.reply !== undefined ? { reply: r.reply } : {};
-      } });
+      },
+      ...(cfg.cards ? { onEvent: (payload: unknown) => { void handleSocketEvent(payload, { server, ...(call ? { call } : {}) }).then((r) => {
+        if (!r.value.ok) process.stderr.write(`slack: event refused (${r.value.error})\n`);
+      }); } } : {}) });
     return;
   }
   const signing = secret("SLACK_SIGNING_SECRET", process.env.SLACK_SIGNING_SECRET, cfg.envFile)
@@ -51,7 +55,7 @@ async function cmdServe(a: Args): Promise<void> {
   const port = Number(opt(a, "port") ?? 5003);
   if (!Number.isInteger(port) || port < 0 || port > 65535) usage("--port must be 0..65535");
   http.on("error", (e) => { process.stderr.write(`slack: ${e.message}\n`); process.exitCode = 1; });
-  http.listen(port, "127.0.0.1", () => out(`govern slack (team ${cfg.team}) on http://127.0.0.1:${port}/slack/actions`));
+  http.listen(port, "127.0.0.1", () => out(`govern slack (team ${cfg.team}) on http://127.0.0.1:${port}/slack/actions${cfg.cards ? " and /slack/events" : ""}`));
 }
 
 /** `govern slack chat`: answer the people slack.chat.users names in slack.channel, over Socket Mode, until stopped. */
@@ -88,7 +92,7 @@ async function cmdNotify(a: Args): Promise<void> {
   if (!Number.isInteger(interval) || interval < 5) usage("--interval must be a whole number of seconds, 5 or more");
   const once = async () => {
     const r = await notify({ api: serverOf(cfg).api, server: serverOf(cfg), token, channel, alertsChannel: cfg.alertsChannel, dryRun: flag(a, "dry-run"),
-      ...(lanes.length ? { lanes } : {}), ...(cfg.labels ? { labels: cfg.labels } : {}), ...(cfg.threads ? { threads: true } : {}), ...(cfg.forms ? { forms: true } : {}) });
+      ...(lanes.length ? { lanes } : {}), ...(cfg.labels ? { labels: cfg.labels } : {}), ...(cfg.threads ? { threads: true } : {}), ...(cfg.cards ? { cards: true } : {}), ...(cfg.forms ? { forms: true } : {}) });
     out(summary(r));
     return r.failed.length === 0;
   };

@@ -26,6 +26,7 @@ import type { Call } from "./channel.ts";
 import { PUBLISH_ID, approvePublish, parsePublish } from "./publish.ts";
 import { allowedUrl, forServer, serverOf, type SlackServer } from "./server.ts";
 import { markAnswered } from "./answered.ts";
+import { cardLaneHere, noteOf, replyOf, type Reply } from "./cards.ts";
 
 export { optionSet };
 
@@ -506,6 +507,77 @@ async function interact(body: Buffer, proof: Proof, o: InteractionOptions): Prom
   return result;
 }
 
+/** Where a reply came from, as the lane ledger records it with the note. */
+type ReplySource = { kind: "slack-message"; team: string; user: string; channel: string; ts: string; thread: string };
+
+/** The lane whose card the reply's thread is, among the workspaces this server serves (its own, then slack.serveRepos). */
+function cardLane(r: Reply): string | undefined {
+  const repos = [...new Set([repo(), ...(slackConfig()?.serveRepos ?? [])])];
+  for (const r0 of repos) {
+    const slug = inRepo(r0, () => (slackConfig()?.cards ? cardLaneHere(r.channel, r.thread) : undefined));
+    if (slug) return slug;
+  }
+  return undefined;
+}
+
+/** Record reply `r` as a note of the lane whose card its thread is, written by the process person mapped to its Slack
+ *  user (Forbidden when none is), under the lane lock. undefined when the thread is no card's (the reply is ignored). */
+export function comment(r: Reply): string | undefined {
+  const lane = cardLane(r);
+  if (!lane) return undefined;
+  const source: ReplySource = { kind: "slack-message", team: r.team, user: r.user, channel: r.channel, ts: r.ts, thread: r.thread };
+  return inLaneWorkspace(r.team, lane, (slug) => transaction(slug, () => {
+    const p = load(slug), person = personOf(p, r.user), text = noteOf(r);
+    p.notes.push({ at: nowIso(), stage: p.stage, text, by: person, via: "slack" });
+    save(p);
+    appendLedger(slug, { kind: "note", text, by: person, source });
+    return `${slug}: note by ${person}`;
+  }));
+}
+
+/** An Events API delivery (slack.cards): a reply in a card's thread becomes a lane note, once (a delivery Slack repeats is
+ *  known by the message). Answers 200 whatever the outcome, so Slack does not retry a refusal, except for a request that
+ *  fails its signature (401) or is not JSON (400). A refused reply is explained to its author only (chat.postEphemeral,
+ *  when `o.call` is there). */
+async function onEvent(raw: unknown, at: number, o: InteractionOptions): Promise<InteractionResult> {
+  if (record(raw) && raw.type === "url_verification") return { status: 200, value: { ok: true }, reply: { challenge: text(raw.challenge, "challenge") } };
+  const r = replyOf(raw);
+  if (!r) return { status: 200, value: { ok: true, text: "ignored" } };
+  try {
+    remember(`event:${r.channel}:${r.ts}`, at, SOCKET_SEEN_SECONDS);
+    const line = comment(r);
+    return { status: 200, value: { ok: true, text: line ?? "ignored: not a case card's thread" } };
+  } catch (e) {
+    if (e instanceof Replayed) return { status: 200, value: { ok: true, text: "ignored: already received" } };
+    const error = STATUS(e) === 500 ? "the note could not be recorded" : (e as Error).message;
+    process.stderr.write(`slack: reply ${r.channel}/${r.ts} not recorded (${error})\n`);
+    if (o.call && e instanceof Forbidden) {
+      try { await o.call("chat.postEphemeral", { channel: r.channel, user: r.user, thread_ts: r.thread, text: `Your reply was not added to the case: ${error}` }); }
+      catch { process.stderr.write("slack: could not tell the reply's author\n"); }
+    }
+    return { status: 200, value: { ok: false, error } };
+  }
+}
+
+/** A signed Events API request (POST /slack/events). */
+export async function handleEvent(secret: string, body: Buffer, ts: string | undefined, sig: string | undefined, o: InteractionOptions = {}): Promise<InteractionResult> {
+  try {
+    const at = (o.now ?? (() => Math.floor(Date.now() / 1000)))();
+    verifySignature(secret, ts, sig, body, at);
+    let raw: unknown;
+    try { raw = JSON.parse(body.toString("utf8")); } catch { throw new BadRequest("the event is not JSON"); }
+    return await onEvent(raw, at, o);
+  } catch (e) {
+    return { status: STATUS(e), value: { ok: false, error: STATUS(e) === 500 ? "event failed" : (e as Error).message } };
+  }
+}
+
+/** A Socket Mode `events_api` envelope's payload, handled as a signed request is, minus the signature. */
+export async function handleSocketEvent(payload: unknown, o: InteractionOptions = {}): Promise<InteractionResult> {
+  try { return await onEvent(payload, (o.now ?? (() => Math.floor(Date.now() / 1000)))(), o); }
+  catch (e) { return { status: STATUS(e), value: { ok: false, error: (e as Error).message } }; }
+}
+
 /** The Slack interactivity server (not yet listening): POST /slack/actions with Slack's signed form body of at most
  *  MAX_BODY bytes. 200 {ok, text} when the decision is recorded; 401 (signature, clock, replay), 400 (payload), 403 (team,
  *  person), 404 (path, lane), 409 (a refused decision), 413 (size) or 500 otherwise, as {ok: false, error}. `now` is the
@@ -518,8 +590,9 @@ export function slackServer(secret: string, o: InteractionOptions = {}): Server 
       res.writeHead(status, { "Content-Type": "application/json; charset=utf-8" });
       res.end(JSON.stringify(value));
     };
-    if (req.method !== "POST" || req.url !== "/slack/actions") {
-      reply(404, { ok: false, error: "POST /slack/actions required" });
+    const events = req.url === "/slack/events";
+    if (req.method !== "POST" || (req.url !== "/slack/actions" && !events)) {
+      reply(404, { ok: false, error: "POST /slack/actions or /slack/events required" });
       req.resume();
       return;
     }
@@ -533,7 +606,7 @@ export function slackServer(secret: string, o: InteractionOptions = {}): Server 
     req.on("end", () => {
       if (res.headersSent) return;
       const timestamp = req.headers["x-slack-request-timestamp"], signature = req.headers["x-slack-signature"];
-      void handleInteraction(secret, Buffer.concat(chunks), typeof timestamp === "string" ? timestamp : undefined,
+      void (events ? handleEvent : handleInteraction)(secret, Buffer.concat(chunks), typeof timestamp === "string" ? timestamp : undefined,
         typeof signature === "string" ? signature : undefined, o).then(r => reply(r.status, r.reply ?? r.value));
     });
     req.on("error", () => reply(400, { ok: false, error: "incomplete request" }));

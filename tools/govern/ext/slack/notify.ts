@@ -30,6 +30,9 @@ export interface NotifyOptions { api?: string; token: string; channel: string; a
   labels?: Partial<Record<Decision, string>>;
   /** One card per case, updated in place; what the case waits on and its alerts are posted in the card's thread. */
   threads?: boolean;
+  /** slack.cards (implies threads): the card shows who holds the case and its last note, and each new lane note is posted
+   *  in the card's thread (a note that came from the thread is not posted back). */
+  cards?: boolean;
   /** Send back asks for a reason, and an option with `edit` fields gets an Edit button (Slack forms, forms.ts). */
   forms?: boolean;
   /** The server (server.ts): how many buttons a message may carry, and whether a click closes a message (a Tayet card).
@@ -47,8 +50,9 @@ const LABELS: Record<Decision, string> = { complete: "Done", approve: "Approve",
 interface Posted { lane: string; channel: string; ts: string; digest: string; text: string; blocks?: unknown[];
   /** The further messages that carry the rest of the buttons, when the server allows fewer than the decision has. */
   parts?: { channel: string; ts: string; text: string; blocks: unknown[] }[] }
-/** A case's card (slack.threads): where it is and the text it shows now. */
-interface Card { channel: string; ts: string; text: string }
+/** A case's card (slack.threads): where it is and the text it shows now; with slack.cards, `notes` is how many of the
+ *  lane's notes the thread has caught up with (the notes before the card was posted are not posted). */
+interface Card { channel: string; ts: string; text: string; notes?: number }
 /** An alert's message while it can still close (its buttons gone once the alert is settled anywhere). */
 interface AlertPost { channel: string; ts: string; text: string; blocks: unknown[] }
 /** An offer of a routed reply to the publishers (publish.ts), until it is published. */
@@ -131,15 +135,28 @@ function message(p: Project, item: Pending, labels: Record<Decision, string>, fo
   };
 }
 
-/** A case's card: its title and stage (or that it finished), and each thing it waits on with who may decide it. */
-function card(p: Project, items: Pending[]): { text: string; blocks: unknown[] } {
+/** A case's card: its title and stage (or that it finished), and each thing it waits on with who may decide it. With
+ *  slack.cards (`rich`) also who holds its human tasks, its last note, and that a reply in the thread is a note. */
+function card(p: Project, items: Pending[], rich = false): { text: string; blocks: unknown[] } {
   const pr = processOf(p), who = (ids: string[]) => ids.map((id) => (pr.people?.[id]?.slack ? `<@${pr.people[id]!.slack}>` : id)).join(" ");
   const where = p.finished ? "Finished" : `stage *${p.stage}*`;
   const waiting = items.map((i) => `• ${what(i.target)} — ${i.people.length ? who(i.people) : "_nobody may decide this_"}`);
   const body = p.finished ? "" : waiting.length ? `\nWaiting on:\n${waiting.join("\n")}` : "\nNothing waits on people now.";
   const text = `${heading(p)} · ${where}${body}`;
-  return { text: `${p.title} (${p.slug}): ${p.finished ? "finished" : p.stage}`, blocks: [{ type: "section", text: { type: "mrkdwn", text: text.slice(0, 2900) } }] };
+  const blocks: unknown[] = [{ type: "section", text: { type: "mrkdwn", text: text.slice(0, 2900) } }];
+  if (rich) {
+    const held = Object.entries(p.humanTasks ?? {}).filter(([, t]) => t.assignee && !t.completedAt).map(([stage, t]) => `${who([t.assignee!])} (${stage})`);
+    const last = p.notes.at(-1);
+    const lines = [...(held.length ? [`Held by ${held.join(", ")}`] : []),
+      ...(last ? [`Last note${last.by ? ` by ${who([last.by])}` : ""} [${last.stage}]: ${clip(last.text, 300)}`] : [])];
+    if (lines.length) blocks.push({ type: "section", text: { type: "mrkdwn", text: lines.join("\n").slice(0, 2900) } });
+    blocks.push({ type: "context", elements: [{ type: "mrkdwn", text: "Reply in this thread to add a note to the case." }] });
+  }
+  return { text: `${p.title} (${p.slug}): ${p.finished ? "finished" : p.stage}`, blocks };
 }
+const clip = (t: string, n: number) => (t.length > n ? `${t.slice(0, n - 1)}…` : t);
+/** A lane note as posted in its card's thread. */
+const noteText = (n: { stage: string; text: string }) => clip(`note [${n.stage}]: ${n.text}`, 3000);
 
 /** A posted message once its buttons are gone: what it asked, as posted, then one line saying who decided (when `p` says)
  *  and why it closed. A record without its blocks closes as one line of text. */
@@ -192,8 +209,8 @@ export async function notify(o: NotifyOptions): Promise<NotifyReport> {
     // slack.threads: the case's card, posted once the case needs someone (or has an alert), then kept up to date. A card
     // that cannot be posted holds the lane's posts back, so they never land outside its thread.
     let thread: string | undefined;
-    if (o.threads) {
-      const cards = (state.cards ??= {}), c = card(p, items), had = cards[slug];
+    if (o.threads || o.cards) {
+      const cards = (state.cards ??= {}), c = card(p, items, !!o.cards), had = cards[slug];
       const alerting = failures.some((f) => f.lane === slug && !state.alerts[f.key]) || (p.alerts ?? []).some((a) => !a.acknowledgedAt && !state.alerts[`${slug}:alert:${a.id}`]);
       if (had) {
         if (had.text !== JSON.stringify(c.blocks) && await send(`${slug}:card`, "chat.update", { channel: had.channel, ts: had.ts, ...c }) && !o.dryRun) cards[slug] = { ...had, text: JSON.stringify(c.blocks) };
@@ -202,8 +219,20 @@ export async function notify(o: NotifyOptions): Promise<NotifyReport> {
         const sent = await send(`${slug}:card`, "chat.postMessage", { channel: o.channel, ...c });
         if (!sent) continue;
         report.posted.push(`${slug}:card`);
-        if (!o.dryRun) cards[slug] = { channel: sent.channel, ts: sent.ts, text: JSON.stringify(c.blocks) };
+        if (!o.dryRun) cards[slug] = { channel: sent.channel, ts: sent.ts, text: JSON.stringify(c.blocks), ...(o.cards ? { notes: p.notes.length } : {}) };
         thread = sent.ts;
+      }
+      // slack.cards: the notes added since the thread last caught up, in order; a failed post is tried again next run.
+      const kept = cards[slug];
+      if (o.cards && kept && thread) {
+        let next = Math.min(kept.notes ?? p.notes.length, p.notes.length);
+        for (; next < p.notes.length; next++) {
+          const n = p.notes[next]!;
+          if (n.via === "slack") continue;
+          if (!(await send(`${slug}:note:${next}`, "chat.postMessage", { channel: kept.channel, thread_ts: thread, text: noteText(n) }))) break;
+          report.posted.push(`${slug}:note:${next}`);
+        }
+        if (!o.dryRun) kept.notes = next;
       }
     }
     const inThread = thread ? { thread_ts: thread } : {};
