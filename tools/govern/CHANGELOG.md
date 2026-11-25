@@ -9,6 +9,12 @@ All notable changes to govern are documented here, following Keep a Changelog.
 
 ## [Unreleased]
 
+## [0.3.21] - 2026-11-25
+
+### Changed
+
+- The Squad Lead's choices card showed each alternative only as a button or menu label, which Slack cuts short and never wraps, so a long alternative could not be read. The card now lists every alternative whole, numbered, as text that wraps, and the buttons name the number (`Choose 1`, `Choose 2`…). A label is kept up to 500 characters instead of 75; only a select menu's option, past five alternatives, is still cut to Slack's 75.
+
 ## [0.3.20] - 2026-11-25
 
 ### Fixed

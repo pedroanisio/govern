@@ -140,8 +140,9 @@ Two ways to fix it: …
 ```
 ````
 
-The block is not posted as text. A card in the same place offers the labels as buttons, or as a select menu past five
-(at most 25, each cut to 75 characters). A click is the clicker's next message to the Lead, `[Chosen with a button]
+The block is not posted as text. A card in the same place lists every label whole, numbered, as text that wraps (Slack
+cuts a long button or menu label short and never wraps it), and offers numbered buttons, `Choose 1`, `Choose 2`…, or a
+select menu past five (at most 25 labels, each cut to 500 characters; a menu option to 75). A click is the clicker's next message to the Lead, `[Chosen with a button]
 <label>`, in the card's place: 👀 and ✅ go on the card, and the reply goes where the card is. Answering in words still
 works, and a card stays clickable until a choice is made.
 

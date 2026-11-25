@@ -46,10 +46,13 @@ const ERROR_CHARS = 1500;
 export const ATTACH_MAX = 10;
 const IMAGES = new Set([".png", ".jpg", ".jpeg", ".gif", ".webp"]);
 
-/** At most this many choices are offered (a select menu's limit); a button's or option's label is at most CHOICE_CHARS. */
-export const CHOICES_MAX = 25, CHOICE_CHARS = 75;
+/** At most this many choices are offered (a select menu's limit). A choice's text is at most CHOICE_TEXT: the card shows
+ *  it whole, as text that wraps; a select menu's option label (Slack's limit) is at most CHOICE_CHARS. */
+export const CHOICES_MAX = 25, CHOICE_CHARS = 75, CHOICE_TEXT = 500;
 
-const clipChoice = (o: string) => o.length > CHOICE_CHARS ? `${o.slice(0, CHOICE_CHARS - 1)}…` : o;
+/** `s` cut to `max` characters, an ellipsis marking the cut. */
+const clip = (s: string, max: number) => s.length > max ? `${s.slice(0, max - 1)}…` : s;
+const clipChoice = (o: string) => clip(o, CHOICE_TEXT);
 const offer = (options: string[]) => { const u = [...new Set(options.map(clipChoice))].slice(0, CHOICES_MAX); return u.length >= 2 ? u : []; };
 /** A line that heads a list of alternatives: "Opções:", "**Options:**", "## Alternativas", "Escolha uma:" and the like. */
 const OPTIONS_HEAD = /^\s*(?:#{1,4}\s*)?(?:\*\*|__)?\s*(?:op[çc](?:õ|o)es|alternativas|options|choices|escolhas?|caminhos)\b[^\n*_]{0,40}?(?:\*\*|__)?\s*[:?]?\s*(?:\*\*|__)?\s*$/i;

@@ -442,13 +442,14 @@ test("a message that waits behind a running turn is answered at once with what t
   } finally { await slack.close(); }
 });
 
-test("a reply's ```choices block is its alternatives: one a line, bullets dropped, long labels cut, fewer than two none", () => {
+test("a reply's ```choices block is its alternatives: one a line, bullets dropped, very long ones cut, fewer than two none", () => {
   assert.deepEqual(choicesOf("Two ways:\n\n1. fix the text — small\n2. change it now\n\n```choices\n1. Fix the text\n- 2. Change it now\n```\n"),
     { text: "Two ways:\n\n1. fix the text — small\n2. change it now", options: ["1. Fix the text", "2. Change it now"] });
   assert.deepEqual(choicesOf("no block\n```ts\nx\n```"), { text: "no block\n```ts\nx\n```", options: [] });
   assert.deepEqual(choicesOf("Go?\n```choices\nYes\n```").options, [], "one alternative is no choice");
-  const long = choicesOf(`Pick:\n\`\`\`choices\n${"a".repeat(90)}\nb\n\`\`\``).options;
-  assert.equal(long[0]!.length, 75);
+  const long = choicesOf(`Pick:\n\`\`\`choices\n${"a".repeat(90)}\n${"b".repeat(600)}\n\`\`\``).options;
+  assert.equal(long[0]!.length, 90, "a long choice is kept whole: the card shows it as text");
+  assert.equal(long[1]!.length, 500);
   assert.equal(choicesOf(`x\n\`\`\`choices\n${Array.from({ length: 30 }, (_, i) => `option ${i}`).join("\n")}\n\`\`\``).options.length, 25);
   // Without the block, a numbered list under an options heading that ends the reply is offered, the text left as it is.
   const listed = "O card não lê o Bitbucket.\n\n**Opções:**\n1. **Ensinar o card a ler o Bitbucket e o hml.** Cada parte passa a mostrar o estado.\n2. **Deixar como está.** Você confere pelo Jira.\n\n**Recomendo a 1.** O card é onde você acompanha.";
@@ -477,15 +478,25 @@ test("a reply's choices become buttons (a menu past five); the click is the choo
       assert.equal(posted[0]!.body.text, "Two ways.", "the block is not posted as text");
       const card = posted[1]!.body, blocks = JSON.stringify(card.blocks);
       assert.deepEqual(blocks.match(/govern\.lead\.choose\.\d/g), ["govern.lead.choose.0", "govern.lead.choose.1"]);
-      assert.match(blocks, /"text":"1\. Fix the text"/);
-      const value = JSON.parse((card.blocks as { elements?: { value?: string }[] }[])[1]!.elements![1]!.value!) as { choice: string; i: number };
+      type Block = { type: string; block_id?: string; text?: { text: string }; elements?: { text?: { text: string }; value?: string; options?: { text: { text: string } }[] }[] };
+      const sections = (b: unknown) => (b as Block[]).filter((x) => x.type === "section").map((x) => x.text!.text);
+      const actions = (b: unknown) => (b as Block[]).find((x) => x.block_id === "govern")!;
+      assert.deepEqual(sections(card.blocks), ["1. Fix the text", "2. Change it now"], "each choice shown whole, as text");
+      assert.deepEqual(actions(card.blocks).elements!.map((x) => x.text!.text), ["Choose 1", "Choose 2"], "the buttons name the number");
+      const value = JSON.parse(actions(card.blocks).elements![1]!.value!) as { choice: string; i: number };
       assert.equal(value.i, 1);
 
       bot.onEvent(message(LEAD_A, `Many.\n\`\`\`choices\n${["a", "b", "c", "d", "e", "f"].join("\n")}\n\`\`\``, { ts: "1795000000.000200" }));
       await bot.idle();
       const menu = slack.calls.filter((c) => c.method === "chat.postMessage").at(-1)!.body;
       assert.match(JSON.stringify(menu.blocks), /"static_select".*"action_id":"govern\.lead\.choose"/);
-      assert.equal((menu.blocks as { elements: { options: unknown[] }[] }[])[1]!.elements[0]!.options.length, 6);
+      assert.deepEqual(actions(menu.blocks).elements![0]!.options!.map((x) => x.text.text), ["1. a", "2. b", "3. c", "4. d", "5. e", "6. f"]);
+      assert.equal(sections(menu.blocks).length, 6);
+      const long = `Ensinar o card a ler o Bitbucket e o hml, para que o painel mostre o estado real de cada lane sem abrir o terminal`;
+      const wide = choiceCard([long, "Deixar como está"], { channel: LEAD_A }, leadSettings().lead);
+      assert.equal(sections(wide.blocks)[0], `1. ${long}`, "a choice longer than a button shows whole");
+      const eight = choiceCard(Array.from({ length: 8 }, (_, i) => `${long} ${i}`), { channel: LEAD_A }, leadSettings().lead);
+      assert.ok(actions(eight.blocks).elements![0]!.options!.every((x) => x.text.text.length <= 75), "a menu label stays within Slack's 75");
 
       // The click: serve records it and hands the Lead a message from the chooser, in the card's place.
       const CARD_TS = "1795000001.000777";

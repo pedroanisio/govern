@@ -24,7 +24,7 @@ import { randomUUID } from "node:crypto";
 import { ACTIONS_BLOCK } from "./pending.ts";
 import type { SlackSource } from "../../lib/approval.ts";
 import * as sessions from "../../lib/conversation.ts";
-import { chatBot, openQuestions } from "./chat.ts";
+import { chatBot, mrkdwn, openQuestions, CHOICE_CHARS } from "./chat.ts";
 import { slackCall, type Call } from "./channel.ts";
 import { serverOf } from "./server.ts";
 import { botToken } from "./secrets.ts";
@@ -343,14 +343,21 @@ export function choiceCard(options: string[], where: { channel: string; thread?:
   const value = (i: number) => JSON.stringify({ v: 1, choice: c.id, i });
   const label = (o: string) => ({ type: "plain_text" as const, text: o, emoji: true });
   const who = lead.users.map((u) => `<@${u}>`).join(" ");
+  // Slack cuts a long button or menu label short and never wraps it, so each choice is shown whole as text, numbered
+  // (its own number when it has one), and the buttons (or the menu past CHOICE_BUTTONS) name the number.
+  const numbered = options.map((o, i) => {
+    const own = /^(\d{1,2})[.)]\s/.exec(o);
+    return { n: own ? own[1]! : String(i + 1), text: own ? o : `${i + 1}. ${o}` };
+  });
   const pick = options.length <= CHOICE_BUTTONS
-    ? options.map((o, i) => ({ type: "button", action_id: `${CHOOSE}.${i}`, text: label(o), value: value(i) }))
+    ? numbered.map((x, i) => ({ type: "button", action_id: `${CHOOSE}.${i}`, text: label(`Choose ${x.n}`), value: value(i) }))
     : [{ type: "static_select", action_id: CHOOSE, placeholder: label(`Choose one of ${options.length}`),
-        options: options.map((o, i) => ({ text: label(o), value: value(i) })) }];
+        options: numbered.map((x, i) => ({ text: label(clip(x.text, CHOICE_CHARS - 1)), value: value(i) })) }];
   return {
     text: `Choose: ${options.join(" · ")}`.slice(0, 3000),
     blocks: [
       { type: "context", elements: [{ type: "mrkdwn", text: `👉 ${who} choose one, or answer in words` }] },
+      ...numbered.map((x) => ({ type: "section", text: { type: "mrkdwn", text: mrkdwn(x.text).slice(0, 3000) } })),
       { type: "actions", block_id: ACTIONS_BLOCK, elements: pick }
     ]
   };
