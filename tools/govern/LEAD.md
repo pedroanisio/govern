@@ -48,7 +48,12 @@ app, token, connection or service, only its config block and a channel the app i
 
 ## Turns
 
-A message in the Lead channel from one of `slack.lead.users` is a turn. Bots, edits and everyone else are ignored. The
+A message in the Lead channel from one of `slack.lead.users` is a turn, with or without files, and a thread reply also
+sent to the channel. Each file a message attaches (a screenshot, a log) is saved under `slack/lead/files/<ts>/` with the
+bot token (`files:read`), and the turn names its path, so the Lead reads it as it would a file pasted in an IDE; a file
+that cannot be fetched is named with why. A message of one of those people that is not a turn (a kind Slack sends that is
+neither text nor files) is answered "Not taken" with why, so nobody waits on a reply that will not come. Bots, edits,
+deletions, joins and everyone else are ignored. The
 Lead's process keeps a journal (`slack/lead-chat.json` under the state folder), so each message is answered once, and a
 reply left unposted is posted when the process starts again. The message gets 👀 while its turn runs, then ✅, or ❌ with the
 reason. The reply is posted where the message was asked: in the channel, or in its thread.

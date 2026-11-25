@@ -10,7 +10,7 @@
 // permission mode a turn starts in, once someone changed it), cost (the session's running total, for each turn's share),
 // audit.jsonl (mode changes and permission decisions, with the Slack request that made them), permissions/ (one request
 // per ask, its decision and its card), allow/<session>.json (what was allowed for the rest of a session), activity.json
-// (what the turn under way is doing, while one runs).
+// (what the turn under way is doing, while one runs), files/<ts>/ (what a message attached, for the Lead to read).
 import { spawn, type ChildProcess } from "node:child_process";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, join, resolve } from "node:path";
@@ -468,7 +468,8 @@ export async function runLead(): Promise<void> {
     chat: { users: lead.users, timeoutSeconds: lead.timeoutSeconds ?? LEAD_TIMEOUT_SECONDS, maxContextChars: LEAD_CONTEXT_CHARS },
     create: (conv) => createLeadConversation(conv, lead),
     control: (q) => leadControl(lead, q),
-    busy: () => busyLine(lead.name ?? "Squad Lead", readActivity()) });
+    busy: () => busyLine(lead.name ?? "Squad Lead", readActivity()),
+    files: { dir: join(leadDir(), "files"), token: botToken(cfg) } });
   log(`govern slack lead in ${lead.channel} for ${repo()} as ${self}, answering ${lead.users.join(", ")}`);
   bot.resume();
   let syncing = false;

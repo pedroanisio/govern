@@ -9,6 +9,13 @@ All notable changes to govern are documented here, following Keep a Changelog.
 
 ## [Unreleased]
 
+## [0.3.16] - 2026-11-25
+
+### Fixed
+
+- A message with a file (a screenshot, Slack's `file_share`) to the Squad Lead or `govern slack chat` was dropped without a word: the chat took only messages with no subtype. It is now a question; the Lead fetches each file into `slack/lead/files/<ts>/` (`files:read`) and the turn names its path, so Claude reads it, images too. A plain chat is told the files were not passed on. A thread reply also sent to the channel (`thread_broadcast`) is a question too.
+- A message from one of the chat's people that it still cannot take is answered "Not taken" with why, instead of nothing. Edits, deletions, joins and the like stay unanswered.
+
 ## [0.3.15] - 2026-11-25
 
 ### Changed

@@ -310,13 +310,18 @@ test("a turn is refused while the Lead's session is open in another live process
 });
 
 /** A fake Slack Web API on localhost that records every call and answers each post with a new ts. */
-async function fakeSlack(): Promise<{ api: string; calls: { method: string; body: Record<string, unknown> }[]; close: () => Promise<void> }> {
+async function fakeSlack(): Promise<{ api: string; base: string; calls: { method: string; body: Record<string, unknown> }[]; close: () => Promise<void> }> {
   const calls: { method: string; body: Record<string, unknown> }[] = [];
   let n = 0;
   const server: Server = createServer((req, res) => {
     let body = "";
     req.on("data", (c) => { body += c; });
     req.on("end", () => {
+      if ((req.url ?? "").startsWith("/files/")) {
+        calls.push({ method: `GET ${req.url}`, body: { auth: req.headers.authorization } });
+        res.writeHead(200, { "Content-Type": "image/png" });
+        return res.end("PNG-BYTES");
+      }
       const method = (req.url ?? "").replace(/^\/api\//, ""), b = (body.startsWith("{") ? JSON.parse(body) : Object.fromEntries(new URLSearchParams(body))) as Record<string, unknown>;
       calls.push({ method, body: b });
       res.writeHead(200, { "Content-Type": "application/json" });
@@ -324,7 +329,8 @@ async function fakeSlack(): Promise<{ api: string; calls: { method: string; body
     });
   });
   await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
-  return { api: `http://127.0.0.1:${(server.address() as { port: number }).port}/api`, calls,
+  const base = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
+  return { api: `${base}/api`, base, calls,
     close: async () => { server.closeAllConnections(); await new Promise<void>((r) => server.close(() => r())); } };
 }
 
@@ -378,6 +384,41 @@ test("a step reads as its own description, else the tool and its target; a plan 
   assert.equal(stepLabel("Bash", { command: "x".repeat(300) }).length, "Bash ``".length + 100);
   assert.equal(planOf([{ content: "a", status: "completed" }, { content: "b", activeForm: "Doing b", status: "in_progress" }, { content: "c", status: "pending" }]), "1/3 · Doing b");
   assert.equal(planOf([]), undefined);
+});
+
+test("a message with a file is a question: the file is fetched for the Lead to read; a message it cannot take is answered, not dropped", async () => {
+  const e = workspace("lead-files", SQUAD_A, { channel: LEAD_A, users: [ME] });
+  const slack = await fakeSlack();
+  try {
+    await within(e, async () => {
+      const { slackCall } = await import("../ext/slack/channel.ts");
+      const sessions = await import("../lib/conversation.ts");
+      const dir = join(leadDir(), "files");
+      const bot = chatBot({ call: slackCall(slack.api, "xoxb-test"), channel: LEAD_A, self: "UBOT000001", journal: "lead-chat", single: "lead",
+        chat: { users: [ME] }, create: (conv) => sessions.create(conv, { command: { name: "none", argv: ["true"] }, title: "lead" }),
+        files: { dir, token: "xoxb-test" } });
+      const shared = message(LEAD_A, "explique o erro abaixo", { ts: "1795000000.000300" });
+      Object.assign(shared.event, { subtype: "file_share", files: [{ id: "F0FILE0001", name: "image.png", mimetype: "image/png", url_private_download: `${slack.base}/files/F0FILE0001` }] });
+      bot.onEvent(shared);
+      const edited = message(LEAD_A, "x", { ts: "1795000000.000400" });
+      Object.assign(edited.event, { subtype: "message_changed" });
+      bot.onEvent(edited);
+      const odd = message(LEAD_A, "waves", { ts: "1795000000.000500" });
+      Object.assign(odd.event, { subtype: "me_message" });
+      bot.onEvent(odd);
+      await bot.idle();
+      const asked = sessions.inspect("lead-1").messages.find((m) => m.role === "user")!.content;
+      const saved = join(dir, "1795000000.000300", "F0FILE0001-image.png");
+      assert.match(asked, /^explique o erro abaixo\n\n\[Files attached .*\]\n- .*F0FILE0001-image\.png \(image\/png\)$/s);
+      assert.ok(asked.includes(saved), asked);
+      assert.equal(readFileSync(saved, "utf8"), "PNG-BYTES");
+      assert.equal(slack.calls.find((c) => c.method.startsWith("GET /files/"))!.body.auth, "Bearer xoxb-test");
+      const notices = slack.calls.filter((c) => c.method === "chat.postMessage" && /^⚠️ Not taken/.test(String(c.body.text)));
+      assert.equal(notices.length, 1, "an edit is not answered; a message of a kind the chat cannot take is");
+      assert.match(String(notices[0]!.body.text), /me_message/);
+      assert.equal(notices[0]!.body.thread_ts, "1795000000.000500");
+    });
+  } finally { await slack.close(); }
 });
 
 test("a message that waits behind a running turn is answered at once with what that turn does", async () => {

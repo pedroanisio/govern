@@ -90,7 +90,9 @@ test("redelivery, edits, other people, other channels, bots and the agent itself
     { type: "event_callback", event: { type: "app_mention", channel: CH, user: ME, text: "hello", ts: "1794000000.000100" } }, null, "nonsense"])
     bot.onEvent(ignored);
   await bot.idle();
-  assert.equal(posts(sent).length, 1, "one question, one reply");
+  // A bare mention is no question, but it is not left unanswered: it is told why, in its thread; nothing else gets a word.
+  assert.deepEqual(posts(sent).map((p) => [String(p.text).startsWith("⚠️ Not taken: it has no text and no file") ? "notice" : p.text, p.thread_ts])
+    .sort((x, y) => (x[1] ? 1 : 0) - (y[1] ? 1 : 0)), [["reply:hello:previous=0", undefined], ["notice", "1794000000.000800"]]);
   assert.equal(sessions.inspect(chatId(CH, 1)).runs.length, 1);
 }));
 

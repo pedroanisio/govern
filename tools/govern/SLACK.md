@@ -508,6 +508,8 @@ sidecar sends every event to every open connection, but Slack sends each event t
 Slack, run chat on an app of its own, or use a Squad Lead ([LEAD.md](LEAD.md)), which `serve` feeds through the one app. Each message a person in `chat.users` posts in the channel is a
 turn of a govern conversation ([CONVERSATIONS.md](CONVERSATIONS.md)) run with `chat.profile` (default `codex-read`) or a
 configured `chat.adapter`, with `timeoutSeconds` and `maxContextChars` (default 400,000) as the conversation takes them.
+A message with files is a turn too; the turn is told its files were not passed on (the Squad Lead fetches them). A
+message of one of those people that is not a turn is answered "Not taken" with why; edits, deletions and joins are not.
 The reply is posted where the question was asked, in parts of at most 3,500 characters, its Markdown turned into Slack's mrkdwn
 (`**bold**` is `*bold*`, `[text](url)` is `<url|text>`, a heading is a bold line, a list item starts with `•`, a table
 is a code block; code stays as it is).

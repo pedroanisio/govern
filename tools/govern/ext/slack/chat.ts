@@ -35,6 +35,8 @@ export interface ChatSettings {
 
 /** A chat conversation's context budget unless slack.chat sets one: a channel holds a long exchange. */
 export const CONTEXT_CHARS = 400_000;
+/** A question's file is fetched up to this size. */
+const ASKED_MAX_BYTES = 50 * 1024 * 1024;
 /** Reply parts are at most this long (Slack advises 4,000 characters a message). */
 export const PART_CHARS = 3500;
 /** Delivered questions are forgotten after this long; the server does not resend an event that old. */
@@ -175,17 +177,59 @@ export function openQuestions(name: string): { conv: string; runId: string; chan
   return Object.values(readJournal(name).requests).filter((e) => !e.done).map((e) => ({ conv: e.conv, runId: e.runId, channel: e.channel, ts: e.ts }));
 }
 
+/** A file attached to a question: Slack's id, name and type, and the URL its bytes are fetched from with the bot token. */
+export interface AskedFile { id: string; name: string; mimetype?: string; url?: string }
+/** What a person wrote: a plain message, one with files (file_share), or a thread reply also sent to the channel. */
+const ASKED = new Set([undefined, "file_share", "thread_broadcast"]);
+/** Message kinds that are not something a person asked (edits, deletes, joins, topics, pins): never answered. */
+const NOT_ASKED = new Set(["message_changed", "message_deleted", "message_replied", "channel_join", "channel_leave", "group_join",
+  "group_leave", "channel_topic", "channel_purpose", "channel_name", "group_topic", "group_purpose", "group_name", "pinned_item",
+  "unpinned_item", "channel_archive", "group_archive", "bot_message", "tombstone"]);
+
 /** A question as the server sends it, when it is one this chat answers. */
-export function question(payload: unknown, o: { channel: string; self: string; users: string[] }): { channel: string; ts: string; thread?: string; text: string; user: string } | undefined {
+export function question(payload: unknown, o: { channel: string; self: string; users: string[] }): { channel: string; ts: string; thread?: string; text: string; user: string; files?: AskedFile[] } | undefined {
   const e = (payload as { event?: Record<string, unknown> } | null)?.event;
   // Only `message`: the server sends a mention as both message and app_mention.
-  if (typeof e !== "object" || e === null || e.type !== "message" || e.subtype !== undefined || e.bot_id !== undefined) return undefined;
+  if (typeof e !== "object" || e === null || e.type !== "message" || !ASKED.has(e.subtype as string | undefined) || e.bot_id !== undefined) return undefined;
   const { user, channel, ts, text, thread_ts: thread } = e;
   if (typeof user !== "string" || user === o.self || !o.users.includes(user) || channel !== o.channel) return undefined;
-  if (typeof ts !== "string" || typeof text !== "string") return undefined;
-  const asked = text.replace(new RegExp(`<@${o.self}(\\|[^>]*)?>`, "g"), "").trim();
-  if (!asked) return undefined;
-  return { channel, ts, user, text: asked, ...(typeof thread === "string" && thread !== ts ? { thread } : {}) };
+  if (typeof ts !== "string") return undefined;
+  const asked = (typeof text === "string" ? text : "").replace(new RegExp(`<@${o.self}(\\|[^>]*)?>`, "g"), "").trim();
+  const files = (Array.isArray(e.files) ? e.files as Record<string, unknown>[] : []).filter((f) => typeof f?.id === "string").map((f): AskedFile => ({
+    id: f.id as string, name: typeof f.name === "string" && f.name ? f.name : f.id as string,
+    ...(typeof f.mimetype === "string" ? { mimetype: f.mimetype } : {}),
+    ...(typeof f.url_private_download === "string" ? { url: f.url_private_download } : typeof f.url_private === "string" ? { url: f.url_private } : {}) }));
+  if (!asked && !files.length) return undefined;
+  return { channel, ts, user, text: asked, ...(typeof thread === "string" && thread !== ts ? { thread } : {}), ...(files.length ? { files } : {}) };
+}
+
+/** A message from one of the chat's people that it does not take as a question, with why: it is answered with a notice, so
+ *  no one waits for a reply that will not come. Edits, deletes, joins and the like are not messages anyone waits on. */
+export function notTaken(payload: unknown, o: { channel: string; self: string; users: string[] }): { channel: string; ts: string; thread?: string; why: string } | undefined {
+  const e = (payload as { event?: Record<string, unknown> } | null)?.event;
+  if (typeof e !== "object" || e === null || e.type !== "message" || e.bot_id !== undefined || e.channel !== o.channel) return undefined;
+  if (typeof e.user !== "string" || e.user === o.self || !o.users.includes(e.user) || typeof e.ts !== "string") return undefined;
+  if (typeof e.subtype === "string" && NOT_ASKED.has(e.subtype)) return undefined;
+  if (question(payload, o)) return undefined;
+  const why = typeof e.subtype === "string" && !ASKED.has(e.subtype) ? `a message of kind ${e.subtype} is not one I can take` : "it has no text and no file";
+  return { channel: e.channel, ts: e.ts, ...(typeof e.thread_ts === "string" && e.thread_ts !== e.ts ? { thread: e.thread_ts } : {}), why };
+}
+
+/** Save a question's file under `dir` with the bot token: at most `maxBytes`, refused when Slack answers with a page (no
+ *  files:read) instead of the file. */
+export async function fetchAsked(f: AskedFile, dir: string, token: string, maxBytes: number, request: typeof fetch = fetch): Promise<string> {
+  if (!f.url) throw new Error("Slack gave no URL for it");
+  const r = await request(f.url, { headers: { Authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(120_000) });
+  if (!r.ok) throw new Error(`HTTP ${r.status}`);
+  if (/text\/html/.test(r.headers.get("content-type") ?? "") && !/html/.test(f.mimetype ?? ""))
+    throw new Error("Slack answered with a page, not the file: the app needs the files:read scope");
+  const bytes = Buffer.from(await r.arrayBuffer());
+  if (bytes.length > maxBytes) throw new Error(`it is ${bytes.length} bytes, more than ${maxBytes}`);
+  const safe = basename(f.name).replace(/[^\w.\- ]+/g, "_").replace(/^\.+/, "") || f.id;
+  const path = join(dir, `${f.id}-${safe}`);
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  writeFileSync(path, bytes, { mode: 0o600 });
+  return path;
 }
 
 export interface ChatOptions {
@@ -212,6 +256,9 @@ export interface ChatOptions {
   /** The line posted at once in a question's thread when it waits behind a turn already under way (what that turn is
    *  doing, say); undefined posts nothing. */
   busy?: () => string | undefined;
+  /** Fetch the files a question attaches into `dir`/<question ts>/ with the bot token, and name their paths in the turn
+   *  (an agent on this host reads them, images too). Without it, the turn is told they were not passed on. */
+  files?: { dir: string; token: string; maxBytes?: number; request?: typeof fetch };
 }
 
 export interface ChatBot {
@@ -364,7 +411,17 @@ export function chatBot(o: ChatOptions): ChatBot {
     track(next.finally(() => { if (chains.get(conv) === next) chains.delete(conv); }));
   };
 
-  const take = async (q: { channel: string; ts: string; thread?: string; text: string; user: string }, key: string) => {
+  /** What the turn is told about a question's files: where each was saved, or why it was not. */
+  const filesNote = async (files: AskedFile[], ts: string): Promise<string> => {
+    if (!o.files) return `[${files.length} file${files.length === 1 ? "" : "s"} attached in Slack (${files.map((f) => f.name).join(", ")}) not passed on: this chat does not fetch files.]`;
+    const lines = ["[Files attached to this Slack message, saved on this host; read them (images too) with your file reading tool:]"];
+    for (const f of files) {
+      try { lines.push(`- ${await fetchAsked(f, join(o.files.dir, ts.replace(/[^\d.]/g, "")), o.files.token, o.files.maxBytes ?? ASKED_MAX_BYTES, o.files.request)}${f.mimetype ? ` (${f.mimetype})` : ""}`); }
+      catch (e) { log(`slack chat: file ${f.id} of ${ts}: ${(e as Error).message}`); lines.push(`- ${f.name}: not fetched (${(e as Error).message})`); }
+    }
+    return lines.join("\n");
+  };
+  const take = async (q: { channel: string; ts: string; thread?: string; text: string; user: string; files?: AskedFile[] }, key: string) => {
     const answer = o.control?.(q);
     if (answer !== undefined) {
       journal((j) => {
@@ -375,6 +432,7 @@ export function chatBot(o: ChatOptions): ChatBot {
       return;
     }
     await react(true, "eyes", q.ts);
+    if (q.files?.length) q = { ...q, text: [q.text, await filesNote(q.files, q.ts)].filter(Boolean).join("\n\n") };
     const gen = q.thread && !o.single ? undefined : journal((j) => j.generations[q.channel] ?? 1);
     const conv = q.thread && !o.single ? chatId(q.channel, q.thread) : convOf(q.channel, gen!);
     const runId = ask(conv, q.text, key);
@@ -393,8 +451,16 @@ export function chatBot(o: ChatOptions): ChatBot {
 
   return {
     onEvent(payload) {
-      const q = question(payload, { channel: o.channel, self: o.self, users: o.chat.users });
-      if (!q) return;
+      const who = { channel: o.channel, self: o.self, users: o.chat.users }, q = question(payload, who);
+      if (!q) {
+        const n = notTaken(payload, who), key = n && `slack:${n.channel}:${n.ts}`;
+        if (!n || !key || seen.has(key)) return;
+        seen.add(key);
+        log(`slack chat: ${key} not taken: ${n.why}`);
+        track(o.call("chat.postMessage", { channel: n.channel, thread_ts: n.thread ?? n.ts,
+          text: `⚠️ Not taken: ${n.why}. Send it again as a plain message (text, with files attached if you need them).` }).then(() => undefined));
+        return;
+      }
       const key = `slack:${q.channel}:${q.ts}`;
       if (seen.has(key) || readJ().requests[key]) return;
       seen.add(key);
