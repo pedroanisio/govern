@@ -138,7 +138,8 @@ This costs no model time. The Lead only wakes on a message.
    It writes `slack.lead`, adds the `lead` mailbox, and keeps the file as it was in `.bak`. It refuses the squad's channel.
 3. Set up the Slack app once per deployment, not per Lead:
    - over HTTP, turn Event Subscriptions on, with the Request URL `https://<serve's public address>/slack/events`, and
-     the bot events `message.channels` and `message.groups` (scopes `channels:history`, `groups:history`);
+     the bot events `message.channels` and `message.groups` (scopes `channels:history`, `groups:history`), and the
+     scope `reactions:write` for the 👀 and ✅ on each message (without it the turns run, unmarked);
    - on Socket Mode, subscribe the same events.
 4. Run `/invite @<app>` in the Lead channel.
 5. Make sure `govern slack serve` serves the workspace: either it is serve's own workspace, or serve's config names it in

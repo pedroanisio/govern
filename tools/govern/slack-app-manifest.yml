@@ -21,6 +21,8 @@ oauth_config:
       # `govern slack listen` and the Squad Lead: read public / private channels the bot belongs to
       - channels:history
       - groups:history
+      # `govern slack chat` and the Squad Lead: 👀 on a message while its turn runs, then ✅ or ❌
+      - reactions:write
       # squad auto-setup: create the squad channel, invite the owner, set its topic
       - channels:manage
       - channels:read

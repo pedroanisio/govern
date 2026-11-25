@@ -9,6 +9,10 @@ All notable changes to govern are documented here, following Keep a Changelog.
 
 ## [Unreleased]
 
+### Fixed
+
+- `slack-app-manifest.yml` and LEAD.md name the `reactions:write` scope that `govern slack chat` and the Squad Lead use to mark each message (👀, then ✅ or ❌). Without it the turns still run, and each refused reaction is logged.
+
 ## [0.3.14] - 2026-11-25
 
 ### Added
