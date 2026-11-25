@@ -27,6 +27,7 @@ import { PUBLISH_ID, approvePublish, parsePublish } from "./publish.ts";
 import { allowedUrl, forServer, serverOf, type SlackServer } from "./server.ts";
 import { markAnswered } from "./answered.ts";
 import { cardLaneHere, noteOf, replyOf, type Reply } from "./cards.ts";
+import { leadClickOf, performLeadClick } from "./lead.ts";
 
 export { optionSet };
 
@@ -35,6 +36,10 @@ export const SKEW_SECONDS = 300;
 /** How long a received signature is remembered: longer than the clock window, so a replay is refused either way. */
 const SEEN_SECONDS = 2 * SKEW_SECONDS;
 export const MAX_BODY = 65536;
+/** The largest Events API request /slack/events accepts (a message event with its blocks and attachments). */
+export const MAX_EVENT_BODY = 1024 * 1024;
+/** How long an event id is remembered: Slack retries a delivery it saw no 200 for, for up to about an hour. */
+export const EVENT_SEEN_SECONDS = 3600;
 /** The action_id of every button govern makes (or it followed by `.` and a suffix, which keeps ids unique within a
  *  Slack block); other buttons in the same app are not decisions. */
 export const ACTION_ID = "govern.decide";
@@ -247,10 +252,14 @@ const sorted = (s: Record<string, Scalar>) => JSON.stringify(Object.entries(s).s
 const sameSet = (a: Record<string, Scalar>, b: Record<string, Scalar>) => sorted(a) === sorted(b);
 const sameKeys = (a: Record<string, Scalar>, b: Record<string, Scalar>) => JSON.stringify(Object.keys(a).sort()) === JSON.stringify(Object.keys(b).sort());
 
-/** The lane `a` names, once its team is the config's and the lane exists. */
+/** The workspace that holds the lane `a` names (this one or one of slack.serveRepos), once its team is the config's and,
+ *  in another workspace, that workspace's own slack.team. Callers that read or write the lane run inside it (inRepo). */
+function laneWorkspace(a: { team: string; lane: string }): string {
+  return inLaneWorkspace(a.team, a.lane, () => repo());
+}
+
+/** The lane `a` names, read in the current workspace (inside laneWorkspace's). */
 function laneOf(a: { team: string; lane: string }): string {
-  const team = slackConfig()?.team ?? (() => { throw new Forbidden("the workspace config names no slack.team"); })();
-  if (a.team !== team) throw new Forbidden(`the request comes from Slack team ${a.team}, not ${team}`);
   let slug: string;
   try { slug = checkSlug(a.lane); } catch (e) { return bad((e as Error).message); }
   if (!existsSync(stateFile(slug))) throw new NotFound(`no lane ${slug}`);
@@ -260,19 +269,22 @@ function laneOf(a: { team: string; lane: string }): string {
 /** Open the form a `form` button names, for the person who clicked, once they may decide the gate now on the case
  *  version the button is bound to. Records nothing. */
 async function openForm(a: SlackAction, raw: Record<string, unknown>, url: string | undefined, call: Call | undefined): Promise<string> {
-  const slug = laneOf(a), p = load(slug), person = personOf(p, a.user), gate = "gate" in a.target ? a.target.gate : bad("a form is for a gate");
-  if (caseDigest(p) !== a.digest) fail(`${slug} has changed since this button was made (its data or a loop): decide on a new message`);
-  const item = pending(p).find((i) => i.key === `${slug}:gate:${gate}`) ?? fail(`${slug}'s ${gate} does not wait on a decision now`);
-  if (!item.people.includes(person)) fail(`${person} may not decide ${gate}`);
-  const option = a.form === "edit" ? (item.options ?? []).findIndex((o) => !!o.edit && sameSet(o.set, a.set!)) : undefined;
-  if (option === -1) fail(`the button's data is not an editable option of ${gate} as the case stands`);
-  if (!call) fail("govern slack serve has no bot token, so it cannot open the form: give it SLACK_BOT_TOKEN (slack.forms)");
-  const trigger = typeof raw.trigger_id === "string" && raw.trigger_id ? raw.trigger_id : bad("the click has no trigger_id");
-  const message = record(raw.message) ? raw.message : undefined, container = record(raw.container) ? raw.container : undefined;
-  const ts = typeof container?.message_ts === "string" ? container.message_ts : typeof message?.ts === "string" ? message.ts : undefined;
-  const meta: FormMeta = { v: 1, lane: slug, gate, digest: a.digest, form: a.form!, quote: a.quote, user: a.user,
-    ...(option !== undefined ? { option } : {}), ...(url ? { url } : {}), ...(ts ? { ts } : {}) };
-  await call("views.open", { trigger_id: trigger, view: formView(p, meta, option !== undefined ? item.options![option] : undefined) });
+  const { slug, person, gate, view } = inRepo(laneWorkspace(a), () => {
+    const slug = laneOf(a), p = load(slug), person = personOf(p, a.user), gate = "gate" in a.target ? a.target.gate : bad("a form is for a gate");
+    if (caseDigest(p) !== a.digest) fail(`${slug} has changed since this button was made (its data or a loop): decide on a new message`);
+    const item = pending(p).find((i) => i.key === `${slug}:gate:${gate}`) ?? fail(`${slug}'s ${gate} does not wait on a decision now`);
+    if (!item.people.includes(person)) fail(`${person} may not decide ${gate}`);
+    const option = a.form === "edit" ? (item.options ?? []).findIndex((o) => !!o.edit && sameSet(o.set, a.set!)) : undefined;
+    if (option === -1) fail(`the button's data is not an editable option of ${gate} as the case stands`);
+    if (!call) fail("govern slack serve has no bot token, so it cannot open the form: give it SLACK_BOT_TOKEN (slack.forms)");
+    const trigger = typeof raw.trigger_id === "string" && raw.trigger_id ? raw.trigger_id : bad("the click has no trigger_id");
+    const message = record(raw.message) ? raw.message : undefined, container = record(raw.container) ? raw.container : undefined;
+    const ts = typeof container?.message_ts === "string" ? container.message_ts : typeof message?.ts === "string" ? message.ts : undefined;
+    const meta: FormMeta = { v: 1, lane: slug, gate, digest: a.digest, form: a.form!, quote: a.quote, user: a.user,
+      ...(option !== undefined ? { option } : {}), ...(url ? { url } : {}), ...(ts ? { ts } : {}) };
+    return { slug, person, gate, view: { trigger_id: trigger, view: formView(p, meta, option !== undefined ? item.options![option] : undefined) } };
+  });
+  await call!("views.open", view);
   return `${slug}: ${gate} ${a.form} form opened for ${person}`;
 }
 
@@ -280,9 +292,11 @@ async function openForm(a: SlackAction, raw: Record<string, unknown>, url: strin
 function submitted(s: Submission): SlackAction {
   const base = { team: s.team, user: s.user, lane: s.meta.lane, target: { gate: s.meta.gate }, digest: s.meta.digest };
   if (s.meta.form === "reason") return { ...base, decision: "reject", quote: reasonOf(s) };
-  const p = load(laneOf(base));
-  const o = processOf(p).gates.find((g) => g.name === s.meta.gate)?.options?.[s.meta.option!] ?? fail(`${s.meta.gate} has no option ${s.meta.option! + 1}`);
-  return { ...base, decision: "approve", quote: s.meta.quote, set: editedSet(s, optionSet(o, p), o.edit ?? []), edit: s.meta.option! };
+  return inRepo(laneWorkspace(base), () => {
+    const p = load(laneOf(base));
+    const o = processOf(p).gates.find((g) => g.name === s.meta.gate)?.options?.[s.meta.option!] ?? fail(`${s.meta.gate} has no option ${s.meta.option! + 1}`);
+    return { ...base, decision: "approve" as const, quote: s.meta.quote, set: editedSet(s, optionSet(o, p), o.edit ?? []), edit: s.meta.option! };
+  });
 }
 
 const STATUS = (e: unknown): number =>
@@ -294,7 +308,10 @@ export interface InteractionOptions { now?: () => number; request?: typeof fetch
   call?: Call;
   /** The server the workspace talks to (server.ts): its API base names the other host a response URL may be on, and a
    *  single-answer server gets edits without buttons. Default: the workspace's slack.server and slack.api. */
-  server?: SlackServer }
+  server?: SlackServer;
+  /** The Squad Leads (slack serve's router, lead.ts): takes an Events API event_callback in a Lead channel and answers
+   *  true, or false for any other channel. Called once per event_id; it must not block (the event is acked after it). */
+  lead?: (payload: unknown) => boolean }
 /** `reply`, when set, is what the server answers Slack instead of `value` (a form submission's response_action). */
 interface InteractionResult { status: number; value: { ok: boolean; text?: string; error?: string }; reply?: unknown }
 
@@ -322,9 +339,11 @@ function decided(body: Buffer, a: SlackAction, line: string, single = false): { 
   return decidedMessage(record(raw) && record(raw.message) ? raw.message : undefined, a, line, single);
 }
 function decidedMessage(message: { text?: unknown; blocks?: unknown } | undefined, a: SlackAction, line: string, single = false): { text: string; blocks: unknown[] } {
-  const p = load(checkSlug(a.lane)), key = "task" in a.target ? `task:${a.target.task}` : `gate:${a.target.gate}`;
-  const open = !single && caseDigest(p) === a.digest && pending(p).some((i) => i.key === `${p.slug}:${key}`);
-  const blocks = settled(blocksOf(message, single), standing(p, a.target) ?? line, open);
+  const { open, standsAt } = inRepo(laneWorkspace(a), () => {
+    const p = load(checkSlug(a.lane)), key = "task" in a.target ? `task:${a.target.task}` : `gate:${a.target.gate}`;
+    return { open: !single && caseDigest(p) === a.digest && pending(p).some((i) => i.key === `${p.slug}:${key}`), standsAt: standing(p, a.target) };
+  });
+  const blocks = settled(blocksOf(message, single), standsAt ?? line, open);
   return blocks ? { text: typeof message?.text === "string" && message.text ? message.text : line, blocks } : { text: line, blocks: [] };
 }
 
@@ -411,6 +430,8 @@ async function interact(body: Buffer, proof: Proof, o: InteractionOptions): Prom
   /** Set while a form submission is being decided: a refusal is then shown in the form (under this input). */
   let form: string | undefined;
   let raw: unknown;
+  /** The lane the click was about, so a single-answer server marks the closed message in that lane's workspace. */
+  let marks: { team: string; lane: string } | undefined;
   try {
     const at = (o.now ?? (() => Math.floor(Date.now() / 1000)))();
     if (proof.kind === "signed") verifySignature(proof.secret, proof.timestamp, proof.signature, body, at);
@@ -435,6 +456,7 @@ async function interact(body: Buffer, proof: Proof, o: InteractionOptions): Prom
       admit();
       const s = parseSubmission(raw);
       form = firstBlock(raw) ?? "";
+      marks = { team: s.team, lane: s.meta.lane };
       const a = submitted(s);
       const line = perform(a, source(a.team, a.user));
       result = { status: 200, value: { ok: true, text: line }, reply: { response_action: "clear" } };
@@ -452,13 +474,21 @@ async function interact(body: Buffer, proof: Proof, o: InteractionOptions): Prom
       const line = `Approved by <@${user}> · govern slack listen posts it in the request's thread`;
       result = { status: 200, value: { ok: true, text: line } };
       update = () => closed(body, line, server.singleAnswer);
+    } else if (leadClickOf(raw)) {
+      const lc = leadClickOf(raw)!;
+      admit();
+      const line = performLeadClick(lc, source(lc.team, lc.user));
+      result = { status: 200, value: { ok: true, text: line } };
+      update = () => closed(body, line, server.singleAnswer);
     } else if (c) {
+      marks = { team: c.team, lane: c.control.lane };
       admit();
       const line = inLaneWorkspace(c.team, c.control.lane, () => performControl(c.control, (p) => personOf(p, c.user), source(c.team, c.user), c.quote, at));
       result = { status: 200, value: { ok: true, text: line } };
       update = () => closed(body, line, server.singleAnswer);
     } else {
       const a = parseAction(body);
+      marks = a;
       admit();
       if (a.form) {
         // The form decides; the click only opens it. On a single-answer server the click closed the card all the same,
@@ -488,7 +518,11 @@ async function interact(body: Buffer, proof: Proof, o: InteractionOptions): Prom
   // that still waits on people. An unauthenticated request marks nothing.
   const clicked = server.singleAnswer && result.status !== 401 ? clickedMessage(raw) : undefined;
   if (clicked) {
-    try { markAnswered(clicked.channel, clicked.ts); } catch { process.stderr.write("slack: could not mark the closed message; notify will not repost it\n"); }
+    try {
+      let ws = repo();
+      try { if (marks) ws = laneWorkspace(marks); } catch { /* the lane is not served: this workspace keeps the mark */ }
+      inRepo(ws, () => markAnswered(clicked.channel, clicked.ts));
+    } catch { process.stderr.write("slack: could not mark the closed message; notify will not repost it\n"); }
   }
   if (url) {
     // A single-answer server has no ephemeral messages: a refusal replaces the closed message, saying a new one follows.
@@ -535,12 +569,19 @@ export function comment(r: Reply): string | undefined {
   }));
 }
 
-/** An Events API delivery (slack.cards): a reply in a card's thread becomes a lane note, once (a delivery Slack repeats is
- *  known by the message). Answers 200 whatever the outcome, so Slack does not retry a refusal, except for a request that
+/** An Events API delivery. A message in a Lead channel goes to that workspace's Lead (`o.lead`), once per event_id (Slack
+ *  retries a delivery with the same id). Otherwise (slack.cards) a reply in a card's thread becomes a lane note, once (a
+ *  delivery Slack repeats is known by the message). Answers 200 whatever the outcome, so Slack does not retry a refusal, except for a request that
  *  fails its signature (401) or is not JSON (400). A refused reply is explained to its author only (chat.postEphemeral,
  *  when `o.call` is there). */
 async function onEvent(raw: unknown, at: number, o: InteractionOptions): Promise<InteractionResult> {
   if (record(raw) && raw.type === "url_verification") return { status: 200, value: { ok: true }, reply: { challenge: text(raw.challenge, "challenge") } };
+  if (o.lead && record(raw) && raw.type === "event_callback" && typeof raw.event_id === "string") {
+    try { remember(`event:${raw.event_id}`, at, EVENT_SEEN_SECONDS); }
+    catch (e) { if (e instanceof Replayed) return { status: 200, value: { ok: true, text: "ignored: already received" } }; throw e; }
+    try { if (o.lead(raw)) return { status: 200, value: { ok: true, text: "to the Lead" } }; }
+    catch (e) { process.stderr.write(`slack: ${nowIso()} the Lead's event was not taken (${(e as Error).message})\n`); return { status: 200, value: { ok: false, error: "the Lead's event was not taken" } }; }
+  }
   const r = replyOf(raw);
   if (!r) return { status: 200, value: { ok: true, text: "ignored" } };
   try {
@@ -578,9 +619,10 @@ export async function handleSocketEvent(payload: unknown, o: InteractionOptions 
   catch (e) { return { status: STATUS(e), value: { ok: false, error: (e as Error).message } }; }
 }
 
-/** The Slack interactivity server (not yet listening): POST /slack/actions with Slack's signed form body of at most
- *  MAX_BODY bytes. 200 {ok, text} when the decision is recorded; 401 (signature, clock, replay), 400 (payload), 403 (team,
- *  person), 404 (path, lane), 409 (a refused decision), 413 (size) or 500 otherwise, as {ok: false, error}. `now` is the
+/** The Slack server (not yet listening): POST /slack/actions with Slack's signed form body of at most MAX_BODY bytes, and
+ *  POST /slack/events (handleEvent) with a signed JSON body of at most MAX_EVENT_BODY bytes. For /slack/actions: 200
+ *  {ok, text} when the decision is recorded; 401 (signature, clock, replay), 400 (payload), 403 (team, person), 404 (path,
+ *  lane), 409 (a refused decision), 413 (size) or 500 otherwise, as {ok: false, error}. `now` is the
  *  clock in seconds. Fails when the secret is shorter than 16 characters. */
 export function slackServer(secret: string, o: InteractionOptions = {}): Server {
   if (secret.length < 16) fail("SLACK_SIGNING_SECRET must contain at least 16 characters");
@@ -596,11 +638,12 @@ export function slackServer(secret: string, o: InteractionOptions = {}): Server 
       req.resume();
       return;
     }
+    const limit = events ? MAX_EVENT_BODY : MAX_BODY;
     let size = 0;
     const chunks: Buffer[] = [];
     req.on("data", (chunk: Buffer) => {
       size += chunk.length;
-      if (size > MAX_BODY) reply(413, { ok: false, error: `the request exceeds ${MAX_BODY} bytes` });
+      if (size > limit) reply(413, { ok: false, error: `the request exceeds ${limit} bytes` });
       else chunks.push(chunk);
     });
     req.on("end", () => {

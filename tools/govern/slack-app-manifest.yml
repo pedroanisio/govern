@@ -18,7 +18,7 @@ oauth_config:
       # upload and read media (cards rendered as images, attachments)
       - files:write
       - files:read
-      # `govern slack listen`: read public / private channels the bot belongs to
+      # `govern slack listen` and the Squad Lead: read public / private channels the bot belongs to
       - channels:history
       - groups:history
       # squad auto-setup: create the squad channel, invite the owner, set its topic
@@ -32,8 +32,10 @@ oauth_config:
       # - groups:write
       # - groups:read
 settings:
-  # slack.cards: a reply in a case card's thread becomes a lane note (SLACK.md, Cards). Remove this block when cards are
-  # off; with Socket Mode the events come over the connection and request_url is not used.
+  # Events `govern slack serve` takes at /slack/events: a reply in a case card's thread becomes a lane note
+  # (slack.cards, SLACK.md), and a message in a Lead channel is a turn for that workspace's Squad Lead (slack.lead,
+  # LEAD.md). Remove this block when neither is on; with Socket Mode the events come over the connection and
+  # request_url is not used.
   event_subscriptions:
     request_url: https://example.invalid/slack/events
     bot_events:

@@ -134,7 +134,7 @@ test("govern.json: unknown keys, wrong types and dangling references are refused
   badLane({ approvals: { owner: { at: "2026-01-05T00:00:00.000Z" } } }, "$.approvals.owner.quote: missing");
   badLane({ approvals: { owner: { at: "yesterday", quote: "ok" } } }, `$.approvals.owner.at: must be an ISO timestamp (got "yesterday")`);
   badLane({ notes: [{ at: "2026-01-04T00:00:00.000Z", stage: "plan" }] }, "$.notes[0].text: missing");
-  badLane({ notes: [{ at: "2026-01-04T00:00:00.000Z", stage: "plan", text: "x", by: "me" }] }, `$.notes[0].by: unknown key "by"`);
+  badLane({ notes: [{ at: "2026-01-04T00:00:00.000Z", stage: "plan", text: "x", who: "me" }] }, `$.notes[0].who: unknown key "who"`);
   badLane({ created: 5 }, "$.created: must be an ISO timestamp (got 5)");
   badLane({ slug: "other" }, `$.slug: is "other", but the lane is "full" (its folder)`);
   badLane({ stage: "deliver" }, `$.stage: no stage "deliver" in process dev`);

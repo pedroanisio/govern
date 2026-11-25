@@ -282,6 +282,8 @@ export function create(
   o: {
     profile?: string;
     adapter?: string;
+    /** A command adapter govern itself provides (the Squad Lead's, ext/slack/lead.ts): never from the command line. */
+    command?: { name: string; argv: string[] };
     lane?: string;
     title?: string;
     timeoutSeconds?: number;
@@ -289,10 +291,13 @@ export function create(
   } = {}
 ): Conversation {
   sessionId(id);
-  if (o.profile && o.adapter) usage("choose --profile or --adapter, not both");
+  if ([o.profile, o.adapter, o.command].filter(Boolean).length > 1) usage("choose --profile or --adapter, not both");
   const reg = registry();
   let adapter: Adapter;
-  if (o.adapter) {
+  if (o.command) {
+    if (!o.command.argv.length) fail("a built-in conversation adapter needs a command");
+    adapter = { kind: "command", name: o.command.name, argv: [...o.command.argv] };
+  } else if (o.adapter) {
     const a = config().conversationAdapters?.[o.adapter];
     if (!a) fail(`unknown conversation adapter ${o.adapter}`);
     adapter = { kind: "command", name: o.adapter, argv: [...a!.argv] };

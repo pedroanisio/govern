@@ -53,7 +53,8 @@ displayable.
 With `"transport": "http"`, `govern slack serve` listens on `http://127.0.0.1:<port>/slack/actions` (`--port`, default
 5003), as for Slack. Start the sidecar with `--slack-actions-url http://127.0.0.1:<port>/slack/actions`: it then posts the
 clicks and form submissions there, signed with its local token, instead of sending them over Socket Mode. Events and
-slash commands stay on Socket Mode, so `govern slack chat` is unchanged.
+slash commands stay on Socket Mode, so `govern slack chat` is unchanged. A Squad Lead ([LEAD.md](LEAD.md)) gets its channel's messages from `govern slack
+serve`'s own connection, as on Slack.
 
 A signed click is a stronger record than a Socket Mode one: the ledger keeps the signature, which anyone holding the local
 token can check again ([What a click proves](#what-a-click-proves)). The sidecar sends a click again, signed anew, when

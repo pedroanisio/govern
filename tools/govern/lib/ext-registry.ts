@@ -54,8 +54,8 @@ export const EXTENSIONS: readonly ExtInfo[] = [
   { name: "slack", description: "Slack: decisions people make with buttons in Slack, verified by Slack's signature",
     commands: ["slack"],
     docs: [{ title: "Slack: decisions from Slack buttons, signature checks, people mapping", path: "SLACK.md" }],
-    files: ["ext/slack/index.ts", "ext/slack/slack.ts", "ext/slack/notify.ts", "ext/slack/channel.ts", "ext/slack/commands.ts", "ext/slack/digest.ts", "ext/slack/route.ts", "ext/slack/service.ts", "ext/slack/manpage.ts", "ext/slack/triage.ts", "ext/slack/heartbeat.ts", "ext/slack/doctor.ts", "ext/slack/secrets.ts"],
-    flags: ["alerts", "all", "check", "delivered", "dry-run", "file", "interval", "json", "key", "kind", "lane", "loop", "not-delivered", "once", "port", "reason", "text", "thread", "title", "ts"] },
+    files: ["ext/slack/index.ts", "ext/slack/slack.ts", "ext/slack/notify.ts", "ext/slack/channel.ts", "ext/slack/commands.ts", "ext/slack/digest.ts", "ext/slack/route.ts", "ext/slack/service.ts", "ext/slack/manpage.ts", "ext/slack/triage.ts", "ext/slack/heartbeat.ts", "ext/slack/doctor.ts", "ext/slack/secrets.ts", "ext/slack/lead.ts", "ext/slack/lead-adapter.ts", "ext/slack/lead-approve.ts"],
+    flags: ["alerts", "all", "brief", "channel", "check", "cwd", "delivered", "dry-run", "file", "interval", "json", "key", "kind", "lane", "loop", "mode", "model", "name", "not-delivered", "once", "port", "reason", "session", "text", "thread", "title", "ts", "user"] },
 ];
 
 /** The extension names, in registry order. */

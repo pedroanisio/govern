@@ -12,6 +12,7 @@ export type ChannelConfig = Pick<NonNullable<WorkspaceConfig["slack"]>, "bot" | 
 const ENCODING = {
   "chat.postMessage": "json",
   "chat.update": "json",
+  "chat.delete": "json",
   "views.open": "json",
   "files.completeUploadExternal": "json",
   "auth.test": "form",

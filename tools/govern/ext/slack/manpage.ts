@@ -4,6 +4,8 @@
 export const MANPAGE = `SYNOPSIS
     govern slack serve [--port 5003]  |  slack notify [--lane S]... [--loop --interval 30] [--dry-run]
     govern slack chat
+    govern slack lead enable --channel C --user U... [--session ID] [--cwd DIR] [--mode M] [--name N] [--brief F] [--model M]
+    govern slack lead status  |  slack lead mode [default|edit|auto|plan]
     govern slack upload --thread TS --file PATH [--title T] [--text T] [--key K]
     govern slack resolve --key K [--delivered [--ts TS] | --not-delivered]
     govern slack install-service
@@ -39,6 +41,19 @@ DESCRIPTION
     each image as a download (<name>.original), for clients that only preview images. The question gets 👀 while it
     runs, then ✅, or ❌ and a message with the reason. A journal
     (slack/chat.json under the state folder) asks each message once and posts a reply left unposted when chat starts again.
+    slack lead gives the workspace a Squad Lead (LEAD.md): a Claude Code session its people drive from a Slack channel of
+    its own (slack.lead.channel, never slack.channel), through the same app and the same slack serve. Serve takes the
+    Events API on POST /slack/events (signed as /slack/actions; Socket Mode carries the events too) and hands each Lead
+    channel's messages, for every workspace it serves (its own and slack.serveRepos), to that workspace's Lead process.
+    A message from slack.lead.users is a turn: claude -p resumes the Lead's session (slack.lead.session, or one it
+    starts) in slack.lead.cwd with the user's settings, the current permission mode and govern's brief; the reply is
+    posted where the message was asked. A tool use the mode does not allow becomes a card in the Lead channel (allow once,
+    allow for the session, deny); serve records the click of one of slack.lead.users, and no answer within
+    permissionTimeoutSeconds (default 1800) is a deny. "mode edit|auto|default|plan" in the channel, or slack lead mode,
+    sets the next turns' mode; "pare" or "stop" stops the turn that runs. A turn is refused while the session is open in
+    another live process (a VS Code tab). Gates stay the people's: the Lead never approves one. With slack.lead set,
+    notify also posts in the Lead channel a one-line pointer to each alert it raises and each decision waiting longer
+    than slack.lead.waitHours (default 8). State lives in slack/lead under the state folder, with audit.jsonl.
     slack listen records new posts in slack.inbox using the poller-compatible state.json and inbox.jsonl. First run
     marks existing posts seen; subsequent runs follow at most twenty changed threads. Only configured requesters can
     ask a fixed command after an exact bot mention: status, pending, lane <slug>, help, and run <name> for each
@@ -93,6 +108,14 @@ OPTIONS
     --port N                slack serve: the loopback port (default 5003; not with slack.transport "socket")
     --lane S                slack notify: only this lane (repeatable)
     --dry-run               slack notify: send nothing and leave notification receipts unchanged
+    --channel C             slack lead: the Lead's own Slack channel id (enable; required)
+    --user U                slack lead: a Slack user the Lead answers and whose clicks decide its asks (enable; repeatable, required)
+    --session ID            slack lead: an existing Claude session (UUID) the Lead continues (enable)
+    --cwd DIR               slack lead: the folder the Lead's claude runs in (enable; default the workspace)
+    --mode M                slack lead: the permission mode turns start in: default, edit, auto or plan (enable)
+    --name N                slack lead: what the Lead calls itself (enable)
+    --brief F               slack lead: a file whose text is added to the Lead's brief (enable)
+    --model M               slack lead: the Claude model of its turns (enable; default claude's own)
 ENVIRONMENT
     XDG_CONFIG_HOME (default ~/.config): slack install-service writes systemd/user units here.
     Slack (slack): SLACK_SIGNING_SECRET (the Slack app's signing secret, at least 16 characters) and SLACK_BOT_TOKEN
@@ -101,9 +124,13 @@ ENVIRONMENT
     first, then the config's slack.envFile; token values never appear in errors. SLACK_APP_TOKEN: the app-level token for
     slack.transport "socket" (Slack: xapp-, connections:write; Tayet: the sidecar's local token). GOVERN_SLACK_API
     overrides slack.api (default https://slack.com/api).
+    Squad Lead: GOVERN_CLAUDE_BIN runs instead of claude; GOVERN_LEAD_PROGRESS_AFTER_MS (default 20000) is how long a turn
+    runs before its progress line. Set by the Lead's adapter for its approval tool, never by you: GOVERN_LEAD_SESSION,
+    GOVERN_LEAD_RUN, GOVERN_LEAD_CHANNEL and GOVERN_LEAD_THREAD.
 EXAMPLES
     govern slack serve --port 5003   # behind an HTTPS proxy whose /slack/actions is the Slack app's interactivity URL
     govern slack serve               # slack.transport "socket": Slack's Socket Mode, or a Tayet sidecar (TAYET.md)
     govern slack serve --port 5003   # a Tayet sidecar with --slack-actions-url http://127.0.0.1:5003/slack/actions
+    govern slack lead enable --channel C0LEAD --user U0ME   # then /invite the app in C0LEAD; serve takes it from the next event
     govern slack chat                # slack.chat: answer its people in slack.channel with a conversation profile
 `;

@@ -126,6 +126,8 @@ Documentation:
   [examples/suporte](examples/suporte/README.md) is a complete autonomous support process.
 - [SLACK.md](SLACK.md) covers `govern slack`: decisions people make with buttons in Slack, verified by Slack's request
   signature and recorded as the mapped person's own.
+- [LEAD.md](LEAD.md) covers `govern slack lead`: a workspace's Squad Lead, a Claude Code session its people drive from a
+  Slack channel of its own through the same app and `govern slack serve`, with permission cards and modes set from the channel.
 - [TAYET.md](TAYET.md) points `govern slack` at a Tayet workspace through its agent sidecar: Socket Mode or signed HTTP
   clicks, forms, cards that close on the first click, and what a click proves there.
 - [REMOTE.md](REMOTE.md) specifies `govern remote`, the protocol that lets a paired phone follow the lanes and their

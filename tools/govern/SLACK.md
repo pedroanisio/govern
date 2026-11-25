@@ -195,9 +195,23 @@ token is refused (`invalid_auth`, `token_revoked` and the like). The connection 
 on the configured API's own address. Each `interactive` envelope goes through the checks above, except the three about the
 signature and size. Instead, a repeat of the same click is refused: the same message, person, button and click time, remembered for
 seven days under the state folder's `slack/`. Every envelope is acked within 2.5 s. Events are acked at once; `govern
-slack chat` reads them ([Chat](#chat-govern-slack-chat)), and with `slack.cards` `serve` takes a reply in a card's thread
-as a lane note ([Cards](#cards-the-cases-place-in-slack)); `serve` ignores every other event. Slash commands are acked and ignored:
-`govern slack listen` reads the channel itself.
+slack chat` reads them ([Chat](#chat-govern-slack-chat)). `serve` hands a Lead channel's messages to that workspace's Lead
+([LEAD.md](LEAD.md)), and with `slack.cards` takes a reply in a card's thread as a lane note
+([Cards](#cards-the-cases-place-in-slack)); it ignores every other event. Slash commands are acked and ignored: `govern
+slack listen` reads the channel itself.
+
+Slack delivers each event to only one of an app's open Socket Mode connections; a Tayet sidecar sends every event to
+every connection. So on Slack, a `govern slack chat` alongside `serve` on the same app sees only some of the channel's
+messages. Give it an app of its own, or use a Lead, which `serve` itself feeds.
+
+### Events over HTTP
+
+`POST /slack/events` on the same server takes Slack's Events API, signed with the same secret and checked as clicks are
+(signature, a timestamp within 300 s, at most 1 MiB). A `url_verification` gets its `challenge`. One subscription serves
+both readers: a message in a Lead channel goes to that workspace's Lead ([LEAD.md](LEAD.md)), and an event whose
+`event_id` was seen in the last hour is dropped there, which is how Slack's retries end; any other message goes on to
+cards ([Cards](#cards-the-cases-place-in-slack)). Turn on Event Subscriptions with that URL and the bot events
+`message.channels` and `message.groups` ([slack-app-manifest.yml](slack-app-manifest.yml)).
 
 ## What is recorded
 
@@ -489,8 +503,9 @@ The command calls `files.getUploadURLExternal`, POSTs the raw bytes without the 
            "chat": { "users": ["U…"], "profile": "ops-chat" } }
 ```
 
-`govern slack chat` opens its own Socket Mode connection (`SLACK_APP_TOKEN`, as `serve` does, and alongside it; Slack and a
-Tayet sidecar send every event to every open connection). Each message a person in `chat.users` posts in the channel is a
+`govern slack chat` opens its own Socket Mode connection (`SLACK_APP_TOKEN`, as `serve` does, and alongside it). A Tayet
+sidecar sends every event to every open connection, but Slack sends each event to only one of an app's connections: on
+Slack, run chat on an app of its own, or use a Squad Lead ([LEAD.md](LEAD.md)), which `serve` feeds through the one app. Each message a person in `chat.users` posts in the channel is a
 turn of a govern conversation ([CONVERSATIONS.md](CONVERSATIONS.md)) run with `chat.profile` (default `codex-read`) or a
 configured `chat.adapter`, with `timeoutSeconds` and `maxContextChars` (default 400,000) as the conversation takes them.
 The reply is posted where the question was asked, in parts of at most 3,500 characters, its Markdown turned into Slack's mrkdwn

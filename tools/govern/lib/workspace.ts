@@ -84,8 +84,24 @@ export interface WorkspaceConfig {
      *  brief: a file (relative to the config's folder) whose text opens each new conversation; originals: each image a
      *  reply shows is also attached as a download of the full file. */
     chat?: { users: string[]; profile?: string; adapter?: string; timeoutSeconds?: number; maxContextChars?: number; brief?: string;
-      originals?: boolean } };
+      originals?: boolean };
+    /** The workspace's Squad Lead (ext/slack/lead.ts, LEAD.md): a Claude Code session that the people `users` names drive
+     *  from their messages in `channel`, through the deployment's one `govern slack serve` (this workspace, or one that names
+     *  it in slack.serveRepos). session adopts an existing Claude session (default: the Lead starts its own); cwd is where
+     *  Claude runs (default: the workspace root); permissionMode is the mode a turn starts in until someone changes it
+     *  (`mode …` in the channel); brief is a file (relative to the config's folder) appended to the built-in brief. */
+    lead?: LeadConfig };
 }
+/** slack.lead: one Squad Lead per workspace. */
+export interface LeadConfig {
+  channel: string; users: string[]; name?: string; session?: string; cwd?: string; permissionMode?: LeadMode; model?: string;
+  brief?: string; timeoutSeconds?: number; permissionTimeoutSeconds?: number;
+  /** Hours a decision may wait on people before notify points the Lead's channel at it (default 8). */
+  waitHours?: number;
+}
+/** The Claude Code permission modes a Lead's turn may run in (bypassPermissions is not one: every ask reaches a person). */
+export const LEAD_MODES = ["default", "acceptEdits", "auto", "plan"] as const;
+export type LeadMode = typeof LEAD_MODES[number];
 /** A file path, or the list shape lib/resources.ts checks (kept as written: resources() builds the registry). */
 const resourcesShape: Shape<unknown> = (v, p) => (typeof v === "string" ? v : (RESOURCES(v, p), v));
 /** The extensions a workspace enables: each a name lib/ext-registry.ts knows, none twice. */
@@ -155,7 +171,14 @@ const SLACK = obj({ team: str }, { envFile: str, channel: str, alertsChannel: st
       if (c.profile !== undefined && c.adapter !== undefined) reject(p, "takes a profile or a conversation adapter, not both");
       return c;
     },
+    // The Squad Lead (ext/slack/lead.ts): who drives it, where, and how its Claude session runs.
+    lead: obj({ channel: nonEmpty("a channel id"), users: arr(nonEmpty("a user id"), { nonEmpty: true }) }, {
+      name: nonEmpty("a non-empty name"),
+      session: (v: unknown, p: string) => { const s = str(v, p); if (!UUID.test(s)) reject(p, "must be a Claude Code session id (a UUID)"); return s; },
+      cwd: nonEmpty("a non-empty path"), permissionMode: literal(...LEAD_MODES), model: nonEmpty("a model name"), brief: nonEmpty("a non-empty path"),
+      timeoutSeconds: posInt, permissionTimeoutSeconds: posInt, waitHours: posInt }),
   });
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
 const isDir = (p: string): boolean => { try { return statSync(p).isDirectory(); } catch { return false; } };
 /** Which marker `dir` holds: "config" (govern.config.json), "dot" (a .govern/ folder) or none; both is refused. */
@@ -262,8 +285,15 @@ export const slackConfig = (): NonNullable<WorkspaceConfig["slack"]> | undefined
     ...(c.heartbeat ? { heartbeat: { ...c.heartbeat, file: resolve(base(), c.heartbeat.file) } } : {}),
     ...(c.upload ? { upload: { ...c.upload, roots: c.upload.roots.map(r => resolve(base(), r)) } } : {}),
     ...(c.serveRepos ? { serveRepos: c.serveRepos.map(r => resolve(base(), r)) } : {}),
-    ...(c.chat?.brief ? { chat: { ...c.chat, brief: resolve(base(), c.chat.brief) } } : {}) };
+    ...(c.chat?.brief ? { chat: { ...c.chat, brief: resolve(base(), c.chat.brief) } } : {}),
+    ...(c.lead ? { lead: { ...c.lead, ...(c.lead.brief ? { brief: resolve(base(), c.lead.brief) } : {}),
+      ...(c.lead.cwd ? { cwd: resolve(base(), c.lead.cwd) } : {}) } } : {}) };
 };
+/** Forget the parsed config of every workspace, so the next config() reads the files again (a long-running process that
+ *  watches other workspaces' configs: slack serve's Lead router). */
+export const forgetConfigs = (): void => cache.clear();
+/** `text` checked as a workspace config, as config() would check the file `file`; fails with the first problem. */
+export const checkConfig = (file: string, text: string): WorkspaceConfig => parseFile(file, text, CONFIG);
 /** The config's decide settings, envFile absolute. */
 export const decideConfig = (): { shadow: boolean; envFile?: string } => {
   const d = findRepo() ? config().decide : undefined;

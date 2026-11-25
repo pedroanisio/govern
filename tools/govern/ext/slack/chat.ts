@@ -143,26 +143,40 @@ interface Entry {
 interface Journal { generations: Record<string, number>; requests: Record<string, Entry> }
 
 const dir = () => join(stateDir(), "slack");
-const file = () => join(dir(), "chat.json");
-function readJournal(): Journal {
+/** The journal `name` (chat: `govern slack chat`'s; lead-chat: the Squad Lead's) in the workspace's state folder. */
+const file = (name: string) => join(dir(), `${name}.json`);
+function readJournal(name: string): Journal {
   try {
-    const v = JSON.parse(readFileSync(file(), "utf8")) as Partial<Journal>;
+    const v = JSON.parse(readFileSync(file(name), "utf8")) as Partial<Journal>;
     return { generations: v.generations ?? {}, requests: v.requests ?? {} };
   } catch { return { generations: {}, requests: {} }; }
 }
-function journal<T>(f: (j: Journal) => T): T {
-  mkdirSync(dir(), { recursive: true, mode: 0o700 });
-  return withLaneLock(join(dir(), "chat.lock"), () => {
-    const j = readJournal(), result = f(j);
-    const tmp = `${file()}.tmp-${process.pid}`;
-    writeFileSync(tmp, JSON.stringify(j) + "\n", { mode: 0o600 });
-    renameSync(tmp, file());
-    return result;
-  });
+function journalOf(name: string) {
+  return <T>(f: (j: Journal) => T): T => {
+    mkdirSync(dir(), { recursive: true, mode: 0o700 });
+    return withLaneLock(join(dir(), `${name}.lock`), () => {
+      const j = readJournal(name), result = f(j);
+      const tmp = `${file(name)}.tmp-${process.pid}`;
+      writeFileSync(tmp, JSON.stringify(j) + "\n", { mode: 0o600 });
+      renameSync(tmp, file(name));
+      return result;
+    });
+  };
+}
+
+/** The question run `runId` answers, from journal `name`: where it was asked (a command adapter finds its Slack message). */
+export function questionOfRun(name: string, runId: string): { channel: string; ts: string; thread?: string; text: string } | undefined {
+  const e = Object.values(readJournal(name).requests).find((x) => x.runId === runId);
+  return e && { channel: e.channel, ts: e.ts, ...(e.thread ? { thread: e.thread } : {}), text: e.text };
+}
+
+/** The questions in journal `name` not yet answered: their conversation and run (a control has neither). */
+export function openQuestions(name: string): { conv: string; runId: string; channel: string; ts: string }[] {
+  return Object.values(readJournal(name).requests).filter((e) => !e.done).map((e) => ({ conv: e.conv, runId: e.runId, channel: e.channel, ts: e.ts }));
 }
 
 /** A question as the server sends it, when it is one this chat answers. */
-function question(payload: unknown, o: { channel: string; self: string; users: string[] }): { channel: string; ts: string; thread?: string; text: string } | undefined {
+export function question(payload: unknown, o: { channel: string; self: string; users: string[] }): { channel: string; ts: string; thread?: string; text: string; user: string } | undefined {
   const e = (payload as { event?: Record<string, unknown> } | null)?.event;
   // Only `message`: the server sends a mention as both message and app_mention.
   if (typeof e !== "object" || e === null || e.type !== "message" || e.subtype !== undefined || e.bot_id !== undefined) return undefined;
@@ -171,7 +185,7 @@ function question(payload: unknown, o: { channel: string; self: string; users: s
   if (typeof ts !== "string" || typeof text !== "string") return undefined;
   const asked = text.replace(new RegExp(`<@${o.self}(\\|[^>]*)?>`, "g"), "").trim();
   if (!asked) return undefined;
-  return { channel, ts, text: asked, ...(typeof thread === "string" && thread !== ts ? { thread } : {}) };
+  return { channel, ts, user, text: asked, ...(typeof thread === "string" && thread !== ts ? { thread } : {}) };
 }
 
 export interface ChatOptions {
@@ -185,6 +199,16 @@ export interface ChatOptions {
    *  files are named as not attached. */
   upload?: { inbox: string; roots: string[]; maxBytes: number; api?: string; token?: string };
   log?: (line: string) => void;
+  /** The journal's name in <state>/slack (default "chat"). */
+  journal?: string;
+  /** Every question, top-level or in a thread, is a turn of one conversation `<single>-<generation>` (the Squad Lead): the
+   *  thread only says where the reply goes. A full conversation moves on to the next generation without a notice. */
+  single?: string;
+  /** Create conversation `conv` (instead of slack.chat's profile or adapter, and its brief). */
+  create?: (conv: string) => void;
+  /** A message that is a command to the chat itself, not a turn (stop, mode): the line to answer it with, or undefined
+   *  for a turn. It runs before the question is journaled; a throw is answered as a refusal. */
+  control?: (q: { channel: string; ts: string; thread?: string; text: string; user: string }) => string | undefined;
 }
 
 export interface ChatBot {
@@ -205,6 +229,8 @@ function readBrief(file: string): string {
 /** The chat for one channel: questions from `o.chat.users` become turns of the channel's or the thread's conversation,
  *  and each answer, or the reason a turn failed, is posted where the question was asked. */
 export function chatBot(o: ChatOptions): ChatBot {
+  const name = o.journal ?? "chat", journal = journalOf(name), readJ = () => readJournal(name);
+  const convOf = (channel: string, where: number | string) => o.single && typeof where === "number" ? `${o.single}-${where}` : chatId(channel, where);
   const log = o.log ?? (() => undefined), pending = new Set<Promise<void>>(), seen = new Set<string>(), chains = new Map<string, Promise<void>>();
   const track = (p: Promise<void>) => {
     const q = p.catch((e: unknown) => log(`slack chat: ${(e as Error).message}`)).finally(() => pending.delete(q));
@@ -221,7 +247,8 @@ export function chatBot(o: ChatOptions): ChatBot {
   });
   /** Queue `text` in the question's conversation, creating it the first time. */
   const ask = (conv: string, text: string, requestId: string): string => {
-    if (!existsSync(join(sessions.directory(conv), "session.json"))) {
+    if (o.create && !existsSync(join(sessions.directory(conv), "session.json"))) o.create(conv);
+    else if (!existsSync(join(sessions.directory(conv), "session.json"))) {
       const brief = o.chat.brief === undefined ? undefined : readBrief(o.chat.brief);
       sessions.create(conv, { ...settings(), title: `chat in ${o.channel}` });
       if (brief) text = `${brief}\n\n---\n\n${text}`;
@@ -260,7 +287,7 @@ export function chatBot(o: ChatOptions): ChatBot {
 
   /** Post what the question's run ended with, once its run has ended; true when the question needs nothing more. */
   const deliver = async (key: string, failure?: string): Promise<boolean> => {
-    const e = readJournal().requests[key];
+    const e = readJ().requests[key];
     if (!e || e.done) return true;
     const s = sessions.inspect(e.conv), r = s.runs.find((x) => x.id === e.runId);
     if (!r) throw new Error(`${e.conv} has no run ${e.runId}`);
@@ -272,15 +299,15 @@ export function chatBot(o: ChatOptions): ChatBot {
     }
     if (r.state === "queued" || r.state === "running") return false;
     if (r.state === "interrupted" && !r.acknowledgedAt) sessions.recover(e.conv, "cancel", "slack chat: reported in the channel; ask again");
-    if (r.state === "failed" && !e.thread && !e.moved && /context budget exceeded/.test(r.error ?? "")) {
+    if (r.state === "failed" && (!e.thread || o.single) && !e.moved && /context budget exceeded/.test(r.error ?? "")) {
       // The channel's conversation is full: the question moves to the next generation, opened by the first to get here.
       const next = journal((j) => {
         const g = j.generations[e.channel] ?? 1, bump = g === e.gen;
         if (bump) j.generations[e.channel] = g + 1;
         return { gen: bump ? g + 1 : g, bump };
       });
-      if (next.bump) await post(e, `_The conversation in this channel is past its context budget (${s.maxContextChars} characters): this question starts a new conversation, which does not see the earlier ones._`);
-      const conv = chatId(e.channel, next.gen), runId = ask(conv, e.text, `${key}:moved`);
+      if (next.bump && !o.single) await post(e, `_The conversation in this channel is past its context budget (${s.maxContextChars} characters): this question starts a new conversation, which does not see the earlier ones._`);
+      const conv = convOf(e.channel, next.gen), runId = ask(conv, e.text, `${key}:moved`);
       save(key, (x) => { x.conv = conv; x.gen = next.gen; x.runId = runId; x.moved = true; });
       drain(conv);
       return true;
@@ -324,7 +351,7 @@ export function chatBot(o: ChatOptions): ChatBot {
     const step = async () => {
       let failure: string | undefined;
       try { await run(conv); } catch (e) { failure = (e as Error).message; log(`slack chat: ${conv}: ${failure}`); }
-      const keys = Object.entries(readJournal().requests).filter(([, e]) => e.conv === conv && !e.done).map(([k]) => k);
+      const keys = Object.entries(readJ().requests).filter(([, e]) => e.conv === conv && !e.done).map(([k]) => k);
       for (const key of keys) {
         try { await deliver(key, failure); } catch (e) { log(`slack chat: delivering ${key}: ${(e as Error).message}`); }
       }
@@ -334,13 +361,22 @@ export function chatBot(o: ChatOptions): ChatBot {
     track(next.finally(() => { if (chains.get(conv) === next) chains.delete(conv); }));
   };
 
-  const take = async (q: { channel: string; ts: string; thread?: string; text: string }, key: string) => {
+  const take = async (q: { channel: string; ts: string; thread?: string; text: string; user: string }, key: string) => {
+    const answer = o.control?.(q);
+    if (answer !== undefined) {
+      journal((j) => {
+        j.requests[key] = { channel: q.channel, ts: q.ts, ...(q.thread ? { thread: q.thread } : {}), conv: "", runId: "", text: q.text, at: Date.now(), posted: 1, done: Date.now() };
+      });
+      await post({ channel: q.channel, ts: q.ts, ...(q.thread ? { thread: q.thread } : {}) } as Entry, answer);
+      await react(true, "white_check_mark", q.ts);
+      return;
+    }
     await react(true, "eyes", q.ts);
-    const gen = q.thread ? undefined : journal((j) => j.generations[q.channel] ?? 1);
-    const conv = chatId(q.channel, q.thread ?? gen!);
+    const gen = q.thread && !o.single ? undefined : journal((j) => j.generations[q.channel] ?? 1);
+    const conv = q.thread && !o.single ? chatId(q.channel, q.thread) : convOf(q.channel, gen!);
     const runId = ask(conv, q.text, key);
     journal((j) => {
-      j.requests[key] = { channel: q.channel, ts: q.ts, ...(q.thread ? { thread: q.thread } : { gen }), conv, runId, text: q.text, at: Date.now() };
+      j.requests[key] = { channel: q.channel, ts: q.ts, ...(q.thread ? { thread: q.thread } : {}), ...(gen !== undefined ? { gen } : {}), conv, runId, text: q.text, at: Date.now() };
     });
     drain(conv);
   };
@@ -350,7 +386,7 @@ export function chatBot(o: ChatOptions): ChatBot {
       const q = question(payload, { channel: o.channel, self: o.self, users: o.chat.users });
       if (!q) return;
       const key = `slack:${q.channel}:${q.ts}`;
-      if (seen.has(key) || readJournal().requests[key]) return;
+      if (seen.has(key) || readJ().requests[key]) return;
       seen.add(key);
       track(take(q, key).catch(async (e: unknown) => {
         // Not asked (the profile is refused, the conversation is unreadable): the person sees why.

@@ -9,6 +9,22 @@ All notable changes to govern are documented here, following Keep a Changelog.
 
 ## [Unreleased]
 
+## [0.3.14] - 2026-11-25
+
+### Added
+
+- The Squad Lead, `govern slack lead` (LEAD.md). Each workspace can have a Lead: a Claude Code session its people drive from a Slack channel of its own (`slack.lead`), with no IDE. One Slack app and one `govern slack serve` serve every Lead. `govern slack lead enable --channel C --user U [--session ID]` writes the config and the `lead` mailbox, and a running serve picks it up on the next event.
+  - Serve's `POST /slack/events` (and its Socket Mode connection) hands each Lead channel's messages, deduplicated by `event_id` and checked against `slack.team`, to that workspace's `govern slack lead run` child. Every other event goes on to `slack.cards` as before.
+  - Each turn resumes the Lead's Claude session (`claude -p --resume`) in its folder, with the operator's settings, the current permission mode and govern's brief. Turns queue as one govern conversation. A turn is refused while the session is open in another live process (a VS Code tab).
+  - A tool use the mode does not allow becomes a card in the Lead channel: allow once, allow for the session, or deny. Serve records the click of one of `slack.lead.users`. No answer within `permissionTimeoutSeconds` is a deny.
+  - `mode default|edit|auto|plan` in the channel, or `govern slack lead mode`, sets the next turns' mode; `pare` or `stop` stops the current turn. Everything is audited in `slack/lead/audit.jsonl`.
+  - `govern slack notify` points the Lead channel at each alert it posts and at each decision waiting longer than `slack.lead.waitHours` (default 8).
+
+### Fixed
+
+- A serve with `slack.serveRepos` now reads and writes a click's lane in the lane's own workspace. Before, it used its own workspace for these: the card update after a decision, the form a button opens, the form's submission and the answered mark.
+- SLACK.md said Slack sends every event to every Socket Mode connection. Only a Tayet sidecar does that; Slack sends each event to one of the app's connections.
+
 ## [0.3.13] - 2026-11-25
 
 ### Changed

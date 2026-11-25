@@ -1,0 +1,19 @@
+// A fake `claude -p --output-format stream-json` for the Squad Lead's adapter (ext/slack/lead-adapter.ts): it logs its
+// argv, prompt and GOVERN_AS to FAKE_LEAD_LOG, then streams a session, one tool use and its result, the reply text and a
+// result whose total_cost_usd is FAKE_LEAD_COST (the session's running total). FAKE_LEAD_SESSION overrides the session id
+// it reports; FAKE_LEAD_FAIL makes it end with that message on stderr and no result.
+import { appendFileSync } from "node:fs";
+let prompt = "";
+for await (const chunk of process.stdin) prompt += chunk;
+const argv = process.argv.slice(2);
+if (process.env.FAKE_LEAD_LOG) appendFileSync(process.env.FAKE_LEAD_LOG, JSON.stringify({ argv, prompt, as: process.env.GOVERN_AS, cwd: process.cwd() }) + "\n");
+if (process.env.FAKE_LEAD_FAIL) { process.stderr.write(process.env.FAKE_LEAD_FAIL + "\n"); process.exit(1); }
+const at = (flag: string) => { const i = argv.indexOf(flag); return i >= 0 ? argv[i + 1] : undefined; };
+const session = process.env.FAKE_LEAD_SESSION ?? at("--resume") ?? at("--session-id") ?? "";
+const out = (x: unknown) => process.stdout.write(JSON.stringify(x) + "\n");
+out({ type: "system", subtype: "init", session_id: session });
+out({ type: "assistant", session_id: session, message: { content: [{ type: "tool_use", id: "tu1", name: "Bash", input: { command: "govern desk" } }] } });
+out({ type: "user", session_id: session, message: { content: [{ type: "tool_result", tool_use_id: "tu1", content: "ok" }] } });
+out({ type: "assistant", session_id: session, message: { content: [{ type: "text", text: `lead reply to: ${prompt}` }] } });
+out({ type: "result", subtype: "success", is_error: false, session_id: session, result: `lead reply to: ${prompt}`,
+  usage: { input_tokens: 10, cache_read_input_tokens: 5, cache_creation_input_tokens: 0, output_tokens: 7 }, total_cost_usd: Number(process.env.FAKE_LEAD_COST ?? 0.5) });

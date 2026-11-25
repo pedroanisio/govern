@@ -37,7 +37,12 @@ export interface NotifyOptions { api?: string; token: string; channel: string; a
   forms?: boolean;
   /** The server (server.ts): how many buttons a message may carry, and whether a click closes a message (a Tayet card).
    *  Default: Slack's. */
-  server?: SlackServer }
+  server?: SlackServer;
+  /** The Squad Lead's channel (slack.lead.channel, LEAD.md): each impediment posted here (a drive failure, a lane alert, a
+   *  channel alert) and each decision still waiting after `leadWaitHours` also gets a one-line pointer there, once. */
+  leadChannel?: string;
+  /** Hours a decision may wait on people before the Lead's channel hears of it (default 8). */
+  leadWaitHours?: number }
 /** What one run did, by key (`lane:task:stage`, `lane:gate:name`, `lane:alert:id`); failed lines name the key and the reason;
  *  heartbeat lines say what the session heartbeat check posted (heartbeat.ts) and any state it rebuilt. */
 export interface NotifyReport { posted: string[]; closed: string[]; superseded: string[]; alerts: string[]; failed: string[]; heartbeat: string[] }
@@ -58,7 +63,9 @@ interface AlertPost { channel: string; ts: string; text: string; blocks: unknown
 /** An offer of a routed reply to the publishers (publish.ts), until it is published. */
 interface Review { channel: string; ts: string; blocks: unknown[] }
 interface State { posted: Record<string, Posted>; alerts: Record<string, string>; cards?: Record<string, Card>; alertPosts?: Record<string, AlertPost>;
-  reviews?: Record<string, Review> }
+  reviews?: Record<string, Review>;
+  /** Pointers posted in the Lead's channel, by key, and when each decision was first seen waiting (by its key). */
+  lead?: { pointed: Record<string, string>; waiting: Record<string, string> } }
 const dir = () => join(stateDir(), "slack");
 const file = () => join(dir(), "posted.json");
 function readState(): State {
@@ -193,6 +200,15 @@ export async function notify(o: NotifyOptions): Promise<NotifyReport> {
   const clicked = server.singleAnswer ? answered() : new Set<string>(), claimed: string[] = [];
   /** The marks of `rec`'s messages; claimed (forgotten) only once the record they concern is closed or replaced. */
   const clicksOf = (rec: Posted) => [rec, ...(rec.parts ?? [])].map((m) => answeredKey(m.channel, m.ts)).filter((k) => clicked.has(k));
+  const lead = o.leadChannel ? (state.lead ??= { pointed: {}, waiting: {} }) : undefined;
+  /** One line in the Lead's channel about `key`, once, linking the message it is about when there is one. */
+  const point = async (key: string, text: string, at?: { channel: string; ts: string }) => {
+    if (!lead || lead.pointed[key]) return;
+    const link = at && at.ts !== "dry-run" ? ` · <https://slack.com/archives/${at.channel}/p${at.ts.replace(".", "")}|see it>` : "";
+    const sent = await send(`lead:${key}`, "chat.postMessage", { channel: o.leadChannel!, text: `${text.slice(0, 2800)}${link}`, unfurl_links: false });
+    if (sent) { report.posted.push(`lead:${key}`); if (!o.dryRun) lead.pointed[key] = sent.ts; }
+  };
+  const waitMs = (o.leadWaitHours ?? 8) * 3600_000, seenWaiting = new Set<string>();
   for (const slug of slugs) {
     let p: Project;
     try { p = load(slug); } catch (e) { report.failed.push(`${slug}: ${(e as Error).message}`); continue; }
@@ -237,6 +253,14 @@ export async function notify(o: NotifyOptions): Promise<NotifyReport> {
       }
     }
     const inThread = thread ? { thread_ts: thread } : {};
+    if (lead) for (const item of items) {
+      seenWaiting.add(item.key);
+      const since = (lead.waiting[item.key] ??= new Date().toISOString());
+      if (Date.now() - Date.parse(since) < waitMs) continue;
+      const rec = state.posted[item.key];
+      await point(`${item.key}:${since}`, `⏳ ${p.title} (${slug}) waits on people for over ${o.leadWaitHours ?? 8} h: ${item.key.slice(slug.length + 1)}`,
+        rec ? { channel: rec.channel, ts: rec.ts } : undefined);
+    }
     for (const item of items) {
       const rec = state.posted[item.key];
       const reopen = !!rec && clicksOf(rec).length > 0;
@@ -266,6 +290,7 @@ export async function notify(o: NotifyOptions): Promise<NotifyReport> {
       if (!sent) return;
       report.alerts.push(key);
       if (!o.dryRun) { state.alerts[key] = sent.ts; (state.alertPosts ??= {})[open] = { channel: sent.channel, ts: sent.ts, text, blocks }; }
+      await point(key, `🚧 ${text}`, sent);
     };
     /** Close the message kept under `open` with `line`, when there is one. */
     const closeAlert = async (open: string, line: string) => {
@@ -341,7 +366,12 @@ export async function notify(o: NotifyOptions): Promise<NotifyReport> {
   for (const a of channelConditions) {
     if (state.alerts[a.key]) continue;
     const result = await send(a.key, "chat.postMessage", { channel: o.alertsChannel ?? o.channel, text: a.text });
-    if (result) { report.alerts.push(a.key); if (!o.dryRun) state.alerts[a.key] = result.ts; }
+    if (result) { report.alerts.push(a.key); if (!o.dryRun) state.alerts[a.key] = result.ts; await point(a.key, `🚧 ${a.text}`, result); }
+  }
+  if (lead && !o.lanes && !o.dryRun) {
+    // A decision no longer waiting starts its clock again if it waits once more; pointers are forgotten after 30 days.
+    for (const k of Object.keys(lead.waiting)) if (!seenWaiting.has(k)) delete lead.waiting[k];
+    for (const [k, ts] of Object.entries(lead.pointed)) if (Date.now() - Number(ts.split(".")[0]) * 1000 > 30 * 86400_000) delete lead.pointed[k];
   }
   // Routed replies whose content check passed, offered to the publishers in the review channel (publish.ts), and the
   // offer closed once the listener has published the reply.

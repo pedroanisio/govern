@@ -23,6 +23,10 @@ import { heartbeatSettings, heartbeatStatus, clock } from "./heartbeat.ts";
 import { secret, botToken } from "./secrets.ts";
 import { doctor } from "./doctor.ts";
 import { chatBot } from "./chat.ts";
+import { userInfo } from "node:os";
+import { leadRouter, runLead, enableLead, leadStatus, leadSettings, currentMode, modeNamed, setMode, type LeadRouter } from "./lead.ts";
+import { leadAdapter } from "./lead-adapter.ts";
+import { approveServer } from "./lead-approve.ts";
 
 
 /** `govern slack serve`: decide clicks, once the team is configured: an interactivity server on loopback for Slack's signed
@@ -33,29 +37,34 @@ async function cmdServe(a: Args): Promise<void> {
   // Forms (slack.forms) open a modal with views.open under the bot token, within the click's 3 s trigger window.
   // slack.cards: a refused thread reply is explained to its author with chat.postEphemeral, under the bot token too.
   const call = cfg.forms || cfg.cards ? slackCall(server.api, botToken(cfg)) : undefined;
+  const log = (l: string) => process.stderr.write(`${l}\n`);
+  // Messages in the Lead channels of the served workspaces go to each one's Lead process (slack.lead, LEAD.md).
+  const leads: LeadRouter = leadRouter({ log });
+  const opts = { server, lead: (p: unknown) => leads.route(p), ...(call ? { call } : {}) };
+  for (const sig of ["SIGTERM", "SIGINT"] as const) process.once(sig, () => { leads.close(); process.exit(0); });
   if (cfg.transport === "socket") {
     if (opt(a, "port") !== undefined) usage("--port is for slack.transport \"http\"; Socket Mode listens on no port");
     const token = secret("SLACK_APP_TOKEN", process.env.SLACK_APP_TOKEN, cfg.envFile)
       ?? fail(`SLACK_APP_TOKEN is not set: export it, or put it in the dotenv file slack.envFile names in ${configFile()} (Slack: the app-level token xapp-… with connections:write; Tayet: the sidecar's local token)`);
     out(`govern slack (team ${cfg.team}) over Socket Mode at ${server.api}`);
-    await runSocket({ api: server.api, token, log: (l) => process.stderr.write(`${l}\n`),
+    await runSocket({ api: server.api, token, log,
       handle: async (payload, envelope) => {
         const r = await handleSocketInteraction(payload, envelope, { server, ...(call ? { call } : {}) });
         if (!r.value.ok) process.stderr.write(`slack: click refused (${r.value.error})\n`);
         return r.reply !== undefined ? { reply: r.reply } : {};
       },
-      ...(cfg.cards ? { onEvent: (payload: unknown) => { void handleSocketEvent(payload, { server, ...(call ? { call } : {}) }).then((r) => {
+      onEvent: (payload: unknown) => { void handleSocketEvent(payload, opts).then((r) => {
         if (!r.value.ok) process.stderr.write(`slack: event refused (${r.value.error})\n`);
-      }); } } : {}) });
+      }); } });
     return;
   }
   const signing = secret("SLACK_SIGNING_SECRET", process.env.SLACK_SIGNING_SECRET, cfg.envFile)
     ?? fail(`SLACK_SIGNING_SECRET is not set: export it, or name a dotenv file holding it as slack.envFile in ${configFile()}`);
-  const http = slackServer(signing, { server, ...(call ? { call } : {}) });
+  const http = slackServer(signing, opts);
   const port = Number(opt(a, "port") ?? 5003);
   if (!Number.isInteger(port) || port < 0 || port > 65535) usage("--port must be 0..65535");
   http.on("error", (e) => { process.stderr.write(`slack: ${e.message}\n`); process.exitCode = 1; });
-  http.listen(port, "127.0.0.1", () => out(`govern slack (team ${cfg.team}) on http://127.0.0.1:${port}/slack/actions${cfg.cards ? " and /slack/events" : ""}`));
+  http.listen(port, "127.0.0.1", () => out(`govern slack (team ${cfg.team}) on http://127.0.0.1:${port}/slack/actions and /slack/events`));
 }
 
 /** `govern slack chat`: answer the people slack.chat.users names in slack.channel, over Socket Mode, until stopped. */
@@ -79,6 +88,32 @@ async function cmdChat(): Promise<void> {
   await bot.idle();
 }
 
+/** `govern slack lead enable|status|mode|run|adapter|approve-mcp`: the Squad Lead (LEAD.md). */
+async function cmdLead(a: Args): Promise<void> {
+  const verb = a._[2];
+  if (verb === "enable") {
+    const users = many(a, "user");
+    if (!users.length) usage("lead enable requires --user U… (one per person who may write to the Lead and answer its asks)");
+    const s = (k: string) => opt(a, k);
+    out(enableLead({ channel: s("channel") ?? usage("lead enable requires --channel C…"), users,
+      ...Object.fromEntries((["session", "cwd", "mode", "name", "brief", "model"] as const).flatMap((k) => (s(k) !== undefined ? [[k, s(k)!]] : []))) }));
+    return;
+  }
+  if (verb === "status") { out(leadStatus()); return; }
+  if (verb === "mode") {
+    const { lead } = leadSettings(), word = a._[3];
+    if (word === undefined) { out(currentMode(lead)); return; }
+    const mode = modeNamed(word) ?? usage("lead mode takes default, edit (acceptEdits), auto or plan");
+    setMode(mode, userInfo().username, "cli");
+    out(`mode ${mode}, from the next turn`);
+    return;
+  }
+  if (verb === "run") return runLead();
+  if (verb === "adapter") return leadAdapter();
+  if (verb === "approve-mcp") return approveServer();
+  usage("govern slack lead enable|status|mode [M]|run|adapter|approve-mcp");
+}
+
 const summary = (r: NotifyReport): string =>
   [...r.posted.map((k) => `posted ${k}`), ...r.superseded.map((k) => `superseded ${k}`), ...r.closed.map((k) => `closed ${k}`),
     ...r.alerts.map((k) => `alert ${k}`), ...r.heartbeat.map((k) => `heartbeat ${k}`), ...r.failed.map((k) => `failed ${k}`)].join("\n") || "(nothing to post)";
@@ -92,7 +127,8 @@ async function cmdNotify(a: Args): Promise<void> {
   if (!Number.isInteger(interval) || interval < 5) usage("--interval must be a whole number of seconds, 5 or more");
   const once = async () => {
     const r = await notify({ api: serverOf(cfg).api, server: serverOf(cfg), token, channel, alertsChannel: cfg.alertsChannel, dryRun: flag(a, "dry-run"),
-      ...(lanes.length ? { lanes } : {}), ...(cfg.labels ? { labels: cfg.labels } : {}), ...(cfg.threads ? { threads: true } : {}), ...(cfg.cards ? { cards: true } : {}), ...(cfg.forms ? { forms: true } : {}) });
+      ...(lanes.length ? { lanes } : {}), ...(cfg.labels ? { labels: cfg.labels } : {}), ...(cfg.threads ? { threads: true } : {}), ...(cfg.cards ? { cards: true } : {}), ...(cfg.forms ? { forms: true } : {}),
+      ...(cfg.lead ? { leadChannel: cfg.lead.channel, ...(cfg.lead.waitHours !== undefined ? { leadWaitHours: cfg.lead.waitHours } : {}) } : {}) });
     out(summary(r));
     return r.failed.length === 0;
   };
@@ -221,7 +257,7 @@ export const manpage = MANPAGE;
 export { doctor };
 
 export const commands: Cmd[] = [
-  { name: "slack", section: 7, noSub: "govern slack serve|chat|notify|listen|post|upload|resolve|digest|triage|dismiss|heartbeat|install-service (the protocol: tools/govern/SLACK.md)",
+  { name: "slack", section: 7, noSub: "govern slack serve|chat|lead|notify|listen|post|upload|resolve|digest|triage|dismiss|heartbeat|install-service (the protocol: tools/govern/SLACK.md)",
     subs: {
       "install-service": { lines: [["", "write user units for listen, notify and a daily digest timer; print enable instructions without starting them"]], run: () => out(installServices()) },
       upload: { flags: { value: ["thread", "file", "title", "text", "key"] },
@@ -240,7 +276,14 @@ export const commands: Cmd[] = [
       post: { flags: { value: ["kind", "text", "file", "thread", "key"], bool: ["alerts"] },
         lines: [["--kind ack|blocked|delivered|question|note (--text T | --file F) [--thread TS | --alerts] [--key K]", "send a prefixed message to slack.channel (or slack.alertsChannel with --alerts), resolve a thread parent and journal the send in slack.inbox/sent.jsonl"]], run: cmdPost },
       serve: { flags: { value: ["port"] },
-        lines: [["[--port 5003]", "serve Slack's interactivity requests on loopback (POST /slack/actions); the signing secret comes from\nSLACK_SIGNING_SECRET or the config's slack.envFile, the team from slack.team"]], run: cmdServe },
+        lines: [["[--port 5003]", "serve Slack's interactivity requests (POST /slack/actions) and events (POST /slack/events) on loopback, and\nrun the Lead of each served workspace with slack.lead; the signing secret comes from SLACK_SIGNING_SECRET or the\nconfig's slack.envFile, the team from slack.team"]], run: cmdServe },
+      lead: { flags: { value: ["channel", "session", "cwd", "mode", "name", "brief", "model"], multi: ["user"] },
+        lines: [["enable --channel C --user U [--user U]... [--session ID] [--cwd DIR] [--mode M] [--name N] [--brief F] [--model M]",
+          "write slack.lead: the Squad Lead answers these people in its own channel C by continuing a Claude Code session on\nthis host (LEAD.md); slack serve routes the channel's messages to it and decides its permission cards"],
+          ["status", "the Lead's channel, people, Claude session, permission mode, open turns and asks waiting on a person"],
+          ["mode [default|edit|auto|plan]", "show or set the Lead's permission mode, from its next turn (people in the channel: `mode auto`)"],
+          ["run | adapter | approve-mcp", "internal: the Lead's process (started by slack serve), its conversation adapter, its permission prompt tool"]],
+        run: cmdLead },
       chat: { lines: [["", "answer the people slack.chat.users names in slack.channel over Socket Mode: each message is a turn of a\ngovern conversation (slack.chat.profile or .adapter), its reply posted in the channel or its thread; runs until stopped"]], run: cmdChat },
       notify: { flags: { multi: ["lane"], value: ["interval"], bool: ["loop", "dry-run"] },
         lines: [["[--lane S]... [--loop --interval 30] [--dry-run]", "post to slack.channel what the lanes wait on from people (human tasks, gates) and open timer alerts, once each,\nwith buttons bound to the case; update a message when its decision is made or the case changes; with\nslack.heartbeat, post blocked: when the session heartbeat goes stale and note: when it returns. The bot token is\nSLACK_BOT_TOKEN or the config's slack.envFile; --dry-run sends no notifications and leaves notification receipts unchanged"]], run: cmdNotify },
