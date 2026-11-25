@@ -109,6 +109,21 @@ test("with cards, the card shows who holds the case, its last note, and that a t
   });
 });
 
+test("with cards, every open case has a card, also one that waits on nobody; a finished case that never had one gets none", async () => {
+  const e = setup();
+  write(join(e.root, "PALS-Notes/processes/plain.json"), JSON.stringify({ version: 1, name: "plain", stages: [{ name: "doing", next: [{ to: ["done"] }] }, { name: "done", next: [] }], gates: [] }));
+  assert.equal(govern(e, ["new", "t2", "--process", "plain", "--title", "Quiet one"]).code, 0);
+  assert.equal(govern(e, ["new", "t3", "--process", "plain", "--title", "Old one"]).code, 0);
+  for (let i = 0; i < 2 && !(await inWorkspace(e, () => load("t3"))).finished; i++) { const r = govern(e, ["advance", "t3", "--note", "feito"]); assert.equal(r.code, 0, r.out + r.err); }
+  assert.ok((await inWorkspace(e, () => load("t3"))).finished, "t3 finished");
+  await fakeSlack(async (api, calls) => {
+    const r = await run(e, api);
+    assert.ok(r.posted.includes("t2:card"), JSON.stringify(r));
+    assert.ok(!r.posted.includes("t3:card"));
+    assert.match(textOf(calls.find((c) => c.method === "chat.postMessage" && String(c.body.text).startsWith("Quiet one"))!), /Nothing waits on people now/);
+  });
+});
+
 test("with cards, a new lane note is posted in the card's thread once", async () => {
   const e = setup();
   await fakeSlack(async (api, calls) => {

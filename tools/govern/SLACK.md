@@ -110,6 +110,8 @@ itself.
 
 With `"cards": true` in `slack` (it implies `threads`), the card is where people follow and discuss the case:
 
+- Every open case has a card, posted on the first run that sees it, also one that waits on nobody. A finished case that
+  never had a card gets none.
 - The card also shows who holds the case's human tasks and the case's last note, and says that a reply in its thread is
   a note.
 - Each new lane note (`govern note`, an agent's note, a decision's note) is posted in the card's thread, in order, once.

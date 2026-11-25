@@ -30,7 +30,7 @@ export interface NotifyOptions { api?: string; token: string; channel: string; a
   labels?: Partial<Record<Decision, string>>;
   /** One card per case, updated in place; what the case waits on and its alerts are posted in the card's thread. */
   threads?: boolean;
-  /** slack.cards (implies threads): the card shows who holds the case and its last note, and each new lane note is posted
+  /** slack.cards (implies threads): every open case has a card, posted on the first run that sees it; the card shows who holds the case and its last note, and each new lane note is posted
    *  in the card's thread (a note that came from the thread is not posted back). */
   cards?: boolean;
   /** Send back asks for a reason, and an option with `edit` fields gets an Edit button (Slack forms, forms.ts). */
@@ -206,7 +206,8 @@ export async function notify(o: NotifyOptions): Promise<NotifyReport> {
         if (!o.dryRun) delete state.posted[key];
       }
     }
-    // slack.threads: the case's card, posted once the case needs someone (or has an alert), then kept up to date. A card
+    // slack.threads: the case's card, posted once the case needs someone (or has an alert), then kept up to date; with
+    // slack.cards, every open case has its card (a finished case that never had one gets none). A card
     // that cannot be posted holds the lane's posts back, so they never land outside its thread.
     let thread: string | undefined;
     if (o.threads || o.cards) {
@@ -215,7 +216,7 @@ export async function notify(o: NotifyOptions): Promise<NotifyReport> {
       if (had) {
         if (had.text !== JSON.stringify(c.blocks) && await send(`${slug}:card`, "chat.update", { channel: had.channel, ts: had.ts, ...c }) && !o.dryRun) cards[slug] = { ...had, text: JSON.stringify(c.blocks) };
         thread = had.ts;
-      } else if (items.length || alerting) {
+      } else if (items.length || alerting || (o.cards && !p.finished)) {
         const sent = await send(`${slug}:card`, "chat.postMessage", { channel: o.channel, ...c });
         if (!sent) continue;
         report.posted.push(`${slug}:card`);

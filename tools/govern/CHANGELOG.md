@@ -9,6 +9,12 @@ All notable changes to govern are documented here, following Keep a Changelog.
 
 ## [Unreleased]
 
+## [0.3.13] - 2026-11-25
+
+### Changed
+
+- `slack.cards`: every open case now has its card, posted on the first notify run that sees it, and not only a case that waits on someone or has an alert. A card system needs every open card in view. A finished case that never had a card gets none. With `threads` alone, nothing changes.
+
 ## [0.3.12] - 2026-11-25
 
 ### Added
