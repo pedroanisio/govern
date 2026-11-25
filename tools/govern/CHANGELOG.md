@@ -9,6 +9,17 @@ All notable changes to govern are documented here, following Keep a Changelog.
 
 ## [Unreleased]
 
+## [0.3.11] - 2026-11-25
+
+There is no 0.3.10 in this repository: 0.3.10 and 0.3.11 were tagged by mistake in pedroanisio/super-tools on
+2026-11-24 (0.3.11 there is this release's transport fix on 0.3.9). This release brings that change here.
+
+### Changed
+
+- A Claude Code (or Grok) result, message or stream event with a key govern does not know no longer fails the run. The key is dropped, and its path is reported once on stderr (`govern: ignored an unknown provider field $.x`), never its value. Every key govern reads is still checked as before: a wrong type, a missing required key or a value that is not an object still fails. Claude Code adds run metadata in most releases, and each addition used to stop every Claude turn on every workspace until govern named the key (2.1.x, 2.1.318, 2.1.322 and 2.1.325). On 2026-11-23 a 429 from the API reached the operator as `unknown key "api_error_origin"` instead of the usage limit. Codex events and govern's own conversation events stay closed.
+- A usage counter govern does not know is dropped the same way: the counters it knows are still a measurement, so the run's spend is no longer unknown because of an extra counter.
+- The Slack app manifest is a file, `slack-app-manifest.yml`, each scope commented, with the scopes squad setup needs (channels:manage, channels:read, pins:write, users:read, files:read). SLACK-TUTORIAL.md links to it.
+
 ## [0.3.9] - 2026-11-18
 
 ### Added

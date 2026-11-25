@@ -1,0 +1,40 @@
+# Slack app manifest for the govern bot.
+# Use: api.slack.com/apps → Create New App → From an app manifest (new app), or the app's
+# "App Manifest" page (existing app). After changing scopes, reinstall the app to the workspace.
+# Replace request_url with your public endpoint (see SLACK-TUTORIAL.md, step 5); on an existing
+# app keep the URL it already has.
+display_information:
+  name: govern
+  description: Decisions on govern cases
+features:
+  bot_user:
+    display_name: govern
+    always_online: false
+oauth_config:
+  scopes:
+    bot:
+      # post messages, cards and decision buttons
+      - chat:write
+      # upload and read media (cards rendered as images, attachments)
+      - files:write
+      - files:read
+      # `govern slack listen`: read public / private channels the bot belongs to
+      - channels:history
+      - groups:history
+      # squad auto-setup: create the squad channel, invite the owner, set its topic
+      - channels:manage
+      - channels:read
+      # pin the progress card in the squad channel
+      - pins:write
+      # look up the owner's user id to invite them
+      - users:read
+      # private squad channels: uncomment both
+      # - groups:write
+      # - groups:read
+settings:
+  interactivity:
+    is_enabled: true
+    request_url: https://example.invalid/slack/actions
+  org_deploy_enabled: false
+  socket_mode_enabled: false
+  token_rotation_enabled: false

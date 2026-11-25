@@ -76,33 +76,9 @@ decisions do not use it, but every person needs one, and each must be different.
 ## 2. Create the Slack app
 
 1. Open <https://api.slack.com/apps>, choose **Create New App → From an app manifest**, and pick your workspace.
-2. Paste this manifest (YAML). The request URL is a placeholder until step 5.
+2. Paste the manifest from [`slack-app-manifest.yml`](slack-app-manifest.yml). The request URL is a placeholder until step 5.
 
-   ```yaml
-   display_information:
-     name: govern
-     description: Decisions on govern cases
-   features:
-     bot_user:
-       display_name: govern
-       always_online: false
-   oauth_config:
-     scopes:
-       bot:
-         - chat:write
-         - files:write
-         - channels:history
-         - groups:history
-   settings:
-     interactivity:
-       is_enabled: true
-       request_url: https://example.invalid/slack/actions
-     org_deploy_enabled: false
-     socket_mode_enabled: false
-     token_rotation_enabled: false
-   ```
-
-   `chat:write` posts messages, `files:write` enables media upload, and `channels:history` / `groups:history` let `listen` read public / private channels the bot belongs to. Request only the scopes for the features you enable; reinstall the app after changing scopes. Invite the bot to the channel.
+   `chat:write` posts messages, `files:write` / `files:read` handle media, and `channels:history` / `groups:history` let `listen` read public / private channels the bot belongs to. `channels:manage`, `channels:read`, `pins:write` and `users:read` let squad setup create the channel, invite the owner and pin the progress card; without them a person creates the channel and invites the bot. Each scope is commented in the file: drop the ones for features you do not enable, and reinstall the app after changing scopes. `channels:manage` also lets the bot rename or archive channels it belongs to.
 
    Socket Mode stays off: its payloads carry no per-request signature, and govern accepts only signed requests.
 3. **Install App → Install to Workspace**, and allow it. Copy the **Bot User OAuth Token** (`xoxb-…`).

@@ -6,6 +6,8 @@ import { parseEvents } from "../lib/codex.ts";
 import { claudeResult, grokResult } from "../lib/queue.ts";
 import { build } from "../ext/conversation/conversation-adapters.ts";
 import { makeEnv, childEnv, write, HERE } from "./helpers.ts";
+import { openObj } from "../lib/model-transport.ts";
+import { literal, str } from "../lib/shape.ts";
 
 const oversized = "x".repeat(4 * 1024 * 1024 + 1);
 const bad = [
@@ -14,12 +16,13 @@ const bad = [
   ["wrong type", '{"result":42}'], ["oversized", JSON.stringify({ result: oversized })]
 ] as const;
 for (const [label, raw] of bad) {
-  test(`Claude decoder rejects ${label} with a typed failure`, () => {
+  // Claude Code and Grok add run metadata in most releases: an unknown key is dropped there (the next tests), not refused.
+  if (label !== "unknown field") test(`Claude decoder rejects ${label} with a typed failure`, () => {
     const out = claudeResult(raw, 0, "");
     assert.ok(out.error, "invalid Claude output must fail");
     assert.equal(out.spendUnknown, true);
   });
-  test(`Grok decoder rejects ${label} before a valid terminal event`, () => {
+  if (label !== "unknown field") test(`Grok decoder rejects ${label} before a valid terminal event`, () => {
     const event = label === "non-JSON" || label === "null" || label === "array" ? raw : JSON.stringify({ type: "result", subtype: "success", stop_reason: "end_turn", ...JSON.parse(raw) });
     const out = grokResult(event + '\n' + JSON.stringify({ type: "result", subtype: "success", stop_reason: "end_turn", result: "ok" }), 0, "", undefined, 30);
     assert.ok(out.error, "invalid Grok event must not be hidden by a later success");
@@ -46,7 +49,11 @@ for (const engine of ["command", "codex", "claude", "grok"] as const) {
       a = build({ id: "chat", cwd: e.root, adapter } as Parameters<typeof build>[0], { id: "run", messageId: "message" } as Parameters<typeof build>[1], []);
       const valid = engine === "command" ? { type: "done", text: "ok" } : engine === "codex" ? { type: "item.completed", item: { type: "agent_message", text: "ok" } } : { type: "result", subtype: "success", stop_reason: "end_turn", result: "ok" };
       const incomplete = engine === "command" ? { type: "done" } : engine === "codex" ? { type: "item.completed" } : { type: "result", subtype: "success" };
-      for (const value of ["not JSON", null, [], incomplete, { ...valid, surprise: true }, { ...valid, type: 42 }, engine === "codex" ? { ...valid, item: { type: "agent_message", text: oversized } } : { ...valid, text: oversized, result: oversized }]) {
+      // Claude and Grok results drop an unknown key (Claude Code adds run metadata in most releases); Codex and govern's own
+      // events still refuse one.
+      const open = engine === "claude" || engine === "grok";
+      if (open) assert.equal(a.parse({ ...valid, surprise: true })[0]?.type, "done");
+      for (const value of ["not JSON", null, [], incomplete, ...(open ? [] : [{ ...valid, surprise: true }]), { ...valid, type: 42 }, engine === "codex" ? { ...valid, item: { type: "agent_message", text: oversized } } : { ...valid, text: oversized, result: oversized }]) {
         assert.equal(a.parse(value)[0]?.type, "error", "invalid event must return an adapter failure");
       }
     } finally { a?.finish(); process.env = saved; }
@@ -69,10 +76,13 @@ test("transport schemas reject invalid nested fields and preserve unrelated harn
   assert.deepEqual(ignored.errors, []);
   assert.equal(ignored.spendUnknown, undefined);
   // An invalid usage report in a queue run is not a measurement: the run is not failed for it, and its spend is unknown.
-  const unmeasured = parseEvents('{"type":"turn.completed","usage":{"input_tokens":0,"output_tokens":0,"surprise":1}}');
+  const unmeasured = parseEvents('{"type":"turn.completed","usage":{"input_tokens":"0","output_tokens":0}}');
   assert.equal(unmeasured.invalid, undefined);
   assert.equal(unmeasured.spendUnknown, true);
-  for (const usage of [{ input_tokens: "1", output_tokens: 0 }, { input_tokens: 0, output_tokens: 0, surprise: 1 }]) {
+  // A counter govern does not know is dropped: the known counters are still a measurement.
+  const measured = parseEvents('{"type":"turn.completed","usage":{"input_tokens":0,"output_tokens":0,"surprise":1}}');
+  assert.equal(measured.spendUnknown, undefined);
+  for (const usage of [{ input_tokens: "1", output_tokens: 0 }, { input_tokens: 0, output_tokens: -1 }]) {
     const raw = JSON.stringify({ type: "result", subtype: "success", stop_reason: "end_turn", result: "ok", usage });
     for (const out of [claudeResult(raw, 0, ""), grokResult(raw, 0, "", undefined, 30)]) {
       assert.equal(out.error, undefined);
@@ -106,6 +116,33 @@ test("terminal measurements preserve explicit zero and unknown spend", () => {
       assert.equal(out.spendUnknown, true);
     }
   }
+});
+
+test("an unknown key in a Claude or Grok result is dropped, reported once, and never read; a known key of the wrong type still fails", () => {
+  const seen: string[] = [];
+  const shape = openObj({ type: literal("result") }, { result: str }, (path) => seen.push(path));
+  assert.deepEqual(shape({ type: "result", result: "ok", api_error_origin: "server", surprise: { deep: true } }, "$"), { type: "result", result: "ok" });
+  shape({ type: "result", surprise: 1 }, "$");
+  assert.deepEqual(seen, ["$.api_error_origin", "$.surprise"], "each unknown path is reported once per process");
+  assert.throws(() => shape({ type: "result", result: 42 }, "$"), /string/);
+  assert.throws(() => shape({ result: "ok" }, "$"), /missing/);
+  assert.throws(() => shape([], "$"), /object/);
+  for (const raw of [
+    '{"result":"ok","surprise":true}',
+    // Claude Code 2.1.322: a failed API call names where the error came from and, later, the error itself.
+    '{"type":"result","subtype":"success","is_error":false,"result":"ok","api_error_origin":null,"api_error":null,"field_from_2_1_400":{"x":1}}',
+  ]) {
+    const out = claudeResult(raw, 0, "");
+    assert.equal(out.error, undefined, raw);
+    assert.equal(out.text, "ok");
+  }
+  const grok = grokResult(JSON.stringify({ type: "result", subtype: "success", stop_reason: "end_turn", result: "ok", surprise: true }), 0, "", undefined, 30);
+  assert.equal(grok.error, undefined);
+  // The usage measurement is open too, but a known counter of the wrong type is not a measurement.
+  assert.ok(claudeResult(JSON.stringify({ result: "ok", usage: { input_tokens: 1, output_tokens: 2, brand_new_counter: 3 } }), 0, "").usage);
+  const failed = claudeResult('{"type":"result","subtype":"error_during_execution","is_error":true,"result":"","api_error_origin":"server","api_error":{"status":429}}', 0, "");
+  assert.ok(failed.error, "an API failure still fails the run, now with its own reason instead of a shape error");
+  assert.doesNotMatch(String(failed.error), /unknown key/);
 });
 
 test("a Claude Code 2.1.318 result that names its origin still decodes", () => {

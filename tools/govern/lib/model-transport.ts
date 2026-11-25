@@ -1,4 +1,9 @@
-// Closed transport shapes. Unread harness metadata is explicitly named but opaque; it is never used as a reply or usage.
+// Transport shapes. Codex events and govern's own conversation events are closed: an unknown key fails them. Claude
+// Code's (and Grok's) result, message and stream events are open: every field govern reads is checked as strictly as
+// before, and a key govern does not know is dropped, with one line on stderr the first time it is seen. Claude Code adds
+// run metadata in most releases, and before 0.3.10 each addition failed every Claude turn on every squad until govern
+// named the new key (2.1.x, 2.1.318, 2.1.322, 2.1.325). Unread harness metadata that is named stays opaque; none of it is
+// used as a reply or usage.
 import { obj, arr, str, bool, literal, reject, ShapeError, type Shape } from "./shape.ts";
 
 export const OUTPUT_LIMIT = 4 * 1024 * 1024;
@@ -23,6 +28,25 @@ const count: Shape<number> = (v, p) => {
   return n;
 };
 const opaque: Shape<unknown> = (v) => v;
+/** Like obj, but a key the shape does not name is dropped instead of failing the value: for provider metadata only. The
+ *  first time this shape sees a path it is reported on stderr (`report`, for tests), never its value. */
+export function openObj<R extends Record<string, Shape<unknown>>, O extends Record<string, Shape<unknown>> = {}>(
+  required: R, optional: O = {} as O, report: (path: string) => void = (path) => process.stderr.write(`govern: ignored an unknown provider field ${path}\n`),
+): ReturnType<typeof obj<R, O>> {
+  const closed = obj(required, optional), warned = new Set<string>();
+  return (v, p) => {
+    if (typeof v !== "object" || v === null || Array.isArray(v)) return closed(v, p);
+    const kept: Record<string, unknown> = {};
+    for (const [k, x] of Object.entries(v)) {
+      if (Object.hasOwn(required, k) || Object.hasOwn(optional, k)) kept[k] = x;
+      else {
+        const path = `${p}.${k}`;
+        if (!warned.has(path)) { warned.add(path); report(path); }
+      }
+    }
+    return closed(kept, p);
+  };
+}
 const nullable = <T>(shape: Shape<T>): Shape<T | null> => (v, p) => v === null ? null : shape(v, p);
 const counters = {
   input_tokens: number, output_tokens: number, cached_input_tokens: number, cache_write_input_tokens: number,
@@ -34,7 +58,7 @@ const counters = {
   // Claude Code 2.1.x usage metadata (2.1.219 sends the first three; 2.1.312 adds the rest).
   cache_creation: opaque, inference_geo: opaque, speed: opaque, output_tokens_details: opaque, fallback_credit: opaque,
 };
-export const transportUsage = obj({}, counters);
+export const transportUsage = openObj({}, counters);
 export type TransportUsage = ReturnType<typeof transportUsage>;
 /** What an invalid usage report does. "refuse" fails the event (conversation turns). "unknown" reads it as absent: not a
  *  measurement, so the run's spend is unknown (settled as reserved) while its reply is still verified (queue runs); it is
@@ -45,7 +69,7 @@ const measurement: Shape<TransportUsage | undefined> = (v, p) => {
 };
 const usageShape = (policy: UsagePolicy): Shape<TransportUsage | undefined> => policy === "unknown" ? measurement : transportUsage;
 const metadata = { session_id: text, uuid: text, parent_tool_use_id: nullable(text) };
-const resultShape = (policy: UsagePolicy) => obj({}, {
+const resultShape = (policy: UsagePolicy) => openObj({}, {
   type: literal("result"), subtype: text, is_error: bool, result: text, structured_output: opaque,
   num_turns: count, total_cost_usd: number, usage: nullable(usageShape(policy)), errors: arr(text),
   stop_reason: nullable(text), usage_is_incomplete: bool, cost_is_partial: bool,
@@ -126,8 +150,8 @@ export function transportEvent(engine: "codex" | "claude" | "grok", raw: unknown
     }
   } else {
     if (type === "result") return { ...transportResult(raw, engine, policy), type };
-    if (type === "error") return obj({ type: text }, { message: nullable(text) })(raw, "$");
-    if (type === "assistant" || type === "user") return obj({ type: text, message: obj({ content: arr(content) }, {
+    if (type === "error") return openObj({ type: text }, { message: nullable(text) })(raw, "$");
+    if (type === "assistant" || type === "user") return openObj({ type: text, message: openObj({ content: arr(content) }, {
       id: text, type: text, role: text, model: text, stop_reason: nullable(text), stop_sequence: nullable(text), usage: usageShape(policy),
       container: opaque, context_management: opaque, diagnostics: opaque, stop_details: opaque, input_transformations: opaque,
     }) }, { ...metadata, request_id: opaque, timestamp: opaque, tool_use_result: opaque, tool_result_meta: opaque, wire_tool_inputs: opaque,
@@ -147,7 +171,7 @@ export function transportEvent(engine: "codex" | "claude" | "grok", raw: unknown
         return t === "content_block_delta" ? obj({ type: text, delta }, { index: count })(v, p) : { type: t };
       };
       // Claude Code 2.1.325 adds the API message id, the thinking display mode and time to first token; none is read.
-      return obj({ type: text, event }, { ...metadata, api_message_id: opaque, thinking_display: opaque, ttft_ms: opaque })(raw, "$");
+      return openObj({ type: text, event }, { ...metadata, api_message_id: opaque, thinking_display: opaque, ttft_ms: opaque })(raw, "$");
     }
   }
   return { type };
