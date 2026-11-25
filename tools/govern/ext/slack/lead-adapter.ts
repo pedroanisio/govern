@@ -4,8 +4,10 @@
 // permission mode the Lead's people chose. Only the newest message is sent: the Claude session holds the context.
 //
 // What it adds around Claude: a refusal while the session is open in another live process (a VS Code tab, a terminal:
-// two ends on one session overwrite each other); a progress message in the question's thread while the turn runs, deleted
-// when it ends; permission asks through lead-approve.ts (--permission-prompt-tool); the session id Claude continues under;
+// two ends on one session overwrite each other); the turn told in the question's thread as it runs (what Claude says
+// between tool uses, posted as it says it, and a status message kept last in the thread: each tool use by its own
+// description, what runs now and for how long, the plan's progress), and what it is doing in slack/lead/activity.json for
+// a message that arrives meanwhile (lead.ts busyLine); permission asks through lead-approve.ts (--permission-prompt-tool); the session id Claude continues under;
 // and the turn's share of the session's cost. The run keeps GOVERN_CONVERSATION_RUN, so the Lead cannot approve a gate or
 // complete a human task itself.
 import { spawn } from "node:child_process";
@@ -16,16 +18,19 @@ import { join } from "node:path";
 import { createInterface } from "node:readline";
 import { repo } from "../../lib/workspace.ts";
 import { SESSIONS_DIR, isAlive, pidChain } from "../../lib/sessions.ts";
-import { questionOfRun } from "./chat.ts";
+import { chunks, mrkdwn, questionOfRun } from "./chat.ts";
 import { slackCall, type Call } from "./channel.ts";
 import { serverOf } from "./server.ts";
 import { findBotToken } from "./secrets.ts";
-import { LEAD_JOURNAL, LEAD_MAILBOX, currentMode, governArgv, lastCost, leadSession, leadSettings, recordCost, recordSession } from "./lead.ts";
+import { LEAD_JOURNAL, LEAD_MAILBOX, currentMode, elapsed, governArgv, lastCost, leadSession, leadSettings, recordCost, recordSession,
+  writeActivity } from "./lead.ts";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const NO_LOGIN = /authenticat|oauth|not logged in|\/login|invalid api key|401/i;
-const PROGRESS_AFTER_MS = Number(process.env.GOVERN_LEAD_PROGRESS_AFTER_MS ?? 20_000);
-const PROGRESS_EVERY_MS = 15_000;
+const PROGRESS_AFTER_MS = Number(process.env.GOVERN_LEAD_PROGRESS_AFTER_MS ?? 10_000);
+const PROGRESS_EVERY_MS = Number(process.env.GOVERN_LEAD_PROGRESS_EVERY_MS ?? 10_000);
+/** Finished steps the status message lists. */
+const RECENT_STEPS = 4;
 const NO_USAGE = { input: 0, output: 0, cached: 0, cacheWrite: 0, reasoning: 0, costUsd: 0 };
 const num = (v: unknown): number => (typeof v === "number" && Number.isFinite(v) && v > 0 ? v : 0);
 const emit = (e: Record<string, unknown>): void => { process.stdout.write(JSON.stringify(e) + "\n"); };
@@ -55,8 +60,12 @@ export function builtinBrief(o: { name: string; ws: string; squad?: string; lead
   return [
     `You are the ${o.name} of the govern workspace ${o.ws}${o.squad ? ` (its squad channel is ${o.squad})` : ""}, reached from Slack, not an IDE:`,
     `the squad's people write to you in the Lead channel ${o.lead}, and your final reply is posted there (Markdown becomes Slack mrkdwn).`,
-    `Nobody sees your intermediate text, so the reply must stand alone: short, with substance, saying what you ran and what it showed`,
-    `when that matters, in the language the person wrote in. This turn runs in permission mode ${o.mode}.`,
+    `The people follow the turn from Slack: your text between tool uses is posted in the thread as you write it, and a status`,
+    `message there shows each tool use by its description. So: answer what the message asks first; a question (a status, what`,
+    `you are doing) gets its answer before you start or resume any other work. Before long work (tests, builds, deploys, loops)`,
+    `say in one line what you are starting and why, and give each Bash call a short description. The final reply sums up the`,
+    `turn: what you did, what it showed, what is next. Write in the language the person wrote in. This turn runs in permission`,
+    `mode ${o.mode}.`,
     ``,
     `Read the squad's state with govern in ${o.ws}: \`govern desk\` (lanes, inbox, queue, units), \`govern status\`, \`govern brief <lane>\`,`,
     `\`govern task inbox --as ${LEAD_MAILBOX}\` (mail the squad's agents send you), \`govern task triage\`; \`govern help\` lists what this workspace`,
@@ -96,18 +105,37 @@ export async function leadAdapter(): Promise<void> {
     }
   } else recordSession(session);
 
-  let progressTs: string | undefined;
-  const progress = async (line: string) => {
+  // What the thread shows while the turn runs, in the order it happens: one Slack call at a time.
+  let chain: Promise<unknown> = Promise.resolve(), statusTs: string | undefined, statusBuried = false, statusBusy = false, lastStatus = 0;
+  const send = (f: () => Promise<unknown>): Promise<unknown> =>
+    (chain = chain.then(f).catch((e: Error) => log(`thread: ${e.message}`)));
+  const narrate = (text: string) => {
     if (!where || !call) return;
-    try {
-      if (progressTs) await call("chat.update", { channel: where.channel, ts: progressTs, text: line });
-      else progressTs = (await call("chat.postMessage", { ...where, text: line })).ts as string;
-    } catch (e) { log(`progress: ${(e as Error).message}`); }
+    for (const part of chunks(mrkdwn(text))) void send(() => call("chat.postMessage", { ...where, text: part, unfurl_links: false }));
+    statusBuried = Boolean(statusTs);
   };
-  const clearProgress = async () => {
-    const ts = progressTs;
-    progressTs = undefined;
-    if (ts && where && call) await call("chat.delete", { channel: where.channel, ts }).catch(() => undefined);
+  const status = (text: string, final = false) => {
+    if (!where || !call) return;
+    const buried = statusBuried && !final;
+    statusBuried = false;
+    statusBusy = true;
+    void send(async () => {
+      if (statusTs && buried) { await call("chat.delete", { channel: where.channel, ts: statusTs }).catch(() => undefined); statusTs = undefined; }
+      if (statusTs) await call("chat.update", { channel: where.channel, ts: statusTs, text });
+      else if (!final) statusTs = (await call("chat.postMessage", { ...where, text })).ts as string;
+    }).finally(() => { statusBusy = false; });
+  };
+  let written = "";
+  const tick = (live: Live, at: number) => {
+    const a = { ...(req.run?.id ? { run: req.run.id } : {}), ...(q ? { channel: q.channel, thread: q.thread ?? q.ts } : {}),
+      since: new Date(live.t0).toISOString(), steps: live.steps,
+      ...(live.now ? { now: { what: live.now.what, since: new Date(live.now.at).toISOString() } } : {}),
+      ...(live.plan ? { plan: live.plan } : {}), ...(live.said ? { said: oneLine(mrkdwn(live.said), 300) } : {}) };
+    const json = JSON.stringify(a);
+    if (json !== written) { try { writeActivity(a); written = json; } catch (e) { log(`activity: ${(e as Error).message}`); } }
+    if (statusBusy || at - live.t0 < PROGRESS_AFTER_MS || (at - lastStatus < PROGRESS_EVERY_MS && !statusBuried)) return;
+    lastStatus = at;
+    status(statusText(name, live, at));
   };
 
   const mode = currentMode(lead), argv = governArgv();
@@ -133,8 +161,11 @@ export async function leadAdapter(): Promise<void> {
   ];
   let terminating = false;
   process.once("SIGTERM", () => { terminating = true; });
-  const out = await runClaude(claudeArgv, last.content, { cwd: lead.cwd ?? ws, name, progress, terminating: () => terminating });
-  await clearProgress();
+  const out = await runClaude(claudeArgv, last.content, { cwd: lead.cwd ?? ws, narrate, tick, terminating: () => terminating });
+  const took = `${elapsed(Date.now() - out.live.t0)}, ${out.live.steps} step${out.live.steps === 1 ? "" : "s"}`;
+  status(out.stopped ? `⏹️ ${name} stopped after ${took}.` : out.failed !== undefined ? `❌ ${name} failed after ${took}.` : `✔️ ${name} answered after ${took}.`, true);
+  await chain;
+  try { writeActivity(undefined); } catch { /* the next turn writes it again */ }
   if (out.session && UUID.test(out.session) && out.session !== session) { log(`session continued as ${out.session}`); recordSession(out.session); }
   if (out.stopped) return emit({ type: "error", text: `stopped${out.said ? `; it had said: ${out.said.slice(0, 1500)}` : ""}` });
   if (out.failed !== undefined) {
@@ -153,26 +184,80 @@ export async function leadAdapter(): Promise<void> {
 
 interface ClaudeResult { result: string; session_id?: string; usage?: unknown; total_cost_usd?: number; is_error?: boolean; subtype?: string }
 
-/** One claude run, its events passed on, with progress. */
-function runClaude(argv: string[], prompt: string, o: { cwd: string; name: string; progress: (l: string) => Promise<void>; terminating: () => boolean }):
-  Promise<{ result?: ClaudeResult; session?: string; failed?: string; started?: boolean; stopped?: boolean; said?: string }> {
+/** What a turn is doing, from Claude's events. */
+interface Live {
+  t0: number;
+  steps: number;
+  /** The newest tool use still running. */
+  now?: { what: string; at: number };
+  /** The last finished tool uses, oldest first. */
+  done: { what: string; ok: boolean }[];
+  plan?: string;
+  said?: string;
+}
+
+const oneLine = (t: string, n = 100): string => { const s = t.replace(/\s+/g, " ").trim(); return s.length > n ? `${s.slice(0, n - 1)}…` : s; };
+/** Text for Slack mrkdwn as it is: no mention, link or entity. */
+const esc = (t: string): string => t.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+
+/** One tool use as a person reads it: its own description when it has one (Bash, agents), else the tool and its target. */
+export function stepLabel(tool: string, input: unknown): string {
+  const i = (input ?? {}) as Record<string, unknown>, s = (k: string) => (typeof i[k] === "string" ? (i[k] as string).trim() : "");
+  const code = (t: string) => `\`${oneLine(t).replace(/`/g, "'")}\``;
+  switch (tool) {
+    case "Bash": return s("description") ? oneLine(s("description")) : `Bash ${code(s("command"))}`;
+    case "Read": case "Write": case "Edit": case "MultiEdit": case "NotebookEdit": {
+      const p = s("file_path") || s("notebook_path");
+      return p ? `${tool} ${code(p.split("/").slice(-2).join("/"))}` : tool;
+    }
+    case "Grep": case "Glob": return s("pattern") ? `${tool} ${code(s("pattern"))}` : tool;
+    case "Task": case "Agent": return `Agent: ${oneLine(s("description") || s("prompt"))}`;
+    case "WebFetch": return s("url") ? `WebFetch ${oneLine(s("url"))}` : tool;
+    case "WebSearch": return s("query") ? `WebSearch ${code(s("query"))}` : tool;
+    case "TodoWrite": return "Plan updated";
+  }
+  const mcp = /^mcp__(.+?)__(.+)$/.exec(tool);
+  if (mcp) return `${mcp[2]} (${mcp[1]})`;
+  return s("description") ? `${tool}: ${oneLine(s("description"))}` : tool;
+}
+
+/** A todo list's progress: "3/7 · what is under way". */
+export function planOf(todos: unknown): string | undefined {
+  if (!Array.isArray(todos) || !todos.length) return undefined;
+  const t = todos as { content?: unknown; status?: unknown; activeForm?: unknown }[];
+  const done = t.filter((x) => x.status === "completed").length, cur = t.find((x) => x.status === "in_progress");
+  const what = cur ? String(cur.activeForm || cur.content || "") : "";
+  return `${done}/${t.length}${what ? ` · ${oneLine(what)}` : ""}`;
+}
+
+/** The status message: how long, how many steps, the last ones, what runs now, the plan. */
+export function statusText(name: string, live: Live, at: number): string {
+  const lines = [`⏳ *${esc(name)}* working · ${elapsed(at - live.t0)} · ${live.steps} step${live.steps === 1 ? "" : "s"}`];
+  for (const d of live.done) lines.push(`${d.ok ? "✓" : "✗"} ${esc(d.what)}`);
+  if (live.now) lines.push(`▶ ${esc(live.now.what)} (${elapsed(at - live.now.at)})`);
+  if (live.plan) lines.push(`📋 ${esc(live.plan)}`);
+  lines.push("Send *stop* to interrupt; a new message waits for this turn.");
+  return lines.join("\n");
+}
+
+/** One claude run, its events passed on: what Claude says between tool uses goes to `narrate` as it says it (the reply
+ *  itself does not), and `tick` sees what the turn is doing every second. */
+function runClaude(argv: string[], prompt: string, o: { cwd: string; narrate: (text: string) => void; tick: (live: Live, at: number) => void; terminating: () => boolean }):
+  Promise<{ result?: ClaudeResult; session?: string; failed?: string; started?: boolean; stopped?: boolean; said?: string; live: Live }> {
   const bin = process.env.GOVERN_CLAUDE_BIN || "claude";
   const env: NodeJS.ProcessEnv = { ...process.env, GOVERN_AS: LEAD_MAILBOX };
+  const live: Live = { t0: Date.now(), steps: 0, done: [] };
   return new Promise((resolve) => {
     const child = spawn(bin, argv, { cwd: o.cwd, env, stdio: ["pipe", "pipe", "pipe"] });
-    const t0 = Date.now(), tools = new Map<string, string>();
-    let started = false, result: ClaudeResult | undefined, said = "", lastTool = "", session: string | undefined, settled = false, stopped = false, err = "";
-    let lastProgress = 0;
-    const finish = (v: Parameters<typeof resolve>[0]) => { if (settled) return; settled = true; clearInterval(timer); resolve(v); };
+    const tools = new Map<string, string>(), running = new Map<string, { what: string; at: number }>();
+    let started = false, result: ClaudeResult | undefined, said = "", pendingText = "", session: string | undefined, settled = false, stopped = false, err = "";
+    const finish = (v: Omit<Parameters<typeof resolve>[0], "live">) => { if (settled) return; settled = true; clearInterval(timer); resolve({ ...v, live }); };
     const timer = setInterval(() => {
-      const now = Date.now();
       if (o.terminating() && !stopped) { stopped = true; child.kill("SIGINT"); setTimeout(() => child.kill("SIGKILL"), 5000).unref(); }
-      if (!stopped && now - t0 >= PROGRESS_AFTER_MS && now - lastProgress >= PROGRESS_EVERY_MS) {
-        lastProgress = now;
-        const s = Math.round((now - t0) / 1000), el = s >= 60 ? `${Math.floor(s / 60)}m${String(s % 60).padStart(2, "0")}s` : `${s}s`;
-        void o.progress(`⏳ ${o.name} working for ${el}${lastTool ? ` · ${lastTool}` : ""}. Send *stop* to interrupt.`);
-      }
+      if (!stopped) o.tick(live, Date.now());
     }, 1000);
+    // Text followed by a tool use is Claude telling what it does; the text a turn ends with is its reply.
+    const flush = () => { if (pendingText) { o.narrate(pendingText); pendingText = ""; } };
     child.on("error", (e) => finish({ failed: `cannot run ${bin}: ${e.message}`, started }));
     child.stdin.on("error", () => undefined);
     child.stdin.end(prompt);
@@ -184,13 +269,20 @@ function runClaude(argv: string[], prompt: string, o: { cwd: string; name: strin
       const content = (e.message as { content?: unknown } | undefined)?.content;
       if (e.type === "assistant" && Array.isArray(content)) {
         for (const b of content as Record<string, unknown>[]) {
-          if (b.type === "text" && typeof b.text === "string" && b.text) { started = true; said = b.text; emit({ type: "assistant.delta", text: b.text }); }
-          else if (b.type === "tool_use" && typeof b.id === "string") {
+          if (b.type === "text" && typeof b.text === "string" && b.text.trim()) {
             started = true;
-            const name = String(b.name), i = (b.input ?? {}) as Record<string, unknown>;
+            flush();
+            said = pendingText = live.said = b.text;
+            emit({ type: "assistant.delta", text: b.text });
+          } else if (b.type === "tool_use" && typeof b.id === "string") {
+            started = true;
+            flush();
+            const name = String(b.name), what = stepLabel(name, b.input), at = Date.now();
             tools.set(b.id, name);
-            const what = typeof i.command === "string" ? i.command : typeof i.file_path === "string" ? i.file_path : "";
-            lastTool = `${name}${what ? ` \`${what.replace(/`/g, "'").slice(0, 80)}\`` : ""}`;
+            running.set(b.id, { what, at });
+            live.steps++;
+            live.now = { what, at };
+            if (name === "TodoWrite") live.plan = planOf((b.input as { todos?: unknown } | undefined)?.todos) ?? live.plan;
             emit({ type: "tool.started", id: b.id, name });
           }
         }
@@ -198,7 +290,12 @@ function runClaude(argv: string[], prompt: string, o: { cwd: string; name: strin
         for (const b of content as Record<string, unknown>[])
           if (b.type === "tool_result" && typeof b.tool_use_id === "string" && tools.has(b.tool_use_id)) {
             emit({ type: "tool.finished", id: b.tool_use_id, name: tools.get(b.tool_use_id), ok: !b.is_error });
+            const r = running.get(b.tool_use_id);
+            if (r) live.done = [...live.done, { what: r.what, ok: !b.is_error }].slice(-RECENT_STEPS);
             tools.delete(b.tool_use_id);
+            running.delete(b.tool_use_id);
+            const still = [...running.values()].at(-1);
+            if (still) live.now = still; else delete live.now;
           }
       } else if (e.type === "result") result = e as unknown as ClaudeResult;
     });

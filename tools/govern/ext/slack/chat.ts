@@ -209,6 +209,9 @@ export interface ChatOptions {
   /** A message that is a command to the chat itself, not a turn (stop, mode): the line to answer it with, or undefined
    *  for a turn. It runs before the question is journaled; a throw is answered as a refusal. */
   control?: (q: { channel: string; ts: string; thread?: string; text: string; user: string }) => string | undefined;
+  /** The line posted at once in a question's thread when it waits behind a turn already under way (what that turn is
+   *  doing, say); undefined posts nothing. */
+  busy?: () => string | undefined;
 }
 
 export interface ChatBot {
@@ -378,6 +381,13 @@ export function chatBot(o: ChatOptions): ChatBot {
     journal((j) => {
       j.requests[key] = { channel: q.channel, ts: q.ts, ...(q.thread ? { thread: q.thread } : {}), ...(gen !== undefined ? { gen } : {}), conv, runId, text: q.text, at: Date.now() };
     });
+    if (o.busy && sessions.inspect(conv).runs.some((r) => r.id !== runId && (r.state === "running" || r.state === "queued"))) {
+      const line = o.busy();
+      if (line) {
+        try { await o.call("chat.postMessage", { channel: q.channel, text: line, thread_ts: q.thread ?? q.ts }); }
+        catch (e) { log(`slack chat: ${key}: busy line: ${(e as Error).message}`); }
+      }
+    }
     drain(conv);
   };
 

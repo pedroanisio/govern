@@ -9,7 +9,8 @@
 // State, in the workspace's state folder under slack/lead/: session (the Claude session the Lead continues), mode (the
 // permission mode a turn starts in, once someone changed it), cost (the session's running total, for each turn's share),
 // audit.jsonl (mode changes and permission decisions, with the Slack request that made them), permissions/ (one request
-// per ask, its decision and its card), allow/<session>.json (what was allowed for the rest of a session).
+// per ask, its decision and its card), allow/<session>.json (what was allowed for the rest of a session), activity.json
+// (what the turn under way is doing, while one runs).
 import { spawn, type ChildProcess } from "node:child_process";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, join, resolve } from "node:path";
@@ -90,6 +91,46 @@ export const recordSession = (id: string): void => { if (UUID.test(id)) writeAto
 export function currentMode(lead: LeadConfig): LeadMode {
   const m = readText(leadFile("mode"));
   return m && (LEAD_MODES as readonly string[]).includes(m) ? m as LeadMode : lead.permissionMode ?? DEFAULT_MODE;
+}
+
+/** What the turn under way is doing: written by the adapter as it goes, removed when the turn ends. */
+export interface LeadActivity {
+  /** The conversation run, and where its question was asked. */
+  run?: string; channel?: string; thread?: string;
+  /** When the turn started (ISO). */
+  since: string;
+  /** Tool uses so far. */
+  steps: number;
+  /** The tool use running now, as a person reads it, and since when (ISO). */
+  now?: { what: string; since: string };
+  /** The plan's progress (Claude's todo list): "3/7 · what is under way". */
+  plan?: string;
+  /** The last thing the Lead said in the thread. */
+  said?: string;
+}
+const activityFile = (): string => leadFile("activity.json");
+/** The turn under way, if one is. */
+export const readActivity = (): LeadActivity | undefined => readJson<LeadActivity>(activityFile());
+/** Record what the turn is doing; undefined when it ended. */
+export function writeActivity(a: LeadActivity | undefined): void {
+  if (a) writeAtomic(activityFile(), JSON.stringify(a) + "\n");
+  else rmSync(activityFile(), { force: true });
+}
+/** A duration as people read it: 45s, 3m07s, 2h05m. */
+export function elapsed(ms: number): string {
+  const s = Math.max(0, Math.round(ms / 1000));
+  if (s < 60) return `${s}s`;
+  if (s < 3600) return `${Math.floor(s / 60)}m${String(s % 60).padStart(2, "0")}s`;
+  return `${Math.floor(s / 3600)}h${String(Math.floor(s / 60) % 60).padStart(2, "0")}m`;
+}
+/** The answer, at once and without the model, to a message that waits behind the turn under way. */
+export function busyLine(name: string, a: LeadActivity | undefined, at = Date.now()): string {
+  const lines = [`⏳ ${name} is still on an earlier message${a ? ` (${elapsed(at - Date.parse(a.since))}, ${a.steps} step${a.steps === 1 ? "" : "s"})` : ""}. ` +
+    "This one is queued and answered when that turn ends; send *stop* to end it now."];
+  if (a?.now) lines.push(`▶ Now: ${a.now.what} (${elapsed(at - Date.parse(a.now.since))})`);
+  if (a?.plan) lines.push(`📋 Plan: ${a.plan}`);
+  if (a?.said) lines.push(`💬 Last said: ${a.said}`);
+  return lines.join("\n");
 }
 
 /** Append one record to audit.jsonl. */
@@ -426,7 +467,8 @@ export async function runLead(): Promise<void> {
   const bot = chatBot({ call, channel: lead.channel, self, log, journal: LEAD_JOURNAL, single: LEAD_CONVERSATION,
     chat: { users: lead.users, timeoutSeconds: lead.timeoutSeconds ?? LEAD_TIMEOUT_SECONDS, maxContextChars: LEAD_CONTEXT_CHARS },
     create: (conv) => createLeadConversation(conv, lead),
-    control: (q) => leadControl(lead, q) });
+    control: (q) => leadControl(lead, q),
+    busy: () => busyLine(lead.name ?? "Squad Lead", readActivity()) });
   log(`govern slack lead in ${lead.channel} for ${repo()} as ${self}, answering ${lead.users.join(", ")}`);
   bot.resume();
   let syncing = false;

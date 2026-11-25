@@ -9,6 +9,13 @@ All notable changes to govern are documented here, following Keep a Changelog.
 
 ## [Unreleased]
 
+## [0.3.15] - 2026-11-25
+
+### Changed
+
+- The Squad Lead's turn is told in Slack as it runs, so its people are never left without news (LEAD.md, "The turn, told as it runs"). What Claude says between tool uses is posted in the thread as it says it. A status message, kept last in the thread, shows the elapsed time, the last steps, the one running now and for how long, and the plan's progress; a step reads as its own description (a Bash call's `description`), not a cut command. It appears after 10 s (was 20 s), is updated every 10 s (`GOVERN_LEAD_PROGRESS_EVERY_MS`), and ends saying how the turn ended instead of being deleted. The brief now tells the Lead to answer what was asked before resuming other work, and to say what it starts before long work.
+- A message sent to the Lead while a turn runs is answered at once, without the model, with what that turn is doing and that `stop` ends it (`slack/lead/activity.json`); the message itself is answered when the turn ends. `govern slack chat` gains the same hook (`busy`).
+
 ## [0.3.14] - 2026-11-25
 
 ### Added

@@ -124,8 +124,8 @@ ENVIRONMENT
     first, then the config's slack.envFile; token values never appear in errors. SLACK_APP_TOKEN: the app-level token for
     slack.transport "socket" (Slack: xapp-, connections:write; Tayet: the sidecar's local token). GOVERN_SLACK_API
     overrides slack.api (default https://slack.com/api).
-    Squad Lead: GOVERN_CLAUDE_BIN runs instead of claude; GOVERN_LEAD_PROGRESS_AFTER_MS (default 20000) is how long a turn
-    runs before its progress line. Set by the Lead's adapter for its approval tool, never by you: GOVERN_LEAD_SESSION,
+    Squad Lead: GOVERN_CLAUDE_BIN runs instead of claude; GOVERN_LEAD_PROGRESS_AFTER_MS (default 10000) is how long a turn
+    runs before its status message, GOVERN_LEAD_PROGRESS_EVERY_MS (default 10000) how often it is updated. Set by the Lead's adapter for its approval tool, never by you: GOVERN_LEAD_SESSION,
     GOVERN_LEAD_RUN, GOVERN_LEAD_CHANNEL and GOVERN_LEAD_THREAD.
 EXAMPLES
     govern slack serve --port 5003   # behind an HTTPS proxy whose /slack/actions is the Slack app's interactivity URL

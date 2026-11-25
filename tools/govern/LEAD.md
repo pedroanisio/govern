@@ -71,8 +71,17 @@ claude -p --resume <session> --permission-mode <mode> --output-format stream-jso
   `govern task inbox --as lead`, a mailbox `enable` registers.
 - **One process at a time.** A turn is refused, with a reply that says where the session is open, while another live
   process has the session open (a VS Code tab, a terminal `claude`). Close it there and send the message again.
-- **Progress.** A turn that runs longer than 20 s posts a line in the thread with its last tool, updates it every 15 s,
-  and deletes it when the reply is posted.
+- **The turn, told as it runs.** The people follow a turn from Slack, without an IDE:
+  - What Claude says between tool uses is posted in the question's thread as it says it. The reply it ends with is posted
+    once, by the chat.
+  - After 10 s a status message shows how long the turn has run and how many steps it took, the last steps (✓ or ✗), the
+    one running now and for how long, and the plan's progress when Claude keeps a todo list. A step reads as its own
+    description (a Bash call's `description`, an agent's task), else as the tool and its target. The message is updated
+    every 10 s and kept as the thread's last; when the turn ends it says how it ended, after how long.
+  - A message sent while a turn runs waits for it, and is answered at once, without the model, with what that turn is
+    doing now (`slack/lead/activity.json`), and that `stop` ends it.
+  - The brief tells Claude to answer what the message asks first, to say in a line what it starts before long work, and
+    to describe its Bash calls.
 - **Cost.** The run's cost is what the session's total grew by during the turn (`slack/lead/cost`).
 - **The brief** tells the Lead which workspace and channels are its own, and how to read the squad (`govern desk`,
   `status`, `brief <lane>`, `task inbox --as lead`, `task triage`) and act on it (`task send`, `advance`, `new`). It says

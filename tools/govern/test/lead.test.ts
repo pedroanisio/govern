@@ -7,13 +7,16 @@ import assert from "node:assert/strict";
 import { createHmac } from "node:crypto";
 import { spawn, spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { userInfo } from "node:os";
 import { makeEnv, childEnv, govern, setConfig, write, jsonl, type Env } from "./helpers.ts";
 import { forgetConfigs, FOLDER_OVERRIDES } from "../lib/workspace.ts";
 import { handleEvent, handleInteraction, slackServer } from "../ext/slack/slack.ts";
 import { enableLead, leadSettings, leadMap, leadRouter, leadControl, currentMode, writeRequest, readDecision, allowRules,
-  leadDir, cardOf, type PermissionRequest } from "../ext/slack/lead.ts";
+  leadDir, cardOf, busyLine, type PermissionRequest } from "../ext/slack/lead.ts";
+import { stepLabel, planOf } from "../ext/slack/lead-adapter.ts";
+import { chatBot } from "../ext/slack/chat.ts";
+import { GOVERN } from "./helpers.ts";
 import { ask, answer } from "../ext/slack/lead-approve.ts";
 import { notify } from "../ext/slack/notify.ts";
 import { createServer, type Server } from "node:http";
@@ -304,6 +307,98 @@ test("a turn is refused while the Lead's session is open in another live process
   const r = turn();
   assert.equal(r.code, 0, r.err);
   assert.equal(JSON.parse(r.out.trim().split("\n").at(-1)!).text, "lead reply to: status?");
+});
+
+/** A fake Slack Web API on localhost that records every call and answers each post with a new ts. */
+async function fakeSlack(): Promise<{ api: string; calls: { method: string; body: Record<string, unknown> }[]; close: () => Promise<void> }> {
+  const calls: { method: string; body: Record<string, unknown> }[] = [];
+  let n = 0;
+  const server: Server = createServer((req, res) => {
+    let body = "";
+    req.on("data", (c) => { body += c; });
+    req.on("end", () => {
+      const method = (req.url ?? "").replace(/^\/api\//, ""), b = (body.startsWith("{") ? JSON.parse(body) : Object.fromEntries(new URLSearchParams(body))) as Record<string, unknown>;
+      calls.push({ method, body: b });
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ ok: true, channel: b.channel, user_id: "UBOT000001", ts: `1795000001.${String(++n).padStart(6, "0")}` }));
+    });
+  });
+  await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+  return { api: `http://127.0.0.1:${(server.address() as { port: number }).port}/api`, calls,
+    close: async () => { server.closeAllConnections(); await new Promise<void>((r) => server.close(() => r())); } };
+}
+
+test("a turn is told in its thread as it runs: what the Lead says between steps, and a status of each step by its description", async () => {
+  const e = workspace("lead-live", SQUAD_A, { channel: LEAD_A, users: [ME], session: SESSION });
+  const log = join(e.root, "claude.jsonl"), bin = write(join(e.root, "fake-claude.sh"),
+    `#!/bin/sh\nexec ${process.execPath} --disable-warning=ExperimentalWarning ${join(HERE, "fake-lead-claude.ts")} "$@"\n`);
+  spawnSync("chmod", ["+x", bin]);
+  const ASKED = "1795000000.000100", lead = await within(e, () => leadDir());
+  write(join(dirname(lead), "lead-chat.json"), JSON.stringify({ generations: {}, requests: {
+    [`slack:${LEAD_A}:${ASKED}`]: { channel: LEAD_A, ts: ASKED, conv: "lead-1", runId: "run-1", text: "status?", at: Date.now() } } }));
+  const slack = await fakeSlack();
+  try {
+    const child = spawn(process.execPath, ["--disable-warning=ExperimentalWarning", GOVERN, "slack", "lead", "adapter"], {
+      env: childEnv(e, { GOVERN_CLAUDE_BIN: bin, FAKE_LEAD_LOG: log, GOVERN_SLACK_API: slack.api, SLACK_BOT_TOKEN: "xoxb-test",
+        FAKE_LEAD_NARRATE: "Vou ler o **desk** primeiro.", FAKE_LEAD_SLOW_MS: "3500", GOVERN_LEAD_PROGRESS_AFTER_MS: "0", GOVERN_LEAD_PROGRESS_EVERY_MS: "500" }) });
+    let out = "", err = "";
+    child.stdout.on("data", (c) => { out += c; });
+    child.stderr.on("data", (c) => { err += c; });
+    child.stdin.end(JSON.stringify({ protocol: "govern-conversation-v1", run: { id: "run-1" }, messages: [{ role: "user", content: "status?" }] }));
+    // While the step runs: the activity a message arriving now is answered with.
+    assert.ok(await until(() => existsSync(join(lead, "activity.json")) && /desk/.test(readFileSync(join(lead, "activity.json"), "utf8"))), err);
+    const busy = await within(e, async () => { const { readActivity } = await import("../ext/slack/lead.ts"); return busyLine("Squad Lead", readActivity()); });
+    assert.match(busy, /still on an earlier message .*queued.*\*stop\*/s);
+    assert.match(busy, /▶ Now: Read the squad's desk \(\d+s\)/);
+    assert.match(busy, /📋 Plan: 0\/2 · Reading the desk/);
+    assert.match(busy, /💬 Last said: Vou ler o \*desk\* primeiro\./);
+    const code = await new Promise<number | null>((r) => child.on("close", r));
+    assert.equal(code, 0, err);
+    assert.equal(JSON.parse(out.trim().split("\n").at(-1)!).text, "lead reply to: status?");
+
+    const inThread = slack.calls.filter((c) => c.body.thread_ts === ASKED && c.method === "chat.postMessage").map((c) => String(c.body.text));
+    assert.equal(inThread[0], "Vou ler o *desk* primeiro.", "what the Lead says between steps is posted as it says it");
+    assert.ok(!inThread.some((t) => /lead reply to/.test(t)), "the reply itself is the chat's to post, once");
+    const statuses = slack.calls.filter((c) => /^⏳/.test(String(c.body.text ?? ""))).map((c) => String(c.body.text));
+    assert.ok(statuses.some((t) => /▶ Read the squad's desk \(\d+s\)/.test(t) && /📋 0\/2 · Reading the desk/.test(t)), statuses.join("\n---\n"));
+    assert.ok(statuses.every((t) => !/govern desk/.test(t)), "a step is shown by its description, not its command");
+    const last = slack.calls.at(-1)!;
+    assert.equal(last.method, "chat.update");
+    assert.match(String(last.body.text), /^✔️ Squad Lead answered after \d+s, 2 steps\.$/);
+    assert.equal(existsSync(join(lead, "activity.json")), false, "no activity once the turn ended");
+  } finally { await slack.close(); }
+});
+
+test("a step reads as its own description, else the tool and its target; a plan reads as its progress", () => {
+  assert.equal(stepLabel("Bash", { command: "cd x && npm test", description: "Run the risk-engine tests" }), "Run the risk-engine tests");
+  assert.equal(stepLabel("Bash", { command: "cd x &&\n  npm test" }), "Bash `cd x && npm test`");
+  assert.equal(stepLabel("Edit", { file_path: "/home/dev/src/app/lib/rules.ts" }), "Edit `lib/rules.ts`");
+  assert.equal(stepLabel("Agent", { description: "Review the diff", prompt: "..." }), "Agent: Review the diff");
+  assert.equal(stepLabel("mcp__govern-lead__approve", {}), "approve (govern-lead)");
+  assert.equal(stepLabel("Bash", { command: "x".repeat(300) }).length, "Bash ``".length + 100);
+  assert.equal(planOf([{ content: "a", status: "completed" }, { content: "b", activeForm: "Doing b", status: "in_progress" }, { content: "c", status: "pending" }]), "1/3 · Doing b");
+  assert.equal(planOf([]), undefined);
+});
+
+test("a message that waits behind a running turn is answered at once with what that turn does", async () => {
+  const e = workspace("lead-queued", SQUAD_A, { channel: LEAD_A, users: [ME] });
+  const slack = await fakeSlack();
+  try {
+    await within(e, async () => {
+      const { slackCall } = await import("../ext/slack/channel.ts");
+      const sessions = await import("../lib/conversation.ts");
+      // A turn under way in the Lead's conversation: the next message queues behind it.
+      sessions.create("lead-1", { command: { name: "lead", argv: ["true"] }, title: "lead" });
+      const first = sessions.send("lead-1", "earlier", { requestId: "r0" }).run.id;
+      assert.equal(sessions.claim("lead-1")?.run.id, first);
+      const bot = chatBot({ call: slackCall(slack.api, "xoxb-test"), channel: LEAD_A, self: "UBOT000001", journal: "lead-chat", single: "lead",
+        chat: { users: [ME] }, busy: () => `busy: ${first}` });
+      bot.onEvent(message(LEAD_A, "status?", { ts: "1795000000.000200" }));
+      assert.ok(await until(() => slack.calls.some((c) => c.body.text === `busy: ${first}`)), JSON.stringify(slack.calls));
+      const b = slack.calls.find((c) => c.body.text === `busy: ${first}`)!;
+      assert.equal(b.body.thread_ts, "1795000000.000200", "in the thread of the message that waits");
+    });
+  } finally { await slack.close(); }
 });
 
 // ---------------------------------------------------------------------------------------------------------------- notify
