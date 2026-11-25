@@ -59,7 +59,7 @@ export function buildGraph(p: Process): Graph {
     if (!s.next.length) { se.push({ from: i, to: "end" }); return; }
     const conditional = s.next.some((r) => r.when || r.branches);
     s.next.forEach((r, k) => {
-      const label = r.loop ? `loop ≤ ${r.loop.maxIterations}` : r.when ? clip(conditionLabel(r.when), 40) : conditional ? "else" : undefined;
+      const label = r.loop ? `loop ≤ ${r.loop.maxIterations}${r.loop.stallOn ? ", stops if " + r.loop.stallOn.join("/") + " unchanged" : ""}` : r.when ? clip(conditionLabel(r.when), 40) : conditional ? "else" : undefined;
       const targets = r.branches ? r.branches.map((b) => ({ to: b.to, label: clip(conditionLabel(b.when), 40) })) : routeTargets(r).map((to) => ({ to, label }));
       const split = r.to.length > 1 || (r.branches?.length ?? 0) > 1 ? `${i}.${k}` : undefined;
       for (const t of targets) se.push({ from: i, to: at.get(t.to) ?? "end", ...(t.label ? { label: t.label } : {}), ...(split ? { split } : {}) });

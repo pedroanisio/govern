@@ -57,6 +57,58 @@ test("bounded repeats persist, then conditional exit finishes", () => {
   advance(e);
   assert.ok(state(e).finished);
 });
+test("a loop with stallOn refuses a repeat whose progress fields did not change", () => {
+  const e = setup(
+    [
+      {
+        name: "work",
+        next: [
+          {
+            to: ["work"],
+            when: { field: "again", op: "eq", value: true },
+            loop: { maxIterations: 9, stages: ["work"], stallOn: ["diff", "tags"] }
+          },
+          { to: ["done"] }
+        ]
+      },
+      { name: "done", next: [] }
+    ],
+    {
+      again: { type: "boolean", default: true },
+      diff: { type: "string" },
+      tags: { type: "array", items: { type: "string" } }
+    }
+  );
+  ok(e, ["new", "p", "--process", "p"]);
+  advance(e); // no mark yet: the first repeat is always allowed
+  advance(e); // fields still unset: nothing to compare
+  ok(e, ["data", "p", "--set", '{"diff":"a","tags":["x"]}']);
+  advance(e);
+  assert.deepEqual(state(e).workflow.loopMarks.work, { diff: "a", tags: ["x"] });
+  const refused = govern(e, ["advance", "p", ...note]);
+  assert.notEqual(refused.code, 0);
+  assert.match(refused.err, /loop work would repeat with diff, tags unchanged since its last round/);
+  assert.equal(state(e).workflow.loops.work, 3);
+  ok(e, ["data", "p", "--set", '{"tags":["x","y"]}']);
+  advance(e);
+  assert.equal(state(e).workflow.loops.work, 4);
+  assert.match(govern(e, ["advance", "p", ...note]).err, /unchanged since its last round/);
+  ok(e, ["data", "p", "--set", '{"again":false}']);
+  advance(e);
+  advance(e);
+  assert.ok(state(e).finished);
+});
+test("stallOn names declared fields, once each", () => {
+  const route = (stallOn: string[]) => [
+    { name: "a", next: [{ to: ["a"], when: { field: "n", op: "eq", value: 1 }, loop: { maxIterations: 2, stages: ["a"], stallOn } }, { to: ["b"] }] },
+    { name: "b", next: [] }
+  ];
+  const fields = { n: { type: "integer" } };
+  assert.doesNotThrow(() => parseProcess("/p.json", JSON.stringify({ version: 1, name: "p", fields, stages: route(["n"]), gates: [] })));
+  assert.throws(() => parseProcess("/p.json", JSON.stringify({ version: 1, name: "p", fields, stages: route(["nope"]), gates: [] })), /unknown field nope/);
+  assert.throws(() => parseProcess("/p.json", JSON.stringify({ version: 1, name: "p", fields, stages: route(["n", "n"]), gates: [] })), /duplicate/);
+  assert.throws(() => parseProcess("/p.json", JSON.stringify({ version: 1, name: "p", fields, stages: route([]), gates: [] })));
+});
 test("inclusive fan-out joins only selected branches, including empty selection", () => {
   for (const selected of [["a"], ["a", "b"], []]) {
     const e = setup(

@@ -73,6 +73,11 @@ export function validateCase(p: Project, pr: Process, path: string): void {
       const loop = pr.stages.find((s) => s.name === latch)?.next?.find((r) => r.loop)?.loop;
       if (!loop || n >= loop.maxIterations) reject(path + ".workflow.loops", "invalid loop counter");
     }
+    for (const [latch, mark] of Object.entries(w.loopMarks ?? {})) {
+      const loop = pr.stages.find((s) => s.name === latch)?.next?.find((r) => r.loop)?.loop;
+      if (!loop?.stallOn || Object.keys(mark).some((f) => !loop.stallOn!.includes(f)))
+        reject(path + ".workflow.loopMarks", "invalid loop mark");
+    }
     for (const [join, expected] of Object.entries(w.joinExpected ?? {})) {
       const def = pr.stages.find((s) => s.name === join)?.join;
       if (!def || new Set(expected).size !== expected.length || expected.some((id) => !def.stages.includes(id)))
@@ -199,6 +204,9 @@ export function selectedRoute(p: Project) {
   if (routes.length && !r) fail(`${p.slug}: no route matches from ${p.stage}`);
   return r;
 }
+/** Whether two case values are equal (arrays element by element); a recorded null matches no set value. */
+const sameValue = (a: Value | undefined, b: Value | null | undefined): boolean =>
+  Array.isArray(a) && Array.isArray(b) ? a.length === b.length && a.every((x, i) => x === b[i]) : a === b;
 /** Stage names the current stage advances to: the following stage in a linear process, else the selected route's targets
  *  (plus matching dynamic branches). Fails when a loop is at its iteration limit or its body still has unfinished work. */
 export function nextStages(p: Project): string[] {
@@ -209,6 +217,13 @@ export function nextStages(p: Project): string[] {
   if (selected?.loop) {
     if ((p.workflow?.loops?.[p.stage] ?? 0) + 1 >= selected.loop.maxIterations)
       fail(`${p.slug}: loop ${p.stage} reached its ${selected.loop.maxIterations}-iteration limit`);
+    const stall = selected.loop.stallOn,
+      mark = p.workflow?.loopMarks?.[p.stage];
+    if (stall && mark && stall.every((f) => p.data?.[f] !== undefined && sameValue(p.data[f], mark[f])))
+      fail(
+        `${p.slug}: loop ${p.stage} would repeat with ${stall.join(", ")} unchanged since its last round; ` +
+          "a person must change the case data or resolve the case"
+      );
     const body = new Set(selected.loop.stages);
     if ([...p.workflow!.active, ...p.workflow!.waiting].some((id) => id !== p.stage && body.has(id)))
       fail("loop body still has active or waiting work");
@@ -262,8 +277,15 @@ export function completeStage(p: Project, destinations: string[]): void {
       w = p.workflow;
     w.loops ??= emptyRecord();
     w.loops[from] = (w.loops[from] ?? 0) + 1;
+    if (route.loop.stallOn) {
+      w.loopMarks ??= emptyRecord();
+      w.loopMarks[from] = Object.fromEntries(route.loop.stallOn.map((f) => [f, p.data?.[f] ?? null]));
+    }
     for (const stage of pr.stages)
-      if (body.has(stage.name) && stage.name !== from && stage.next?.some((r) => r.loop)) delete w.loops[stage.name];
+      if (body.has(stage.name) && stage.name !== from && stage.next?.some((r) => r.loop)) {
+        delete w.loops[stage.name];
+        if (w.loopMarks) delete w.loopMarks[stage.name];
+      }
     for (const key of ["completed", "cancelled", "waiting"] as const) w[key] = w[key].filter((id) => !body.has(id));
     w.active = w.active.filter((id) => id !== from);
     w.active.push(destinations[0]!);
@@ -482,7 +504,8 @@ export function rejectRoute(p: Project, g: GateDef): void {
       completed: [],
       waiting: [],
       cancelled: [],
-      ...(p.workflow.loops ? { loops: p.workflow.loops } : {})
+      ...(p.workflow.loops ? { loops: p.workflow.loops } : {}),
+      ...(p.workflow.loopMarks ? { loopMarks: p.workflow.loopMarks } : {})
     };
   p.stage = to;
   delete p.finished;

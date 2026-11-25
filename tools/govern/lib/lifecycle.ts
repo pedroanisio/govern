@@ -43,7 +43,8 @@ export function resetExecution(p: Project, to: string, reason: string): void {
       completed: [],
       waiting: [],
       cancelled: [],
-      ...(p.workflow.loops ? { loops: p.workflow.loops } : {})
+      ...(p.workflow.loops ? { loops: p.workflow.loops } : {}),
+      ...(p.workflow.loopMarks ? { loopMarks: p.workflow.loopMarks } : {})
     };
   p.stage = to;
   delete p.finished;
@@ -402,6 +403,10 @@ export function migrate(
   if (candidate.workflow?.loops)
     candidate.workflow.loops = Object.fromEntries(
       Object.entries(candidate.workflow.loops).map(([id, n]) => [rename(id), n])
+    );
+  if (candidate.workflow?.loopMarks)
+    candidate.workflow.loopMarks = Object.fromEntries(
+      Object.entries(candidate.workflow.loopMarks).map(([id, mark]) => [rename(id), mark])
     );
   if (candidate.workflow?.joinExpected)
     candidate.workflow.joinExpected = Object.fromEntries(

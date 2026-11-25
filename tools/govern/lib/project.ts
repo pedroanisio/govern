@@ -551,6 +551,7 @@ export function brief(p: Project, o: { notes?: number } = {}): string {
   if (drift) L.push(drift);
   if (manualOf(pr)) L.push(`manual: govern manual ${pr.name}`);
   if(p.workflow?.loops)L.push(`loop repeats: ${JSON.stringify(p.workflow.loops)}`);
+  if(p.workflow?.loopMarks)L.push(`loop marks: ${JSON.stringify(p.workflow.loopMarks)}`);
   if (p.workflow) L.push(`active: ${p.workflow.active.join(', ') || '(none)'}${p.workflow.waiting.length ? ` · joins waiting: ${p.workflow.waiting.join(', ')}` : ''}`);
   if (p.data) L.push(`case data: ${JSON.stringify(p.data)}`);
   for (const [stage,t] of Object.entries(p.humanTasks ?? {})) L.push(`human task ${stage}: ${t.completedAt ? `completed by ${t.completedBy}` : t.assignee ? `assigned to ${t.assignee}` : 'unclaimed'}`);

@@ -16,6 +16,14 @@ A repeat route declares its entry, body, and maximum total iterations:
 
 `draft` must lead to `review`. The first execution counts as iteration one; this definition permits two repeats. At the limit, a still-selected repeat refuses advancement and preserves the case. Change the decision data or resolve the process explicitly. Conditions are evaluated on advancement; a loop can target itself.
 
+A bound alone lets a loop spend every round redoing the same work: a reviewer repeats the same finding, the author cannot satisfy it, and the case only stops at the limit. `stallOn` names the case fields that show a round made progress (a diff hash, a findings digest, a version):
+
+```json
+"loop":{"maxIterations":4,"stages":["build","review"],"stallOn":["diffSha"]}
+```
+
+Each repeat records those fields. When the repeat is selected again and every `stallOn` field is set and equal to what the previous repeat recorded, the advance is refused (`loop review would repeat with diffSha unchanged since its last round`) and the case stays where it is, as at the limit: `govern drive` gives the stage to a person, who changes the data or resolves the case. A field that is not set never stalls the loop, so the first round, and a process whose services do not yet write the field, repeat as before. Status shows the recorded values as `loop marks`; nested loops clear their inner marks with their inner budgets.
+
 A repeat clears completion, cancellation, human decisions, and stage gate approvals within the body, including approvals that depend on those gates. It preserves unrelated parallel work and data. Runtime entry generations increment, so an old event receipt cannot satisfy a new iteration. Completed subprocesses remain available as historical cases; a repeated call creates a new invocation. Unfinished subprocesses and uncertain checks or compensation block a repeat. Nested loops reset their inner budgets when the outer body repeats. Rework reroutes retain repeat counters.
 
 Loops must have one entry and one latch (the stage owning the repeat route). Every body stage must be reachable from the entry and reach the latch. Forward paths cannot escape before the latch. Scopes may nest or be disjoint. Ordinary undeclared cycles remain invalid.

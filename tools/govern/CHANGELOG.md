@@ -9,6 +9,12 @@ All notable changes to govern are documented here, following Keep a Changelog.
 
 ## [Unreleased]
 
+## [0.3.19] - 2026-11-25
+
+### Added
+
+- A loop can stop before its limit when a round would only redo the last one. `loop.stallOn` names the case fields that show progress (a diff hash, a findings digest); a repeat whose fields are all set and equal to those recorded at the previous repeat is refused like a loop at its limit, so `govern drive` hands the stage to a person instead of spending the remaining rounds. A real review loop had burned all four rounds on the same finding over an identical diff. See ITERATION.md.
+
 ## [0.3.18] - 2026-11-25
 
 ### Fixed

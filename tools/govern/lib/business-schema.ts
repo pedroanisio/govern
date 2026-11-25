@@ -64,7 +64,10 @@ export const CONDITION: Shape<Condition> = (v, p) => {
 export interface Route {
   to: string[];
   when?: Condition;
-  loop?: { maxIterations: number; stages: string[] };
+  /** A bounded repeat: at most `maxIterations` rounds of `stages`. `stallOn` names case fields that show progress: a
+   *  repeat whose fields all equal (and are set as) the values recorded at the previous repeat is refused, since the
+   *  round would redo the same work; a person then changes the data or resolves the case. */
+  loop?: { maxIterations: number; stages: string[]; stallOn?: string[] };
   branches?: { to: string; when: Condition }[];
   join?: string;
 }
@@ -72,7 +75,10 @@ export const ROUTE = obj(
   { to: arr(name) },
   {
     when: CONDITION,
-    loop: obj({ maxIterations: posInt, stages: arr(name, { nonEmpty: true }) }),
+    loop: obj(
+      { maxIterations: posInt, stages: arr(name, { nonEmpty: true }) },
+      { stallOn: arr(name, { nonEmpty: true }) }
+    ),
     branches: arr(obj({ to: name, when: CONDITION }), { nonEmpty: true }),
     join: name
   }
@@ -161,6 +167,8 @@ export interface Workflow {
   waiting: string[];
   cancelled: string[];
   loops?: Record<string, number>;
+  /** Per loop latch, the `stallOn` field values recorded when the loop last repeated. */
+  loopMarks?: Record<string, Record<string, Value | null>>;
   joinExpected?: Record<string, string[]>;
 }
 export const WORKFLOW = obj(
@@ -169,6 +177,7 @@ export const WORKFLOW = obj(
     loops: record((v, p) =>
       Number.isSafeInteger(v) && (v as number) >= 0 ? (v as number) : reject(p, "must be a nonnegative integer")
     ),
+    loopMarks: record(record((v, p) => (v === null ? null : value(v, p)))),
     joinExpected: record(arr(name))
   }
 );
@@ -338,6 +347,9 @@ export function validateBusinessProcess(p: BusinessProcess): void {
           );
         if (r.loop.stages.some((id) => !stages.has(id))) reject(at + ".next.loop", "unknown loop body stage");
         if (stages.get(r.to[0]!)!.join) reject(at + ".next.loop", "loop entry cannot bypass a join");
+        for (const f of r.loop.stallOn ?? []) hasField(f, at + ".next.loop.stallOn");
+        if (new Set(r.loop.stallOn ?? []).size !== (r.loop.stallOn ?? []).length)
+          reject(at + ".next.loop.stallOn", "duplicate fields");
       }
     }
     if ((s.next ?? []).filter((r) => !r.when).length > 1) reject(at + ".next", "at most one fallback route");
