@@ -145,6 +145,10 @@ The block is not posted as text. A card in the same place offers the labels as b
 <label>`, in the card's place: 👀 and ✅ go on the card, and the reply goes where the card is. Answering in words still
 works, and a card stays clickable until a choice is made.
 
+A reply without the block still gets the card when it ends with a numbered list under an options heading ("Opções:",
+"Options:", "Alternativas:" and the like), followed by at most a short recommendation. Each item is offered by its bold
+lead, or else its first sentence, and the text is posted as written.
+
 Serve checks a choice like a permission click: signed (or on the socket), from `slack.team`, not a replay, and from one
 of the Lead's `slack.lead.users`. The first choice stands, and a later click is answered "already chosen". Each choice is
 in the audit with its source. Offers and choices are files under `slack/lead/choices/`, removed after seven days. A

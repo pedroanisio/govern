@@ -49,8 +49,25 @@ const IMAGES = new Set([".png", ".jpg", ".jpeg", ".gif", ".webp"]);
 /** At most this many choices are offered (a select menu's limit); a button's or option's label is at most CHOICE_CHARS. */
 export const CHOICES_MAX = 25, CHOICE_CHARS = 75;
 
-/** A reply's choices: the lines of its fenced block whose info string is `choices` (a leading "- " or "* " dropped), and the
- *  reply without that block. A reply with several such blocks offers the last one's; one with fewer than two lines, none. */
+const clipChoice = (o: string) => o.length > CHOICE_CHARS ? `${o.slice(0, CHOICE_CHARS - 1)}…` : o;
+const offer = (options: string[]) => { const u = [...new Set(options.map(clipChoice))].slice(0, CHOICES_MAX); return u.length >= 2 ? u : []; };
+/** A line that heads a list of alternatives: "Opções:", "**Options:**", "## Alternativas", "Escolha uma:" and the like. */
+const OPTIONS_HEAD = /^\s*(?:#{1,4}\s*)?(?:\*\*|__)?\s*(?:op[çc](?:õ|o)es|alternativas|options|choices|escolhas?|caminhos)\b[^\n*_]{0,40}?(?:\*\*|__)?\s*[:?]?\s*(?:\*\*|__)?\s*$/i;
+/** After the list, at most this much may follow (a recommendation) for it to be what the reply asks the people. */
+const AFTER_LIST_LINES = 3, AFTER_LIST_CHARS = 500;
+
+/** A numbered item's label: its bold lead ("**Fix the text.** Why…" is "Fix the text"), else its first sentence. */
+function itemLabel(n: string, item: string): string {
+  const bold = /^(?:\*\*|__)(.+?)(?:\*\*|__)/.exec(item);
+  const plain = (bold ? bold[1]! : item.split(/(?<=[.!?])\s|\s[—–-]\s/)[0]!).replace(/[*_`~]/g, "").replace(/[.:;,\s]+$/, "").trim();
+  return `${n}. ${plain || item.replace(/[*_`~]/g, "").trim()}`;
+}
+
+/** A reply's choices, and the reply as it is posted. A fenced block whose info string is `choices` names them, one a line (a
+ *  leading "- " or "* " dropped), and is not posted (the last block counts when there are several). Without one, a numbered
+ *  list headed "Opções:" / "Options:" (and the like) near the end of the reply is offered too, each item by its bold lead
+ *  or first sentence, the text posted as it is: the person need not wait for the model to remember the block. Fewer than
+ *  two choices are none. */
 export function choicesOf(md: string): { text: string; options: string[] } {
   const re = /(^|\n)[ \t]*```choices[ \t]*\n([\s\S]*?)\n?[ \t]*```[ \t]*(?=\n|$)/g;
   let options: string[] = [];
@@ -58,9 +75,29 @@ export function choicesOf(md: string): { text: string; options: string[] } {
     options = body.split("\n").map((l) => l.trim().replace(/^[-*•]\s+/, "").trim()).filter(Boolean);
     return lead;
   });
-  if (text === md) return { text: md, options: [] };
-  const unique = [...new Set(options.map((o) => o.length > CHOICE_CHARS ? `${o.slice(0, CHOICE_CHARS - 1)}…` : o))].slice(0, CHOICES_MAX);
-  return { text: text.replace(/\n{3,}/g, "\n\n").trimEnd(), options: unique.length >= 2 ? unique : [] };
+  if (text !== md) return { text: text.replace(/\n{3,}/g, "\n\n").trimEnd(), options: offer(options) };
+  return { text: md, options: offer(listedChoices(md)) };
+}
+
+/** The numbered list after the last options heading, when it ends the reply (but for a short recommendation). */
+function listedChoices(md: string): string[] {
+  const lines = md.split("\n");
+  let fence = false;
+  const heads: number[] = [];
+  lines.forEach((l, i) => { if (/^\s*```/.test(l)) fence = !fence; else if (!fence && OPTIONS_HEAD.test(l)) heads.push(i); });
+  for (const h of heads.reverse()) {
+    const items: string[] = [];
+    let i = h + 1;
+    for (; i < lines.length; i++) {
+      const l = lines[i]!, m = /^\s{0,3}(\d{1,2})[.)]\s+(.+)$/.exec(l);
+      if (m && Number(m[1]) === items.length + 1) { items.push(itemLabel(m[1]!, m[2]!.trim())); continue; }
+      if (!l.trim() || (items.length && /^\s{2,}\S/.test(l))) continue;
+      break;
+    }
+    const rest = lines.slice(i).filter((l) => l.trim());
+    if (items.length >= 2 && rest.length <= AFTER_LIST_LINES && rest.join("\n").length <= AFTER_LIST_CHARS) return items;
+  }
+  return [];
 }
 
 /** The conversation of `channel`'s top-level messages in generation `where`, or of the thread whose parent is at `where`. */

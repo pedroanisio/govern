@@ -450,6 +450,13 @@ test("a reply's ```choices block is its alternatives: one a line, bullets droppe
   const long = choicesOf(`Pick:\n\`\`\`choices\n${"a".repeat(90)}\nb\n\`\`\``).options;
   assert.equal(long[0]!.length, 75);
   assert.equal(choicesOf(`x\n\`\`\`choices\n${Array.from({ length: 30 }, (_, i) => `option ${i}`).join("\n")}\n\`\`\``).options.length, 25);
+  // Without the block, a numbered list under an options heading that ends the reply is offered, the text left as it is.
+  const listed = "O card não lê o Bitbucket.\n\n**Opções:**\n1. **Ensinar o card a ler o Bitbucket e o hml.** Cada parte passa a mostrar o estado.\n2. **Deixar como está.** Você confere pelo Jira.\n\n**Recomendo a 1.** O card é onde você acompanha.";
+  assert.deepEqual(choicesOf(listed), { text: listed, options: ["1. Ensinar o card a ler o Bitbucket e o hml", "2. Deixar como está"] });
+  assert.deepEqual(choicesOf("Options:\n1) Retry now - it is safe\n2) Wait for the deploy").options, ["1. Retry now", "2. Wait for the deploy"]);
+  assert.deepEqual(choicesOf("Steps I took:\n1. read\n2. fixed").options, [], "a numbered list that is no options heading's");
+  assert.deepEqual(choicesOf(`Opções:\n1. a\n2. b\n\n${"Long report after the list.\n".repeat(5)}`).options, [], "a list the reply goes on past");
+  assert.deepEqual(choicesOf("```\nOpções:\n1. a\n2. b\n```").options, [], "inside code");
 });
 
 test("a reply's choices become buttons (a menu past five); the click is the chooser's next message to the Lead, once", async () => {

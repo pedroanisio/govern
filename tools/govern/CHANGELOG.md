@@ -9,6 +9,12 @@ All notable changes to govern are documented here, following Keep a Changelog.
 
 ## [Unreleased]
 
+## [0.3.18] - 2026-11-25
+
+### Fixed
+
+- The Squad Lead's alternatives became buttons only when the reply carried a ```` ```choices ```` block, and the first real reply listed its options as "**Opções:** 1. … 2. …" without one, so no card came. A reply that ends with a numbered list under an options heading ("Opções:", "Options:", "Alternativas:"…, at most a short recommendation after it) now gets the card too, each item offered by its bold lead or first sentence.
+
 ## [0.3.17] - 2026-11-25
 
 ### Added
