@@ -9,6 +9,12 @@ All notable changes to govern are documented here, following Keep a Changelog.
 
 ## [Unreleased]
 
+## [0.3.20] - 2026-11-25
+
+### Fixed
+
+- A case that recorded a loop's `stallOn` values failed to load once its process dropped `stallOn` or changed its fields, and processes are read live, so editing one would strand every such case. A recorded mark now only needs its latch to still be a loop; fields it no longer lists are ignored.
+
 ## [0.3.19] - 2026-11-25
 
 ### Added

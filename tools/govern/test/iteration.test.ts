@@ -93,6 +93,13 @@ test("a loop with stallOn refuses a repeat whose progress fields did not change"
   advance(e);
   assert.equal(state(e).workflow.loops.work, 4);
   assert.match(govern(e, ["advance", "p", ...note]).err, /unchanged since its last round/);
+  // a process that drops stallOn keeps its cases: the old mark is ignored and the loop repeats on its bound alone
+  const file = join(e.root, "PALS-Notes/processes/p.json"),
+    def = JSON.parse(readFileSync(file, "utf8"));
+  delete def.stages[0].next[0].loop.stallOn;
+  write(file, JSON.stringify(def));
+  advance(e);
+  assert.equal(state(e).workflow.loops.work, 5);
   ok(e, ["data", "p", "--set", '{"again":false}']);
   advance(e);
   advance(e);

@@ -73,11 +73,10 @@ export function validateCase(p: Project, pr: Process, path: string): void {
       const loop = pr.stages.find((s) => s.name === latch)?.next?.find((r) => r.loop)?.loop;
       if (!loop || n >= loop.maxIterations) reject(path + ".workflow.loops", "invalid loop counter");
     }
-    for (const [latch, mark] of Object.entries(w.loopMarks ?? {})) {
-      const loop = pr.stages.find((s) => s.name === latch)?.next?.find((r) => r.loop)?.loop;
-      if (!loop?.stallOn || Object.keys(mark).some((f) => !loop.stallOn!.includes(f)))
+    // a mark only needs its latch to still be a loop: a process that drops or changes stallOn must not strand its cases
+    for (const latch of Object.keys(w.loopMarks ?? {}))
+      if (!pr.stages.find((s) => s.name === latch)?.next?.some((r) => r.loop))
         reject(path + ".workflow.loopMarks", "invalid loop mark");
-    }
     for (const [join, expected] of Object.entries(w.joinExpected ?? {})) {
       const def = pr.stages.find((s) => s.name === join)?.join;
       if (!def || new Set(expected).size !== expected.length || expected.some((id) => !def.stages.includes(id)))
