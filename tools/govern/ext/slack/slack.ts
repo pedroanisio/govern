@@ -27,7 +27,7 @@ import { PUBLISH_ID, approvePublish, parsePublish } from "./publish.ts";
 import { allowedUrl, forServer, serverOf, type SlackServer } from "./server.ts";
 import { markAnswered } from "./answered.ts";
 import { cardLaneHere, noteOf, replyOf, type Reply } from "./cards.ts";
-import { leadClickOf, performLeadClick } from "./lead.ts";
+import { leadChoiceOf, leadClickOf, performLeadChoice, performLeadClick } from "./lead.ts";
 
 export { optionSet };
 
@@ -472,6 +472,14 @@ async function interact(body: Buffer, proof: Proof, o: InteractionOptions): Prom
       const { reply, digest } = parsePublish(value);
       approvePublish(cfg.inbox, reply, digest, user, source(team, user));
       const line = `Approved by <@${user}> · govern slack listen posts it in the request's thread`;
+      result = { status: 200, value: { ok: true, text: line } };
+      update = () => closed(body, line, server.singleAnswer);
+    } else if (leadChoiceOf(raw)) {
+      const lc = leadChoiceOf(raw)!;
+      admit();
+      const lead = o.lead ?? (() => { throw new NotFound("the Lead is not served here: its choices go through govern slack serve"); })();
+      const { line, event } = performLeadChoice(lc, source(lc.team, lc.user));
+      if (!lead(event)) throw new NotFound(`${lc.channel} is no Lead channel this server routes`);
       result = { status: 200, value: { ok: true, text: line } };
       update = () => closed(body, line, server.singleAnswer);
     } else if (leadClickOf(raw)) {

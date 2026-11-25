@@ -46,6 +46,23 @@ const ERROR_CHARS = 1500;
 export const ATTACH_MAX = 10;
 const IMAGES = new Set([".png", ".jpg", ".jpeg", ".gif", ".webp"]);
 
+/** At most this many choices are offered (a select menu's limit); a button's or option's label is at most CHOICE_CHARS. */
+export const CHOICES_MAX = 25, CHOICE_CHARS = 75;
+
+/** A reply's choices: the lines of its fenced block whose info string is `choices` (a leading "- " or "* " dropped), and the
+ *  reply without that block. A reply with several such blocks offers the last one's; one with fewer than two lines, none. */
+export function choicesOf(md: string): { text: string; options: string[] } {
+  const re = /(^|\n)[ \t]*```choices[ \t]*\n([\s\S]*?)\n?[ \t]*```[ \t]*(?=\n|$)/g;
+  let options: string[] = [];
+  const text = md.replace(re, (_all, lead: string, body: string) => {
+    options = body.split("\n").map((l) => l.trim().replace(/^[-*•]\s+/, "").trim()).filter(Boolean);
+    return lead;
+  });
+  if (text === md) return { text: md, options: [] };
+  const unique = [...new Set(options.map((o) => o.length > CHOICE_CHARS ? `${o.slice(0, CHOICE_CHARS - 1)}…` : o))].slice(0, CHOICES_MAX);
+  return { text: text.replace(/\n{3,}/g, "\n\n").trimEnd(), options: unique.length >= 2 ? unique : [] };
+}
+
 /** The conversation of `channel`'s top-level messages in generation `where`, or of the thread whose parent is at `where`. */
 export const chatId = (channel: string, where: number | string): string =>
   typeof where === "number" ? `chat-${channel.toLowerCase()}-${where}` : `chat-${channel.toLowerCase()}-t-${where}`;
@@ -137,6 +154,8 @@ interface Entry {
   attached?: number;
   /** The server refused a part of the reply, and a notice saying so was posted instead. */
   refused?: boolean;
+  /** The reply's choices card is posted (or was not, and a notice said so). */
+  choices?: boolean;
   /** Moved to a new conversation once already (its context budget). */
   moved?: boolean;
   done?: number;
@@ -259,6 +278,9 @@ export interface ChatOptions {
   /** Fetch the files a question attaches into `dir`/<question ts>/ with the bot token, and name their paths in the turn
    *  (an agent on this host reads them, images too). Without it, the turn is told they were not passed on. */
   files?: { dir: string; token: string; maxBytes?: number; request?: typeof fetch };
+  /** The message offering a reply's choices (its ```choices block, choicesOf) where the reply was posted, whose click comes
+   *  back as the next question; without it the block is posted as it was written. */
+  choices?: (options: string[], where: { channel: string; thread?: string }) => { text: string; blocks: unknown[] };
 }
 
 export interface ChatBot {
@@ -364,7 +386,8 @@ export function chatBot(o: ChatOptions): ChatBot {
     }
     if (r.state === "completed") {
       const reply = s.messages.find((m) => m.runId === r.id && m.role === "assistant")!.content;
-      const { text, files } = attachments(reply, s.cwd), parts = chunks(mrkdwn(text));
+      const offered = o.choices ? choicesOf(reply) : { text: reply, options: [] };
+      const { text, files } = attachments(offered.text, s.cwd), parts = chunks(mrkdwn(text));
       let refused: string | undefined;
       for (let i = e.posted ?? 0; i < parts.length && !refused; i++) {
         let sent: Record<string, unknown>;
@@ -384,6 +407,16 @@ export function chatBot(o: ChatOptions): ChatBot {
       }
       if (refused) e.refused = true;
       if (!e.refused) await attach(key, e, files);
+      if (!e.refused && !e.choices && offered.options.length && o.choices) {
+        try {
+          const card = o.choices(offered.options, { channel: e.channel, ...(e.thread ? { thread: e.thread } : {}) });
+          await o.call("chat.postMessage", { channel: e.channel, ...card, ...(e.thread ? { thread_ts: e.thread } : {}) });
+        } catch (err) {
+          log(`slack chat: ${key}: choices: ${(err as Error).message}`);
+          await post(e, `⚠️ The choices could not be shown as buttons (${(err as Error).message.slice(0, ERROR_CHARS)}): answer in words.\n${offered.options.map((x) => `• ${x}`).join("\n")}`);
+        }
+        save(key, (x) => { x.choices = true; });
+      }
     } else {
       const why = (r.error ?? r.reason ?? r.state).slice(0, ERROR_CHARS);
       if (!e.posted) await post(e, `❌ The turn ${r.state === "failed" ? "failed" : `was ${r.state}`}: ${why}`);

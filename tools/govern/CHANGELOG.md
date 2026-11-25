@@ -9,6 +9,12 @@ All notable changes to govern are documented here, following Keep a Changelog.
 
 ## [Unreleased]
 
+## [0.3.17] - 2026-11-25
+
+### Added
+
+- The Squad Lead's alternatives are buttons (LEAD.md, "Choices as buttons"). A reply that ends with a ```` ```choices ```` block (one short label a line; the brief asks for it whenever the people must pick, yes/no too) gets a card in the same place: buttons, or a select menu past five. A click is the clicker's next message to the Lead, checked like a permission click (signed, the team, a Lead user, the first choice stands) and audited. `govern slack chat` gains the same hook (`choices`). Serve hands the Lead router to clicks on Socket Mode too, as it did over HTTP.
+
 ## [0.3.16] - 2026-11-25
 
 ### Fixed

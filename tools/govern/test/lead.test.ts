@@ -13,9 +13,9 @@ import { makeEnv, childEnv, govern, setConfig, write, jsonl, type Env } from "./
 import { forgetConfigs, FOLDER_OVERRIDES } from "../lib/workspace.ts";
 import { handleEvent, handleInteraction, slackServer } from "../ext/slack/slack.ts";
 import { enableLead, leadSettings, leadMap, leadRouter, leadControl, currentMode, writeRequest, readDecision, allowRules,
-  leadDir, cardOf, busyLine, type PermissionRequest } from "../ext/slack/lead.ts";
+  leadDir, cardOf, busyLine, choiceCard, type PermissionRequest } from "../ext/slack/lead.ts";
 import { stepLabel, planOf } from "../ext/slack/lead-adapter.ts";
-import { chatBot } from "../ext/slack/chat.ts";
+import { chatBot, choicesOf } from "../ext/slack/chat.ts";
 import { GOVERN } from "./helpers.ts";
 import { ask, answer } from "../ext/slack/lead-approve.ts";
 import { notify } from "../ext/slack/notify.ts";
@@ -438,6 +438,85 @@ test("a message that waits behind a running turn is answered at once with what t
       assert.ok(await until(() => slack.calls.some((c) => c.body.text === `busy: ${first}`)), JSON.stringify(slack.calls));
       const b = slack.calls.find((c) => c.body.text === `busy: ${first}`)!;
       assert.equal(b.body.thread_ts, "1795000000.000200", "in the thread of the message that waits");
+    });
+  } finally { await slack.close(); }
+});
+
+test("a reply's ```choices block is its alternatives: one a line, bullets dropped, long labels cut, fewer than two none", () => {
+  assert.deepEqual(choicesOf("Two ways:\n\n1. fix the text — small\n2. change it now\n\n```choices\n1. Fix the text\n- 2. Change it now\n```\n"),
+    { text: "Two ways:\n\n1. fix the text — small\n2. change it now", options: ["1. Fix the text", "2. Change it now"] });
+  assert.deepEqual(choicesOf("no block\n```ts\nx\n```"), { text: "no block\n```ts\nx\n```", options: [] });
+  assert.deepEqual(choicesOf("Go?\n```choices\nYes\n```").options, [], "one alternative is no choice");
+  const long = choicesOf(`Pick:\n\`\`\`choices\n${"a".repeat(90)}\nb\n\`\`\``).options;
+  assert.equal(long[0]!.length, 75);
+  assert.equal(choicesOf(`x\n\`\`\`choices\n${Array.from({ length: 30 }, (_, i) => `option ${i}`).join("\n")}\n\`\`\``).options.length, 25);
+});
+
+test("a reply's choices become buttons (a menu past five); the click is the chooser's next message to the Lead, once", async () => {
+  const e = workspace("lead-choices", SQUAD_A, { channel: LEAD_A, users: [ME] });
+  const slack = await fakeSlack();
+  try {
+    await within(e, async () => {
+      const { slackCall } = await import("../ext/slack/channel.ts");
+      const sessions = await import("../lib/conversation.ts");
+      // The Lead answers with what it was asked: a message carrying a choices block gets it back as its reply.
+      const echo = `let s="";process.stdin.on("data",c=>s+=c).on("end",()=>{const r=JSON.parse(s);process.stdout.write(JSON.stringify({type:"done",text:r.messages.at(-1).content})+"\\n")})`;
+      const bot = chatBot({ call: slackCall(slack.api, "xoxb-test"), channel: LEAD_A, self: "UBOT000001", journal: "lead-chat", single: "lead",
+        chat: { users: [ME] }, create: (conv) => sessions.create(conv, { command: { name: "echo", argv: [process.execPath, "-e", echo] }, title: "lead" }),
+        choices: (options, where) => choiceCard(options, where, leadSettings().lead) });
+      bot.onEvent(message(LEAD_A, "Two ways.\n```choices\n1. Fix the text\n2. Change it now\n```", { ts: "1795000000.000100" }));
+      await bot.idle();
+      const posted = slack.calls.filter((c) => c.method === "chat.postMessage");
+      assert.equal(posted[0]!.body.text, "Two ways.", "the block is not posted as text");
+      const card = posted[1]!.body, blocks = JSON.stringify(card.blocks);
+      assert.deepEqual(blocks.match(/govern\.lead\.choose\.\d/g), ["govern.lead.choose.0", "govern.lead.choose.1"]);
+      assert.match(blocks, /"text":"1\. Fix the text"/);
+      const value = JSON.parse((card.blocks as { elements?: { value?: string }[] }[])[1]!.elements![1]!.value!) as { choice: string; i: number };
+      assert.equal(value.i, 1);
+
+      bot.onEvent(message(LEAD_A, `Many.\n\`\`\`choices\n${["a", "b", "c", "d", "e", "f"].join("\n")}\n\`\`\``, { ts: "1795000000.000200" }));
+      await bot.idle();
+      const menu = slack.calls.filter((c) => c.method === "chat.postMessage").at(-1)!.body;
+      assert.match(JSON.stringify(menu.blocks), /"static_select".*"action_id":"govern\.lead\.choose"/);
+      assert.equal((menu.blocks as { elements: { options: unknown[] }[] }[])[1]!.elements[0]!.options.length, 6);
+
+      // The click: serve records it and hands the Lead a message from the chooser, in the card's place.
+      const CARD_TS = "1795000001.000777";
+      const choose = (i: number, user = ME, select = false) => {
+        const v = JSON.stringify({ v: 1, choice: value.choice, i });
+        const payload = { type: "block_actions", team: { id: TEAM }, user: { id: user }, channel: { id: LEAD_A },
+          container: { channel_id: LEAD_A, message_ts: CARD_TS }, message: { ts: CARD_TS, blocks: card.blocks, text: card.text },
+          actions: [select ? { action_id: "govern.lead.choose", selected_option: { value: v }, action_ts: `${Date.now()}.${Math.random().toString().slice(2, 8)}` }
+            : { action_id: `govern.lead.choose.${i}`, value: v, action_ts: `${Date.now()}.${Math.random().toString().slice(2, 8)}` }] };
+        return Buffer.from(new URLSearchParams({ payload: JSON.stringify(payload) }).toString(), "utf8");
+      };
+      const routed: Record<string, unknown>[] = [];
+      const by = (body: Buffer, o: { signed?: boolean; lead?: boolean } = {}) => {
+        const k = sign(body.toString("utf8"));
+        return handleInteraction(SECRET, body, k.ts, o.signed === false ? "v0=" + "1".repeat(64) : k.sig,
+          o.lead === false ? {} : { lead: (p) => { routed.push(p as Record<string, unknown>); return true; } });
+      };
+      assert.equal((await by(choose(0), { signed: false })).status, 401, "an unsigned click");
+      assert.equal((await by(choose(0, OTHER))).status, 403, "a person the Lead does not answer");
+      assert.equal((await by(choose(0), { lead: false })).status, 404, "a server that does not route to the Lead");
+      const ok = await by(choose(1, ME, true));
+      assert.equal(ok.status, 200, JSON.stringify(ok.value));
+      assert.equal(ok.value.text, "✅ <@UPEDRO0001> chose: *2. Change it now*");
+      const again = await by(choose(0));
+      assert.equal(again.status, 409);
+      assert.match(again.value.error!, /already chosen: 2\. Change it now/);
+      assert.equal(routed.length, 1);
+      const ev = routed[0]!.event as Record<string, unknown>;
+      assert.deepEqual([ev.channel, ev.user, ev.ts, ev.text], [LEAD_A, ME, CARD_TS, "[Chosen with a button] 2. Change it now"]);
+      const audit = jsonl(join(leadDir(), "audit.jsonl")).filter((x: { kind?: string }) => x.kind === "choice");
+      assert.deepEqual(audit.map((x: { option: string; by: string; source: { kind: string } }) => [x.option, x.by, x.source.kind]), [["2. Change it now", ME, "slack"]]);
+
+      // The Lead takes it as a turn: 👀 on the card, the reply where the card is.
+      bot.onEvent(routed[0]);
+      await bot.idle();
+      assert.equal(sessions.inspect("lead-1").messages.filter((m) => m.role === "user").at(-1)!.content, "[Chosen with a button] 2. Change it now");
+      assert.ok(slack.calls.some((c) => c.method === "reactions.add" && c.body.timestamp === CARD_TS && c.body.name === "eyes"));
+      assert.equal(slack.calls.filter((c) => c.method === "chat.postMessage").at(-1)!.body.text, "[Chosen with a button] 2. Change it now");
     });
   } finally { await slack.close(); }
 });

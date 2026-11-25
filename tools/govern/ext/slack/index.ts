@@ -49,7 +49,7 @@ async function cmdServe(a: Args): Promise<void> {
     out(`govern slack (team ${cfg.team}) over Socket Mode at ${server.api}`);
     await runSocket({ api: server.api, token, log,
       handle: async (payload, envelope) => {
-        const r = await handleSocketInteraction(payload, envelope, { server, ...(call ? { call } : {}) });
+        const r = await handleSocketInteraction(payload, envelope, opts);
         if (!r.value.ok) process.stderr.write(`slack: click refused (${r.value.error})\n`);
         return r.reply !== undefined ? { reply: r.reply } : {};
       },

@@ -20,6 +20,8 @@ import { configFile, checkConfig, forgetConfigs, inRepo, repo, slackConfig, stat
   type LeadConfig, type LeadMode } from "../../lib/workspace.ts";
 import { BadRequest, Forbidden, NotFound } from "../../lib/http-errors.ts";
 import { GovernError, fail, nowIso } from "../../lib/util.ts";
+import { randomUUID } from "node:crypto";
+import { ACTIONS_BLOCK } from "./pending.ts";
 import type { SlackSource } from "../../lib/approval.ts";
 import * as sessions from "../../lib/conversation.ts";
 import { chatBot, openQuestions } from "./chat.ts";
@@ -46,6 +48,10 @@ export const LEAD_MAILBOX = "lead";
 /** Permission card buttons. */
 export const LEAD_ACTION = "govern.lead.";
 const ACTIONS = { allow: "govern.lead.allow", session: "govern.lead.allow-session", deny: "govern.lead.deny" } as const;
+/** A choices card's buttons (`govern.lead.choose.<n>`) and select menu (`govern.lead.choose`). */
+const CHOOSE = "govern.lead.choose";
+/** Up to this many choices are buttons; more are a select menu. */
+export const CHOICE_BUTTONS = 5;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const REQ = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 /** A message that stops the Lead's turn. */
@@ -256,7 +262,7 @@ const record = (v: unknown): v is Record<string, unknown> => typeof v === "objec
 /** A permission card click, or undefined for any other payload. */
 export function leadClickOf(p: unknown): LeadClick | undefined {
   if (!record(p) || p.type !== "block_actions" || !Array.isArray(p.actions)
-    || !p.actions.some((x) => record(x) && typeof x.action_id === "string" && x.action_id.startsWith(LEAD_ACTION))) return undefined;
+    || !p.actions.some((x) => record(x) && typeof x.action_id === "string" && x.action_id.startsWith(LEAD_ACTION) && !x.action_id.startsWith(CHOOSE))) return undefined;
   if (p.actions.length !== 1) throw new BadRequest("a click is exactly one action");
   const a = p.actions[0] as Record<string, unknown>;
   const action = (Object.keys(ACTIONS) as (keyof typeof ACTIONS)[]).find((k) => ACTIONS[k] === a.action_id) ?? (() => { throw new BadRequest("unknown Lead button"); })();
@@ -314,6 +320,93 @@ export function performLeadClick(c: LeadClick, source: SlackSource): string {
     if (c.action === "session") addAllowRule(r.session, ruleOf(r.tool, r.input));
     audit({ kind: "permission", req: c.req, tool: r.tool, rule: ruleOf(r.tool, r.input), session: r.session, decision: d, source });
     return `${decisionLine(d)}: *${r.tool}* ${describe(r.tool, r.input)}`;
+  });
+}
+
+// ---------------------------------------------------------------------------------------------------------------------
+// Choices: a reply's ```choices block (chat.ts choicesOf) offered as buttons, or a select menu past CHOICE_BUTTONS; the one
+// chosen comes back to the Lead as the next message, from the person who chose it.
+
+export interface Choice { id: string; channel: string; thread?: string; options: string[]; at: string }
+export interface Chosen { index: number; option: string; by: string; at: string }
+const choiceDir = (): string => join(leadDir(), "choices");
+const choiceFile = (id: string, kind: "offer" | "chosen"): string => join(choiceDir(), kind === "offer" ? `${id}.json` : `${id}.chosen.json`);
+
+/** Keep the choices offered in `where` and the card offering them (one decision: the first click). */
+export function choiceCard(options: string[], where: { channel: string; thread?: string }, lead: LeadConfig): { text: string; blocks: unknown[] } {
+  ensure(choiceDir());
+  for (const f of readdirSync(choiceDir())) {
+    try { if (Date.now() - statSync(join(choiceDir(), f)).mtimeMs > KEEP_MS) rmSync(join(choiceDir(), f), { force: true }); } catch { /* gone */ }
+  }
+  const c: Choice = { id: randomUUID(), channel: where.channel, ...(where.thread ? { thread: where.thread } : {}), options, at: nowIso() };
+  writeAtomic(choiceFile(c.id, "offer"), JSON.stringify(c) + "\n");
+  const value = (i: number) => JSON.stringify({ v: 1, choice: c.id, i });
+  const label = (o: string) => ({ type: "plain_text" as const, text: o, emoji: true });
+  const who = lead.users.map((u) => `<@${u}>`).join(" ");
+  const pick = options.length <= CHOICE_BUTTONS
+    ? options.map((o, i) => ({ type: "button", action_id: `${CHOOSE}.${i}`, text: label(o), value: value(i) }))
+    : [{ type: "static_select", action_id: CHOOSE, placeholder: label(`Choose one of ${options.length}`),
+        options: options.map((o, i) => ({ text: label(o), value: value(i) })) }];
+  return {
+    text: `Choose: ${options.join(" · ")}`.slice(0, 3000),
+    blocks: [
+      { type: "context", elements: [{ type: "mrkdwn", text: `👉 ${who} choose one, or answer in words` }] },
+      { type: "actions", block_id: ACTIONS_BLOCK, elements: pick }
+    ]
+  };
+}
+
+export interface LeadChoiceClick { team: string; user: string; channel: string; choice: string; index: number; ts: string; thread?: string }
+
+/** A choices card click (a button, or an option picked in its menu), or undefined for any other payload. */
+export function leadChoiceOf(p: unknown): LeadChoiceClick | undefined {
+  if (!record(p) || p.type !== "block_actions" || !Array.isArray(p.actions)
+    || !p.actions.some((x) => record(x) && typeof x.action_id === "string" && x.action_id.startsWith(CHOOSE))) return undefined;
+  if (p.actions.length !== 1) throw new BadRequest("a click is exactly one action");
+  const a = p.actions[0] as Record<string, unknown>;
+  const team = record(p.team) && typeof p.team.id === "string" ? p.team.id : undefined;
+  const user = record(p.user) && typeof p.user.id === "string" ? p.user.id : undefined;
+  const container = record(p.container) ? p.container : {}, message = record(p.message) ? p.message : {};
+  const channel = record(p.channel) && typeof p.channel.id === "string" ? p.channel.id : typeof container.channel_id === "string" ? container.channel_id : undefined;
+  const ts = typeof container.message_ts === "string" ? container.message_ts : typeof message.ts === "string" ? message.ts : undefined;
+  if (!team || !user || !channel || !ts) throw new BadRequest("the click names no team, user, channel or message");
+  const thread = typeof container.thread_ts === "string" ? container.thread_ts : typeof message.thread_ts === "string" ? message.thread_ts : undefined;
+  const raw = record(a.selected_option) ? a.selected_option.value : a.value;
+  let value: unknown;
+  try { value = JSON.parse(typeof raw === "string" ? raw : ""); } catch { throw new BadRequest("the choice's value is not JSON"); }
+  if (!record(value) || value.v !== 1 || typeof value.choice !== "string" || !UUID.test(value.choice) || !Number.isInteger(value.i) || (value.i as number) < 0)
+    throw new BadRequest("the click names no choice");
+  return { team, user, channel, choice: value.choice, index: value.i as number, ts, ...(thread && thread !== ts ? { thread } : {}) };
+}
+
+/** Record a choice as the clicker's, once, in the Lead's own workspace: the line the card ends with, and the message the
+ *  Lead takes as its next question (in the card's place: its reactions go on the card, its reply where the card is). */
+export function performLeadChoice(c: LeadChoiceClick, source: SlackSource): { line: string; event: Record<string, unknown> } {
+  const ours = slackConfig()?.team ?? (() => { throw new Forbidden("the workspace config names no slack.team"); })();
+  if (c.team !== ours) throw new Forbidden(`the request comes from Slack team ${c.team}, not ${ours}`);
+  const at = leadMap().get(c.channel) ?? (() => { throw new NotFound(`${c.channel} is no Lead channel this server serves`); })();
+  return inRepo(at.ws, () => {
+    const { cfg, lead } = leadSettings();
+    if (cfg.team !== c.team) throw new Forbidden(`${at.ws} belongs to Slack team ${cfg.team}, not ${c.team}`);
+    if (!lead.users.includes(c.user)) throw new Forbidden(`Slack user ${c.user} is not one of ${at.ws}'s slack.lead.users`);
+    const offer = readJson<Choice>(choiceFile(c.choice, "offer")) ?? (() => { throw new NotFound("no such choice (older than a week?)"); })();
+    if (offer.channel !== c.channel) throw new Forbidden("the choice was offered in another channel");
+    const option = offer.options[c.index] ?? (() => { throw new BadRequest("no such option"); })();
+    const d: Chosen = { index: c.index, option, by: c.user, at: nowIso() };
+    try { writeFileSync(choiceFile(c.choice, "chosen"), JSON.stringify(d) + "\n", { flag: "wx", mode: 0o600 }); }
+    catch (e) {
+      if ((e as NodeJS.ErrnoException).code !== "EEXIST") throw e;
+      const had = readJson<Chosen>(choiceFile(c.choice, "chosen"));
+      throw new GovernError(`already chosen${had ? `: ${had.option} by <@${had.by}>` : ""}`, 1);
+    }
+    audit({ kind: "choice", choice: c.choice, index: c.index, option, by: c.user, source });
+    const thread = c.thread ?? offer.thread;
+    return {
+      line: `✅ <@${c.user}> chose: *${option}*`,
+      event: { type: "event_callback", team_id: c.team, event_id: `govern-choice-${c.choice}`,
+        event: { type: "message", channel: c.channel, user: c.user, ts: c.ts, ...(thread ? { thread_ts: thread } : {}),
+          text: `[Chosen with a button] ${option}` } }
+    };
   });
 }
 
@@ -469,7 +562,8 @@ export async function runLead(): Promise<void> {
     create: (conv) => createLeadConversation(conv, lead),
     control: (q) => leadControl(lead, q),
     busy: () => busyLine(lead.name ?? "Squad Lead", readActivity()),
-    files: { dir: join(leadDir(), "files"), token: botToken(cfg) } });
+    files: { dir: join(leadDir(), "files"), token: botToken(cfg) },
+    choices: (options, where) => choiceCard(options, where, lead) });
   log(`govern slack lead in ${lead.channel} for ${repo()} as ${self}, answering ${lead.users.join(", ")}`);
   bot.resume();
   let syncing = false;

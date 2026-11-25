@@ -126,6 +126,30 @@ and a later click is answered "already decided". An ask nobody answers within `s
 The approval tool never talks to Slack and holds no Slack credential. Requests and decisions are files under
 `slack/lead/permissions/`. The Lead's process posts and closes the cards, and serve writes the decisions.
 
+## Choices as buttons
+
+When a reply asks the people to pick among alternatives, the brief has the Lead end it with a fenced block whose info
+string is `choices`, one short label a line:
+
+````
+Two ways to fix it: …
+
+```choices
+1. Fix the exception text
+2. Change it now
+```
+````
+
+The block is not posted as text. A card in the same place offers the labels as buttons, or as a select menu past five
+(at most 25, each cut to 75 characters). A click is the clicker's next message to the Lead, `[Chosen with a button]
+<label>`, in the card's place: 👀 and ✅ go on the card, and the reply goes where the card is. Answering in words still
+works, and a card stays clickable until a choice is made.
+
+Serve checks a choice like a permission click: signed (or on the socket), from `slack.team`, not a replay, and from one
+of the Lead's `slack.lead.users`. The first choice stands, and a later click is answered "already chosen". Each choice is
+in the audit with its source. Offers and choices are files under `slack/lead/choices/`, removed after seven days. A
+choice is refused when serve does not route that channel to its Lead.
+
 ## Decisions stay the people's
 
 The Lead runs under `GOVERN_CONVERSATION_RUN`, so govern refuses an approval made from inside a turn. Gates and human tasks
@@ -184,6 +208,7 @@ Everything is under the workspace's state folder, in `slack/`:
 | `lead/session` | the session the next turn resumes |
 | `lead/mode` | the mode set from the channel or `slack lead mode` |
 | `lead/cost` | the session's total cost at the end of the last turn |
-| `lead/audit.jsonl` | permission decisions, mode changes and stops, with who and how |
+| `lead/audit.jsonl` | permission decisions, choices, mode changes and stops, with who and how |
 | `lead/permissions/` | each ask: request, decision and card; removed seven days after its decision |
 | `lead/allow/<session>.json` | the rules allowed for the rest of a session |
+| `lead/choices/` | each offer of choices and the choice made, if any; removed after seven days |

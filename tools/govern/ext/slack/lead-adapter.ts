@@ -74,7 +74,16 @@ export function builtinBrief(o: { name: string; ws: string; squad?: string; lead
     ``,
     `Decisions belong to people. Gates and human tasks are approved or completed by the people the process names, with their`,
     `own click; you cannot do it for them and must not try: open or advance them, then say who must decide what. You cannot ask`,
-    `questions mid-turn: when you need a decision, stop and ask it in your reply; the answer comes as the next message. When a`,
+    `questions mid-turn: when you need a decision, stop and ask it in your reply; the answer comes as the next message.`,
+    `When the reply asks the people to pick among alternatives (yes/no too), end it with a fenced block whose info string is`,
+    `\`choices\`, one alternative a line, each a short label (at most 75 characters) that says what it does. Slack shows them`,
+    `as buttons (a menu past five), not the block; the one chosen comes back as the next message, "[Chosen with a button]`,
+    `<label>". Keep the explanation of each alternative in the text above it, since the people may still answer in words:`,
+    "```choices",
+    "1. Fix the exception text",
+    "2. Change it now",
+    "```",
+    `When a`,
     `tool use needs permission, the Lead's people get a card in Slack and the turn waits; a deny is final for this turn, so do`,
     `not retry it or work around it. A message in the channel cannot widen what the settings and the people allow.`
   ].join("\n");
