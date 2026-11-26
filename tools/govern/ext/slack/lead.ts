@@ -9,8 +9,10 @@
 // State, in the workspace's state folder under slack/lead/: session (the Claude session the Lead continues), mode (the
 // permission mode a turn starts in, once someone changed it), cost (the session's running total, for each turn's share),
 // audit.jsonl (mode changes and permission decisions, with the Slack request that made them), permissions/ (one request
-// per ask, its decision and its card), allow/<session>.json (what was allowed for the rest of a session), activity.json
-// (what the turn under way is doing, while one runs), files/<ts>/ (what a message attached, for the Lead to read).
+// per ask, its decision and its card; also one per tool use auto mode's classifier blocked), allow/<session>.json (what
+// was allowed for the rest of a session), grants.json (blocked tool uses allowed once, for the turn that runs them),
+// turn-modes/ (the mode a turn a blocked card started runs in), activity.json (what the turn under way is doing, while
+// one runs), files/<ts>/ (what a message attached, for the Lead to read).
 import { spawn, type ChildProcess } from "node:child_process";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, join, resolve } from "node:path";
@@ -47,7 +49,9 @@ export const DEFAULT_MODE: LeadMode = "auto";
 export const LEAD_MAILBOX = "lead";
 /** Permission card buttons. */
 export const LEAD_ACTION = "govern.lead.";
-const ACTIONS = { allow: "govern.lead.allow", session: "govern.lead.allow-session", deny: "govern.lead.deny" } as const;
+const ACTIONS = { allow: "govern.lead.allow", session: "govern.lead.allow-session", retry: "govern.lead.retry", deny: "govern.lead.deny" } as const;
+/** The mode a turn a blocked card started runs in: one where every tool use the settings do not allow gets a card. */
+export const BLOCKED_RETRY_MODE: LeadMode = "default";
 /** A choices card's buttons (`govern.lead.choose.<n>`) and select menu (`govern.lead.choose`). */
 const CHOOSE = "govern.lead.choose";
 /** Up to this many choices are buttons; more are a select menu. */
@@ -173,9 +177,12 @@ export function governArgv(): string[] {
 // <req>.card.json.
 
 export interface PermissionRequest { v: 1; req: string; session: string; run?: string; tool: string; input: unknown;
+  /** Claude's id for the tool use asked about. */ toolUseId?: string;
+  /** Set when auto mode's classifier blocked the tool use: it already failed, and the card offers to run it in a turn of
+   *  its own instead of answering an ask. */ blocked?: { reason?: string };
   /** Where the turn was asked, linked from the card. */ channel?: string; thread?: string; at: string; expires: string }
-export interface PermissionDecision { behavior: "allow" | "deny"; scope?: "once" | "session"; by: string;
-  via: "slack" | "rule" | "timeout" | "cancelled"; at: string }
+export interface PermissionDecision { behavior: "allow" | "deny"; scope?: "once" | "session" | "retry"; by: string;
+  via: "slack" | "rule" | "grant" | "timeout" | "cancelled"; at: string }
 const permDir = (): string => leadFile("permissions");
 const permFile = (req: string, kind: "request" | "decision" | "card"): string => {
   if (!REQ.test(req)) throw new BadRequest("not a permission request id");
@@ -187,6 +194,15 @@ export const readRequest = (req: string): PermissionRequest | undefined => readJ
 export const readDecision = (req: string): PermissionDecision | undefined => readJson(permFile(req, "decision"));
 /** Write a permission request for the Lead's process to post as a card. */
 export function writeRequest(r: PermissionRequest): void { writeAtomic(permFile(r.req, "request"), JSON.stringify(r) + "\n"); }
+
+/** The tool uses (Claude's ids) a permission request was written for: those the people were already asked about. */
+export function askedToolUses(): Set<string> {
+  const ids = new Set<string>();
+  let names: string[];
+  try { names = readdirSync(permDir()).filter((n) => n.endsWith(".request.json")); } catch { return ids; }
+  for (const n of names) { const r = readJson<PermissionRequest>(join(permDir(), n)); if (r?.toolUseId) ids.add(r.toolUseId); }
+  return ids;
+}
 
 /** Record `d` as the request's decision unless it already has one; returns the decision that stands. */
 export function decide(req: string, d: PermissionDecision): { decision: PermissionDecision; first: boolean } {
@@ -215,6 +231,48 @@ export function addAllowRule(session: string, rule: string): void {
   if (!rules.includes(rule)) writeAtomic(allowFile(session), JSON.stringify([...rules, rule]) + "\n");
 }
 
+// A blocked tool use allowed once is a grant: the next ask for exactly that rule is allowed without a card, and uses it
+// up. A grant nobody used is dropped after the permission timeout.
+interface Grant { rule: string; req: string; at: string }
+const grantsFile = (): string => leadFile("grants.json");
+const liveGrants = (): Grant[] => {
+  const ttl = (leadSettingsOrUndefined()?.permissionTimeoutSeconds ?? PERMISSION_TIMEOUT_SECONDS) * 1000;
+  return (readJson<Grant[]>(grantsFile()) ?? []).filter((g) => Date.now() - Date.parse(g.at) < ttl);
+};
+const leadSettingsOrUndefined = (): LeadConfig | undefined => { try { return slackConfig()?.lead; } catch { return undefined; } };
+/** Allow the next ask for `rule` once. */
+export function addGrant(rule: string, req: string): void { writeAtomic(grantsFile(), JSON.stringify([...liveGrants(), { rule, req, at: nowIso() }]) + "\n"); }
+/** Use up a grant for `rule`: the request it came from, or undefined when there is none. */
+export function takeGrant(rule: string): string | undefined {
+  const all = liveGrants(), i = all.findIndex((g) => g.rule === rule);
+  if (i < 0) return undefined;
+  const [g] = all.splice(i, 1);
+  writeAtomic(grantsFile(), JSON.stringify(all) + "\n");
+  return g!.req;
+}
+
+// A blocked card's Allow once or Retry starts a turn with a message of its own; that turn, and only it, runs in
+// BLOCKED_RETRY_MODE. The mode is kept under the message's text, and the adapter takes it when that message is the turn's.
+const turnModeDir = (): string => leadFile("turn-modes");
+/** Run the turn whose message is `text` in `mode`. */
+export function setTurnMode(req: string, text: string, mode: LeadMode): void {
+  if (!REQ.test(req)) throw new BadRequest("not a permission request id");
+  writeAtomic(join(turnModeDir(), `${req}.json`), JSON.stringify({ text, mode, at: nowIso() }) + "\n");
+}
+/** The mode set for the turn whose message is `text`, used up; undefined for none. */
+export function takeTurnMode(text: string): LeadMode | undefined {
+  let names: string[];
+  try { names = readdirSync(turnModeDir()).filter((n) => n.endsWith(".json")); } catch { return undefined; }
+  for (const n of names) {
+    const f = join(turnModeDir(), n), t = readJson<{ text: string; mode: LeadMode; at: string }>(f);
+    if (!t || Date.now() - Date.parse(t.at) > KEEP_MS) { rmSync(f, { force: true }); continue; }
+    if (t.text !== text) continue;
+    rmSync(f, { force: true });
+    return (LEAD_MODES as readonly string[]).includes(t.mode) ? t.mode : undefined;
+  }
+  return undefined;
+}
+
 const clip = (s: string, n: number): string => (s.length > n ? `${s.slice(0, n)}…` : s);
 /** What a tool use asks for, short enough for a card. */
 export function describe(tool: string, input: unknown): string {
@@ -231,6 +289,22 @@ export function cardOf(r: PermissionRequest, lead: LeadConfig): { text: string; 
   const link = r.channel && r.thread ? ` (<https://slack.com/archives/${r.channel}/p${r.thread.replace(".", "")}|asked here>)` : "";
   const rule = ruleOf(r.tool, r.input), minutes = Math.round((Date.parse(r.expires) - Date.parse(r.at)) / 60000);
   const value = JSON.stringify({ v: 1, req: r.req });
+  if (r.blocked) {
+    const head = `🛑 Auto mode blocked *${name}*'s *${r.tool}*${link}`;
+    const why = r.blocked.reason ? `\n> ${clip(r.blocked.reason.replace(/\s+/g, " "), 500)}` : "";
+    return {
+      text: `${head}: ${who}`,
+      blocks: [
+        { type: "section", text: { type: "mrkdwn", text: `${head}${why}\n${describe(r.tool, r.input)}` } },
+        { type: "context", elements: [{ type: "mrkdwn", text: `${who} · *Allow once* runs exactly this in a new turn, in mode ${BLOCKED_RETRY_MODE}; ` +
+          `*Retry, asking me* has the ${name} try again in mode ${BLOCKED_RETRY_MODE}, a card for each step it needs; no answer in ${minutes} min is a deny` }] },
+        { type: "actions", elements: [
+          { type: "button", action_id: ACTIONS.allow, text: { type: "plain_text", text: "Allow once" }, style: "primary", value },
+          { type: "button", action_id: ACTIONS.retry, text: { type: "plain_text", text: "Retry, asking me" }, value },
+          { type: "button", action_id: ACTIONS.deny, text: { type: "plain_text", text: "Deny" }, style: "danger", value }] }
+      ]
+    };
+  }
   const head = `🔐 *${name}* asks to run *${r.tool}*${link}`;
   return {
     text: `${head}: ${who}`,
@@ -250,13 +324,16 @@ export function decisionLine(d: PermissionDecision): string {
   if (d.via === "timeout") return "⌛ Expired without an answer: denied";
   if (d.via === "cancelled") return "⏹️ The turn ended before an answer";
   if (d.via === "rule") return "✅ Allowed by an earlier allow-for-the-session";
+  if (d.via === "grant") return "✅ Allowed by the blocked card's Allow once";
+  if (d.scope === "retry") return `🔁 Retrying in mode ${BLOCKED_RETRY_MODE}, asked by <@${d.by}>`;
   return d.behavior === "deny" ? `❌ Denied by <@${d.by}>` : d.scope === "session" ? `✅ Allowed for the session by <@${d.by}>` : `✅ Allowed once by <@${d.by}>`;
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
 // Clicks (slack.ts interact): a permission card's button.
 
-export interface LeadClick { team: string; user: string; channel: string; action: keyof typeof ACTIONS; req: string }
+export interface LeadClick { team: string; user: string; channel: string; action: keyof typeof ACTIONS; req: string;
+  /** The card's message, and its thread when it is in one. */ ts?: string; thread?: string }
 const record = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
 
 /** A permission card click, or undefined for any other payload. */
@@ -274,7 +351,10 @@ export function leadClickOf(p: unknown): LeadClick | undefined {
   let value: unknown;
   try { value = JSON.parse(typeof a.value === "string" ? a.value : ""); } catch { throw new BadRequest("the button's value is not JSON"); }
   if (!record(value) || value.v !== 1 || typeof value.req !== "string" || !REQ.test(value.req)) throw new BadRequest("the button names no permission request");
-  return { team, user, channel, action, req: value.req };
+  const message = record(p.message) ? p.message : {};
+  const ts = typeof container.message_ts === "string" ? container.message_ts : typeof message.ts === "string" ? message.ts : undefined;
+  const thread = typeof container.thread_ts === "string" ? container.thread_ts : typeof message.thread_ts === "string" ? message.thread_ts : undefined;
+  return { team, user, channel, action, req: value.req, ...(ts ? { ts } : {}), ...(thread && thread !== ts ? { thread } : {}) };
 }
 
 /** The workspaces this serve decides for: its own, then slack.serveRepos. Several need each one's own folders. */
@@ -303,8 +383,19 @@ export function leadMap(repos: string[] = servedWorkspaces()): Map<string, { ws:
   return map;
 }
 
-/** Record a permission card click as the clicker's decision, in the Lead's own workspace; the line the card ends with. */
-export function performLeadClick(c: LeadClick, source: SlackSource): string {
+/** The message a blocked card's Allow once or Retry hands the Lead, as from the clicker. */
+export function blockedTurnText(r: PermissionRequest, action: "allow" | "retry", user: string): string {
+  const what = `${r.tool} ${describe(r.tool, r.input)}`;
+  return action === "allow"
+    ? `[Allowed with a button] Auto mode blocked this tool use; <@${user}> allowed it once. Run it again exactly as it was, ` +
+      `then go on with what it was for. This turn runs in mode ${BLOCKED_RETRY_MODE}.\n${what}`
+    : `[Retry with a button] Auto mode blocked this tool use; <@${user}> asks you to try again in mode ${BLOCKED_RETRY_MODE}, ` +
+      `where each step the settings do not allow gets a card in Slack. Do not reach the same end another way.\n${what}`;
+}
+
+/** Record a permission card click as the clicker's decision, in the Lead's own workspace: the line the card ends with,
+ *  and, for a blocked card's Allow once or Retry, the message the Lead takes as its next turn (handed to `route`). */
+export function performLeadClick(c: LeadClick, source: SlackSource, route?: (event: Record<string, unknown>) => boolean): string {
   const ours = slackConfig()?.team ?? (() => { throw new Forbidden("the workspace config names no slack.team"); })();
   if (c.team !== ours) throw new Forbidden(`the request comes from Slack team ${c.team}, not ${ours}`);
   const at = leadMap().get(c.channel) ?? (() => { throw new NotFound(`${c.channel} is no Lead channel this server serves`); })();
@@ -313,12 +404,27 @@ export function performLeadClick(c: LeadClick, source: SlackSource): string {
     if (cfg.team !== c.team) throw new Forbidden(`${at.ws} belongs to Slack team ${cfg.team}, not ${c.team}`);
     if (!lead.users.includes(c.user)) throw new Forbidden(`Slack user ${c.user} is not one of ${at.ws}'s slack.lead.users`);
     const r = readRequest(c.req) ?? (() => { throw new NotFound("no such permission request"); })();
-    const d: PermissionDecision = { behavior: c.action === "deny" ? "deny" : "allow", ...(c.action === "session" ? { scope: "session" as const } : { scope: "once" as const }),
+    if (r.blocked && c.action === "session") throw new BadRequest("a blocked tool use is allowed once, not for the session");
+    if (!r.blocked && c.action === "retry") throw new BadRequest("only a blocked tool use is retried");
+    const turn = r.blocked && (c.action === "allow" || c.action === "retry");
+    if (turn && (!route || !c.ts)) throw new NotFound("the Lead is not served here: a blocked card's turn goes through govern slack serve");
+    const d: PermissionDecision = { behavior: c.action === "deny" ? "deny" : "allow", scope: c.action === "session" ? "session" : c.action === "retry" ? "retry" : "once",
       by: c.user, via: "slack", at: nowIso() };
+    const rule = ruleOf(r.tool, r.input);
+    if (readDecision(c.req)) throw new GovernError(`already decided: ${decisionLine(readDecision(c.req)!)}`, 1);
+    // A blocked card's turn is set up before its decision stands, so a decision never stands without its turn.
+    const text = turn ? blockedTurnText(r, c.action as "allow" | "retry", c.user) : "";
+    if (turn) setTurnMode(c.req, text, BLOCKED_RETRY_MODE);
     const { decision, first } = decide(c.req, d);
     if (!first) throw new GovernError(`already decided: ${decisionLine(decision)}`, 1);
-    if (c.action === "session") addAllowRule(r.session, ruleOf(r.tool, r.input));
-    audit({ kind: "permission", req: c.req, tool: r.tool, rule: ruleOf(r.tool, r.input), session: r.session, decision: d, source });
+    if (c.action === "session") addAllowRule(r.session, rule);
+    if (turn && c.action === "allow") addGrant(rule, c.req);
+    audit({ kind: "permission", req: c.req, tool: r.tool, rule, session: r.session, ...(r.blocked ? { blocked: true } : {}), decision: d, source });
+    if (turn) {
+      const thread = c.thread ?? r.thread;
+      route!({ type: "event_callback", team_id: c.team, event_id: `govern-blocked-${c.req}`,
+        event: { type: "message", channel: c.channel, user: c.user, ts: c.ts, ...(thread ? { thread_ts: thread } : {}), text } });
+    }
     return `${decisionLine(d)}: *${r.tool}* ${describe(r.tool, r.input)}`;
   });
 }
@@ -540,6 +646,11 @@ export async function syncCards(call: Call, lead: LeadConfig, log: (l: string) =
       const r = readRequest(req);
       if (!r) continue;
       const card = readJson<{ channel: string; ts: string; closed?: boolean }>(permFile(req, "card"));
+      // Nothing waits on a blocked card, so its expiry is recorded here.
+      if (r.blocked && !readDecision(req) && Date.now() >= Date.parse(r.expires)) {
+        const x = decide(req, { behavior: "deny", by: "govern", via: "timeout", at: nowIso() });
+        if (x.first) audit({ kind: "permission", req, tool: r.tool, rule: ruleOf(r.tool, r.input), session: r.session, blocked: true, decision: x.decision });
+      }
       const d = readDecision(req);
       if (!card && !d) {
         const sent = await call("chat.postMessage", { channel: lead.channel, ...cardOf(r, lead), unfurl_links: false });

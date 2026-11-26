@@ -108,7 +108,7 @@ A turn starts in the Lead's current permission mode: `slack/lead/mode`, else `sl
 `mode` alone shows the current mode, and `govern slack lead mode [M]` does the same from a terminal. A change is recorded
 in `slack/lead/audit.jsonl` with who made it, and applies to every turn that starts after it, including one already
 queued. `pare` or `stop` stops the turn that runs.
-`bypassPermissions` is not a Lead mode: whatever the mode does not allow reaches a person.
+`bypassPermissions` is not a Lead mode: whatever the mode does not allow reaches a person, as an ask or as a blocked card.
 
 A tool use the mode does not allow is asked through `govern slack lead approve-mcp`, Claude's permission prompt tool. The
 ask becomes a card in the Lead channel that shows the tool and its input, with three buttons:
@@ -125,6 +125,29 @@ and a later click is answered "already decided". An ask nobody answers within `s
 
 The approval tool never talks to Slack and holds no Slack credential. Requests and decisions are files under
 `slack/lead/permissions/`. The Lead's process posts and closes the cards, and serve writes the decisions.
+
+### When auto mode blocks a tool use
+
+In `auto` mode, Claude Code's classifier refuses some tool uses on its own: a command that handles a credential, that
+pushes, that looks like it gets around a control. That refusal never reaches the permission prompt tool, so no ask is made
+and the turn just goes on without it. Claude reports it at the end of the turn, in the result's `permission_denials`. The
+adapter turns each denial the people were not already asked about into a **blocked card** in the Lead channel, with the
+classifier's reason, the tool and its input. The reply then ends with a line pointing to the card. Each card has three
+buttons:
+
+- **Allow once** hands the Lead a message from the clicker, `[Allowed with a button] …` with the exact tool use. That turn,
+  and only that one, runs in mode `default`. In that turn the ask for exactly that tool use (a Bash command, character for
+  character) is allowed once without a new card. Anything else it needs gets an ask card as usual. The grant is kept in
+  `slack/lead/grants.json` and is used up by that ask, or dropped after `slack.lead.permissionTimeoutSeconds`.
+- **Retry, asking me** hands the Lead `[Retry with a button] …`, a turn in mode `default` with no grant, so every step the
+  settings do not allow gets an ask card.
+- **Deny** closes the card and starts no turn.
+
+The brief tells the Lead not to reach a blocked end another way (another command, a script, a credential of its own), but
+to say what was blocked and stop. A blocked card is decided like an ask card: signed, by one of `slack.lead.users`, once,
+and audited with `blocked: true`. A blocked card that nobody answers in time is closed as expired. A click needs `govern
+slack serve` to route the Lead's channel, since the decision starts a turn. The mode of that turn is kept in
+`slack/lead/turn-modes/` until the turn starts.
 
 ## Choices as buttons
 
@@ -216,4 +239,6 @@ Everything is under the workspace's state folder, in `slack/`:
 | `lead/audit.jsonl` | permission decisions, choices, mode changes and stops, with who and how |
 | `lead/permissions/` | each ask: request, decision and card; removed seven days after its decision |
 | `lead/allow/<session>.json` | the rules allowed for the rest of a session |
+| `lead/grants.json` | blocked tool uses allowed once, until their turn asks for them |
+| `lead/turn-modes/` | the mode of a turn a blocked card started, until it starts |
 | `lead/choices/` | each offer of choices and the choice made, if any; removed after seven days |

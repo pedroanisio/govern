@@ -485,7 +485,9 @@ async function interact(body: Buffer, proof: Proof, o: InteractionOptions): Prom
     } else if (leadClickOf(raw)) {
       const lc = leadClickOf(raw)!;
       admit();
-      const line = performLeadClick(lc, source(lc.team, lc.user));
+      let routed = true;
+      const line = performLeadClick(lc, source(lc.team, lc.user), o.lead ? (event) => (routed = o.lead!(event)) : undefined);
+      if (!routed) throw new NotFound(`${lc.channel} is no Lead channel this server routes`);
       result = { status: 200, value: { ok: true, text: line } };
       update = () => closed(body, line, server.singleAnswer);
     } else if (c) {

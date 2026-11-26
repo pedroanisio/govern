@@ -9,6 +9,12 @@ All notable changes to govern are documented here, following Keep a Changelog.
 
 ## [Unreleased]
 
+## [0.3.23] - 2026-11-26
+
+### Fixed
+
+- A tool use that auto mode's classifier blocked stopped the Squad Lead with nothing to click. The classifier refuses on its own and never asks the permission prompt tool, so the people only learned about it from the reply and had to run the command from a terminal. Now each such denial, read from the result's `permission_denials`, becomes a blocked card in the Lead channel with the classifier's reason. **Allow once** starts a turn in mode `default` where exactly that tool use is allowed once. **Retry, asking me** starts a turn in mode `default` that asks for each step. **Deny** ends it. The brief tells the Lead not to reach a blocked end another way. See LEAD.md, "When auto mode blocks a tool use".
+
 ## [0.3.22] - 2026-11-26
 
 ### Added

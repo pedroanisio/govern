@@ -3,6 +3,8 @@
 // result whose total_cost_usd is FAKE_LEAD_COST (the session's running total). FAKE_LEAD_SESSION overrides the session id
 // it reports; FAKE_LEAD_FAIL makes it end with that message on stderr and no result. FAKE_LEAD_NARRATE makes it first say
 // that text, then write a plan (TodoWrite) and describe its Bash call; FAKE_LEAD_SLOW_MS is how long the Bash call takes.
+// FAKE_LEAD_DENY makes auto mode's classifier block a Bash call of that command (tool use FAKE_LEAD_DENY_ID, default
+// tu2), reported in the result's permission_denials.
 import { appendFileSync } from "node:fs";
 let prompt = "";
 for await (const chunk of process.stdin) prompt += chunk;
@@ -24,6 +26,13 @@ out({ type: "assistant", session_id: session, message: { content: [{ type: "tool
   input: { command: "govern desk", ...(narrate ? { description: "Read the squad's desk" } : {}) } }] } });
 await new Promise((r) => setTimeout(r, Number(process.env.FAKE_LEAD_SLOW_MS ?? 0)));
 out({ type: "user", session_id: session, message: { content: [{ type: "tool_result", tool_use_id: "tu1", content: "ok" }] } });
+const deny = process.env.FAKE_LEAD_DENY, denyId = process.env.FAKE_LEAD_DENY_ID ?? "tu2";
+if (deny) {
+  out({ type: "assistant", session_id: session, message: { content: [{ type: "tool_use", id: denyId, name: "Bash", input: { command: deny, description: "Push the branch" } }] } });
+  out({ type: "user", session_id: session, message: { content: [{ type: "tool_result", tool_use_id: denyId, is_error: true,
+    content: "Permission for this action was denied by the Claude Code auto mode classifier. Reason: [Undermining Oversight] The command reads a credential into the shell." }] } });
+}
 out({ type: "assistant", session_id: session, message: { content: [{ type: "text", text: `lead reply to: ${prompt}` }] } });
 out({ type: "result", subtype: "success", is_error: false, session_id: session, result: `lead reply to: ${prompt}`,
+  permission_denials: deny ? [{ tool_name: "Bash", tool_use_id: denyId, tool_input: { command: deny, description: "Push the branch" } }] : [],
   usage: { input_tokens: 10, cache_read_input_tokens: 5, cache_creation_input_tokens: 0, output_tokens: 7 }, total_cost_usd: Number(process.env.FAKE_LEAD_COST ?? 0.5) });

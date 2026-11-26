@@ -2,7 +2,8 @@
 // not allow. An MCP server on stdio (JSON-RPC, one tool `approve`), named as Claude's --permission-prompt-tool by the Lead's
 // adapter (lead-adapter.ts). An ask is allowed at once when the people allowed it for the rest of this session; otherwise
 // it is written as a permission request, the Lead's process posts its card in the Lead channel, and the answer is the
-// decision serve records from a click (lead.ts). No answer within slack.lead.permissionTimeoutSeconds is a deny, and so is
+// decision serve records from a click (lead.ts). A tool use auto mode's classifier blocked never reaches here; its card
+// (lead-adapter.ts) may grant it once, and the ask for exactly it in the turn that card starts is allowed without a card. No answer within slack.lead.permissionTimeoutSeconds is a deny, and so is
 // a turn that ends first. Nothing here talks to Slack: the request and its decision are files in the workspace's state.
 //
 // Environment (set by the adapter in --mcp-config): GOVERN_REPO, GOVERN_LEAD_SESSION (the Claude session), and, when the
@@ -10,7 +11,7 @@
 import { randomUUID } from "node:crypto";
 import { createInterface } from "node:readline";
 import { nowIso } from "../../lib/util.ts";
-import { allowRules, audit, decide, leadSettings, readDecision, ruleOf, writeRequest, PERMISSION_TIMEOUT_SECONDS,
+import { allowRules, audit, decide, leadSettings, readDecision, ruleOf, takeGrant, writeRequest, PERMISSION_TIMEOUT_SECONDS,
   type PermissionDecision } from "./lead.ts";
 
 const POLL_MS = 500;
@@ -26,17 +27,25 @@ export const APPROVE_TOOL = {
   }
 };
 
-/** The decision for one ask: a session rule, else the people's answer, else a deny when time runs out or `stopped`. */
-export async function ask(tool: string, input: unknown, o: { session: string; stopped: () => boolean; pending: Set<string> }): Promise<PermissionDecision> {
+/** The decision for one ask: a session rule, else a blocked card's Allow once (used up), else the people's answer, else a
+ *  deny when time runs out or `stopped`. */
+export async function ask(tool: string, input: unknown, o: { session: string; stopped: () => boolean; pending: Set<string>; toolUseId?: string }): Promise<PermissionDecision> {
   const rule = ruleOf(tool, input);
   if (allowRules(o.session).includes(rule)) {
     const d: PermissionDecision = { behavior: "allow", scope: "session", by: "rule", via: "rule", at: nowIso() };
     audit({ kind: "permission", tool, rule, session: o.session, decision: d });
     return d;
   }
+  const granted = takeGrant(rule);
+  if (granted) {
+    const d: PermissionDecision = { behavior: "allow", scope: "once", by: "grant", via: "grant", at: nowIso() };
+    audit({ kind: "permission", tool, rule, session: o.session, grant: granted, decision: d });
+    return d;
+  }
   const { lead } = leadSettings(), req = randomUUID(), seconds = lead.permissionTimeoutSeconds ?? PERMISSION_TIMEOUT_SECONDS;
   const at = Date.now(), env = process.env;
   writeRequest({ v: 1, req, session: o.session, ...(env.GOVERN_LEAD_RUN ? { run: env.GOVERN_LEAD_RUN } : {}), tool, input,
+    ...(o.toolUseId ? { toolUseId: o.toolUseId } : {}),
     ...(env.GOVERN_LEAD_CHANNEL ? { channel: env.GOVERN_LEAD_CHANNEL } : {}), ...(env.GOVERN_LEAD_THREAD ? { thread: env.GOVERN_LEAD_THREAD } : {}),
     at: new Date(at).toISOString(), expires: new Date(at + seconds * 1000).toISOString() });
   o.pending.add(req);
@@ -82,11 +91,12 @@ export async function approveServer(): Promise<void> {
     if (method === "tools/list") return send({ id, result: { tools: [APPROVE_TOOL] } });
     if (method === "ping") return send({ id, result: {} });
     if (method === "tools/call") {
-      const a = (params?.arguments ?? {}) as { tool_name?: unknown; input?: unknown };
+      const a = (params?.arguments ?? {}) as { tool_name?: unknown; input?: unknown; tool_use_id?: unknown };
       let decision: ReturnType<typeof answer>;
       try {
         if (typeof a.tool_name !== "string" || !a.tool_name) throw new Error("the ask names no tool");
-        decision = answer(await ask(a.tool_name, a.input ?? {}, { session, stopped: () => stopped, pending }), a.input);
+        decision = answer(await ask(a.tool_name, a.input ?? {}, { session, stopped: () => stopped, pending,
+          ...(typeof a.tool_use_id === "string" && a.tool_use_id ? { toolUseId: a.tool_use_id } : {}) }), a.input);
       } catch (e) {
         decision = { behavior: "deny", message: `Could not ask the Lead's people (${(e as Error).message}); not allowed.` };
       }

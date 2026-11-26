@@ -6,14 +6,14 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createHmac } from "node:crypto";
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { userInfo } from "node:os";
 import { makeEnv, childEnv, govern, setConfig, write, jsonl, type Env } from "./helpers.ts";
 import { forgetConfigs, FOLDER_OVERRIDES } from "../lib/workspace.ts";
 import { handleEvent, handleInteraction, slackServer } from "../ext/slack/slack.ts";
 import { enableLead, leadSettings, leadMap, leadRouter, leadControl, currentMode, writeRequest, readDecision, allowRules,
-  leadDir, cardOf, busyLine, choiceCard, type PermissionRequest } from "../ext/slack/lead.ts";
+  leadDir, cardOf, busyLine, choiceCard, readRequest, type PermissionRequest } from "../ext/slack/lead.ts";
 import { stepLabel, planOf } from "../ext/slack/lead-adapter.ts";
 import { chatBot, choicesOf } from "../ext/slack/chat.ts";
 import { GOVERN } from "./helpers.ts";
@@ -46,7 +46,7 @@ const message = (channel: string, text: string, o: { user?: string; ts?: string;
   type: "event_callback", team_id: o.team ?? TEAM, event_id: o.id ?? `Ev${Math.random().toString(36).slice(2)}`,
   event: { type: "message", channel, channel_type: "channel", user: o.user ?? ME, text, ts: o.ts ?? "1795000000.000100" }
 });
-const click = (req: string, action: "allow" | "allow-session" | "deny", user = ME, channel = LEAD_A) => {
+const click = (req: string, action: "allow" | "allow-session" | "retry" | "deny", user = ME, channel = LEAD_A) => {
   const payload = { type: "block_actions", team: { id: TEAM }, user: { id: user }, channel: { id: channel },
     container: { channel_id: channel, message_ts: "1795000000.000900" },
     actions: [{ action_id: `govern.lead.${action}`, value: JSON.stringify({ v: 1, req }), action_ts: `${Date.now()}.${Math.random().toString().slice(2, 8)}` }] };
@@ -284,6 +284,91 @@ test("a turn continues the Lead's Claude session in its mode, with the approval 
   const nologin = turn("hi", { FAKE_LEAD_FAIL: "Invalid API key · Please run /login" });
   assert.equal(nologin.at(-1)!.type, "done");
   assert.match(nologin.at(-1)!.text!, new RegExp(`not logged in on .+ as ${userInfo().username}`));
+});
+
+test("a tool use auto mode blocks gets a card: Allow once runs exactly it in a turn of mode default, Retry asks for each step, Deny ends it", async () => {
+  const e = workspace("lead-blocked", SQUAD_A, { channel: LEAD_A, users: [ME], session: SESSION });
+  const log = join(e.root, "claude.jsonl"), bin = write(join(e.root, "fake-claude.sh"),
+    `#!/bin/sh\nexec ${process.execPath} --disable-warning=ExperimentalWarning ${join(HERE, "fake-lead-claude.ts")} "$@"\n`);
+  spawnSync("chmod", ["+x", bin]);
+  const PUSH = "GIT_ASKPASS=/tmp/x git push origin HEAD:refs/heads/feat/x";
+  const turn = (text: string, env: Record<string, string> = {}) => {
+    const r = govern(e, ["slack", "lead", "adapter"], { GOVERN_CLAUDE_BIN: bin, FAKE_LEAD_LOG: log, ...env },
+      JSON.stringify({ protocol: "govern-conversation-v1", messages: [{ role: "user", content: text }] }));
+    assert.equal(r.code, 0, r.err);
+    return r.out.trim().split("\n").map((l) => JSON.parse(l) as { type: string; text?: string }).at(-1)!;
+  };
+  const modeOf = () => { const a = (jsonl(log).at(-1) as { argv: string[] }).argv; return a[a.indexOf("--permission-mode") + 1]; };
+  await within(e, async () => {
+    const blockedReqs = () => { try { return readdirSync(join(leadDir(), "permissions")).filter((n) => n.endsWith(".request.json")).map((n) => readRequest(n.slice(0, -13))!).filter((r) => r.blocked); } catch { return []; } };
+
+    // The classifier's block is in the result's permission_denials: the reply says so, and a card waits.
+    const done = turn("push the PR", { FAKE_LEAD_DENY: PUSH });
+    assert.equal(modeOf(), "auto");
+    assert.match(done.text!, /Auto mode blocked a tool use: its card in this channel/);
+    const [b1] = blockedReqs();
+    assert.ok(b1, "a blocked request");
+    assert.deepEqual([b1.tool, (b1.input as { command: string }).command, b1.toolUseId, b1.session], ["Bash", PUSH, "tu2", SESSION]);
+    assert.match(b1.blocked!.reason!, /^\[Undermining Oversight\]/);
+    const card = cardOf(b1, leadSettings().lead);
+    assert.deepEqual(JSON.stringify(card.blocks).match(/govern\.lead\.[a-z-]+/g), ["govern.lead.allow", "govern.lead.retry", "govern.lead.deny"]);
+    assert.match(card.text, /Auto mode blocked/);
+    // The same denial again (it was already carded), and a denial outside auto mode (the people were asked), get none.
+    turn("again", { FAKE_LEAD_DENY: PUSH });
+    assert.equal(govern(e, ["slack", "lead", "mode", "default"]).code, 0);
+    turn("in default", { FAKE_LEAD_DENY: "git push --force", FAKE_LEAD_DENY_ID: "tu3" });
+    assert.equal(blockedReqs().length, 1);
+    assert.equal(govern(e, ["slack", "lead", "mode", "auto"]).code, 0);
+
+    const routed: Record<string, unknown>[] = [];
+    const by = (body: Buffer, lead = true) => {
+      const k = sign(body.toString("utf8"));
+      return handleInteraction(SECRET, body, k.ts, k.sig, lead ? { lead: (p) => { routed.push(p as Record<string, unknown>); return true; } } : {});
+    };
+    assert.equal((await by(click(b1.req, "allow-session"))).status, 400, "a blocked tool use is not allowed for the session");
+    assert.equal((await by(click(b1.req, "allow"), false)).status, 404, "a server that does not route to the Lead");
+    assert.equal(readDecision(b1.req), undefined, "a refused click decides nothing");
+    const ok = await by(click(b1.req, "allow"));
+    assert.equal(ok.status, 200, JSON.stringify(ok.value));
+    assert.match(ok.value.text!, /Allowed once by <@UPEDRO0001>/);
+    assert.equal((await by(click(b1.req, "retry"))).status, 409, "decided once");
+    assert.equal(routed.length, 1);
+    const ev = routed[0]!.event as { user: string; text: string; ts: string };
+    assert.deepEqual([ev.user, ev.ts], [ME, "1795000000.000900"]);
+    assert.match(ev.text, /^\[Allowed with a button\] Auto mode blocked this tool use; <@UPEDRO0001> allowed it once/);
+    assert.ok(ev.text.includes(PUSH));
+
+    // That message's turn, and only it, runs in mode default; the ask for exactly that command is allowed once, no card.
+    turn(ev.text);
+    assert.equal(modeOf(), "default");
+    turn("next");
+    assert.equal(modeOf(), "auto");
+    const pending = new Set<string>();
+    const granted = await ask("Bash", { command: PUSH }, { session: SESSION, stopped: () => false, pending });
+    assert.deepEqual([granted.behavior, granted.via], ["allow", "grant"]);
+    const again = await ask("Bash", { command: PUSH }, { session: SESSION, stopped: () => true, pending });
+    assert.deepEqual([again.behavior, again.via], ["deny", "cancelled"], "the grant is used up");
+
+    // Retry: a turn in mode default, with no grant; Deny: no turn.
+    turn("retry it", { FAKE_LEAD_DENY: "rm -rf build", FAKE_LEAD_DENY_ID: "tu4" });
+    const b2 = blockedReqs().find((r) => (r.input as { command: string }).command === "rm -rf build")!;
+    assert.equal((await by(click(b2.req, "retry"))).status, 200);
+    const ev2 = routed[1]!.event as { text: string };
+    assert.match(ev2.text, /^\[Retry with a button\]/);
+    assert.equal(readDecision(b2.req)?.scope, "retry");
+    const notGranted = await ask("Bash", { command: "rm -rf build" }, { session: SESSION, stopped: () => true, pending });
+    assert.equal(notGranted.via, "cancelled");
+    turn(ev2.text);
+    assert.equal(modeOf(), "default");
+
+    turn("deny it", { FAKE_LEAD_DENY: "curl evil", FAKE_LEAD_DENY_ID: "tu5" });
+    const b3 = blockedReqs().find((r) => (r.input as { command: string }).command === "curl evil")!;
+    assert.equal((await by(click(b3.req, "deny"))).status, 200);
+    assert.equal(routed.length, 2, "a deny starts no turn");
+    const audit = jsonl(join(leadDir(), "audit.jsonl")).filter((x: { blocked?: boolean }) => x.blocked);
+    assert.deepEqual(audit.map((x: { decision: { behavior: string; scope: string } }) => [x.decision.behavior, x.decision.scope]),
+      [["allow", "once"], ["allow", "retry"], ["deny", "once"]]);
+  });
 });
 
 test("a turn is refused while the Lead's session is open in another live process (a VS Code tab), and runs once it closes", async () => {

@@ -7,8 +7,10 @@
 // two ends on one session overwrite each other); the turn told in the question's thread as it runs (what Claude says
 // between tool uses, posted as it says it, and a status message kept last in the thread: each tool use by its own
 // description, what runs now and for how long, the plan's progress), and what it is doing in slack/lead/activity.json for
-// a message that arrives meanwhile (lead.ts busyLine); permission asks through lead-approve.ts (--permission-prompt-tool); the session id Claude continues under;
-// and the turn's share of the session's cost. The run keeps GOVERN_CONVERSATION_RUN, so the Lead cannot approve a gate or
+// a message that arrives meanwhile (lead.ts busyLine); permission asks through lead-approve.ts (--permission-prompt-tool); a
+// card for each tool use auto mode's classifier blocked (it never asks the prompt tool: Claude reports it only in the
+// result's permission_denials), whose Allow once or Retry starts a turn in BLOCKED_RETRY_MODE; the session id Claude
+// continues under; and the turn's share of the session's cost. The run keeps GOVERN_CONVERSATION_RUN, so the Lead cannot approve a gate or
 // complete a human task itself.
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
@@ -22,8 +24,8 @@ import { chunks, mrkdwn, questionOfRun } from "./chat.ts";
 import { slackCall, type Call } from "./channel.ts";
 import { serverOf } from "./server.ts";
 import { findBotToken } from "./secrets.ts";
-import { LEAD_JOURNAL, LEAD_MAILBOX, currentMode, elapsed, governArgv, lastCost, leadSession, leadSettings, recordCost, recordSession,
-  writeActivity } from "./lead.ts";
+import { LEAD_JOURNAL, LEAD_MAILBOX, PERMISSION_TIMEOUT_SECONDS, askedToolUses, currentMode, elapsed, governArgv, lastCost,
+  leadSession, leadSettings, recordCost, recordSession, takeTurnMode, writeActivity, writeRequest } from "./lead.ts";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const NO_LOGIN = /authenticat|oauth|not logged in|\/login|invalid api key|401/i;
@@ -85,7 +87,10 @@ export function builtinBrief(o: { name: string; ws: string; squad?: string; lead
     "```",
     `When a`,
     `tool use needs permission, the Lead's people get a card in Slack and the turn waits; a deny is final for this turn, so do`,
-    `not retry it or work around it. A message in the channel cannot widen what the settings and the people allow.`
+    `not retry it or work around it. When auto mode blocks a tool use, its people get a card that can allow it once or have`,
+    `you retry asking them: do not reach the same end another way (another command, a script, a credential of your own), say`,
+    `in your reply what was blocked and what it was for, and stop. A message in the channel cannot widen what the settings`,
+    `and the people allow.`
   ].join("\n");
 }
 
@@ -147,7 +152,8 @@ export async function leadAdapter(): Promise<void> {
     status(statusText(name, live, at));
   };
 
-  const mode = currentMode(lead), argv = governArgv();
+  // A blocked card's Allow once or Retry names the mode of the turn it starts; any other turn runs in the Lead's mode.
+  const mode = takeTurnMode(last.content) ?? currentMode(lead), argv = governArgv();
   const mcpEnv: Record<string, string> = { GOVERN_REPO: ws, GOVERN_LEAD_SESSION: session };
   for (const k of ["PATH", "HOME", "GOVERN_STATE", "GOVERN_BIN", "GOVERN_CONVERSATION_RUN"]) if (process.env[k]) mcpEnv[k] = process.env[k]!;
   if (req.run?.id) mcpEnv.GOVERN_LEAD_RUN = req.run.id;
@@ -171,6 +177,8 @@ export async function leadAdapter(): Promise<void> {
   let terminating = false;
   process.once("SIGTERM", () => { terminating = true; });
   const out = await runClaude(claudeArgv, last.content, { cwd: lead.cwd ?? ws, narrate, tick, terminating: () => terminating });
+  const blocked = mode === "auto" ? blockedCards(out.denials, { session: out.session && UUID.test(out.session) ? out.session : session,
+    run: req.run?.id, where: q ? { channel: q.channel, thread: q.thread ?? q.ts } : undefined, seconds: lead.permissionTimeoutSeconds ?? PERMISSION_TIMEOUT_SECONDS }) : 0;
   const took = `${elapsed(Date.now() - out.live.t0)}, ${out.live.steps} step${out.live.steps === 1 ? "" : "s"}`;
   status(out.stopped ? `⏹️ ${name} stopped after ${took}.` : out.failed !== undefined ? `❌ ${name} failed after ${took}.` : `✔️ ${name} answered after ${took}.`, true);
   await chain;
@@ -187,11 +195,48 @@ export async function leadAdapter(): Promise<void> {
   // A resumed session's total_cost_usd is its running total: this turn's share is the difference.
   const before = lastCost(), total = num(r.total_cost_usd);
   recordCost(total);
-  emit({ type: "done", text: r.result, usage: { input: num(u.input_tokens) + cached + cacheWrite, output: num(u.output_tokens), cached, cacheWrite,
+  const note = blocked ? `\n\n🛑 Auto mode blocked ${blocked === 1 ? "a tool use" : `${blocked} tool uses`}: ${blocked === 1 ? "its card" : "their cards"} ` +
+    `in this channel can allow ${blocked === 1 ? "it" : "each"} once, or have me retry asking you.` : "";
+  emit({ type: "done", text: r.result + note, usage: { input: num(u.input_tokens) + cached + cacheWrite, output: num(u.output_tokens), cached, cacheWrite,
     reasoning: 0, costUsd: Number.isFinite(before) && total >= before ? total - before : 0 } });
 }
 
-interface ClaudeResult { result: string; session_id?: string; usage?: unknown; total_cost_usd?: number; is_error?: boolean; subtype?: string }
+interface ClaudeResult { result: string; session_id?: string; usage?: unknown; total_cost_usd?: number; is_error?: boolean; subtype?: string;
+  permission_denials?: unknown }
+
+/** A tool use Claude refused to run, as its result reports it, with the reason its tool result gave. */
+export interface Denial { tool: string; toolUseId: string; input: unknown; reason?: string }
+const CLASSIFIER = /denied by the Claude Code auto mode classifier/i;
+
+/** The denials Claude's result reports; `reasons` holds each refused tool use's tool result text. */
+export function denialsOf(r: { permission_denials?: unknown } | undefined, reasons: Map<string, string>): Denial[] {
+  if (!r || !Array.isArray(r.permission_denials)) return [];
+  const out: Denial[] = [];
+  for (const x of r.permission_denials as Record<string, unknown>[]) {
+    if (!x || typeof x.tool_name !== "string" || typeof x.tool_use_id !== "string") continue;
+    const text = reasons.get(x.tool_use_id), why = text ? /Reason:\s*([\s\S]*)$/.exec(text)?.[1]?.trim() ?? text.trim() : undefined;
+    out.push({ tool: x.tool_name, toolUseId: x.tool_use_id, input: x.tool_input ?? {}, ...(why ? { reason: oneLine(why, 1000) } : {}) });
+  }
+  return out;
+}
+
+/** A card for each denial the people were never asked about (in auto mode, the classifier's): how many. */
+function blockedCards(denials: Denial[], o: { session: string; run?: string; where?: { channel: string; thread: string }; seconds: number }): number {
+  if (!denials.length) return 0;
+  const asked = askedToolUses();
+  let n = 0;
+  for (const d of denials) {
+    if (asked.has(d.toolUseId)) continue;
+    const at = Date.now();
+    try {
+      writeRequest({ v: 1, req: randomUUID(), session: o.session, ...(o.run ? { run: o.run } : {}), tool: d.tool, input: d.input, toolUseId: d.toolUseId,
+        blocked: d.reason ? { reason: d.reason } : {}, ...(o.where ? { channel: o.where.channel, thread: o.where.thread } : {}),
+        at: new Date(at).toISOString(), expires: new Date(at + o.seconds * 1000).toISOString() });
+      n++;
+    } catch (e) { log(`blocked ${d.tool}: ${(e as Error).message}`); }
+  }
+  return n;
+}
 
 /** What a turn is doing, from Claude's events. */
 interface Live {
@@ -252,15 +297,20 @@ export function statusText(name: string, live: Live, at: number): string {
 /** One claude run, its events passed on: what Claude says between tool uses goes to `narrate` as it says it (the reply
  *  itself does not), and `tick` sees what the turn is doing every second. */
 function runClaude(argv: string[], prompt: string, o: { cwd: string; narrate: (text: string) => void; tick: (live: Live, at: number) => void; terminating: () => boolean }):
-  Promise<{ result?: ClaudeResult; session?: string; failed?: string; started?: boolean; stopped?: boolean; said?: string; live: Live }> {
+  Promise<{ result?: ClaudeResult; session?: string; failed?: string; started?: boolean; stopped?: boolean; said?: string; live: Live; denials: Denial[] }> {
   const bin = process.env.GOVERN_CLAUDE_BIN || "claude";
   const env: NodeJS.ProcessEnv = { ...process.env, GOVERN_AS: LEAD_MAILBOX };
   const live: Live = { t0: Date.now(), steps: 0, done: [] };
   return new Promise((resolve) => {
     const child = spawn(bin, argv, { cwd: o.cwd, env, stdio: ["pipe", "pipe", "pipe"] });
-    const tools = new Map<string, string>(), running = new Map<string, { what: string; at: number }>();
+    const tools = new Map<string, string>(), running = new Map<string, { what: string; at: number }>(), reasons = new Map<string, string>();
     let started = false, result: ClaudeResult | undefined, said = "", pendingText = "", session: string | undefined, settled = false, stopped = false, err = "";
-    const finish = (v: Omit<Parameters<typeof resolve>[0], "live">) => { if (settled) return; settled = true; clearInterval(timer); resolve({ ...v, live }); };
+    const finish = (v: Omit<Parameters<typeof resolve>[0], "live" | "denials">) => {
+      if (settled) return;
+      settled = true;
+      clearInterval(timer);
+      resolve({ ...v, live, denials: denialsOf(result, reasons) });
+    };
     const timer = setInterval(() => {
       if (o.terminating() && !stopped) { stopped = true; child.kill("SIGINT"); setTimeout(() => child.kill("SIGKILL"), 5000).unref(); }
       if (!stopped) o.tick(live, Date.now());
@@ -296,7 +346,12 @@ function runClaude(argv: string[], prompt: string, o: { cwd: string; narrate: (t
           }
         }
       } else if (e.type === "user" && Array.isArray(content)) {
-        for (const b of content as Record<string, unknown>[])
+        for (const b of content as Record<string, unknown>[]) {
+          if (b.type === "tool_result" && b.is_error && typeof b.tool_use_id === "string") {
+            const text = typeof b.content === "string" ? b.content : Array.isArray(b.content)
+              ? (b.content as { text?: unknown }[]).map((x) => (typeof x?.text === "string" ? x.text : "")).join("\n") : "";
+            if (CLASSIFIER.test(text)) reasons.set(b.tool_use_id, text);
+          }
           if (b.type === "tool_result" && typeof b.tool_use_id === "string" && tools.has(b.tool_use_id)) {
             emit({ type: "tool.finished", id: b.tool_use_id, name: tools.get(b.tool_use_id), ok: !b.is_error });
             const r = running.get(b.tool_use_id);
@@ -306,6 +361,7 @@ function runClaude(argv: string[], prompt: string, o: { cwd: string; narrate: (t
             const still = [...running.values()].at(-1);
             if (still) live.now = still; else delete live.now;
           }
+        }
       } else if (e.type === "result") result = e as unknown as ClaudeResult;
     });
     child.on("close", (code) => {
