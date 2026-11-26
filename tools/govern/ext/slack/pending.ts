@@ -14,8 +14,11 @@ export interface Pending { key: string; lane: string; target: Target; decisions:
 
 /** A gate option's case data as it stands on `p`: {data.FIELD} in a string value filled from the case ("" when absent). */
 export function optionSet(o: GateOption, p: Pick<Project, "data">): Record<string, Scalar> {
-  return Object.fromEntries(Object.entries(o.set).map(([k, v]) => [k, typeof v === "string"
-    ? v.replace(/\{data\.([^{}]+)\}/g, (_m, f: string) => { const x = p.data?.[f]; return x === undefined ? "" : String(x); }) : v]));
+  return Object.fromEntries(Object.entries(o.set).map(([k, v]) => [k, typeof v === "string" ? withData(v, p) : v]));
+}
+/** `text` with each `{data.FIELD}` replaced by the case's field as text (empty when unset). */
+export function withData(text: string, p: Pick<Project, "data">): string {
+  return text.replace(/\{data\.([^{}]+)\}/g, (_m, f: string) => { const x = p.data?.[f]; return x === undefined || x === null ? "" : typeof x === "object" ? JSON.stringify(x) : String(x); });
 }
 
 /** What `p` waits on from people now: its active human tasks not completed (for the assignee, else everyone eligible),

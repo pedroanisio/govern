@@ -213,6 +213,9 @@ the queue's dispatcher runs the agents' tasks.
 - A stage with nothing to do but its gates and routes (no human task, agent, service, event, call, foreach or check) is
   advanced by `govern drive` once its gates are approved.
 
+A gate's `message` may use `{data.FIELD}` too: a decision card shows the case's field as it stands (a PR's link, what a
+service found), and is posted again when the case changes under it. A field the process does not declare is refused.
+
 A gate's `options` are named approvals that also set case fields; a string value may use `{data.FIELD}`. From Slack, each
 option is its own approve button ([SLACK.md](SLACK.md)):
 

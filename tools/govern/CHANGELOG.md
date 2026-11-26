@@ -9,6 +9,12 @@ All notable changes to govern are documented here, following Keep a Changelog.
 
 ## [Unreleased]
 
+## [0.3.22] - 2026-11-26
+
+### Added
+
+- A gate's `message` may name case fields as `{data.FIELD}`, like its options: the decision card shows each field as it stands, so a card can carry what the decision is about (a PR's link and state, what a service found). A field the process does not declare is refused when the process loads.
+
 ## [0.3.21] - 2026-11-25
 
 ### Changed

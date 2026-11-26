@@ -270,6 +270,34 @@ test("a gate with options gets one approve button per option, showing what each 
   });
 });
 
+test("a gate's message shows the case's fields named {data.FIELD}; an undeclared field is refused", async () => {
+  const e = setup();
+  const file = join(e.root, "PALS-Notes/processes/support.json"), def = JSON.parse(readFileSync(file, "utf8"));
+  def.fields = { ...def.fields, prUrl: { type: "string" } };
+  def.gates[0].message = "PR <{data.prUrl}|ver as mudanças>{data.nada}";
+  def.fields.nada = { type: "string" };
+  write(file, JSON.stringify(def));
+  assert.equal(govern(e, ["new", "t4", "--process", "support", "--title", "Ticket four"]).code, 0);
+  assert.equal(govern(e, ["data", "t4", "--set", JSON.stringify({ prUrl: "https://example.test/pr/7" })]).code, 0);
+  await inWorkspace(e, () => {
+    const p = load("t4");
+    humanAction(p, "draft", "claim", "ana", "mine");
+    humanAction(p, "draft", "complete", "ana", "done");
+    save(p);
+  });
+  assert.equal(govern(e, ["advance", "t4", "--note", "draft done"]).code, 0);
+  await fakeSlack(async (api, calls) => {
+    await inWorkspace(e, () => notify({ api, token: "xoxb-test-token", channel: "C0SUP", lanes: ["t4"] }));
+    const gate = calls.find((c) => String(c.body.text).includes("validacao"))!;
+    assert.match(JSON.stringify(gate.body.blocks), /PR <https:\/\/example\.test\/pr\/7\|ver as mudanças>\\n/, "the field's value, an unset one as nothing");
+  });
+  def.gates[0].message = "PR {data.semCampo}";
+  write(file, JSON.stringify(def));
+  const r = govern(e, ["status", "t4"]);
+  assert.notEqual(r.code, 0);
+  assert.match(r.err, /gates\[0\]\.message.*semCampo|semCampo.*gates\[0\]\.message/);
+});
+
 test("a stage govern drive left to the operator is posted once, with its reason", async () => {
   const e = setup();
   const runs = { "t1:draft": { task: "20261029-codex-x", round: 0, attempt: 2, state: "failed", reason: "the agent is blocked: Jira is down" },

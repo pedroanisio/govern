@@ -17,7 +17,7 @@ import { SLACK_API, forServer, serverOf, type SlackServer } from "./server.ts";
 import { answered, answeredKey, claimAnswered } from "./answered.ts";
 import { checkHeartbeat, heartbeatSettings } from "./heartbeat.ts";
 import { ACTION_ID, caseDigest, decisionValue, type Decision, type Form, type Target } from "./slack.ts";
-import { pending, settled, standing, targetOf, ACTIONS_BLOCK, type Pending } from "./pending.ts";
+import { pending, settled, standing, targetOf, withData, ACTIONS_BLOCK, type Pending } from "./pending.ts";
 import { alertButtons, driveButtons, mention } from "./controls.ts";
 import { offers, offerMessage, published } from "./publish.ts";
 import { ledgerFile } from "../../lib/project.ts";
@@ -115,7 +115,7 @@ const heading = (p: Project) => `*${p.title}* (\`${p.slug}\`)`;
 function message(p: Project, item: Pending, labels: Record<Decision, string>, forms = false, max = 25): { text: string; blocks: unknown[]; more: { text: string; blocks: unknown[] }[] } {
   const pr = processOf(p), slack = item.people.map((id) => pr.people?.[id]?.slack).filter((u): u is string => !!u);
   const detail = "task" in item.target ? pr.stages.find((s) => s.name === (item.target as { task: string }).task)?.exit
-    : pr.gates.find((g) => g.name === (item.target as { gate: string }).gate)?.message;
+    : withData(pr.gates.find((g) => g.name === (item.target as { gate: string }).gate)?.message ?? "", p) || undefined;
   const button = (id: string, label: string, d: Decision, set?: Record<string, Scalar>, form?: Form) => ({ type: "button", action_id: `${ACTION_ID}.${id}`,
     text: { type: "plain_text", text: label.slice(0, 75) }, ...(form === "edit" ? {} : { style: d === "reject" ? "danger" : "primary" }),
     value: decisionValue(p, item.target, d, set, form) });

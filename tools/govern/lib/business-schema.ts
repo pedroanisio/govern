@@ -237,7 +237,7 @@ interface BusinessProcess {
     onError?: { to?: string };
     timer?: { escalate?: { to?: string } };
   }[];
-  gates: { name: string; stage?: string; policy?: Policy; options?: GateOption[] }[];
+  gates: { name: string; stage?: string; message?: string; policy?: Policy; options?: GateOption[] }[];
 }
 /** Check the cross-references of a process's business layer and reject (ShapeError) the first problem: field
  *  declarations, people and roles, route conditions, graph next/join/branch/loop rules, an acyclic graph with every
@@ -477,6 +477,7 @@ export function validateBusinessProcess(p: BusinessProcess): void {
     if (p.stages[0]!.join) reject("$.stages[0].join", "entry stage cannot be a join");
   }
   p.gates.forEach((g, i) => {
+    for (const m of (g.message ?? "").matchAll(/\{data\.([^{}]+)\}/g)) hasField(m[1]!, `$.gates[${i}].message`);
     (g.options ?? []).forEach((o, j) => {
       const at = `$.gates[${i}].options[${j}]`;
       if (o.label.trim().length < 2) reject(at + ".label", "must be the decision's words (2 characters or more)");
