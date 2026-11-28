@@ -42,7 +42,8 @@ export function allowedUrl(url: URL, slackHost: string, api: string): boolean {
   return (base.protocol === "http:" || base.protocol === "https:") && url.origin === base.origin;
 }
 
-/** Slack's text for a message whose blocks say it all: the sections and contexts as mrkdwn, one paragraph each. A Tayet
+/** Slack's text for a message whose blocks say it all: the headers, sections, rich text and contexts as mrkdwn, one
+ *  paragraph each. A Tayet
  *  card reads `text` as its request and drops other blocks when `text` is given, so the request must be the whole message. */
 export function blocksText(blocks: unknown[]): string {
   const out: string[] = [];
@@ -50,6 +51,13 @@ export function blocksText(blocks: unknown[]): string {
     if (typeof b !== "object" || b === null) continue;
     const x = b as { type?: unknown; text?: { text?: unknown }; elements?: unknown };
     if (x.type === "section" && typeof x.text?.text === "string") out.push(x.text.text);
+    else if (x.type === "header" && typeof x.text?.text === "string") out.push(`*${x.text.text}*`);
+    else if (x.type === "rich_text" && Array.isArray(x.elements)) {
+      for (const el of x.elements as { type?: unknown; elements?: unknown }[]) {
+        const t = Array.isArray(el?.elements) ? el.elements.map((e) => (typeof (e as { text?: unknown })?.text === "string" ? (e as { text: string }).text : "")).join("") : "";
+        if (t) out.push(el.type === "rich_text_preformatted" ? `\`\`\`\n${t}\n\`\`\`` : el.type === "rich_text_quote" ? t.split("\n").map((l) => `> ${l}`).join("\n") : t);
+      }
+    }
     else if (x.type === "context" && Array.isArray(x.elements))
       out.push(x.elements.map((e) => (typeof e === "object" && e !== null && typeof (e as { text?: unknown }).text === "string" ? (e as { text: string }).text : "")).filter(Boolean).join(" "));
   }

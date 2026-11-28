@@ -111,12 +111,25 @@ queued. `pare` or `stop` stops the turn that runs.
 `bypassPermissions` is not a Lead mode: whatever the mode does not allow reaches a person, as an ask or as a blocked card.
 
 A tool use the mode does not allow is asked through `govern slack lead approve-mcp`, Claude's permission prompt tool. The
-ask becomes a card in the Lead channel that shows the tool and its input, with three buttons:
+ask becomes a card in the Lead channel with three buttons:
 
 - **Allow once** lets this use run.
-- **Allow for this session** lets it run and allows the same rule for the rest of the session without a card: a Bash
+- **Allow for session** lets it run and allows the same rule for the rest of the session without a card: a Bash
   command exactly, or any other tool by its name. The rules are kept in `slack/lead/allow/<session>.json`.
 - **Deny** refuses it, and Claude is told not to retry or work around it.
+
+The card reads from the top: a header with what the tool use is for (a Bash call's own description, else "Squad Lead asks
+to run Write"); who asks for which tool, linked to the message that started the turn; the input as it would run, in a code
+block (a Bash command, a file's path, any other input as JSON); and a line naming who can decide and when the card
+expires, shown to each reader in their own time zone. The input is literal text, so nothing a command contains becomes a
+mention or formatting. A card shows the first 12 lines (1200 characters) of a longer input, and a **View full command**
+button opens all of it in a view for the person who clicked; anyone in the Lead channel may read it, it decides nothing,
+and it needs `govern slack serve` to hold the bot token. Each button that lets the tool use run asks once more before it
+counts, saying what it allows, so a slip of the thumb on a phone runs nothing. The message's notification text is one
+line: the tool, what it is for, when it expires and who decides.
+
+A decided card keeps what it asked. Its buttons go, and a last line says who decided what and when, or that it expired or
+its turn ended. A click from someone who may not decide is answered to that person alone.
 
 Serve records the click the way it records any other: the request must be signed (or come on the socket), its team must be
 `slack.team`, a replay is refused, and the clicker must be one of that Lead's `slack.lead.users`. The first decision stands,
@@ -132,14 +145,14 @@ In `auto` mode, Claude Code's classifier refuses some tool uses on its own: a co
 pushes, that looks like it gets around a control. That refusal never reaches the permission prompt tool, so no ask is made
 and the turn just goes on without it. Claude reports it at the end of the turn, in the result's `permission_denials`. The
 adapter turns each denial the people were not already asked about into a **blocked card** in the Lead channel, with the
-classifier's reason, the tool and its input. The reply then ends with a line pointing to the card. Each card has three
-buttons:
+classifier's reason quoted above the tool's input, in the same layout as an ask card. The reply then ends with a line
+pointing to the card. Each card has three buttons, and the two that start a turn say what they start before they count:
 
 - **Allow once** hands the Lead a message from the clicker, `[Allowed with a button] …` with the exact tool use. That turn,
   and only that one, runs in mode `default`. In that turn the ask for exactly that tool use (a Bash command, character for
   character) is allowed once without a new card. Anything else it needs gets an ask card as usual. The grant is kept in
   `slack/lead/grants.json` and is used up by that ask, or dropped after `slack.lead.permissionTimeoutSeconds`.
-- **Retry, asking me** hands the Lead `[Retry with a button] …`, a turn in mode `default` with no grant, so every step the
+- **Retry, ask me** hands the Lead `[Retry with a button] …`, a turn in mode `default` with no grant, so every step the
   settings do not allow gets an ask card.
 - **Deny** closes the card and starts no turn.
 

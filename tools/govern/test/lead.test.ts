@@ -13,7 +13,7 @@ import { makeEnv, childEnv, govern, setConfig, write, jsonl, type Env } from "./
 import { forgetConfigs, FOLDER_OVERRIDES } from "../lib/workspace.ts";
 import { handleEvent, handleInteraction, slackServer } from "../ext/slack/slack.ts";
 import { enableLead, leadSettings, leadMap, leadRouter, leadControl, currentMode, writeRequest, readDecision, allowRules,
-  leadDir, cardOf, busyLine, choiceCard, readRequest, type PermissionRequest } from "../ext/slack/lead.ts";
+  leadDir, cardOf, decidedCard, syncCards, busyLine, choiceCard, readRequest, CARD_LINES, type PermissionRequest } from "../ext/slack/lead.ts";
 import { stepLabel, planOf } from "../ext/slack/lead-adapter.ts";
 import { chatBot, choicesOf } from "../ext/slack/chat.ts";
 import { GOVERN } from "./helpers.ts";
@@ -215,6 +215,142 @@ test("an ask nobody answers in time is a deny, and so is one whose turn was stop
     const stopped = await ask("Write", { file_path: "/etc/y" }, { session: SESSION, stopped: () => true, pending });
     assert.deepEqual([stopped.behavior, stopped.via], ["deny", "cancelled"]);
     assert.equal(pending.size, 0);
+  });
+});
+
+/** Slack's limits on what a card carries (Block Kit reference): a payload past one of them is refused whole. */
+function assertBlockLimits(blocks: unknown[]): void {
+  type B = Record<string, any>;
+  assert.ok(blocks.length <= 50, "at most 50 blocks in a message");
+  for (const b of blocks as B[]) {
+    if (b.type === "header") { assert.equal(b.text.type, "plain_text"); assert.ok(b.text.text.length <= 150, "a header holds 150 characters"); }
+    if (b.type === "section") assert.ok(b.text.text.length <= 3000, "a section holds 3000 characters");
+    if (b.type === "context") { assert.ok(b.elements.length <= 10); for (const x of b.elements) assert.ok(x.text.length <= 3000); }
+    if (b.type === "rich_text") for (const el of b.elements) for (const x of el.elements) assert.ok(x.type === "text" && x.text.length > 0, "a text element is never empty");
+    if (b.type === "actions") {
+      assert.ok(b.elements.length <= 25, "at most 25 elements in an actions block");
+      for (const x of b.elements as B[]) {
+        assert.ok(x.text.text.length <= 30, `"${x.text.text}" fits a phone's button`);
+        assert.ok(x.action_id.length <= 255 && x.value.length <= 2000);
+        if (!x.confirm) continue;
+        assert.ok(x.confirm.title.text.length <= 100 && x.confirm.text.text.length <= 300 && x.confirm.confirm.text.length <= 30 && x.confirm.deny.text.length <= 30,
+          "a confirm dialog's title, text and buttons fit");
+      }
+    }
+  }
+}
+
+test("a permission card shows what the tool use is for, the input as it would run, who decides until when, and asks again before allowing", async () => {
+  const e = workspace("lead-card", SQUAD_A, { channel: LEAD_A, users: [ME, OTHER] });
+  await within(e, () => {
+    type B = Record<string, any>;
+    const lead = leadSettings().lead, expires = "2026-11-28T10:44:00.000Z";
+    const r: PermissionRequest = { ...request(uuid(20), { command: "git push origin fix/checkout-sign-in && echo '<!channel> *done*'", description: "Push the reviewed checkout fix" }),
+      channel: LEAD_A, thread: "1795000000.000100", expires };
+    const card = cardOf(r, lead), blocks = card.blocks as B[];
+    assertBlockLimits(blocks);
+    assert.deepEqual(blocks.map((b) => b.type), ["header", "section", "rich_text", "context", "actions"]);
+    assert.equal(blocks[0]!.text.text, "🔐 Push the reviewed checkout fix");
+    assert.match(blocks[1]!.text.text, /^\*Squad Lead\* asks to run \*Bash\* \(<https:\/\/slack\.com\/archives\/CLEADA0001\/p1795000000000100\|asked here>\)$/);
+    assert.deepEqual(blocks[2]!.elements, [{ type: "rich_text_preformatted", elements: [{ type: "text", text: "git push origin fix/checkout-sign-in && echo '<!channel> *done*'" }] }],
+      "the command is literal text: nothing in it is a mention or formatting");
+    assert.equal(blocks[3]!.elements[0].text, "Only <@UPEDRO0001> <@UOTHER0001> can decide · expires <!date^1795862640^{time}|10:44 UTC>, and no answer is a deny");
+    assert.equal(blocks[4]!.block_id, "govern", "the buttons are the block a decision removes");
+    const buttons = blocks[4]!.elements as B[];
+    assert.deepEqual(buttons.map((b) => [b.text.text, Boolean(b.confirm)]), [["Allow once", true], ["Allow for session", true], ["Deny", false]]);
+    assert.match(buttons[1]!.confirm.text.text, /the same command again for the rest of the session without a card/);
+    // The text a notification and a screen reader give: one line, with no mention the command wrote.
+    assert.equal(card.text, "🔐 Squad Lead asks to run Bash: Push the reviewed checkout fix · expires 10:44 UTC · <@UPEDRO0001> <@UOTHER0001>");
+    assert.match(cardOf({ ...r, input: { command: "echo <!channel>" } }, lead).text, /Bash: echo &lt;!channel&gt; · expires/);
+    assert.equal((cardOf({ ...r, tool: "Write", input: { file_path: "/etc/x", content: "y" } }, lead).blocks as B[])[0]!.text.text, "🔐 Squad Lead asks to run Write");
+
+    // A blocked card: the classifier's reason quoted above the command, and what each button starts said when it is clicked.
+    const blocked = cardOf({ ...r, blocked: { reason: "[Undermining Oversight] pushes  past\na review" } }, lead), bb = blocked.blocks as B[];
+    assertBlockLimits(bb);
+    assert.equal(bb[0]!.text.text, "🛑 Push the reviewed checkout fix");
+    assert.deepEqual(bb[2]!.elements[0], { type: "rich_text_quote", elements: [{ type: "text", text: "[Undermining Oversight] pushes past a review" }] });
+    assert.deepEqual((bb[4]!.elements as B[]).map((b) => [b.text.text, Boolean(b.confirm)]), [["Allow once", true], ["Retry, ask me", true], ["Deny", false]]);
+    assert.match(bb[4]!.elements[0].confirm.text.text, /^A new turn in mode default runs exactly this, once\. Bash: Push the reviewed/);
+    assert.match(blocked.text, /^🛑 Auto mode blocked Squad Lead's Bash: Push the reviewed checkout fix · expires 10:44 UTC/);
+
+    // A long input shows how it starts; the rest opens from a button that decides nothing.
+    const script = Array.from({ length: 40 }, (_, i) => `echo step ${i}`).join("\n");
+    const long = cardOf({ ...r, input: { command: script } }, lead), lb = long.blocks as B[];
+    assertBlockLimits(lb);
+    assert.equal(lb[2]!.elements[0].elements[0].text, `${script.split("\n").slice(0, CARD_LINES).join("\n")}\n…`);
+    assert.deepEqual((lb[4]!.elements as B[]).map((b) => b.action_id), ["govern.lead.allow", "govern.lead.allow-session", "govern.lead.deny", "govern.lead.show"]);
+    assertBlockLimits(cardOf({ ...r, input: { command: "x".repeat(9000), description: "d".repeat(400) } }, lead).blocks);
+
+    // Decided: what it asked stays as it was posted, the buttons go, and a line says who decided and when.
+    const done = decidedCard({ ...r, input: { command: script } }, lead, { behavior: "allow", scope: "once", by: ME, via: "slack", at: "2026-11-28T10:16:00.000Z" }), db = done.blocks as B[];
+    assert.deepEqual(db.map((b) => b.type), ["header", "section", "rich_text", "context"]);
+    assert.deepEqual(db.slice(0, 3), lb.slice(0, 3));
+    assert.deepEqual([db[3]!.block_id, db[3]!.elements[0].text], ["govern.outcome", "✅ Allowed once by <@UPEDRO0001> · <!date^1795860960^{time}|10:16 UTC>"]);
+    assert.match(done.text, /^✅ Allowed once by <@UPEDRO0001>: Bash echo step 0 echo step 1/);
+  });
+});
+
+test("a click answers with the decided card; View full opens the whole input for the clicker and decides nothing; an expired card keeps what it asked", async () => {
+  const e = workspace("lead-card-flow", SQUAD_A, { channel: LEAD_A, users: [ME], permissionTimeoutSeconds: 1 });
+  await within(e, async () => {
+    type B = Record<string, any>;
+    const posts: B[] = [], calls: { method: string; body: B }[] = [];
+    const request_ = (async (_url: unknown, init?: { body?: unknown }) => { posts.push(JSON.parse(String(init?.body))); return new Response("ok"); }) as typeof fetch;
+    const call = async (method: string, body: B) => { calls.push({ method, body }); return { ok: true, ts: "1795000000.000900" }; };
+    const send = (action: string, req: string, o: { user?: string; call?: boolean } = {}) => {
+      const payload = { type: "block_actions", team: { id: TEAM }, user: { id: o.user ?? ME }, channel: { id: LEAD_A }, trigger_id: "trigger-1",
+        response_url: "https://hooks.slack.com/actions/T/1/x", container: { channel_id: LEAD_A, message_ts: "1795000000.000900" },
+        actions: [{ action_id: `govern.lead.${action}`, value: JSON.stringify({ v: 1, req }), action_ts: `${Date.now()}.${Math.random().toString().slice(2, 8)}` }] };
+      const body = Buffer.from(new URLSearchParams({ payload: JSON.stringify(payload) }).toString(), "utf8"), k = sign(body.toString("utf8"));
+      return handleInteraction(SECRET, body, k.ts, k.sig, { request: request_, ...(o.call === false ? {} : { call }) });
+    };
+    const script = Array.from({ length: 300 }, (_, i) => `echo a long step number ${i}`).join("\n");
+    const r1 = uuid(30);
+    writeRequest(request(r1, { command: script, description: "Run the migration" }));
+
+    // View full: anyone in the Lead channel reads it; nothing is decided and the card stays.
+    const shown = await send("show", r1, { user: OTHER });
+    assert.equal(shown.status, 200, JSON.stringify(shown.value));
+    assert.equal(calls.length, 1);
+    assert.deepEqual([calls[0]!.method, calls[0]!.body.trigger_id, calls[0]!.body.view.type, calls[0]!.body.view.title.text], ["views.open", "trigger-1", "modal", "Full command"]);
+    const view = calls[0]!.body.view.blocks as B[];
+    assert.ok(view.length <= 100, "a view holds 100 blocks");
+    assert.equal(view.filter((b) => b.type === "rich_text").map((b) => b.elements[0].elements[0].text).join(""), script, "the whole command, in order");
+    assert.ok(view.filter((b) => b.type === "rich_text").every((b) => b.elements[0].elements[0].text.length <= 3000));
+    assert.match(view.at(-1)!.elements[0].text, /^Waits on a decision until <!date\^/);
+    assert.equal(readDecision(r1), undefined);
+    assert.equal(posts.length, 0, "the card is left as it is");
+    assert.equal((await send("show", r1, { call: false })).status, 409, "a serve without a bot token cannot open a view");
+    assert.equal((await send("show", uuid(39))).status, 404);
+
+    // A decision's answer is the card itself, decided.
+    assert.equal((await send("allow", r1, { user: OTHER })).status, 403);
+    assert.deepEqual(posts.pop(), { replace_original: false, response_type: "ephemeral", text: `Refused: Slack user UOTHER0001 is not one of ${e.root}'s slack.lead.users` },
+      "a refusal is shown to the clicker alone");
+    assert.equal((await send("allow", r1)).status, 200);
+    const answer_ = posts.pop()!;
+    assert.equal(answer_.replace_original, true);
+    assert.deepEqual((answer_.blocks as B[]).map((b) => b.type), ["header", "section", "rich_text", "context"]);
+    assert.match(answer_.blocks[3].elements[0].text, /^✅ Allowed once by <@UPEDRO0001> · <!date\^\d+\^\{time\}\|\d\d:\d\d UTC>$/);
+
+    // The Lead's process posts a waiting request's card, and closes an expired one with what it asked still on it.
+    const r2 = uuid(31);
+    writeRequest({ ...request(r2, { command: "rm -rf build" }), blocked: {}, expires: new Date(Date.now() + 400).toISOString() });
+    calls.length = 0;
+    const lead = leadSettings().lead;
+    await syncCards(call, lead, () => undefined);
+    const post = calls.find((c) => c.method === "chat.postMessage")!;
+    assert.deepEqual([post.body.channel, (post.body.blocks as B[]).at(-1)!.type], [LEAD_A, "actions"]);
+    await new Promise((r) => setTimeout(r, 500));
+    await syncCards(call, lead, () => undefined);
+    const closed = calls.filter((c) => c.method === "chat.update").at(-1)!;
+    assert.equal(closed.body.ts, "1795000000.000900");
+    assert.deepEqual((closed.body.blocks as B[]).map((b) => b.type), ["header", "section", "rich_text", "context"]);
+    assert.equal(closed.body.blocks[2].elements[0].elements[0].text, "rm -rf build");
+    assert.match(closed.body.blocks[3].elements[0].text, /^⌛ Expired without an answer: denied · <!date\^/);
+    const n = calls.length;
+    await syncCards(call, lead, () => undefined);
+    assert.equal(calls.length, n, "a closed card is edited once");
   });
 });
 

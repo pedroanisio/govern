@@ -9,7 +9,14 @@ All notable changes to govern are documented here, following Keep a Changelog.
 
 ## [Unreleased]
 
+### Changed
+
+- The Squad Lead's permission card is laid out to be read at a glance. Its header says what the tool use is for (a Bash call's own description), the input sits in a code block of its own as literal text, and a line names who can decide and when the card expires, in each reader's time zone. A long input shows its first 12 lines, and **View full command** opens all of it in a view. The buttons are short enough for a phone (**Allow once**, **Allow for session**, **Retry, ask me**, **Deny**), and each one that lets a tool use run asks once more before it counts, saying what it allows. The notification text is one line: the tool, what it is for, when it expires and who decides. See LEAD.md.
+
 ### Fixed
+
+- A decided permission card kept its buttons after a click, and a card that expired or whose turn ended was replaced by one line of text that lost the command's formatting. A decided card now keeps what it asked, drops its buttons and ends with a line saying who decided what and when. The Lead's process makes the same edit for every decision, so a card whose click answer never reached Slack is closed too.
+- A command on a permission card could write a mention (`<!channel>`) or formatting into the card and its notification. The input is now literal text.
 
 - `slack-app-manifest.yml` and LEAD.md name the `reactions:write` scope that `govern slack chat` and the Squad Lead use to mark each message (👀, then ✅ or ❌). Without it the turns still run, and each refused reaction is logged.
 

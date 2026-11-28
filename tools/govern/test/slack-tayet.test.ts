@@ -87,6 +87,9 @@ test("the server profile: Tayet takes 25 buttons on a card and closes it on its 
     assert.equal(allowedUrl(new URL(u), "hooks.slack.com", api), false, u);
   assert.equal(blocksText([{ type: "section", text: { type: "mrkdwn", text: "a" } }, { type: "actions", elements: [] },
     { type: "context", elements: [{ type: "mrkdwn", text: "b" }] }]), "a\n\nb");
+  assert.equal(blocksText([{ type: "header", text: { type: "plain_text", text: "h" } }, { type: "rich_text", elements: [
+    { type: "rich_text_quote", elements: [{ type: "text", text: "why" }] }, { type: "rich_text_preformatted", elements: [{ type: "text", text: "git push" }] }] }]),
+    "*h*\n\n> why\n\n```\ngit push\n```", "a card's header, reason and command are text too");
 });
 
 test("the config takes Tayet with forms and with HTTP clicks, and refuses an API that is not an http(s) URL", () => {

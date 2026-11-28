@@ -23,12 +23,12 @@ import { configFile, checkConfig, forgetConfigs, inRepo, repo, slackConfig, stat
 import { BadRequest, Forbidden, NotFound } from "../../lib/http-errors.ts";
 import { GovernError, fail, nowIso } from "../../lib/util.ts";
 import { randomUUID } from "node:crypto";
-import { ACTIONS_BLOCK } from "./pending.ts";
+import { ACTIONS_BLOCK, OUTCOME_BLOCK } from "./pending.ts";
 import type { SlackSource } from "../../lib/approval.ts";
 import * as sessions from "../../lib/conversation.ts";
 import { chatBot, mrkdwn, openQuestions, CHOICE_CHARS } from "./chat.ts";
 import { slackCall, type Call } from "./channel.ts";
-import { serverOf } from "./server.ts";
+import { forServer, serverOf } from "./server.ts";
 import { botToken } from "./secrets.ts";
 
 type SlackConfig = NonNullable<ReturnType<typeof slackConfig>>;
@@ -50,6 +50,8 @@ export const LEAD_MAILBOX = "lead";
 /** Permission card buttons. */
 export const LEAD_ACTION = "govern.lead.";
 const ACTIONS = { allow: "govern.lead.allow", session: "govern.lead.allow-session", retry: "govern.lead.retry", deny: "govern.lead.deny" } as const;
+/** A card's View full button: it opens the whole input and decides nothing. */
+const SHOW = "govern.lead.show";
 /** The mode a turn a blocked card started runs in: one where every tool use the settings do not allow gets a card. */
 export const BLOCKED_RETRY_MODE: LeadMode = "default";
 /** A choices card's buttons (`govern.lead.choose.<n>`) and select menu (`govern.lead.choose`). */
@@ -274,7 +276,7 @@ export function takeTurnMode(text: string): LeadMode | undefined {
 }
 
 const clip = (s: string, n: number): string => (s.length > n ? `${s.slice(0, n)}…` : s);
-/** What a tool use asks for, short enough for a card. */
+/** What a tool use asks for, short enough for a message's text. */
 export function describe(tool: string, input: unknown): string {
   const i = (input ?? {}) as Record<string, unknown>;
   if (tool === "Bash" && typeof i.command === "string")
@@ -283,40 +285,88 @@ export function describe(tool: string, input: unknown): string {
   return `\`\`\`${clip(JSON.stringify(input, null, 1) ?? "", 2500)}\`\`\``;
 }
 
-/** The card for request `r`. */
+/** A tool use's input as the people read it: a Bash command, a file's path, else the input as JSON. */
+export function inputText(tool: string, input: unknown): string {
+  const i = (input ?? {}) as Record<string, unknown>;
+  if (tool === "Bash" && typeof i.command === "string") return i.command;
+  if (typeof i.file_path === "string") return i.file_path;
+  return JSON.stringify(input, null, 1) ?? "";
+}
+/** What a Bash call says it is for; undefined for any other tool use, or a call that does not say. */
+const purposeOf = (tool: string, input: unknown): string | undefined => {
+  const d = tool === "Bash" ? (input as { description?: unknown } | null)?.description : undefined;
+  return typeof d === "string" && d.trim() ? d.replace(/\s+/g, " ").trim() : undefined;
+};
+/** Text for Slack mrkdwn as it is: no mention, link or entity. */
+const esc = (t: string): string => t.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+/** A tool use in one line, for a notification: what it is for, else where its input starts. */
+const summaryOf = (tool: string, input: unknown): string => esc(clip((purposeOf(tool, input) ?? inputText(tool, input)).replace(/\s+/g, " ").trim(), 80));
+
+/** How much of a tool use's input a card shows; the whole of a longer one opens from its View full button. */
+export const CARD_LINES = 12, CARD_CHARS = 1200;
+/** How much of it that view shows, in blocks of VIEW_CHUNK characters. */
+export const VIEW_CHARS = 60_000, VIEW_CHUNK = 2900;
+/** The start of `text` a card shows, and whether more follows. */
+function preview(text: string): { shown: string; cut: boolean } {
+  const shown = text.split("\n").slice(0, CARD_LINES).join("\n").slice(0, CARD_CHARS);
+  return shown.length < text.length ? { shown: `${shown}\n…`, cut: true } : { shown: shown || "(empty)", cut: false };
+}
+/** A time each reader sees in their own time zone (UTC where Slack does not format it). */
+const clock = (iso: string): string => `${new Date(Date.parse(iso)).toISOString().slice(11, 16)} UTC`;
+const stamp = (iso: string): string => `<!date^${Math.floor(Date.parse(iso) / 1000)}^{time}|${clock(iso)}>`;
+const plain = (text: string) => ({ type: "plain_text" as const, text, emoji: true });
+const pre = (text: string) => ({ type: "rich_text_preformatted", elements: [{ type: "text", text }] });
+
+/** What a card says of request `r` while it waits and once it is decided: what it is for as the header, who asks for
+ *  which tool, the classifier's reason when it blocked the tool use, and the start of the input as it would run. */
+function cardBody(r: PermissionRequest, lead: LeadConfig): { blocks: unknown[]; cut: boolean } {
+  const name = lead.name ?? "Squad Lead";
+  const link = r.channel && r.thread ? ` (<https://slack.com/archives/${r.channel}/p${r.thread.replace(".", "")}|asked here>)` : "";
+  const title = purposeOf(r.tool, r.input) ?? (r.blocked ? `Auto mode blocked ${r.tool}` : `${name} asks to run ${r.tool}`);
+  const { shown, cut } = preview(inputText(r.tool, r.input));
+  const why = r.blocked?.reason ? [{ type: "rich_text_quote", elements: [{ type: "text", text: clip(r.blocked.reason.replace(/\s+/g, " "), 500) }] }] : [];
+  return { cut, blocks: [
+    { type: "header", text: plain(`${r.blocked ? "🛑" : "🔐"} ${clip(title, 140)}`) },
+    { type: "section", text: { type: "mrkdwn", text: r.blocked ? `Auto mode blocked *${esc(name)}*'s *${esc(r.tool)}*${link}` : `*${esc(name)}* asks to run *${esc(r.tool)}*${link}` } },
+    { type: "rich_text", elements: [...why, pre(shown)] }] };
+}
+
+/** The card for request `r`: its body, who may decide and until when, and the buttons. A button that lets the tool use
+ *  run asks once more before it counts, saying what it does. */
 export function cardOf(r: PermissionRequest, lead: LeadConfig): { text: string; blocks: unknown[] } {
   const name = lead.name ?? "Squad Lead", who = lead.users.map((u) => `<@${u}>`).join(" ");
-  const link = r.channel && r.thread ? ` (<https://slack.com/archives/${r.channel}/p${r.thread.replace(".", "")}|asked here>)` : "";
-  const rule = ruleOf(r.tool, r.input), minutes = Math.round((Date.parse(r.expires) - Date.parse(r.at)) / 60000);
-  const value = JSON.stringify({ v: 1, req: r.req });
-  if (r.blocked) {
-    const head = `🛑 Auto mode blocked *${name}*'s *${r.tool}*${link}`;
-    const why = r.blocked.reason ? `\n> ${clip(r.blocked.reason.replace(/\s+/g, " "), 500)}` : "";
-    return {
-      text: `${head}: ${who}`,
-      blocks: [
-        { type: "section", text: { type: "mrkdwn", text: `${head}${why}\n${describe(r.tool, r.input)}` } },
-        { type: "context", elements: [{ type: "mrkdwn", text: `${who} · *Allow once* runs exactly this in a new turn, in mode ${BLOCKED_RETRY_MODE}; ` +
-          `*Retry, asking me* has the ${name} try again in mode ${BLOCKED_RETRY_MODE}, a card for each step it needs; no answer in ${minutes} min is a deny` }] },
-        { type: "actions", elements: [
-          { type: "button", action_id: ACTIONS.allow, text: { type: "plain_text", text: "Allow once" }, style: "primary", value },
-          { type: "button", action_id: ACTIONS.retry, text: { type: "plain_text", text: "Retry, asking me" }, value },
-          { type: "button", action_id: ACTIONS.deny, text: { type: "plain_text", text: "Deny" }, style: "danger", value }] }
-      ]
-    };
-  }
-  const head = `🔐 *${name}* asks to run *${r.tool}*${link}`;
+  const rule = ruleOf(r.tool, r.input), value = JSON.stringify({ v: 1, req: r.req });
+  const { blocks, cut } = cardBody(r, lead), bash = rule.startsWith("Bash(");
+  const what = clip(`${r.tool}: ${(purposeOf(r.tool, r.input) ?? inputText(r.tool, r.input)).replace(/\s+/g, " ").trim()}`, 120);
+  const confirm = (title: string, text: string, ok: string) =>
+    ({ title: plain(title), text: { type: "plain_text", text: clip(text, 299) }, confirm: plain(ok), deny: plain("Cancel") });
+  const button = (action: keyof typeof ACTIONS, label: string, more: Record<string, unknown> = {}) =>
+    ({ type: "button", action_id: ACTIONS[action], text: plain(label), value, ...more });
+  const view = cut ? [{ type: "button", action_id: SHOW, text: plain(bash ? "View full command" : "View full input"), value }] : [];
+  const buttons = r.blocked
+    ? [button("allow", "Allow once", { style: "primary", confirm: confirm("Allow it once?",
+        `A new turn in mode ${BLOCKED_RETRY_MODE} runs exactly this, once. ${what}`, "Allow once") }),
+      button("retry", "Retry, ask me", { confirm: confirm("Retry, asking you?",
+        `${name} tries again in a new turn in mode ${BLOCKED_RETRY_MODE}: each step the settings do not allow gets a card here.`, "Retry") }),
+      button("deny", "Deny", { style: "danger" })]
+    : [button("allow", "Allow once", { style: "primary", confirm: confirm("Allow it once?", `${name} runs this once. ${what}`, "Allow once") }),
+      button("session", "Allow for session", { confirm: confirm("Allow it for the session?",
+        bash ? `${name} runs this command now, and the same command again for the rest of the session without a card. ${what}`
+          : `${name} runs this now, and any other ${r.tool} use for the rest of the session without a card.`, "Allow for session") }),
+      button("deny", "Deny", { style: "danger" })];
   return {
-    text: `${head}: ${who}`,
-    blocks: [
-      { type: "section", text: { type: "mrkdwn", text: `${head}\n${describe(r.tool, r.input)}` } },
-      { type: "context", elements: [{ type: "mrkdwn", text: `${who} · no answer in ${minutes} min is a deny` }] },
-      { type: "actions", elements: [
-        { type: "button", action_id: ACTIONS.allow, text: { type: "plain_text", text: "Allow once" }, style: "primary", value },
-        { type: "button", action_id: ACTIONS.session, text: { type: "plain_text", text: rule.startsWith("Bash(") ? "Allow this command for the session" : `Allow ${clip(rule, 40)} for the session` }, value },
-        { type: "button", action_id: ACTIONS.deny, text: { type: "plain_text", text: "Deny" }, style: "danger", value }] }
-    ]
+    text: `${r.blocked ? `🛑 Auto mode blocked ${esc(name)}'s ${esc(r.tool)}` : `🔐 ${esc(name)} asks to run ${esc(r.tool)}`}: ${summaryOf(r.tool, r.input)}` +
+      ` · expires ${clock(r.expires)} · ${who}`,
+    blocks: [...blocks,
+      { type: "context", elements: [{ type: "mrkdwn", text: `Only ${who} can decide · expires ${stamp(r.expires)}, and no answer is a deny` }] },
+      { type: "actions", block_id: ACTIONS_BLOCK, elements: [...buttons, ...view] }]
   };
+}
+
+/** The card of request `r` once `d` stands: what it asked, as it was posted, then who decided what and when. */
+export function decidedCard(r: PermissionRequest, lead: LeadConfig, d: PermissionDecision): { text: string; blocks: unknown[] } {
+  return { text: `${decisionLine(d)}: ${esc(r.tool)} ${summaryOf(r.tool, r.input)}`,
+    blocks: [...cardBody(r, lead).blocks, { type: "context", block_id: OUTCOME_BLOCK, elements: [{ type: "mrkdwn", text: `${decisionLine(d)} · ${stamp(d.at)}` }] }] };
 }
 
 /** The line a decided card ends with. */
@@ -339,7 +389,7 @@ const record = (v: unknown): v is Record<string, unknown> => typeof v === "objec
 /** A permission card click, or undefined for any other payload. */
 export function leadClickOf(p: unknown): LeadClick | undefined {
   if (!record(p) || p.type !== "block_actions" || !Array.isArray(p.actions)
-    || !p.actions.some((x) => record(x) && typeof x.action_id === "string" && x.action_id.startsWith(LEAD_ACTION) && !x.action_id.startsWith(CHOOSE))) return undefined;
+    || !p.actions.some((x) => record(x) && typeof x.action_id === "string" && x.action_id.startsWith(LEAD_ACTION) && !x.action_id.startsWith(CHOOSE) && x.action_id !== SHOW)) return undefined;
   if (p.actions.length !== 1) throw new BadRequest("a click is exactly one action");
   const a = p.actions[0] as Record<string, unknown>;
   const action = (Object.keys(ACTIONS) as (keyof typeof ACTIONS)[]).find((k) => ACTIONS[k] === a.action_id) ?? (() => { throw new BadRequest("unknown Lead button"); })();
@@ -393,9 +443,10 @@ export function blockedTurnText(r: PermissionRequest, action: "allow" | "retry",
       `where each step the settings do not allow gets a card in Slack. Do not reach the same end another way.\n${what}`;
 }
 
-/** Record a permission card click as the clicker's decision, in the Lead's own workspace: the line the card ends with,
- *  and, for a blocked card's Allow once or Retry, the message the Lead takes as its next turn (handed to `route`). */
-export function performLeadClick(c: LeadClick, source: SlackSource, route?: (event: Record<string, unknown>) => boolean): string {
+/** Record a permission card click as the clicker's decision, in the Lead's own workspace: the line saying what was
+ *  decided, the card as it stands from then on, and, for a blocked card's Allow once or Retry, the message the Lead takes
+ *  as its next turn (handed to `route`). */
+export function performLeadClick(c: LeadClick, source: SlackSource, route?: (event: Record<string, unknown>) => boolean): { line: string; card: { text: string; blocks: unknown[] } } {
   const ours = slackConfig()?.team ?? (() => { throw new Forbidden("the workspace config names no slack.team"); })();
   if (c.team !== ours) throw new Forbidden(`the request comes from Slack team ${c.team}, not ${ours}`);
   const at = leadMap().get(c.channel) ?? (() => { throw new NotFound(`${c.channel} is no Lead channel this server serves`); })();
@@ -425,7 +476,52 @@ export function performLeadClick(c: LeadClick, source: SlackSource, route?: (eve
       route!({ type: "event_callback", team_id: c.team, event_id: `govern-blocked-${c.req}`,
         event: { type: "message", channel: c.channel, user: c.user, ts: c.ts, ...(thread ? { thread_ts: thread } : {}), text } });
     }
-    return `${decisionLine(d)}: *${r.tool}* ${describe(r.tool, r.input)}`;
+    return { line: `${decisionLine(d)}: *${r.tool}* ${describe(r.tool, r.input)}`, card: decidedCard(r, lead, d) };
+  });
+}
+
+/** A View full click: who asked to read which request, and the trigger that opens a view for them. */
+export interface LeadShow { team: string; user: string; channel: string; req: string; trigger: string }
+
+/** A card's View full click, or undefined for any other payload. */
+export function leadShowOf(p: unknown): LeadShow | undefined {
+  if (!record(p) || p.type !== "block_actions" || !Array.isArray(p.actions) || !p.actions.some((x) => record(x) && x.action_id === SHOW)) return undefined;
+  if (p.actions.length !== 1) throw new BadRequest("a click is exactly one action");
+  const a = p.actions[0] as Record<string, unknown>, container = record(p.container) ? p.container : {};
+  const team = record(p.team) && typeof p.team.id === "string" ? p.team.id : undefined;
+  const user = record(p.user) && typeof p.user.id === "string" ? p.user.id : undefined;
+  const channel = record(p.channel) && typeof p.channel.id === "string" ? p.channel.id : typeof container.channel_id === "string" ? container.channel_id : undefined;
+  if (!team || !user || !channel) throw new BadRequest("the click names no team, user or channel");
+  if (typeof p.trigger_id !== "string" || !p.trigger_id) throw new BadRequest("the click has no trigger_id");
+  let value: unknown;
+  try { value = JSON.parse(typeof a.value === "string" ? a.value : ""); } catch { throw new BadRequest("the button's value is not JSON"); }
+  if (!record(value) || value.v !== 1 || typeof value.req !== "string" || !REQ.test(value.req)) throw new BadRequest("the button names no permission request");
+  return { team, user, channel, req: value.req, trigger: p.trigger_id };
+}
+
+/** The view a View full click opens: the request's whole input, for anyone in its Lead channel (the card there already
+ *  shows how it starts). It decides nothing and records nothing. */
+export function leadShowView(c: LeadShow): Record<string, unknown> {
+  const ours = slackConfig()?.team ?? (() => { throw new Forbidden("the workspace config names no slack.team"); })();
+  if (c.team !== ours) throw new Forbidden(`the request comes from Slack team ${c.team}, not ${ours}`);
+  const at = leadMap().get(c.channel) ?? (() => { throw new NotFound(`${c.channel} is no Lead channel this server serves`); })();
+  return inRepo(at.ws, () => {
+    const { cfg, lead } = leadSettings();
+    if (cfg.team !== c.team) throw new Forbidden(`${at.ws} belongs to Slack team ${cfg.team}, not ${c.team}`);
+    const r = readRequest(c.req) ?? (() => { throw new NotFound("no such permission request (older than a week?)"); })();
+    const text = inputText(r.tool, r.input), parts: string[] = [];
+    // Each block holds whole lines while they fit, so a long script reads as it was written.
+    for (let rest = text.slice(0, VIEW_CHARS); rest;) {
+      const nl = rest.length > VIEW_CHUNK ? rest.lastIndexOf("\n", VIEW_CHUNK) : -1, n = nl > 0 ? nl + 1 : VIEW_CHUNK;
+      parts.push(rest.slice(0, n));
+      rest = rest.slice(n);
+    }
+    const purpose = purposeOf(r.tool, r.input), d = readDecision(c.req);
+    return { type: "modal", title: plain(r.tool === "Bash" ? "Full command" : "Full input"), close: plain("Close"), blocks: [
+      { type: "section", text: { type: "mrkdwn", text: `*${esc(lead.name ?? "Squad Lead")}* · *${esc(r.tool)}*${purpose ? ` · ${esc(clip(purpose, 300))}` : ""}` } },
+      ...(parts.length ? parts : ["(empty)"]).map((t) => ({ type: "rich_text", elements: [pre(t)] })),
+      { type: "context", elements: [{ type: "mrkdwn", text: [d ? decisionLine(d) : `Waits on a decision until ${stamp(r.expires)}`,
+        ...(text.length > VIEW_CHARS ? [`the first ${VIEW_CHARS} of ${text.length} characters; all of it is in the request file of ${c.req}`] : [])].join(" · ") }] }] };
   });
 }
 
@@ -636,7 +732,8 @@ export function createLeadConversation(conv: string, lead: LeadConfig): void {
     timeoutSeconds: lead.timeoutSeconds ?? LEAD_TIMEOUT_SECONDS, maxContextChars: LEAD_CONTEXT_CHARS });
 }
 
-/** Post the cards of requests that have none, and close those decided without a click (expired, cancelled). */
+/** Post the cards of requests that have none, and close each decided one: what it asked stays, the buttons go, and a line
+ *  says who decided what and when (or that it expired, or its turn ended). */
 export async function syncCards(call: Call, lead: LeadConfig, log: (l: string) => void): Promise<void> {
   let names: string[];
   try { names = readdirSync(permDir()); } catch { return; }
@@ -656,10 +753,8 @@ export async function syncCards(call: Call, lead: LeadConfig, log: (l: string) =
         const sent = await call("chat.postMessage", { channel: lead.channel, ...cardOf(r, lead), unfurl_links: false });
         writeAtomic(permFile(req, "card"), JSON.stringify({ channel: lead.channel, ts: sent.ts }) + "\n");
       } else if (card && d && !card.closed) {
-        if (d.via !== "slack") {
-          const head = `*${r.tool}* ${describe(r.tool, r.input)}`;
-          await call("chat.update", { channel: card.channel, ts: card.ts, text: `${decisionLine(d)}: ${head}`, blocks: [] });
-        }
+        // A click's own answer already closed the card; the edit here is the same card, so one that answer missed is closed too.
+        await call("chat.update", { channel: card.channel, ts: card.ts, ...forServer(serverOf(leadSettings().cfg), decidedCard(r, lead, d)) });
         writeAtomic(permFile(req, "card"), JSON.stringify({ ...card, closed: true }) + "\n");
       } else if (d && Date.now() - Date.parse(d.at) > KEEP_MS) {
         for (const k of ["request", "decision", "card"] as const) rmSync(permFile(req, k), { force: true });

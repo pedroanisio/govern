@@ -27,7 +27,7 @@ import { PUBLISH_ID, approvePublish, parsePublish } from "./publish.ts";
 import { allowedUrl, forServer, serverOf, type SlackServer } from "./server.ts";
 import { markAnswered } from "./answered.ts";
 import { cardLaneHere, noteOf, replyOf, type Reply } from "./cards.ts";
-import { leadChoiceOf, leadClickOf, performLeadChoice, performLeadClick } from "./lead.ts";
+import { leadChoiceOf, leadClickOf, leadShowOf, leadShowView, performLeadChoice, performLeadClick } from "./lead.ts";
 
 export { optionSet };
 
@@ -482,14 +482,23 @@ async function interact(body: Buffer, proof: Proof, o: InteractionOptions): Prom
       if (!lead(event)) throw new NotFound(`${lc.channel} is no Lead channel this server routes`);
       result = { status: 200, value: { ok: true, text: line } };
       update = () => closed(body, line, server.singleAnswer);
+    } else if (leadShowOf(raw)) {
+      // A View full click reads a permission request's whole input; it decides nothing and leaves the card as it is.
+      const ls = leadShowOf(raw)!;
+      admit();
+      const view = leadShowView(ls);
+      if (!o.call) fail("govern slack serve has no bot token, so it cannot open the view: give it SLACK_BOT_TOKEN");
+      await o.call!("views.open", { trigger_id: ls.trigger, view });
+      result = { status: 200, value: { ok: true, text: `the full input of ${ls.req} shown to <@${ls.user}>` } };
+      url = undefined;
     } else if (leadClickOf(raw)) {
       const lc = leadClickOf(raw)!;
       admit();
       let routed = true;
-      const line = performLeadClick(lc, source(lc.team, lc.user), o.lead ? (event) => (routed = o.lead!(event)) : undefined);
+      const { line, card } = performLeadClick(lc, source(lc.team, lc.user), o.lead ? (event) => (routed = o.lead!(event)) : undefined);
       if (!routed) throw new NotFound(`${lc.channel} is no Lead channel this server routes`);
       result = { status: 200, value: { ok: true, text: line } };
-      update = () => closed(body, line, server.singleAnswer);
+      update = () => card;
     } else if (c) {
       marks = { team: c.team, lane: c.control.lane };
       admit();
