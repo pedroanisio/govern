@@ -9,6 +9,10 @@ All notable changes to govern are documented here, following Keep a Changelog.
 
 ## [Unreleased]
 
+### Fixed
+
+- The Squad Lead's status plan closed the steps a reader had opened every 10 seconds: each edit for the clock redrew the plan closed. The plan is now edited when its steps change, and for the clock alone once a minute (`GOVERN_LEAD_CLOCK_EVERY_MS`). Its blocks keep the same `block_id` from one edit to the next. A status posted again below new narration still starts closed. The text status, on Tayet or where Slack refuses the plan, follows the clock as before.
+
 ## [0.3.24] - 2026-11-28
 
 ### Added

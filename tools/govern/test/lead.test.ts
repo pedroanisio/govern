@@ -666,6 +666,11 @@ test("a turn is told in its thread as it runs: what the Lead says between steps,
     assert.match(running[0]!.title, /^Squad Lead working · \d+s · 2 steps$/);
     assert.deepEqual(running[0]!.tasks.map((t: B) => [t.type, t.task_id, t.status]), [["task_card", "step-1", "complete"], ["task_card", "step-2", "in_progress"]]);
     assert.equal(running[1]!.elements[0].text, "📋 0/2 · Reading the desk · Send *stop* to interrupt; a new message waits for this turn.");
+    assert.deepEqual([running[0]!.block_id, ...running[0]!.tasks.map((t: B) => t.block_id)], ["govern.lead.plan", "govern.lead.plan.1", "govern.lead.plan.2"], "the same plan from one edit to the next");
+    // A plan is edited when its steps change, not for its clock: an edit closes the steps a reader opened.
+    const edits = slack.calls.filter((c) => (c.body.blocks as B[] | undefined)?.[0]?.type === "plan" && running[0]!.tasks.length === (c.body.blocks as B[])[0]!.tasks.length
+      && (c.body.blocks as B[])[0]!.tasks.at(-1).status === "in_progress");
+    assert.equal(edits.length, 1, `one edit for the step that ran 3.5 s, not one each 500 ms: ${edits.length}`);
     const last = slack.calls.at(-1)!;
     assert.equal(last.method, "chat.update");
     assert.match(String(last.body.text), /^✔️ Squad Lead answered after \d+s, 2 steps\.$/);

@@ -32,6 +32,9 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const NO_LOGIN = /authenticat|oauth|not logged in|\/login|invalid api key|401/i;
 const PROGRESS_AFTER_MS = Number(process.env.GOVERN_LEAD_PROGRESS_AFTER_MS ?? 10_000);
 const PROGRESS_EVERY_MS = Number(process.env.GOVERN_LEAD_PROGRESS_EVERY_MS ?? 10_000);
+/** How often a plan whose steps did not change is edited for its clock alone. Slack shows an edited plan closed again,
+ *  so a reader who opened the steps keeps them open until a step changes, or this long. */
+const CLOCK_EVERY_MS = Number(process.env.GOVERN_LEAD_CLOCK_EVERY_MS ?? 60_000);
 /** Finished steps the status message lists. */
 const RECENT_STEPS = 4;
 const NO_USAGE = { input: 0, output: 0, cached: 0, cacheWrite: 0, reasoning: 0, costUsd: 0 };
@@ -156,7 +159,7 @@ export async function leadAdapter(): Promise<void> {
       }
     }).finally(() => { statusBusy = false; });
   };
-  let written = "";
+  let written = "", shown = "";
   const tick = (live: Live, at: number) => {
     const a = { ...(req.run?.id ? { run: req.run.id } : {}), ...(q ? { channel: q.channel, thread: q.thread ?? q.ts } : {}),
       since: new Date(live.t0).toISOString(), steps: live.steps,
@@ -165,6 +168,11 @@ export async function leadAdapter(): Promise<void> {
     const json = JSON.stringify(a);
     if (json !== written) { try { writeActivity(a); written = json; } catch (e) { log(`activity: ${(e as Error).message}`); } }
     if (statusBusy || at - live.t0 < PROGRESS_AFTER_MS || (at - lastStatus < PROGRESS_EVERY_MS && !statusBuried)) return;
+    // As a plan, the status is edited when what it lists changed; the clock alone waits CLOCK_EVERY_MS. As text there is
+    // nothing to keep open, so it follows the clock.
+    const shape = JSON.stringify([live.steps, live.done, live.now?.n, live.plan]);
+    if (rich && statusTs && !statusBuried && shape === shown && at - lastStatus < CLOCK_EVERY_MS) return;
+    shown = shape;
     lastStatus = at;
     status(statusText(name, live, at), false, statusBlocks(name, live, at));
   };
@@ -311,14 +319,18 @@ export function statusText(name: string, live: Live, at: number): string {
   return lines.join("\n");
 }
 
+/** The plan's block id, and the stem of each step's: the same from one edit to the next, so an edit is the same plan
+ *  with other content and not a new one. */
+const PLAN_BLOCK = "govern.lead.plan";
+
 /** The status message as a plan (Slack's plan and task_card blocks): each recent step with how it ended, the one that
  *  runs now, then the todo list's progress and how to interrupt. Before the first step there is no plan to show. */
 export function statusBlocks(name: string, live: Live, at: number): unknown[] {
-  const task = (n: number, title: string, status: "complete" | "error" | "in_progress") => ({ type: "task_card", task_id: `step-${n}`, title: oneLine(title, 150), status });
+  const task = (n: number, title: string, status: "complete" | "error" | "in_progress") => ({ type: "task_card", block_id: `${PLAN_BLOCK}.${n}`, task_id: `step-${n}`, title: oneLine(title, 150), status });
   const tasks = [...live.done.map((d) => task(d.n, d.what, d.ok ? "complete" : "error")),
     ...(live.now ? [task(live.now.n, `${live.now.what} (${elapsed(at - live.now.at)})`, "in_progress")] : [])];
   const head = `${name} working · ${elapsed(at - live.t0)} · ${live.steps} step${live.steps === 1 ? "" : "s"}`;
-  return [tasks.length ? { type: "plan", title: oneLine(head, 150), tasks } : { type: "section", text: { type: "mrkdwn", text: `⏳ ${esc(head)}` } },
+  return [tasks.length ? { type: "plan", block_id: PLAN_BLOCK, title: oneLine(head, 150), tasks } : { type: "section", text: { type: "mrkdwn", text: `⏳ ${esc(head)}` } },
     { type: "context", elements: [{ type: "mrkdwn", text: `${live.plan ? `📋 ${esc(live.plan)} · ` : ""}Send *stop* to interrupt; a new message waits for this turn.` }] }];
 }
 
