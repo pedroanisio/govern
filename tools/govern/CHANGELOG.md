@@ -9,6 +9,8 @@ All notable changes to govern are documented here, following Keep a Changelog.
 
 ## [Unreleased]
 
+## [0.3.24] - 2026-11-28
+
 ### Added
 
 - `examples/pr-review`: a process that merges a pull request on a reviewer's decision. A connector reads the pull request's title, target branch, size and finished checks from GitHub onto the case, the gate's card shows them, and a second connector merges the commit that was approved; GitHub refuses the merge when the branch moved after the approval. See its README.
