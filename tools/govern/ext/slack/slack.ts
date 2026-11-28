@@ -27,7 +27,7 @@ import { PUBLISH_ID, approvePublish, parsePublish } from "./publish.ts";
 import { allowedUrl, forServer, serverOf, type SlackServer } from "./server.ts";
 import { markAnswered } from "./answered.ts";
 import { cardLaneHere, noteOf, replyOf, type Reply } from "./cards.ts";
-import { leadChoiceOf, leadClickOf, leadShowOf, leadShowView, performLeadChoice, performLeadClick } from "./lead.ts";
+import { leadChoiceOf, leadClickOf, leadMap, leadShowOf, leadShowView, performLeadChoice, performLeadClick } from "./lead.ts";
 
 export { optionSet };
 
@@ -432,6 +432,8 @@ async function interact(body: Buffer, proof: Proof, o: InteractionOptions): Prom
   let raw: unknown;
   /** The lane the click was about, so a single-answer server marks the closed message in that lane's workspace. */
   let marks: { team: string; lane: string } | undefined;
+  /** The Lead channel a click on one of a Lead's cards came from. */
+  let leadChannel: string | undefined;
   try {
     const at = (o.now ?? (() => Math.floor(Date.now() / 1000)))();
     if (proof.kind === "signed") verifySignature(proof.secret, proof.timestamp, proof.signature, body, at);
@@ -476,6 +478,7 @@ async function interact(body: Buffer, proof: Proof, o: InteractionOptions): Prom
       update = () => closed(body, line, server.singleAnswer);
     } else if (leadChoiceOf(raw)) {
       const lc = leadChoiceOf(raw)!;
+      leadChannel = lc.channel;
       admit();
       const lead = o.lead ?? (() => { throw new NotFound("the Lead is not served here: its choices go through govern slack serve"); })();
       const { line, event } = performLeadChoice(lc, source(lc.team, lc.user));
@@ -485,6 +488,7 @@ async function interact(body: Buffer, proof: Proof, o: InteractionOptions): Prom
     } else if (leadShowOf(raw)) {
       // A View full click reads a permission request's whole input; it decides nothing and leaves the card as it is.
       const ls = leadShowOf(raw)!;
+      leadChannel = ls.channel;
       admit();
       const view = leadShowView(ls);
       if (!o.call) fail("govern slack serve has no bot token, so it cannot open the view: give it SLACK_BOT_TOKEN");
@@ -493,6 +497,7 @@ async function interact(body: Buffer, proof: Proof, o: InteractionOptions): Prom
       url = undefined;
     } else if (leadClickOf(raw)) {
       const lc = leadClickOf(raw)!;
+      leadChannel = lc.channel;
       admit();
       let routed = true;
       const { line, card } = performLeadClick(lc, source(lc.team, lc.user), o.lead ? (event) => (routed = o.lead!(event)) : undefined);
@@ -540,6 +545,8 @@ async function interact(body: Buffer, proof: Proof, o: InteractionOptions): Prom
     try {
       let ws = repo();
       try { if (marks) ws = laneWorkspace(marks); } catch { /* the lane is not served: this workspace keeps the mark */ }
+      // A Lead's card is marked in the Lead's own workspace, where its process posts the card again if nobody decided.
+      try { if (leadChannel) ws = leadMap().get(leadChannel)?.ws ?? ws; } catch { /* no Lead is served: this workspace keeps the mark */ }
       inRepo(ws, () => markAnswered(clicked.channel, clicked.ts));
     } catch { process.stderr.write("slack: could not mark the closed message; notify will not repost it\n"); }
   }

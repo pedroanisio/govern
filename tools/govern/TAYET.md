@@ -92,6 +92,22 @@ A card closes on its first click, so `slack serve` marks every clicked card unde
 
 The old card is edited to say that a newer one follows. A mark that no posted record claims is forgotten after a day.
 
+## The Squad Lead on Tayet
+
+A Squad Lead ([LEAD.md](LEAD.md)) runs on Tayet with these differences from Slack, each for a rule of the sidecar:
+
+| | Slack | Tayet |
+|---|---|---|
+| A permission card's input | The first 12 lines, and **View full command** opens the rest | All of it in the card, up to 20,000 characters. The sidecar opens a view only as a form with something to send |
+| Before a button counts | A dialog says what it allows | Nothing asks again (the sidecar drops a button's `confirm`). The line above the buttons says what each one does |
+| The link to the message that started the turn | On the card | Not shown: it is a Slack address |
+| Choices in a reply | Buttons up to 5, a menu past that | Buttons up to 25. The sidecar shows no menu, so past 25 the people answer in words |
+| A click by someone who may not decide | Refused to that person; the card stays | The card closes for everyone, and the Lead's process posts it again within a second. The same for a choices card |
+| The status of a turn | A plan of steps | Text |
+
+Anyone in the Lead channel can therefore close a card for a moment, and cannot decide it: the decision is still only
+`slack.lead.users`'. A card that closes only for the people who may answer it needs a change in Tayet, not in govern.
+
 ## What a click proves
 
 There is no signature over a Socket Mode payload. A click counts because it arrived on the connection `govern slack serve`

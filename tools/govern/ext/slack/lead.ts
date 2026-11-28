@@ -28,7 +28,8 @@ import type { SlackSource } from "../../lib/approval.ts";
 import * as sessions from "../../lib/conversation.ts";
 import { chatBot, mrkdwn, openQuestions, CHOICE_CHARS } from "./chat.ts";
 import { slackCall, type Call } from "./channel.ts";
-import { forServer, serverOf } from "./server.ts";
+import { forServer, serverOf, type SlackServer } from "./server.ts";
+import { answered, answeredKey, claimAnswered } from "./answered.ts";
 import { botToken } from "./secrets.ts";
 
 type SlackConfig = NonNullable<ReturnType<typeof slackConfig>>;
@@ -306,8 +307,14 @@ const summaryOf = (tool: string, input: unknown): string => esc(clip((purposeOf(
 export const CARD_LINES = 12, CARD_CHARS = 1200;
 /** How much of it that view shows, in blocks of VIEW_CHUNK characters. */
 export const VIEW_CHARS = 60_000, VIEW_CHUNK = 2900;
+/** How much of it a card shows on a server whose card is its text and that opens no read-only view (Tayet). */
+export const TEXT_CARD_CHARS = 20_000;
+/** A server that shows a card's text and not its blocks, closes a card on its first click, opens no view without a form
+ *  to send and asks nothing again before a click counts (TAYET.md): the card carries everything itself. */
+const textOnly = (server?: SlackServer): boolean => server?.kind === "tayet";
 /** The start of `text` a card shows, and whether more follows. */
-function preview(text: string): { shown: string; cut: boolean } {
+function preview(text: string, whole = false): { shown: string; cut: boolean } {
+  if (whole) return { shown: text.length > TEXT_CARD_CHARS ? `${text.slice(0, TEXT_CARD_CHARS)}\n… (${text.length - TEXT_CARD_CHARS} more characters)` : text || "(empty)", cut: false };
   const shown = text.split("\n").slice(0, CARD_LINES).join("\n").slice(0, CARD_CHARS);
   return shown.length < text.length ? { shown: `${shown}\n…`, cut: true } : { shown: shown || "(empty)", cut: false };
 }
@@ -319,11 +326,12 @@ const pre = (text: string) => ({ type: "rich_text_preformatted", elements: [{ ty
 
 /** What a card says of request `r` while it waits and once it is decided: what it is for as the header, who asks for
  *  which tool, the classifier's reason when it blocked the tool use, and the start of the input as it would run. */
-function cardBody(r: PermissionRequest, lead: LeadConfig): { blocks: unknown[]; cut: boolean } {
+function cardBody(r: PermissionRequest, lead: LeadConfig, server?: SlackServer): { blocks: unknown[]; cut: boolean } {
   const name = lead.name ?? "Squad Lead";
-  const link = r.channel && r.thread ? ` (<https://slack.com/archives/${r.channel}/p${r.thread.replace(".", "")}|asked here>)` : "";
+  // The link is Slack's own address of a message; another server has none to give.
+  const link = r.channel && r.thread && !textOnly(server) ? ` (<https://slack.com/archives/${r.channel}/p${r.thread.replace(".", "")}|asked here>)` : "";
   const title = purposeOf(r.tool, r.input) ?? (r.blocked ? `Auto mode blocked ${r.tool}` : `${name} asks to run ${r.tool}`);
-  const { shown, cut } = preview(inputText(r.tool, r.input));
+  const { shown, cut } = preview(inputText(r.tool, r.input), textOnly(server));
   const why = r.blocked?.reason ? [{ type: "rich_text_quote", elements: [{ type: "text", text: clip(r.blocked.reason.replace(/\s+/g, " "), 500) }] }] : [];
   return { cut, blocks: [
     { type: "header", text: plain(`${r.blocked ? "🛑" : "🔐"} ${clip(title, 140)}`) },
@@ -333,24 +341,28 @@ function cardBody(r: PermissionRequest, lead: LeadConfig): { blocks: unknown[]; 
 
 /** The card for request `r`: its body, who may decide and until when, and the buttons. A button that lets the tool use
  *  run asks once more before it counts, saying what it does. */
-export function cardOf(r: PermissionRequest, lead: LeadConfig): { text: string; blocks: unknown[] } {
+export function cardOf(r: PermissionRequest, lead: LeadConfig, server?: SlackServer): { text: string; blocks: unknown[] } {
   const name = lead.name ?? "Squad Lead", who = lead.users.map((u) => `<@${u}>`).join(" ");
   const rule = ruleOf(r.tool, r.input), value = JSON.stringify({ v: 1, req: r.req });
-  const { blocks, cut } = cardBody(r, lead), bash = rule.startsWith("Bash(");
+  const { blocks, cut } = cardBody(r, lead, server), bash = rule.startsWith("Bash("), bare = textOnly(server);
   const what = clip(`${r.tool}: ${(purposeOf(r.tool, r.input) ?? inputText(r.tool, r.input)).replace(/\s+/g, " ").trim()}`, 120);
+  // Where nothing asks again, a button carries no dialog, and the line above the buttons says what each one does.
   const confirm = (title: string, text: string, ok: string) =>
-    ({ title: plain(title), text: { type: "plain_text", text: clip(text, 299) }, confirm: plain(ok), deny: plain("Cancel") });
+    (bare ? {} : { confirm: { title: plain(title), text: { type: "plain_text", text: clip(text, 299) }, confirm: plain(ok), deny: plain("Cancel") } });
+  const said = !bare ? "" : r.blocked
+    ? ` · *Allow once* runs exactly this in a new turn, in mode ${BLOCKED_RETRY_MODE}; *Retry, ask me* has the ${esc(name)} try again there, a card for each step it needs`
+    : ` · *Allow for session* also allows ${bash ? "this same command" : `any ${esc(r.tool)} use`} for the rest of the session, without a card`;
   const button = (action: keyof typeof ACTIONS, label: string, more: Record<string, unknown> = {}) =>
     ({ type: "button", action_id: ACTIONS[action], text: plain(label), value, ...more });
   const view = cut ? [{ type: "button", action_id: SHOW, text: plain(bash ? "View full command" : "View full input"), value }] : [];
   const buttons = r.blocked
-    ? [button("allow", "Allow once", { style: "primary", confirm: confirm("Allow it once?",
+    ? [button("allow", "Allow once", { style: "primary", ...confirm("Allow it once?",
         `A new turn in mode ${BLOCKED_RETRY_MODE} runs exactly this, once. ${what}`, "Allow once") }),
-      button("retry", "Retry, ask me", { confirm: confirm("Retry, asking you?",
+      button("retry", "Retry, ask me", { ...confirm("Retry, asking you?",
         `${name} tries again in a new turn in mode ${BLOCKED_RETRY_MODE}: each step the settings do not allow gets a card here.`, "Retry") }),
       button("deny", "Deny", { style: "danger" })]
-    : [button("allow", "Allow once", { style: "primary", confirm: confirm("Allow it once?", `${name} runs this once. ${what}`, "Allow once") }),
-      button("session", "Allow for session", { confirm: confirm("Allow it for the session?",
+    : [button("allow", "Allow once", { style: "primary", ...confirm("Allow it once?", `${name} runs this once. ${what}`, "Allow once") }),
+      button("session", "Allow for session", { ...confirm("Allow it for the session?",
         bash ? `${name} runs this command now, and the same command again for the rest of the session without a card. ${what}`
           : `${name} runs this now, and any other ${r.tool} use for the rest of the session without a card.`, "Allow for session") }),
       button("deny", "Deny", { style: "danger" })];
@@ -358,15 +370,15 @@ export function cardOf(r: PermissionRequest, lead: LeadConfig): { text: string; 
     text: `${r.blocked ? `🛑 Auto mode blocked ${esc(name)}'s ${esc(r.tool)}` : `🔐 ${esc(name)} asks to run ${esc(r.tool)}`}: ${summaryOf(r.tool, r.input)}` +
       ` · expires ${clock(r.expires)} · ${who}`,
     blocks: [...blocks,
-      { type: "context", elements: [{ type: "mrkdwn", text: `Only ${who} can decide · expires ${stamp(r.expires)}, and no answer is a deny` }] },
+      { type: "context", elements: [{ type: "mrkdwn", text: `Only ${who} can decide · expires ${stamp(r.expires)}, and no answer is a deny${said}` }] },
       { type: "actions", block_id: ACTIONS_BLOCK, elements: [...buttons, ...view] }]
   };
 }
 
 /** The card of request `r` once `d` stands: what it asked, as it was posted, then who decided what and when. */
-export function decidedCard(r: PermissionRequest, lead: LeadConfig, d: PermissionDecision): { text: string; blocks: unknown[] } {
+export function decidedCard(r: PermissionRequest, lead: LeadConfig, d: PermissionDecision, server?: SlackServer): { text: string; blocks: unknown[] } {
   return { text: `${decisionLine(d)}: ${esc(r.tool)} ${summaryOf(r.tool, r.input)}`,
-    blocks: [...cardBody(r, lead).blocks, { type: "context", block_id: OUTCOME_BLOCK, elements: [{ type: "mrkdwn", text: `${decisionLine(d)} · ${stamp(d.at)}` }] }] };
+    blocks: [...cardBody(r, lead, server).blocks, { type: "context", block_id: OUTCOME_BLOCK, elements: [{ type: "mrkdwn", text: `${decisionLine(d)} · ${stamp(d.at)}` }] }] };
 }
 
 /** The line a decided card ends with. */
@@ -476,7 +488,7 @@ export function performLeadClick(c: LeadClick, source: SlackSource, route?: (eve
       route!({ type: "event_callback", team_id: c.team, event_id: `govern-blocked-${c.req}`,
         event: { type: "message", channel: c.channel, user: c.user, ts: c.ts, ...(thread ? { thread_ts: thread } : {}), text } });
     }
-    return { line: `${decisionLine(d)}: *${r.tool}* ${describe(r.tool, r.input)}`, card: decidedCard(r, lead, d) };
+    return { line: `${decisionLine(d)}: *${r.tool}* ${describe(r.tool, r.input)}`, card: decidedCard(r, lead, d, serverOf(cfg)) };
   });
 }
 
@@ -529,19 +541,30 @@ export function leadShowView(c: LeadShow): Record<string, unknown> {
 // Choices: a reply's ```choices block (chat.ts choicesOf) offered as buttons, or a select menu past CHOICE_BUTTONS; the one
 // chosen comes back to the Lead as the next message, from the person who chose it.
 
-export interface Choice { id: string; channel: string; thread?: string; options: string[]; at: string }
+export interface Choice { id: string; channel: string; thread?: string; options: string[]; at: string;
+  /** The card offering it, once posted: what a server that closes a card on any click is asked about (syncChoices). */ ts?: string }
 export interface Chosen { index: number; option: string; by: string; at: string }
 const choiceDir = (): string => join(leadDir(), "choices");
 const choiceFile = (id: string, kind: "offer" | "chosen"): string => join(choiceDir(), kind === "offer" ? `${id}.json` : `${id}.chosen.json`);
 
-/** Keep the choices offered in `where` and the card offering them (one decision: the first click). */
-export function choiceCard(options: string[], where: { channel: string; thread?: string }, lead: LeadConfig): { text: string; blocks: unknown[] } {
+/** Keep the choices offered in `where` and the card offering them (one decision: the first click). `sent` records the
+ *  card's message once it is posted. */
+export function choiceCard(options: string[], where: { channel: string; thread?: string }, lead: LeadConfig, server?: SlackServer):
+  { text: string; blocks: unknown[]; sent: (ts: string) => void } {
   ensure(choiceDir());
   for (const f of readdirSync(choiceDir())) {
     try { if (Date.now() - statSync(join(choiceDir(), f)).mtimeMs > KEEP_MS) rmSync(join(choiceDir(), f), { force: true }); } catch { /* gone */ }
   }
   const c: Choice = { id: randomUUID(), channel: where.channel, ...(where.thread ? { thread: where.thread } : {}), options, at: nowIso() };
   writeAtomic(choiceFile(c.id, "offer"), JSON.stringify(c) + "\n");
+  return { ...choiceMessage(c, lead, server), sent: (ts) => writeAtomic(choiceFile(c.id, "offer"), JSON.stringify({ ...c, ts }) + "\n") };
+}
+
+/** The card offering choice `c`: each alternative whole, then a button for each. Past the buttons a card takes, Slack gets
+ *  a select menu; a server with buttons only (Tayet) gets as many as its card holds, and past that the people answer in
+ *  words. */
+function choiceMessage(c: Choice, lead: LeadConfig, server?: SlackServer): { text: string; blocks: unknown[] } {
+  const { options } = c, bare = textOnly(server), buttons = bare ? server!.maxButtons : CHOICE_BUTTONS;
   const value = (i: number) => JSON.stringify({ v: 1, choice: c.id, i });
   const label = (o: string) => ({ type: "plain_text" as const, text: o, emoji: true });
   const who = lead.users.map((u) => `<@${u}>`).join(" ");
@@ -551,18 +574,40 @@ export function choiceCard(options: string[], where: { channel: string; thread?:
     const own = /^(\d{1,2})[.)]\s/.exec(o);
     return { n: own ? own[1]! : String(i + 1), text: own ? o : `${i + 1}. ${o}` };
   });
-  const pick = options.length <= CHOICE_BUTTONS
+  const pick = options.length <= buttons
     ? numbered.map((x, i) => ({ type: "button", action_id: `${CHOOSE}.${i}`, text: label(`Choose ${x.n}`), value: value(i) }))
+    : bare ? []
     : [{ type: "static_select", action_id: CHOOSE, placeholder: label(`Choose one of ${options.length}`),
         options: numbered.map((x, i) => ({ text: label(clip(x.text, CHOICE_CHARS - 1)), value: value(i) })) }];
   return {
     text: `Choose: ${options.join(" · ")}`.slice(0, 3000),
     blocks: [
-      { type: "context", elements: [{ type: "mrkdwn", text: `👉 ${who} choose one, or answer in words` }] },
+      { type: "context", elements: [{ type: "mrkdwn", text: pick.length ? `👉 ${who} choose one, or answer in words` : `👉 ${who} answer in words: more choices than a card has buttons` }] },
       ...numbered.map((x) => ({ type: "section", text: { type: "mrkdwn", text: mrkdwn(x.text).slice(0, 3000) } })),
-      { type: "actions", block_id: ACTIONS_BLOCK, elements: pick }
+      ...(pick.length ? [{ type: "actions", block_id: ACTIONS_BLOCK, elements: pick }] : [])
     ]
   };
+}
+
+/** On a server that closes a card on its first click, whoever clicked: offer again each choice whose card a click
+ *  closed and nobody chose (the click of a person who may not choose, refused). */
+export async function syncChoices(call: Call, lead: LeadConfig, log: (l: string) => void): Promise<void> {
+  const server = serverOf(leadSettings().cfg);
+  if (!server.singleAnswer) return;
+  let names: string[];
+  try { names = readdirSync(choiceDir()).filter((n) => n.endsWith(".json") && !n.endsWith(".chosen.json")); } catch { return; }
+  const clicked = answered(), claimed: string[] = [];
+  for (const n of names) {
+    try {
+      const c = readJson<Choice>(join(choiceDir(), n));
+      if (!c?.ts || !clicked.has(answeredKey(c.channel, c.ts))) continue;
+      claimed.push(answeredKey(c.channel, c.ts));
+      if (existsSync(choiceFile(c.id, "chosen"))) continue;
+      const sent = await call("chat.postMessage", { channel: c.channel, ...forServer(server, choiceMessage(c, lead, server)), ...(c.thread ? { thread_ts: c.thread } : {}) });
+      writeAtomic(choiceFile(c.id, "offer"), JSON.stringify({ ...c, ts: sent.ts }) + "\n");
+    } catch (e) { log(`slack lead: choice ${n}: ${(e as Error).message}`); }
+  }
+  if (claimed.length) claimAnswered(claimed);
 }
 
 export interface LeadChoiceClick { team: string; user: string; channel: string; choice: string; index: number; ts: string; thread?: string }
@@ -737,6 +782,9 @@ export function createLeadConversation(conv: string, lead: LeadConfig): void {
 export async function syncCards(call: Call, lead: LeadConfig, log: (l: string) => void): Promise<void> {
   let names: string[];
   try { names = readdirSync(permDir()); } catch { return; }
+  // A server that closes a card on its first click, whoever clicked, leaves a request nobody may answer any more when
+  // that click was refused: its card is posted again. serve marks every clicked card (answered.ts).
+  const server = serverOf(leadSettings().cfg), clicked = server.singleAnswer ? answered() : new Set<string>(), claimed: string[] = [];
   for (const n of names.filter((x) => x.endsWith(".request.json"))) {
     const req = n.slice(0, -".request.json".length);
     try {
@@ -749,18 +797,21 @@ export async function syncCards(call: Call, lead: LeadConfig, log: (l: string) =
         if (x.first) audit({ kind: "permission", req, tool: r.tool, rule: ruleOf(r.tool, r.input), session: r.session, blocked: true, decision: x.decision });
       }
       const d = readDecision(req);
-      if (!card && !d) {
-        const sent = await call("chat.postMessage", { channel: lead.channel, ...cardOf(r, lead), unfurl_links: false });
+      const mark = card ? answeredKey(card.channel, card.ts) : "";
+      if (card && clicked.has(mark)) claimed.push(mark);
+      if (!d && (!card || clicked.has(mark))) {
+        const sent = await call("chat.postMessage", { channel: lead.channel, ...forServer(server, cardOf(r, lead, server)), unfurl_links: false });
         writeAtomic(permFile(req, "card"), JSON.stringify({ channel: lead.channel, ts: sent.ts }) + "\n");
       } else if (card && d && !card.closed) {
         // A click's own answer already closed the card; the edit here is the same card, so one that answer missed is closed too.
-        await call("chat.update", { channel: card.channel, ts: card.ts, ...forServer(serverOf(leadSettings().cfg), decidedCard(r, lead, d)) });
+        await call("chat.update", { channel: card.channel, ts: card.ts, ...forServer(server, decidedCard(r, lead, d, server)) });
         writeAtomic(permFile(req, "card"), JSON.stringify({ ...card, closed: true }) + "\n");
       } else if (d && Date.now() - Date.parse(d.at) > KEEP_MS) {
         for (const k of ["request", "decision", "card"] as const) rmSync(permFile(req, k), { force: true });
       }
     } catch (e) { log(`slack lead: permission ${req}: ${(e as Error).message}`); }
   }
+  if (claimed.length) claimAnswered(claimed);
 }
 
 /** `govern slack lead run`: the Lead's chat, fed events_api payloads as lines on stdin by slack serve; runs until stdin ends. */
@@ -776,14 +827,14 @@ export async function runLead(): Promise<void> {
     control: (q) => leadControl(lead, q),
     busy: () => busyLine(lead.name ?? "Squad Lead", readActivity()),
     files: { dir: join(leadDir(), "files"), token: botToken(cfg) },
-    choices: (options, where) => choiceCard(options, where, lead) });
+    choices: (options, where) => { const c = choiceCard(options, where, lead, server); return { ...forServer(server, c), sent: c.sent }; } });
   log(`govern slack lead in ${lead.channel} for ${repo()} as ${self}, answering ${lead.users.join(", ")}`);
   bot.resume();
   let syncing = false;
   const cards = setInterval(() => {
     if (syncing) return;
     syncing = true;
-    void syncCards(call, lead, log).finally(() => { syncing = false; });
+    void syncCards(call, lead, log).then(() => syncChoices(call, lead, log)).finally(() => { syncing = false; });
   }, 1000);
   const rl = createInterface({ input: process.stdin });
   rl.on("line", (line) => {

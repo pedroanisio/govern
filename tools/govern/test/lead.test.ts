@@ -13,8 +13,9 @@ import { makeEnv, childEnv, govern, setConfig, write, jsonl, type Env } from "./
 import { forgetConfigs, FOLDER_OVERRIDES } from "../lib/workspace.ts";
 import { handleEvent, handleInteraction, slackServer } from "../ext/slack/slack.ts";
 import { enableLead, leadSettings, leadMap, leadRouter, leadControl, currentMode, writeRequest, readDecision, allowRules,
-  leadDir, cardOf, decidedCard, syncCards, busyLine, choiceCard, readRequest, CARD_LINES, type PermissionRequest } from "../ext/slack/lead.ts";
+  leadDir, cardOf, decidedCard, syncCards, syncChoices, busyLine, choiceCard, readRequest, CARD_LINES, type PermissionRequest } from "../ext/slack/lead.ts";
 import { stepLabel, planOf } from "../ext/slack/lead-adapter.ts";
+import { forServer, serverOf } from "../ext/slack/server.ts";
 import { chatBot, choicesOf } from "../ext/slack/chat.ts";
 import { GOVERN } from "./helpers.ts";
 import { ask, answer } from "../ext/slack/lead-approve.ts";
@@ -351,6 +352,72 @@ test("a click answers with the decided card; View full opens the whole input for
     const n = calls.length;
     await syncCards(call, lead, () => undefined);
     assert.equal(calls.length, n, "a closed card is edited once");
+  });
+});
+
+test("on Tayet a Lead's card carries the whole input as its text, with buttons only, and a card a refused click closed is posted again", async () => {
+  const e = workspace("lead-tayet", SQUAD_A, { channel: LEAD_A, users: [ME], permissionTimeoutSeconds: 600 }, { server: "tayet", api: "http://127.0.0.1:9/slack/api" });
+  await within(e, async () => {
+    type B = Record<string, any>;
+    const { cfg, lead } = leadSettings(), server = serverOf(cfg);
+    assert.equal(server.singleAnswer, true);
+    const script = Array.from({ length: 40 }, (_, i) => `echo step ${i}`).join("\n");
+    const r: PermissionRequest = { ...request(uuid(40), { command: script, description: "Run the migration" }), channel: LEAD_A, thread: "1795000000.000100" };
+    // The sidecar shows a message's text and reads only the buttons of its blocks: the text is the whole card, the input
+    // is not cut (no view opens there without a form to send), and no button carries a dialog the sidecar would drop.
+    const card = forServer(server, cardOf(r, lead, server)), buttons = (card.blocks as B[]).at(-1)!.elements as B[];
+    assert.deepEqual(buttons.map((b) => [b.action_id, b.confirm]), [["govern.lead.allow", undefined], ["govern.lead.allow-session", undefined], ["govern.lead.deny", undefined]]);
+    assert.ok(card.text.startsWith("*🔐 Run the migration*\n\n*Squad Lead* asks to run *Bash*\n\n```\n" + script + "\n```\n\nOnly <@UPEDRO0001> can decide"), card.text);
+    assert.match(card.text, /\*Allow for session\* also allows this same command for the rest of the session, without a card$/);
+    assert.ok(!card.text.includes("slack.com/archives"), "no link to a Slack address");
+    const blocked = forServer(server, cardOf({ ...r, blocked: { reason: "pushes past a review" } }, lead, server));
+    assert.match(blocked.text, /> pushes past a review\n\n```\necho step 0/);
+    assert.match(blocked.text, /\*Allow once\* runs exactly this in a new turn, in mode default; \*Retry, ask me\* has the Squad Lead try again there/);
+    assert.match(forServer(server, cardOf({ ...r, input: { command: "x".repeat(30_000) } }, lead, server)).text, /x\n… \(10000 more characters\)\n```/);
+
+    // Choices: buttons for as many as a card holds (no menu there); past that, in words.
+    const eight = choiceCard(Array.from({ length: 8 }, (_, i) => `Option ${i + 1}`), { channel: LEAD_A, thread: "1795000000.000100" }, lead, server);
+    assert.deepEqual((eight.blocks as B[]).at(-1)!.elements.map((x: B) => x.type), Array(8).fill("button"));
+    const many = choiceCard(Array.from({ length: 30 }, (_, i) => `Option ${i + 1}`), { channel: LEAD_A }, lead, server);
+    assert.ok((many.blocks as B[]).every((b) => b.type !== "actions"));
+    assert.match((many.blocks as B[])[0]!.elements[0].text, /answer in words: more choices than a card has buttons/);
+    assert.equal((choiceCard(Array.from({ length: 8 }, (_, i) => `Option ${i + 1}`), { channel: LEAD_A }, lead).blocks as B[]).at(-1)!.elements[0].type, "static_select", "Slack keeps its menu");
+
+    // A person who may not decide clicks: the sidecar closed the card for everyone, so the Lead's process posts it again.
+    const calls: { method: string; body: B }[] = [], stamps = ["1795000000.000900", "1795000000.000901", "1795000000.000902", "1795000000.000903"];
+    const call = async (method: string, body: B) => { calls.push({ method, body }); return { ok: true, ts: method === "chat.postMessage" ? stamps.shift() : body.ts }; };
+    const decideBy = (body: Buffer) => { const k = sign(body.toString("utf8")); return handleInteraction(SECRET, body, k.ts, k.sig, { lead: () => true }); };
+    writeRequest(r);
+    await syncCards(call, lead, () => undefined);
+    assert.deepEqual(calls.map((c) => c.method), ["chat.postMessage"]);
+    assert.ok(String(calls[0]!.body.text).includes("```\n" + script + "\n```"), "the posted card's text holds the command");
+    assert.equal((await decideBy(click(r.req, "allow", OTHER))).status, 403);
+    assert.equal(readDecision(r.req), undefined);
+    await syncCards(call, lead, () => undefined);
+    assert.deepEqual(calls.map((c) => c.method), ["chat.postMessage", "chat.postMessage"], "the closed card is posted again");
+    await syncCards(call, lead, () => undefined);
+    assert.equal(calls.length, 2, "once");
+    // The decision closes the card that stands now.
+    assert.equal((await decideBy(click(r.req, "allow"))).status, 200);
+    await syncCards(call, lead, () => undefined);
+    const closed = calls.at(-1)!;
+    assert.deepEqual([closed.method, closed.body.ts], ["chat.update", "1795000000.000901"]);
+    assert.match(String(closed.body.text), /```\n\n✅ Allowed once by <@UPEDRO0001> · /);
+
+    // The same for a choice nobody may have made: its card comes back where it was offered.
+    eight.sent("1795000000.000900");
+    const choose = (user: string) => {
+      const payload = { type: "block_actions", team: { id: TEAM }, user: { id: user }, channel: { id: LEAD_A }, container: { channel_id: LEAD_A, message_ts: "1795000000.000900" },
+        actions: [{ action_id: "govern.lead.choose.0", value: (eight.blocks as B[]).at(-1)!.elements[0].value, action_ts: `${Date.now()}.${Math.random().toString().slice(2, 8)}` }] };
+      return decideBy(Buffer.from(new URLSearchParams({ payload: JSON.stringify(payload) }).toString(), "utf8"));
+    };
+    assert.equal((await choose(OTHER)).status, 403);
+    calls.length = 0;
+    await syncChoices(call, lead, () => undefined);
+    assert.deepEqual(calls.map((c) => [c.method, c.body.thread_ts]), [["chat.postMessage", "1795000000.000100"]]);
+    assert.match(String(calls[0]!.body.text), /choose one, or answer in words\n\n1\. Option 1/);
+    await syncChoices(call, lead, () => undefined);
+    assert.equal(calls.length, 1, "once");
   });
 });
 

@@ -21,6 +21,7 @@ All notable changes to govern are documented here, following Keep a Changelog.
 
 ### Fixed
 
+- The Squad Lead on Tayet, checked against the sidecar's source. A permission card showed a one-line summary without the command, because the sidecar shows a message's text and not its blocks: the card's text is now the whole card, with the input uncut. A card closed by the click of someone who may not decide left the request with no button until it expired as a deny: the Lead's process posts it again, and a choices card too. Choices past five were a menu the sidecar drops: they are buttons up to 25. Tayet cards carry no **View full command** button (the sidecar opens no view without a form to send) and no confirm dialog (it drops them); the line above the buttons says what each one does. See TAYET.md, "The Squad Lead on Tayet".
 - A decided permission card kept its buttons after a click, and a card that expired or whose turn ended was replaced by one line of text that lost the command's formatting. A decided card now keeps what it asked, drops its buttons and ends with a line saying who decided what and when. The Lead's process makes the same edit for every decision, so a card whose click answer never reached Slack is closed too.
 - A command on a permission card could write a mention (`<!channel>`) or formatting into the card and its notification. The input is now literal text.
 

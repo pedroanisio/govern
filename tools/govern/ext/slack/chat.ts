@@ -320,7 +320,8 @@ export interface ChatOptions {
   files?: { dir: string; token: string; maxBytes?: number; request?: typeof fetch };
   /** The message offering a reply's choices (its ```choices block, choicesOf) where the reply was posted, whose click comes
    *  back as the next question; without it the block is posted as it was written. */
-  choices?: (options: string[], where: { channel: string; thread?: string }) => { text: string; blocks: unknown[] };
+  choices?: (options: string[], where: { channel: string; thread?: string }) => { text: string; blocks: unknown[];
+    /** Told the card's message once it is posted. */ sent?: (ts: string) => void };
 }
 
 export interface ChatBot {
@@ -449,8 +450,9 @@ export function chatBot(o: ChatOptions): ChatBot {
       if (!e.refused) await attach(key, e, files);
       if (!e.refused && !e.choices && offered.options.length && o.choices) {
         try {
-          const card = o.choices(offered.options, { channel: e.channel, ...(e.thread ? { thread: e.thread } : {}) });
-          await o.call("chat.postMessage", { channel: e.channel, ...card, ...(e.thread ? { thread_ts: e.thread } : {}) });
+          const { sent: posted, ...card } = o.choices(offered.options, { channel: e.channel, ...(e.thread ? { thread: e.thread } : {}) });
+          const at = (await o.call("chat.postMessage", { channel: e.channel, ...card, ...(e.thread ? { thread_ts: e.thread } : {}) })).ts;
+          if (typeof at === "string") posted?.(at);
         } catch (err) {
           log(`slack chat: ${key}: choices: ${(err as Error).message}`);
           await post(e, `⚠️ The choices could not be shown as buttons (${(err as Error).message.slice(0, ERROR_CHARS)}): answer in words.\n${offered.options.map((x) => `• ${x}`).join("\n")}`);
