@@ -6,7 +6,8 @@
 // What it adds around Claude: a refusal while the session is open in another live process (a VS Code tab, a terminal:
 // two ends on one session overwrite each other); the turn told in the question's thread as it runs (what Claude says
 // between tool uses, posted as it says it, and a status message kept last in the thread: each tool use by its own
-// description, what runs now and for how long, the plan's progress), and what it is doing in slack/lead/activity.json for
+// description, what runs now and for how long, the plan's progress; on Slack a plan block of steps, as text where the
+// server refuses one), and what it is doing in slack/lead/activity.json for
 // a message that arrives meanwhile (lead.ts busyLine); permission asks through lead-approve.ts (--permission-prompt-tool); a
 // card for each tool use auto mode's classifier blocked (it never asks the prompt tool: Claude reports it only in the
 // result's permission_denials), whose Allow once or Retry starts a turn in BLOCKED_RETRY_MODE; the session id Claude
@@ -21,7 +22,7 @@ import { createInterface } from "node:readline";
 import { repo } from "../../lib/workspace.ts";
 import { SESSIONS_DIR, isAlive, pidChain } from "../../lib/sessions.ts";
 import { chunks, mrkdwn, questionOfRun } from "./chat.ts";
-import { slackCall, type Call } from "./channel.ts";
+import { slackCall, SlackError, type Call } from "./channel.ts";
 import { serverOf } from "./server.ts";
 import { findBotToken } from "./secrets.ts";
 import { LEAD_JOURNAL, LEAD_MAILBOX, PERMISSION_TIMEOUT_SECONDS, askedToolUses, currentMode, elapsed, governArgv, lastCost,
@@ -121,6 +122,9 @@ export async function leadAdapter(): Promise<void> {
 
   // What the thread shows while the turn runs, in the order it happens: one Slack call at a time.
   let chain: Promise<unknown> = Promise.resolve(), statusTs: string | undefined, statusBuried = false, statusBusy = false, lastStatus = 0;
+  // The status is a plan of steps (Slack's plan block) until the server refuses one; then, and on a server that is not
+  // Slack, it is the same content as text.
+  let rich = serverOf(cfg).kind === "slack", hasBlocks = false;
   const send = (f: () => Promise<unknown>): Promise<unknown> =>
     (chain = chain.then(f).catch((e: Error) => log(`thread: ${e.message}`)));
   const narrate = (text: string) => {
@@ -128,15 +132,28 @@ export async function leadAdapter(): Promise<void> {
     for (const part of chunks(mrkdwn(text))) void send(() => call("chat.postMessage", { ...where, text: part, unfurl_links: false }));
     statusBuried = Boolean(statusTs);
   };
-  const status = (text: string, final = false) => {
+  const status = (text: string, final = false, blocks?: unknown[]) => {
     if (!where || !call) return;
     const buried = statusBuried && !final;
     statusBuried = false;
     statusBusy = true;
     void send(async () => {
-      if (statusTs && buried) { await call("chat.delete", { channel: where.channel, ts: statusTs }).catch(() => undefined); statusTs = undefined; }
-      if (statusTs) await call("chat.update", { channel: where.channel, ts: statusTs, text });
-      else if (!final) statusTs = (await call("chat.postMessage", { ...where, text })).ts as string;
+      if (statusTs && buried) { await call("chat.delete", { channel: where.channel, ts: statusTs }).catch(() => undefined); statusTs = undefined; hasBlocks = false; }
+      // An edit without blocks keeps the ones the message has, so a message that had a plan is told to drop it.
+      const put = async (b?: unknown[]) => {
+        const shape = b ? { blocks: b } : hasBlocks ? { blocks: [] } : {};
+        if (statusTs) await call("chat.update", { channel: where.channel, ts: statusTs, text, ...shape });
+        else if (!final) statusTs = (await call("chat.postMessage", { ...where, text, ...shape })).ts as string;
+        hasBlocks = Boolean(b);
+      };
+      const plan = rich && !final ? blocks : undefined;
+      try { await put(plan); }
+      catch (e) {
+        if (!plan || !(e instanceof SlackError) || e.uncertain) throw e;
+        rich = false;
+        log(`the status as a plan was refused (${e.message}); it is text from here on`);
+        await put();
+      }
     }).finally(() => { statusBusy = false; });
   };
   let written = "";
@@ -149,7 +166,7 @@ export async function leadAdapter(): Promise<void> {
     if (json !== written) { try { writeActivity(a); written = json; } catch (e) { log(`activity: ${(e as Error).message}`); } }
     if (statusBusy || at - live.t0 < PROGRESS_AFTER_MS || (at - lastStatus < PROGRESS_EVERY_MS && !statusBuried)) return;
     lastStatus = at;
-    status(statusText(name, live, at));
+    status(statusText(name, live, at), false, statusBlocks(name, live, at));
   };
 
   // A blocked card's Allow once or Retry names the mode of the turn it starts; any other turn runs in the Lead's mode.
@@ -242,10 +259,10 @@ function blockedCards(denials: Denial[], o: { session: string; run?: string; whe
 interface Live {
   t0: number;
   steps: number;
-  /** The newest tool use still running. */
-  now?: { what: string; at: number };
+  /** The newest tool use still running: which step of the turn it is, what it does and since when. */
+  now?: { n: number; what: string; at: number };
   /** The last finished tool uses, oldest first. */
-  done: { what: string; ok: boolean }[];
+  done: { n: number; what: string; ok: boolean }[];
   plan?: string;
   said?: string;
 }
@@ -294,6 +311,17 @@ export function statusText(name: string, live: Live, at: number): string {
   return lines.join("\n");
 }
 
+/** The status message as a plan (Slack's plan and task_card blocks): each recent step with how it ended, the one that
+ *  runs now, then the todo list's progress and how to interrupt. Before the first step there is no plan to show. */
+export function statusBlocks(name: string, live: Live, at: number): unknown[] {
+  const task = (n: number, title: string, status: "complete" | "error" | "in_progress") => ({ type: "task_card", task_id: `step-${n}`, title: oneLine(title, 150), status });
+  const tasks = [...live.done.map((d) => task(d.n, d.what, d.ok ? "complete" : "error")),
+    ...(live.now ? [task(live.now.n, `${live.now.what} (${elapsed(at - live.now.at)})`, "in_progress")] : [])];
+  const head = `${name} working · ${elapsed(at - live.t0)} · ${live.steps} step${live.steps === 1 ? "" : "s"}`;
+  return [tasks.length ? { type: "plan", title: oneLine(head, 150), tasks } : { type: "section", text: { type: "mrkdwn", text: `⏳ ${esc(head)}` } },
+    { type: "context", elements: [{ type: "mrkdwn", text: `${live.plan ? `📋 ${esc(live.plan)} · ` : ""}Send *stop* to interrupt; a new message waits for this turn.` }] }];
+}
+
 /** One claude run, its events passed on: what Claude says between tool uses goes to `narrate` as it says it (the reply
  *  itself does not), and `tick` sees what the turn is doing every second. */
 function runClaude(argv: string[], prompt: string, o: { cwd: string; narrate: (text: string) => void; tick: (live: Live, at: number) => void; terminating: () => boolean }):
@@ -303,7 +331,7 @@ function runClaude(argv: string[], prompt: string, o: { cwd: string; narrate: (t
   const live: Live = { t0: Date.now(), steps: 0, done: [] };
   return new Promise((resolve) => {
     const child = spawn(bin, argv, { cwd: o.cwd, env, stdio: ["pipe", "pipe", "pipe"] });
-    const tools = new Map<string, string>(), running = new Map<string, { what: string; at: number }>(), reasons = new Map<string, string>();
+    const tools = new Map<string, string>(), running = new Map<string, { n: number; what: string; at: number }>(), reasons = new Map<string, string>();
     let started = false, result: ClaudeResult | undefined, said = "", pendingText = "", session: string | undefined, settled = false, stopped = false, err = "";
     const finish = (v: Omit<Parameters<typeof resolve>[0], "live" | "denials">) => {
       if (settled) return;
@@ -338,9 +366,9 @@ function runClaude(argv: string[], prompt: string, o: { cwd: string; narrate: (t
             flush();
             const name = String(b.name), what = stepLabel(name, b.input), at = Date.now();
             tools.set(b.id, name);
-            running.set(b.id, { what, at });
-            live.steps++;
-            live.now = { what, at };
+            const n = ++live.steps;
+            running.set(b.id, { n, what, at });
+            live.now = { n, what, at };
             if (name === "TodoWrite") live.plan = planOf((b.input as { todos?: unknown } | undefined)?.todos) ?? live.plan;
             emit({ type: "tool.started", id: b.id, name });
           }
@@ -355,7 +383,7 @@ function runClaude(argv: string[], prompt: string, o: { cwd: string; narrate: (t
           if (b.type === "tool_result" && typeof b.tool_use_id === "string" && tools.has(b.tool_use_id)) {
             emit({ type: "tool.finished", id: b.tool_use_id, name: tools.get(b.tool_use_id), ok: !b.is_error });
             const r = running.get(b.tool_use_id);
-            if (r) live.done = [...live.done, { what: r.what, ok: !b.is_error }].slice(-RECENT_STEPS);
+            if (r) live.done = [...live.done, { n: r.n, what: r.what, ok: !b.is_error }].slice(-RECENT_STEPS);
             tools.delete(b.tool_use_id);
             running.delete(b.tool_use_id);
             const still = [...running.values()].at(-1);

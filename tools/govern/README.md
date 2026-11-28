@@ -124,6 +124,8 @@ Documentation:
 - [CONVERSATIONS.md](CONVERSATIONS.md) covers persistent sessions, adapters, context checkpoints and recovery.
 - [SLACK-TUTORIAL.md](SLACK-TUTORIAL.md) sets up a real Slack app and runs a case's decisions through it;
   [examples/suporte](examples/suporte/README.md) is a complete autonomous support process.
+  [examples/pr-review](examples/pr-review/README.md) merges a pull request on a reviewer's decision in Slack, with the
+  pull request's facts on the gate's card.
 - [SLACK.md](SLACK.md) covers `govern slack`: decisions people make with buttons in Slack, verified by Slack's request
   signature and recorded as the mapped person's own.
 - [LEAD.md](LEAD.md) covers `govern slack lead`: a workspace's Squad Lead, a Claude Code session its people drive from a

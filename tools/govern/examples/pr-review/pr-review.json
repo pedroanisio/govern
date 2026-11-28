@@ -1,0 +1,63 @@
+{
+  "version": 1,
+  "name": "pr-review",
+  "description": "A pull request merged on a person's decision: its facts read from GitHub once the checks finish, a gate whose card shows them, and the merge at the commit that was approved",
+  "fields": {
+    "repo": { "type": "string", "min": 3, "required": true },
+    "number": { "type": "number", "min": 1, "required": true },
+    "prTitle": { "type": "string" },
+    "prUrl": { "type": "string" },
+    "base": { "type": "string" },
+    "head": { "type": "string" },
+    "checks": { "type": "string" },
+    "files": { "type": "number", "min": 0 },
+    "additions": { "type": "number", "min": 0 },
+    "deletions": { "type": "number", "min": 0 },
+    "mergeSha": { "type": "string" },
+    "problem": { "type": "string" }
+  },
+  "people": {
+    "reviewer1": { "user": "reviewer1", "roles": ["reviewer"], "slack": "U0REVIEWER1" }
+  },
+  "setup": [
+    { "commands": {
+      "facts": ["node", "--disable-warning=ExperimentalWarning", "{paths.pr}/pr.ts", "facts", "{dir}"],
+      "merge": ["node", "--disable-warning=ExperimentalWarning", "{paths.pr}/pr.ts", "merge", "{dir}"]
+    } }
+  ],
+  "stages": [
+    {
+      "name": "facts",
+      "exit": "The pull request's title, target branch, head commit, size and finished checks are on the case",
+      "service": { "command": "facts", "outputs": ["prTitle", "prUrl", "base", "head", "checks", "files", "additions", "deletions"],
+        "attempts": 3, "poll": 60, "onExhausted": { "to": "exception", "field": "problem" } },
+      "next": [{ "to": ["review"] }]
+    },
+    {
+      "name": "review",
+      "exit": "A reviewer approved merging the pull request as the card shows it",
+      "next": [{ "to": ["merge"] }]
+    },
+    {
+      "name": "merge",
+      "exit": "The pull request is merged at the approved commit",
+      "service": { "command": "merge", "outputs": ["mergeSha"], "attempts": 3, "backoffSeconds": 30, "probe": "merge",
+        "onExhausted": { "to": "exception", "field": "problem" } },
+      "next": []
+    },
+    {
+      "name": "exception",
+      "human": { "role": "reviewer" },
+      "exit": "A reviewer has dealt with what stopped the pull request; its facts are read again",
+      "next": [{ "to": ["facts"] }]
+    }
+  ],
+  "gates": [
+    {
+      "name": "merge-approval",
+      "stage": "review",
+      "message": "Merge {data.repo} #{data.number} into {data.base}? {data.prTitle} · {data.checks} · {data.files} files changed, +{data.additions} / -{data.deletions} · {data.prUrl}",
+      "policy": { "role": "reviewer", "quorum": 1, "rejectTo": "exception" }
+    }
+  ]
+}

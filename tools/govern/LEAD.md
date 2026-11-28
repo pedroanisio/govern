@@ -83,6 +83,8 @@ claude -p --resume <session> --permission-mode <mode> --output-format stream-jso
     one running now and for how long, and the plan's progress when Claude keeps a todo list. A step reads as its own
     description (a Bash call's `description`, an agent's task), else as the tool and its target. The message is updated
     every 10 s and kept as the thread's last; when the turn ends it says how it ended, after how long.
+    On Slack the steps are a plan block, each step a task that is done, failed or running; a server that refuses the
+    block gets the same lines as text.
   - A message sent while a turn runs waits for it, and is answered at once, without the model, with what that turn is
     doing now (`slack/lead/activity.json`), and that `stop` ends it.
   - The brief tells Claude to answer what the message asks first, to say in a line what it starts before long work, and

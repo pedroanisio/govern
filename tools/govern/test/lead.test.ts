@@ -531,7 +531,7 @@ test("a turn is refused while the Lead's session is open in another live process
 });
 
 /** A fake Slack Web API on localhost that records every call and answers each post with a new ts. */
-async function fakeSlack(): Promise<{ api: string; base: string; calls: { method: string; body: Record<string, unknown> }[]; close: () => Promise<void> }> {
+async function fakeSlack(o: { refuse?: (method: string, body: Record<string, unknown>) => string | undefined } = {}): Promise<{ api: string; base: string; calls: { method: string; body: Record<string, unknown> }[]; close: () => Promise<void> }> {
   const calls: { method: string; body: Record<string, unknown> }[] = [];
   let n = 0;
   const server: Server = createServer((req, res) => {
@@ -546,6 +546,8 @@ async function fakeSlack(): Promise<{ api: string; base: string; calls: { method
       const method = (req.url ?? "").replace(/^\/api\//, ""), b = (body.startsWith("{") ? JSON.parse(body) : Object.fromEntries(new URLSearchParams(body))) as Record<string, unknown>;
       calls.push({ method, body: b });
       res.writeHead(200, { "Content-Type": "application/json" });
+      const refused = o.refuse?.(method, b);
+      if (refused) return res.end(JSON.stringify({ ok: false, error: refused }));
       res.end(JSON.stringify({ ok: true, channel: b.channel, user_id: "UBOT000001", ts: `1795000001.${String(++n).padStart(6, "0")}` }));
     });
   });
@@ -589,11 +591,39 @@ test("a turn is told in its thread as it runs: what the Lead says between steps,
     const statuses = slack.calls.filter((c) => /^⏳/.test(String(c.body.text ?? ""))).map((c) => String(c.body.text));
     assert.ok(statuses.some((t) => /▶ Read the squad's desk \(\d+s\)/.test(t) && /📋 0\/2 · Reading the desk/.test(t)), statuses.join("\n---\n"));
     assert.ok(statuses.every((t) => !/govern desk/.test(t)), "a step is shown by its description, not its command");
+    // On Slack the status is a plan: each step a task with how it stands, then the todo list's progress and how to stop.
+    type B = Record<string, any>;
+    const plans = slack.calls.filter((c) => (c.body.blocks as B[] | undefined)?.[0]?.type === "plan").map((c) => c.body.blocks as B[]);
+    const running = plans.find((p) => p[0]!.tasks.some((t: B) => t.status === "in_progress" && /^Read the squad's desk \(\d+s\)$/.test(t.title)));
+    assert.ok(running, JSON.stringify(plans.at(-1)));
+    assert.match(running[0]!.title, /^Squad Lead working · \d+s · 2 steps$/);
+    assert.deepEqual(running[0]!.tasks.map((t: B) => [t.type, t.task_id, t.status]), [["task_card", "step-1", "complete"], ["task_card", "step-2", "in_progress"]]);
+    assert.equal(running[1]!.elements[0].text, "📋 0/2 · Reading the desk · Send *stop* to interrupt; a new message waits for this turn.");
     const last = slack.calls.at(-1)!;
     assert.equal(last.method, "chat.update");
     assert.match(String(last.body.text), /^✔️ Squad Lead answered after \d+s, 2 steps\.$/);
+    assert.deepEqual(last.body.blocks, [], "the last line replaces the plan");
     assert.equal(existsSync(join(lead, "activity.json")), false, "no activity once the turn ended");
   } finally { await slack.close(); }
+
+  // A server that refuses the plan block gets the same status as text, from the refusal on.
+  const plain = await fakeSlack({ refuse: (_m, b) => (JSON.stringify(b.blocks ?? "").includes('"plan"') ? "invalid_blocks" : undefined) });
+  try {
+    const child = spawn(process.execPath, ["--disable-warning=ExperimentalWarning", GOVERN, "slack", "lead", "adapter"], {
+      env: childEnv(e, { GOVERN_CLAUDE_BIN: bin, FAKE_LEAD_LOG: log, GOVERN_SLACK_API: plain.api, SLACK_BOT_TOKEN: "xoxb-test",
+        FAKE_LEAD_NARRATE: "Vou ler o **desk** primeiro.", FAKE_LEAD_SLOW_MS: "2500", GOVERN_LEAD_PROGRESS_AFTER_MS: "0", GOVERN_LEAD_PROGRESS_EVERY_MS: "500" }) });
+    let err = "";
+    child.stderr.on("data", (c) => { err += c; });
+    child.stdout.resume();
+    child.stdin.end(JSON.stringify({ protocol: "govern-conversation-v1", run: { id: "run-1" }, messages: [{ role: "user", content: "status?" }] }));
+    assert.equal(await new Promise<number | null>((r) => child.on("close", r)), 0, err);
+    const sent = plain.calls.filter((c) => /^⏳/.test(String(c.body.text ?? "")));
+    assert.equal(sent.filter((c) => c.body.blocks !== undefined).length, 1, "one plan is tried");
+    const told = sent.filter((c) => c.body.blocks === undefined);
+    assert.ok(told.length >= 2 && told.some((c) => /▶ Read the squad's desk \(\d+s\)/.test(String(c.body.text))), err);
+    assert.match(err, /the status as a plan was refused \(chat\.postMessage: invalid_blocks\); it is text from here on/);
+    assert.equal(plain.calls.at(-1)!.body.blocks, undefined, "a text status has no plan to drop");
+  } finally { await plain.close(); }
 });
 
 test("a step reads as its own description, else the tool and its target; a plan reads as its progress", () => {
